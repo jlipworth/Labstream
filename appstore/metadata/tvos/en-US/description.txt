@@ -1,0 +1,13 @@
+Labstream is a native Apple TV media client for the Plex, Jellyfin, or Emby server you administer or are authorized to access.
+
+Browse your libraries, search, and stream video and music through a television-first interface. Labstream uses a shared custom AVFoundation player while preserving platform-native navigation and Siri Remote controls.
+
+Features:
+• Plex, Jellyfin, and Emby sign-in and server selection
+• Home, library, search, details, seasons, and episodes
+• Video and music playback with subtitles, chapters, playback speed, and quality controls
+• Watch progress, Up Next, and episode autoplay
+• Native Apple TV navigation and playback controls
+• Local, opt-in diagnostics designed to redact credentials, servers, and media titles
+
+Labstream does not bundle or sell media. A separate optional project-operated review/demo service hosts licensed sample media. You need a compatible media server and must have permission to access and stream its content. Apple TV is streaming-only. Labstream is open source, unofficial, and not affiliated with or endorsed by Plex, the Jellyfin project, or Emby Media.

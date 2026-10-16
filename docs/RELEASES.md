@@ -224,6 +224,9 @@ creating a duplicate record:
 5. Establish the reviewer environment and its licensed sample-media inventory, then capture and
    privacy-review the final platform-specific screenshot sets. Complete shared app information plus
    platform metadata, build selection, privacy/export answers, review notes, and review access.
+   Product-page text and review notes live in `appstore/metadata/` and are edited by pull request;
+   `scripts/asc-metadata.py diff` compares them with App Store Connect and `push --yes` writes the
+   reviewed text. Review contact details and demo credentials stay only in App Store Connect.
 6. Install processed builds through TestFlight on every submitted device family, starting from a
    fresh install for the identity boundary and sign-in checks. Record the platform-specific gates
    below.

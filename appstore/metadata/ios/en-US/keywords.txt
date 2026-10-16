@@ -1,0 +1,1 @@
+plex,jellyfin,emby,media server,streaming,video,music,offline,home theater,player

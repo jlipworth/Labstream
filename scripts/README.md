@@ -25,6 +25,10 @@ media details out of commits and public issues.
   distribution, `ship`, and archive deletion; without it those commands are dry runs or refusals.
   It never submits for review. See
   [Releases](../docs/RELEASES.md#coordinated-publication-sequence).
+- `asc-metadata.py` — `check`, `pull`, `diff`, and `push` for the App Store product-page text and
+  review notes kept in `appstore/metadata/`. Uses the same
+  credentials as `testflight-release.py`; `push` is a dry run unless `--yes`. Never reads or stores
+  review contact details or demo credentials.
 - `check-privacy-manifest.py` — source check of the shared and tvOS `PrivacyInfo.xcprivacy`
   contracts and target membership; with `--app TARGET=PATH` for all four products it also checks
   the built app manifests. `testflight-release.py validate` runs it on archives. It is not Apple's

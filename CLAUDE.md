@@ -132,7 +132,8 @@ Use `scripts/testflight-release.py` (`preflight` → `archive` → `validate` �
 `status --wait` → `distribute --group <internal group> --yes` when needed → `select-build`, or
 `ship --group <internal group> --yes` for an on-demand build to the user's devices) via the
 `testflight-deploy` skill instead of Xcode Organizer or the App Store Connect website;
-`prune-archives` trims old Xcode archives. Uploads, `ship`, `distribute`, and build selection
+`prune-archives` trims old Xcode archives. Product-page text and review notes live in `appstore/metadata/`;
+`scripts/asc-metadata.py push --yes` writes them back and also needs the user's go-ahead. Uploads, `ship`, `distribute`, and build selection
 need the user's explicit go-ahead;
 App Review submission is never automated. The API key comes from 1Password through a read-only
 service account token in the login Keychain (`scripts/asc.local.env`, gitignored); never print or
