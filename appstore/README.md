@@ -6,8 +6,9 @@ Connect (`diff`), refreshes them (`pull`), and writes reviewed changes back (`pu
 layout and the managed fields are described at the top of that script.
 
 - Edit the files here and review them in a pull request, then push after merge.
-- Review contact details and demo-account credentials never belong in this directory; enter them
-  only in App Store Connect.
+- Review contact details, demo-account credentials, and the review server's address never belong
+  in this directory; enter them only in App Store Connect's Sign-In Information. `check` fails on
+  review notes containing a URL, hostname, or IP address.
 - `review_notes.txt` is the App Review note. Re-check it on clean installs of the exact release
   candidate before submission (see `docs/plans/2026-09-15-store-demo-capture.md`).
 - `whats_new.txt` stays empty for the first public version and describes each later update.

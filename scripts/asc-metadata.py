@@ -16,8 +16,10 @@ per field, so changes are reviewed in pull requests like any other source:
   diff           show where the files and App Store Connect differ (read-only).
   push [--yes]   dry run by default; --yes writes the differing fields.
 
-Only the fields above are managed. Review contact details and demo-account credentials are
-never read into, written from, or stored in the repository; enter those in App Store Connect.
+Only the fields above are managed. Review contact details, demo-account credentials, and the
+review server's address are never read into, written from, or stored in the repository; enter
+those in App Store Connect. check rejects review notes that contain a URL, hostname, or IP
+address, and pull refuses to copy such notes into the repository.
 Screenshots, pricing, availability, age rating, and submission stay out of scope.
 
 Credentials and version discovery reuse scripts/testflight-release.py (1Password service
@@ -59,6 +61,7 @@ class Field:
     limit: int
     url: bool = False
     bytes_limit: bool = False
+    no_addresses: bool = False
 
 
 APP_INFO_FIELDS = (
@@ -75,9 +78,14 @@ VERSION_LOCALE_FIELDS = (
     Field("marketing_url.txt", "marketingUrl", 255, url=True),
 )
 VERSION_FIELDS = (Field("copyright.txt", "copyright", 200),)
-REVIEW_FIELDS = (Field("review_notes.txt", "notes", 4000),)
+REVIEW_FIELDS = (Field("review_notes.txt", "notes", 4000, no_addresses=True),)
 
 ID_PATTERN = re.compile(r"\b\d{8,}\b|\b[0-9a-fA-F]{8}-[0-9a-fA-F-]{27}\b")
+# URLs, IPv4 addresses, and dotted hostnames (including the domain of an email address).
+ADDRESS_PATTERN = re.compile(
+    r"\b[a-z][a-z0-9+.-]*://\S+|\b(?:\d{1,3}\.){3}\d{1,3}\b|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\b",
+    re.IGNORECASE,
+)
 
 
 class MetadataError(RuntimeError):
@@ -109,6 +117,9 @@ def problems_for(field: Field, value: str, where: str) -> list[str]:
         out.append(f"{where}/{field.file}: {size} {unit}, limit {field.limit}")
     if field.url and value and not value.startswith("https://"):
         out.append(f"{where}/{field.file}: must be an https:// URL")
+    if field.no_addresses and ADDRESS_PATTERN.search(value):
+        out.append(f"{where}/{field.file}: contains a URL, hostname, or IP address; keep server details "
+                   "only in App Store Connect's Sign-In Information")
     if field.attribute == "keywords" and value and re.search(r",\s", value):
         out.append(f"{where}/{field.file}: separate keywords with commas only; spaces waste the byte limit")
     return out
@@ -213,6 +224,8 @@ def differences(root: pathlib.Path, remotes: list[Remote]) -> list[tuple[Remote,
 
 def show_diff(remote: Remote, field: Field, current: str, local: str) -> str:
     label = f"{remote.path}/{field.file}"
+    if field.no_addresses:
+        current, local = ADDRESS_PATTERN.sub("<address>", current), ADDRESS_PATTERN.sub("<address>", local)
     lines = difflib.unified_diff(current.splitlines(), local.splitlines(),
                                  f"App Store Connect: {label}", f"repository: {label}", lineterm="")
     return "\n".join(lines)
@@ -254,7 +267,12 @@ def cmd_pull(args: argparse.Namespace) -> int:
         remotes = resources(client, args.version, args.platform)
         for remote in remotes:
             for field in remote.fields:
-                write_value(args.root / remote.path / field.file, remote.values[field.attribute])
+                value = remote.values[field.attribute]
+                if field.no_addresses and value and ADDRESS_PATTERN.search(value):
+                    print(f"warning: skipped {remote.path}/{field.file}: App Store Connect copy contains a "
+                          "URL, hostname, or IP address; remove it there or edit the file by hand")
+                    continue
+                write_value(args.root / remote.path / field.file, value)
         print(f"pulled {sum(len(r.fields) for r in remotes)} field(s) into {display(args.root)}")
         return 0
     return with_client(args, action)

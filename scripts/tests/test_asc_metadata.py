@@ -120,6 +120,20 @@ class MetadataTests(unittest.TestCase):
         self.assertTrue(am.problems_for(url, "http://example.org", "ios/en-US"))
         self.assertFalse(am.problems_for(url, "", "ios/en-US"))
 
+    def test_review_notes_reject_server_addresses(self):
+        notes = am.REVIEW_FIELDS[0]
+        for leak in ("https://review.example.org", "jellyfin.example.net:8096", "192.0.2.10",
+                     "reviewer@example.com"):
+            self.assertTrue(am.problems_for(notes, f"Sign in to {leak} now.", "ios"), leak)
+        self.assertFalse(am.problems_for(notes, "Use the address in Sign-In Information, e.g. there.", "ios"))
+
+    def test_pull_does_not_copy_review_notes_with_an_address(self):
+        code, out = self.pull(FakeClient(notes="Server: review.example.org"))
+        self.assertEqual(code, 0)
+        self.assertFalse((self.root / "ios/review_notes.txt").exists())
+        self.assertIn("skipped ios/review_notes.txt", out)
+        self.assertNotIn("example.org", out)
+
     def test_uneditable_version_is_skipped(self):
         client = FakeClient(state="READY_FOR_SALE")
         self.pull(client)
