@@ -107,72 +107,24 @@ Remote, HDR/audio/HDMI, lifecycle, accessibility, performance, or release gates.
 
 ### Installing on a physical iPhone or iPad (device testing)
 
-The mobile simulator flow builds with `CODE_SIGNING_ALLOWED=NO`, which will NOT install
-on hardware. A real iPhone/iPad needs a code-signed **iphoneos** device build (product
-lands in `Debug-iphoneos`, NOT `Debug-iphonesimulator`):
-
-```sh
-scripts/deploy-mobile-to-device.sh            # build (signed, version-stamped) + install
-scripts/deploy-mobile-to-device.sh --launch   # also launch after install
-scripts/deploy-mobile-to-device.sh --no-build # reinstall this worktree's last iOS device build
-scripts/deploy-mobile-to-device.sh --verbose  # show full device/team IDs instead of masked IDs
-```
-
-If both an iPad and iPhone are paired, set `IOS_DEVICE_ID=<uuid>` (or
-`MOBILE_DEVICE_ID=<uuid>`) so the script targets the intended device. Set the signing team with
-`IOS_DEVELOPMENT_TEAM=<team>` (or `MOBILE_DEVELOPMENT_TEAM`); otherwise the wrapper derives it
-from the Apple Development certificate OU. It accepts `--verbose`/`--full-ids`, builds into the
-worktree-local `build/DerivedData-device-ios` (wiped before every build, so there is no
-incremental link to skip), and stamps the internal Build ID via `scripts/build-version-args.sh`.
-It installs only that worktree's exact `Debug-iphoneos/Labstream.app`, never another worktree's
-or Xcode's global DerivedData; `--no-build` reinstalls this worktree's last device build and
-fails if none exists. By default it prunes matching short-lived development profiles;
-`IOS_REFRESH_SHORT_DEV_PROFILES=0` opts out. The embedded profile is checked and a short-lived
-profile with fewer than six days remaining is refused.
-
-First hardware deploy still needs the user's one-time setup: connect/pair the device,
-trust this Mac, enable Developer Mode on-device if prompted, and sign the matching Apple
-ID into Xcode Settings ▸ Accounts so CLI automatic provisioning works.
+Simulator builds (`CODE_SIGNING_ALLOWED=NO`) will not install on hardware. Use
+`scripts/deploy-mobile-to-device.sh` (`--launch` to also launch, `--no-build` to reinstall the
+last build); the `deploy-mobile-to-device` skill and
+`docs/DEVELOPMENT.md#physical-iphone-or-ipad-install` own device selection, env vars, worktree-local
+DerivedData, and profile rules. A `No Account for Team` / missing-profile error means the user must
+sign the matching Apple ID into Xcode Settings ▸ Accounts — Claude cannot do that. Device testing
+is the USER's half; Claude owns the build/install command once signing is unblocked.
 
 ### Installing on a physical Vision Pro (device testing)
 
-The simulator flow above builds with `CODE_SIGNING_ALLOWED=NO`, which will NOT install on
-hardware. A real headset needs a code-signed **device** build (product lands in
-`Debug-xros`, NOT `Debug-xrsimulator`):
-
-```sh
-scripts/deploy-to-device.sh            # build (signed, version-stamped) + install
-scripts/deploy-to-device.sh --launch   # also launch (headset must be awake/worn)
-scripts/deploy-to-device.sh --no-build # reinstall this worktree's last device build
-scripts/deploy-to-device.sh --verbose  # show full device/team IDs instead of masked IDs
-```
-
-Headset must show available/paired — "unavailable" usually means asleep/off-network.
-Wake it, put it on the SAME Wi-Fi as this Mac, enable Developer Mode
-(Settings > Privacy & Security > Developer Mode), and trust this Mac. The wrapper accepts
-`--verbose`/`--full-ids`; by default it prunes matching short-lived development profiles (set
-`VP_REFRESH_SHORT_DEV_PROFILES=0` to opt out), checks the embedded profile, and refuses a
-short-lived profile with fewer than six days remaining. For longer-lived offline use, prefer the
-`scripts/deploy-ad-hoc-to-device.sh` or TestFlight. The script derives
-the Vision Pro identifier from `devicectl`, the signing team from the certificate OU,
-builds into the worktree-local `build/DerivedData-device-visionos` (wiped before every build),
-and stamps the internal Build ID via `scripts/build-version-args.sh`. Like the iOS wrapper, it
-installs only that worktree's exact `Debug-xros/Labstream.app`; `--no-build` reinstalls this
-worktree's last device build and fails if none exists.
-
-⚠️ **RECURRING SIGNING GOTCHA (hit often).** A command-line device build fails with
-`error: No Account for Team "<id>"` / `No profiles for 'org.labstream.Labstream' were found`
-**even though** `security find-identity -p codesigning -v` shows a valid "Apple Development"
-cert. The keychain cert alone is NOT enough for CLI automatic provisioning — Xcode must have
-the matching Apple ID **account** signed in (Xcode → Settings → Accounts → + → Apple ID).
-**Claude cannot do this** (it needs the user's credentials), so when it surfaces, the fix is
-the user's to perform. Two paths:
-- **User signs the account into Xcode once**, then Claude re-runs the `xcodebuild` above.
-- **User installs straight from Xcode** (open the project, pick the headset, Run) — Xcode
-  signs interactively and is the most reliable path for a first device install.
-
-Device testing is otherwise the USER's half (the headset is the device-only gate); Claude
-owns the build/install command once signing is unblocked.
+Use `scripts/deploy-to-device.sh` (`--launch` to also launch while the headset is awake/worn,
+`--no-build` to reinstall the last build); the `deploy-to-device` skill and
+`docs/DEVELOPMENT.md#physical-apple-vision-pro-install` own pairing, Developer Mode/same-Wi-Fi
+setup, env vars, worktree-local DerivedData, the six-day profile refusal, and the Ad Hoc/TestFlight
+alternatives. ⚠️ **Recurring signing gotcha:** `No Account for Team` / `No profiles for
+'org.labstream.Labstream'` despite a valid keychain cert means the user must sign the Apple ID into
+Xcode Settings ▸ Accounts (or install once from Xcode) — **Claude cannot do this**. Device testing
+is the USER's half; Claude owns the build/install command once signing is unblocked.
 
 ### Publishing to TestFlight
 

@@ -52,6 +52,10 @@ media details out of commits and public issues.
   simulator IDs, exports only JPEGs plus a sanitized checksum manifest, and fails closed on
   non-Apple dimensions or alpha channels. See
   [App Store screenshot automation](../docs/APP-STORE-SCREENSHOTS.md).
+- `app-review-media-provenance.json` — checked-in public source, license, and catalog-hash
+  provenance for the licensed App Review/storefront demo media; it is data, not a script, and
+  `tests/test_app_store_screenshots.py` guards its open capture gate. See the
+  [licensed-media capture plan](https://github.com/jlipworth/Labstream/blob/main/docs/plans/2026-09-15-store-demo-capture.md).
 - `publication-audit.py` — audits tracked text, Git history, and optionally GitHub issue text for
   sensitive publication regressions without echoing matched secrets.
 - `publication-audit-allowlist.json` — checked-in, reasoned exceptions for synthetic fixtures and

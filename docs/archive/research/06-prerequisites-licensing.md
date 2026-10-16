@@ -123,6 +123,39 @@ Legend for priority:
 
 ---
 
+## 6. Sideload and original architecture notes
+
+_Merged from the former `03-app-architecture-sideload.md` (June 2026), which covered the same free-Apple-ID build assumptions._
+
+### Sideloading on a free Apple ID
+- **No AltStore/SideStore escape hatch on visionOS.** AltStore and SideStore target **iOS/iPadOS only**; the on-device Wi-Fi auto-refresh that avoids the weekly Mac tether on iPhone is not available for Vision Pro. **LiveContainer** (many apps inside one signed container) and SideStore background refresh likewise do not apply. Apple's Xcode deployment is the only path, with the raw free-provisioning rules.
+- **3-app limit.** A free Apple ID can have at most **3 sideloaded apps** active at once per device.
+- **Mac tether for every refresh.** Re-signing needs the headset reachable (wireless developer mode) by the Mac running Xcode, roughly once a week; if the refresh is missed, the app will not launch until it is redeployed.
+
+### Original six-module breakdown
+The original plan split the app into one-directional Swift Package targets (or folder groups):
+
+| Module | One-line purpose | Depends on |
+|---|---|---|
+| **AppState** | Observable root app state: current server, selected library, navigation path, immersion style, playback queue. | (none — leaf) |
+| **PlexAuth** | Plex.tv login flow (PIN/OAuth), stores & refreshes the auth token in Keychain, resolves the user's servers/connection URIs. | (Foundation, Keychain) |
+| **PlexAPI** | Library browse + the transcode/stream **decision** (direct play vs `start.m3u8`, building the playback URL). Thin hand-written `URLSession` REST layer. | PlexAuth, Foundation |
+| **Player** | `AVPlayerViewController` wrapper + a SwiftUI environment to launch playback from any view; play/pause/seek and `/:/timeline` progress reporting. | PlexAPI, AppState |
+| **DownloadManager** | Downloads selected items to the app sandbox, tracks state, vends local file URLs to Player. | PlexAPI |
+| **LibraryUI** | SwiftUI browse views: server/library picker, poster wall, detail view, play and download buttons. | AppState, PlexAPI, Player, DownloadManager |
+
+The Player accepted a `.remote(URL)` / `.local(URL)` source abstraction so it never knew about Plex, and PlexAPI owned the transcode decision. Deliberately **omitted for v1 (YAGNI):** no official Mobile Sync engine, no multi-user, no analytics, no settings sync, no SharePlay, no immersive 180/360 module.
+
+### Deployment target
+The recommendation was **visionOS 2.0** for broad device coverage, **or visionOS 26.0** to use the newest player/immersive APIs (RealityKit `VideoPlayerComponent`, progressive immersive mode, comfort mitigation). For a personal app on one controlled headset, targeting visionOS 26 was judged simplest; a lower deployment target than the build SDK remains possible.
+
+### Offline storage
+- Store downloads in **`Application Support/`** (or a `Documents/` subfolder) inside the sandbox, in a `Downloads/` subdirectory with a small metadata index, and mark them **`isExcludedFromBackup`** (`var rv = URLResourceValues(); rv.isExcludedFromBackup = true`). Avoid `Caches/` for saved downloads because the system can purge it.
+- The Vision Pro has no hard cap beyond free space, but storage is not expandable, so surface used space and allow deletion.
+- **Caution:** `AVAssetDownloadTask`/`AVAggregateAssetDownloadTask` persist HLS assets, but **do not point them at Plex's live-style universal transcode playlist**; prefer a finished file (original part or Media Optimizer version) fetched with a background `URLSession` download task.
+
+---
+
 ## Sources
 - [Xcode SDK & system requirements — Apple Developer](https://developer.apple.com/xcode/system-requirements/)
 - [Xcode 26 release notes — Apple Developer](https://developer.apple.com/documentation/xcode-release-notes/xcode-26-release-notes)

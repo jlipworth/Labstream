@@ -159,7 +159,7 @@ PMSKit run passed 1,713 Swift Testing cases plus 121 XCTest cases.
 The continuation adds acknowledged Emby stop-before-reopen ordering and preserves failed
 cleanup authority for explicit Retry, together with relative-seek target handling and opt-in
 bounded HLS startup diagnostics. It does not prove server worker exit. See the
-[ordering investigation](https://github.com/jlipworth/Labstream/blob/main/docs/research/emby-reopen-session-overlap.md)
+[ordering investigation](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/audits/2026-10-04-emby-reopen-session-overlap.md)
 for evidence limits.
 
 After test-only event synchronization and manual-clock fixes, a clean-build default-parallel

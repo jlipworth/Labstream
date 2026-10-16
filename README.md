@@ -141,7 +141,7 @@ Labstream is unofficial and independent. It is not affiliated with, endorsed by,
 - Apple Vision Pro: complete the [first-use pairing, Developer Mode, Xcode account/signing, install, and launch procedure](docs/DEVELOPMENT.md#physical-apple-vision-pro-install).
 - iPhone/iPad: use the canonical [signed hardware install procedure](docs/DEVELOPMENT.md#physical-iphone-or-ipad-install).
 - Apple TV: simulator procedures are documented today; physical Apple TV deployment and acceptance remain open release gates in the [tvOS target guide](docs/TVOS.md).
-- Mac: use the [host validation procedure](docs/DEVELOPMENT.md#build-and-run-the-macos-target).
+- Mac: use the [host build-and-run helper](docs/DEVELOPMENT.md#build-and-run-the-macos-target).
 
 All four production targets use `org.labstream.Labstream`. The Mac host helper defaults to a
 per-worktree development bundle identifier so local builds do not collide; see the

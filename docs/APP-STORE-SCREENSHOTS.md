@@ -5,7 +5,10 @@ browse catalog. It does not authenticate, contact a media server, or read persis
 runner evidence remains ignored; the export contains only JPEGs and a sanitized checksum manifest.
 
 Final release images must instead use the controlled licensed catalog and ordinary app sessions;
-see the [licensed-media capture plan](https://github.com/jlipworth/Labstream/blob/main/docs/plans/2026-09-15-store-demo-capture.md). The fixture exporter
+see the [licensed-media capture plan](https://github.com/jlipworth/Labstream/blob/main/docs/plans/2026-09-15-store-demo-capture.md). Its public source and license
+provenance is checked in at
+[`scripts/app-review-media-provenance.json`](https://github.com/jlipworth/Labstream/blob/main/scripts/app-review-media-provenance.json)
+and covered by `scripts/tests/test_app_store_screenshots.py`. The fixture exporter
 does not authenticate to that catalog and a `store-ready` folder name is not release approval.
 
 ## Apple requirements checked on 2026-09-29

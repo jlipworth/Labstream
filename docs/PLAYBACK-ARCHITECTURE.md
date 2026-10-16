@@ -162,7 +162,7 @@ resume/seek, but retains fragmented MP4 rather than switching to MPEG-TS. Capped
 must have a known bitrate within the ceiling and explicit copy-compatible server reasons;
 unknown facts, transforms, and HDR are excluded. This avoids the reproduced visual corruption
 on the offset-primed quality-reopen path, without asserting a shared cause with the H.264
-starvation issue ([evidence and limits](https://github.com/jlipworth/Labstream/blob/main/docs/research/emby-hevc-sdr-timeline.md)).
+starvation issue ([evidence and limits](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/audits/2026-09-13-emby-hevc-sdr-timeline.md)).
 
 Verified Emby copy HLS reopens retain their 12-second buffer target but keep automatic
 waiting enabled, so buffer exhaustion does not strand AVPlayer at rate zero. Verified
@@ -510,7 +510,7 @@ sequenceDiagram
   and serializes replacement negotiation through superseded-result cleanup. A failed stop retains
   retry authority and blocks a new encoder; terminal cleanup has only one bounded retry.
   Jellyfin continues to attach the replacement before deferring prior active-encoding cleanup.
-  This Emby ordering addresses a reproduced [overlapping-session failure](https://github.com/jlipworth/Labstream/blob/main/docs/research/emby-reopen-session-overlap.md);
+  This Emby ordering addresses a reproduced [overlapping-session failure](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/audits/2026-10-04-emby-reopen-session-overlap.md);
   acknowledgement is not proof of encoder-process exit.
 - Surfaced failure also ends the current attempt: invalidate callbacks, cancel preparation,
   detach the player item, and stop its exact backend session without waiting for Close.

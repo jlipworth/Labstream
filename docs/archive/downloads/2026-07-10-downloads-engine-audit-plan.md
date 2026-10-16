@@ -371,7 +371,7 @@ Phase results (full reports in session transcript):
   B.4 downgraded (bounded waste). Slot accounting, attempt UUIDs, keepalives, DownloadStore
   row state all CLEAN. Open (small): side-cache orphan files after quick delete;
   dangling `lastError` writers (deliberate in one case).
-- Phase 2: `docs/audits/2026-07-10-downloads-state-machines.md` written (3 machines,
+- Phase 2: [`2026-07-10-downloads-state-machines.md`](2026-07-10-downloads-state-machines.md) written (3 machines,
   incoherent composite states, 11 executable invariants, Phase-6 model skeleton).
   Correction: audit plan B.8 wrong — free-space preflight EXISTS in start() (+500 MB
   headroom); only mid-transfer disk-full classification open. Open: IC-4 JF keepalive
@@ -587,7 +587,7 @@ The audit documents were committed on main (`23b0bac`) and the three remaining p
 resumed in parallel from that checkpoint.
 
 - **Phase 4 complete — `a6c964f`.** Added
-  `2026-07-11-downloads-phase4-coverage-matrix.md` and five targeted PMSKit composition tests:
+  [`2026-07-11-downloads-phase4-coverage-matrix.md`](2026-07-11-downloads-phase4-coverage-matrix.md) and five targeted PMSKit composition tests:
   backend/lane/resume-mode resolution; retry budget + v2 marker + reattach + segment-local blob
   adoption; head/mid/tail response classes; expected-byte/completion gating; and forward-schema
   corrupt-row isolation. Combined suite: 1365 Swift Testing + 89 XCTest, zero failures.
@@ -595,7 +595,7 @@ resumed in parallel from that checkpoint.
   `BackgroundDownloadSession` now has a DEBUG-only injectable `URLProtocol` seam. The existing
   Plex range-drop probe also drives deterministic validator-flip and one-shot mid-train 401
   scenarios and requires both injection and engine-reaction diagnostics. See
-  `2026-07-11-downloads-fault-injection-harness.md`. A live fault-path pass is still outstanding:
+  [`2026-07-11-downloads-fault-injection-harness.md`](../../evidence/audits/2026-07-11-downloads-fault-injection-harness.md). A live fault-path pass is still outstanding:
   the available probe records entered Plex optimize instead of an immediate static train.
   Pause-mid-drain, reset→blob→reset, relaunch-with-stashes, and filesystem-write injection remain
   open Phase-6 cells.

@@ -13,8 +13,8 @@ This document captures the agreed scope and sequence for finishing the first nat
 - Quality-switch follow-up commit: `57d001a Fix quality reload playhead snapshots`
 - Follow-up redesign issue: #232, `Mac shell/sidebar redesign pass`
 - Deterministic validation script: `scripts/validate-macos-228.sh`
-- Manual validation split: `docs/MACOS-228-VALIDATION.md`
-- Minimal release scaffolding notes: `docs/MACOS-RELEASE-SCAFFOLDING.md`
+- Manual validation split: merged into [Validation split and completion rule](#validation-split-and-completion-rule) below (formerly `docs/MACOS-228-VALIDATION.md`)
+- Minimal release scaffolding notes: `docs/MACOS-RELEASE-SCAFFOLDING.md` (removed; deferred decisions live in [`docs/MACOS.md`](../../MACOS.md))
 
 ## Scope decisions
 
@@ -52,7 +52,7 @@ This document captures the agreed scope and sequence for finishing the first nat
 7. **Release/versioning/App Store mechanics**
    - Minimal scaffolding/docs in #228.
    - Defer final App Store Connect/TestFlight/universal-purchase plan.
-   - Current scaffolding notes live in `docs/MACOS-RELEASE-SCAFFOLDING.md`.
+   - Scaffolding notes lived in `docs/MACOS-RELEASE-SCAFFOLDING.md` (removed).
 
 8. **Mac shell/menu/sidebar polish**
    - Polish current shell enough for v1.
@@ -68,7 +68,7 @@ This document captures the agreed scope and sequence for finishing the first nat
     - User does not need to perform every item manually.
     - Agents/lead should cover build checks, static checks, non-auth automated checks, deterministic runtime smoke, logs, and documentation.
     - User covers real-auth, subjective UI feel, and real-server playback/download cases where local interaction is needed.
-    - Agent-runnable checks are scripted in `scripts/validate-macos-228.sh`; the manual split is tracked in `docs/MACOS-228-VALIDATION.md`.
+    - Agent-runnable checks are scripted in `scripts/validate-macos-228.sh`; the manual split is tracked in [Validation split and completion rule](#validation-split-and-completion-rule).
 
 ## Recommended implementation sequence
 
@@ -101,7 +101,7 @@ This document captures the agreed scope and sequence for finishing the first nat
 7. **Release scaffolding/docs**
    - Document Mac build/deploy/versioning/release caveats.
    - No full App Store Connect plan in this ticket.
-   - Done for the current #228 scope in `docs/MACOS-RELEASE-SCAFFOLDING.md`.
+   - Done for the current #228 scope in `docs/MACOS-RELEASE-SCAFFOLDING.md` (removed).
 
 8. **Validation matrix sweep**
    - Automated/static/build checks by agents/lead.
@@ -137,6 +137,7 @@ This document captures the agreed scope and sequence for finishing the first nat
 - Music page transition/render does not momentarily resize or kick the whole app shell left.
 - Detail/content navigation works.
 - Escape goes back from content/detail submenu.
+- Navigate > Back / `⌘[` pops the same submenu.
 - Settings is idiomatic enough for v1.
 - Choose Libraries dialog remains usable.
 - Sidebar/root toolbar do not appear in player mode.
@@ -174,7 +175,7 @@ This document captures the agreed scope and sequence for finishing the first nat
 
 - Feedback UI works on Mac.
 - Diagnostics include Mac build/platform/container/download/playback facts.
-- Diagnostics redact tokens/server-sensitive values.
+- Diagnostics redact tokens/server-sensitive values; preview/export must not leak tokens, hosts, paths, usernames, filenames, or media titles.
 - Logs include useful quality-switch/download breadcrumbs without excessive noise.
 
 ### Docs/release scaffolding
@@ -182,3 +183,37 @@ This document captures the agreed scope and sequence for finishing the first nat
 - Mac host deploy docs current.
 - Per-worktree dev identity caveats documented.
 - Minimal release/versioning caveats documented.
+
+## Validation split and completion rule
+
+The former `docs/MACOS-228-VALIDATION.md` split the matrix above into agent-runnable and
+user/manual checks; its unique content is preserved here.
+
+### Agent-runnable validation
+
+Run `scripts/validate-macos-228.sh`. It performs:
+
+- `git diff --check`
+- conflict-marker scan across source/docs/scripts/config
+- Mac app icon asset slot/file/dimension validation
+- Mac identity wiring static checks for bundle id, keychain service, background download session id, and diagnostic context
+- `LabstreamMac` host Debug build
+- `Labstream` visionOS simulator build using this worktree's visionOS simulator
+- `LabstreamMobile` iOS simulator build using this worktree's iPhone simulator
+- `PMSKit` diagnostic/redaction tests (`DiagnosticLoggingTests`)
+- bounded native macOS host launch smoke via `scripts/smoke-macos-host.sh`
+
+Logs are written to `build/validation/macos-228/`.
+
+These checks prove the branch is syntactically clean, shared-code compile-safe, that the Mac app can be staged/launched under an isolated dev bundle id, that key Mac identity wiring is still present, and that the diagnostics report renderer/redaction coverage still passes its focused tests. They do **not** prove real auth, subjective UI quality, system media-key runtime behavior, or live download robustness.
+
+### User/manual validation
+
+The Auth/account, Navigation/UI, Playback, Music, Downloads/offline, and Diagnostics/feedback
+sections of the matrix above required a real signed-in Mac session, subjective UI review, or
+real media-server/download behavior. Diagnostic preview/export was expected to include Mac
+build/platform/bundle/keychain/container/download/playback facts.
+
+### Completion rule
+
+#228 should not be considered done until the agent-runnable validation script passes and the manual checklist above has either been tested successfully or split into explicit follow-up issues with user approval.

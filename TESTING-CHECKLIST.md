@@ -386,7 +386,7 @@ them.
 | Off-head user-visible/durable progress (retest) | Under the current static-range regime (512 MiB segments at depth two), start static downloads, leave the headset off-head/locked for a sustained interval, then wake it. Pass if the visible per-row and aggregate progress never moves backward, held bodies stay counted, a paused row with no opaque resume blob stays paused rather than failing, and the durable checkpoint advances off-head. | For the same hash: `downloads.range_progress`/`downloads.progress_milestone` and `downloads.range_segment_assembled` across the background interval, `app.scene_phase` bracketing it, and `downloads.range_launch_checkpoint` for durable/held bytes after any relaunch. | The 2026-07-11 run proved transport-layer off-head transfer only; presentation and durable-checkpoint behavior after the follow-up fixes still needs another physical off-head interval. |
 
 The 2026-07-11 off-head physical run and its follow-up defects are recorded in the downloads audit's
-[Phase-7 physical evidence](docs/evidence/audits/2026-07-10-downloads-engine-audit-plan.md#phase-7-physical-evidence-off-head-static-trains-2026-07-11).
+[Phase-7 physical evidence](docs/archive/downloads/2026-07-10-downloads-engine-audit-plan.md#phase-7-physical-evidence-off-head-static-trains-2026-07-11).
 
 ## 6. Music
 

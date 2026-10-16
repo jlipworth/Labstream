@@ -31,6 +31,11 @@ When a plan is complete or superseded:
   [#288](https://github.com/jlipworth/Labstream/issues/288), physical-device, and App Store
   gates remain open. The completed #293/#295 suspended-request follow-up is recorded in the
   plan but is not an active queue item.
+- [tvOS exhaustive screen audit](2026-07-20-tvos-screen-audit.md) — remaining tvOS
+  screen/interaction acceptance for [#246](https://github.com/jlipworth/Labstream/issues/246)
+  after the archived implementation plan and 2026-07-21 session report; the open gates are the
+  physical Siri Remote/keyboard/HDMI/HDR sweep, not the simulator search-keyboard XCTest
+  (that live test passed).
 
 Completed plans live in [`docs/archive/plans/`](../archive/plans/); the most
 recently archived is the agent playback evidence journal (2026-09-06), which

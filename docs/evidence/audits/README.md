@@ -16,10 +16,14 @@ Name files `YYYY-MM-DD-<subsystem>-<purpose>.md`. Record the source revision, me
 
 ## Retained audits
 
-- [`2026-07-10-downloads-engine-audit-plan.md`](2026-07-10-downloads-engine-audit-plan.md)
-- [`2026-07-10-downloads-state-machines.md`](2026-07-10-downloads-state-machines.md)
-- [`2026-07-11-downloads-fault-injection-harness.md`](2026-07-11-downloads-fault-injection-harness.md)
-- [`2026-07-11-downloads-phase4-coverage-matrix.md`](2026-07-11-downloads-phase4-coverage-matrix.md)
+- [`2026-07-11-downloads-fault-injection-harness.md`](2026-07-11-downloads-fault-injection-harness.md) —
+  retained Phase-6 downloads fault-injection harness record. The parent audit plan,
+  state-machine extraction, and Phase-4 coverage matrix are archived in
+  [`docs/archive/downloads/`](../../archive/downloads/).
+- [`2026-09-13-emby-hevc-sdr-timeline.md`](2026-09-13-emby-hevc-sdr-timeline.md) — reproduced
+  Emby HEVC 10-bit SDR quality-reopen boundary behind the shipped scoped mitigation
+  ([#304](https://github.com/jlipworth/Labstream/issues/304)); the precise fragment/decoder
+  mechanism, physical-device, and broader server-version validation remain recorded limits.
 - [`2026-09-13-plex-corpus.md`](2026-09-13-plex-corpus.md) — bounded Plex exact-source
   playback-evidence audit. It records simulator results and harness corrections; physical,
   HDR/colorimetry, long-play, and exhaustive track/version gates remain open.
@@ -31,3 +35,7 @@ Name files `YYYY-MM-DD-<subsystem>-<purpose>.md`. Record the source revision, me
   bounded privacy audit of the review/demo service against the published App Privacy answers.
 - [`2026-09-17-jellyfin-terminal-cleanup.md`](2026-09-17-jellyfin-terminal-cleanup.md) —
   bounded Jellyfin terminal-cleanup investigation referenced by the playback cleanup invariants.
+- [`2026-10-04-emby-reopen-session-overlap.md`](2026-10-04-emby-reopen-session-overlap.md) —
+  reproduced Emby overlapping-session reopen failure behind the shipped stop-before-reopen
+  ordering; server worker-exit proof, physical-device, and source-matched cross-backend
+  acceptance remain recorded limits.

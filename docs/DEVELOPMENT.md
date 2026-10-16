@@ -322,38 +322,9 @@ Use the host helper so builds are staged under a per-worktree development identi
 scripts/deploy-macos-to-host.sh --launch
 ```
 
-The helper disables Xcode's Debug dylib launcher (`ENABLE_DEBUG_DYLIB=NO`): its shared
-main-executable UUID caused macOS to prohibit local-network requests across different app
-identities even with permission enabled. The signed, non-launcher build restored live access.
-See [Mac local-network troubleshooting](MACOS.md#local-network-permission-and-debug-launcher-identity).
-
-For a credential-free semantic agent check, the bounded runner stages an isolated bundle, mounts
-the real browse/detail UI with synthetic data, presses the stable home-item Accessibility target,
-asserts the detail tagline, captures only the Labstream window, and stops its exact process:
-
-```sh
-scripts/agent-macos-run.sh fixture-detail
-```
-
-Evidence is written beneath ignored `artifacts/agent-platform-runs/`. Exit code `2` means a host
-precondition such as Accessibility or Screen Recording permission is unavailable; the runner does
-not fall back to coordinates or full-desktop capture.
-
-Credential-free App Store capture composes these platform runners into a serial, exact-worktree-ID
-workflow and validates Apple's accepted dimensions, alpha prohibition, and checksums. See
-[App Store screenshot automation](APP-STORE-SCREENSHOTS.md). On Xcode 27 the visionOS lane is
-passive Home capture only; richer visionOS marketing states remain a human/headset gate.
-
-A bounded macOS 27 beta display check found that default scaling exposed a stable HDR
-switch where a higher scaled mode did not. Enabling HDR made AVPlayer eligible and raised
-potential EDR above 1; lowering refresh alone did not. This is host-specific capability
-evidence, not proof of rendered HDR, a universal scaling restriction, or a cable diagnosis.
-Restore temporary display modes and HDR settings after tests; keep per-player-screen and
-physical mixed-display acceptance separate (see [macOS display capability](MACOS.md#live-display-capability)).
-
-The Mac target is a pre-release App Store candidate, not a released compatibility promise. Routine
-host builds still use per-worktree identities to isolate containers and credentials. See the
-[macOS target guide](MACOS.md) for identity isolation, cleanup, validation, and release gates.
+The [macOS target guide](MACOS.md) owns identity isolation, the Debug-launcher local-network
+workaround, the credential-free `agent-macos-run.sh` runner, display capability, cleanup,
+validation, and release gates.
 
 ## Core validation commands
 
@@ -486,7 +457,8 @@ scripts/deploy-to-device.sh --verbose  # show full device/team IDs for troublesh
 The wrapper builds into the worktree-local `build/DerivedData-device-visionos`, wiping it before
 every build, and installs only that exact `Debug-xros/Labstream.app`. It never deletes or installs
 another worktree's product or anything in Xcode's global DerivedData; `--no-build` fails if this
-worktree has no device build yet.
+worktree has no device build yet. Each build stamps the internal Build ID through
+`scripts/build-version-args.sh`.
 
 If several visionOS devices are paired, select one with
 `VP_DEVICE_ID=<device-uuid> scripts/deploy-to-device.sh --launch`. The script normally derives the
@@ -513,7 +485,9 @@ refuses to install a short-lived profile with fewer than six days remaining. Set
 is signed into Xcode, or use the Ad Hoc wrapper below.
 
 For an install that must outlive a development provisioning profile (for example, offline use away
-from the development Mac), use the distribution-signed Ad Hoc wrapper instead. It requires an Apple
+from the development Mac), use TestFlight (see the
+[`testflight-deploy` skill](https://github.com/jlipworth/Labstream/blob/main/.claude/skills/testflight-deploy/SKILL.md))
+or the distribution-signed Ad Hoc wrapper instead. It requires an Apple
 Distribution certificate and a non-expired Ad Hoc provisioning profile that includes the headset's UDID:
 
 ```sh
@@ -540,11 +514,14 @@ scripts/deploy-mobile-to-device.sh --verbose  # show full device/team IDs for tr
 If more than one phone or tablet is paired, set `IOS_DEVICE_ID=<device-uuid>` (alias
 `MOBILE_DEVICE_ID`) explicitly. The signing team is derived from the Apple Development certificate;
 `IOS_DEVELOPMENT_TEAM=<team-id>` (alias `MOBILE_DEVELOPMENT_TEAM`) is the explicit override. Like
-the visionOS wrapper, it builds into a worktree-local path (`build/DerivedData-device-ios`), installs
-only that worktree's exact product, prunes matching short-lived development profiles before building
+the visionOS wrapper, it builds into a worktree-local path (`build/DerivedData-device-ios`), wiping
+it first so no stale `Debug-iphoneos/Labstream.app` survives, stamps the internal Build ID through
+`scripts/build-version-args.sh`, installs only that worktree's exact product, prunes matching short-lived development profiles before building
 (`IOS_REFRESH_SHORT_DEV_PROFILES=0` opts out) and refuses to install a short-lived profile with
-fewer than six days remaining. First use still requires pairing/trust, Developer Mode, and the
-matching Apple ID in Xcode Settings.
+fewer than six days remaining; use TestFlight for longer-lived installs. First use still requires
+pairing/trust, Developer Mode, and the matching Apple ID in Xcode Settings. As with the headset, a
+`No Account for Team` or missing-profile error means that Apple ID is not signed into Xcode
+Settings > Accounts; installing once from Xcode is also a valid first-install path.
 
 ## Credentials and iCloud Keychain sync
 
@@ -640,6 +617,13 @@ Where a current topic page owns the invariant, the bullet points there instead o
   serves real MPEG-TS only from that offset forward; earlier segments are 188-byte PAT-only stubs,
   which is why a deep seek on a primed session stalls. Splicing segments from a second session
   without reloading the item was tried and removed after it drove retry storms.
+- **macOS display scaling can gate HDR eligibility.** A bounded macOS 27 beta display check found
+  that default scaling exposed a stable HDR switch where a higher scaled mode did not. Enabling HDR
+  made AVPlayer eligible and raised potential EDR above 1; lowering refresh alone did not. This is
+  host-specific capability evidence, not proof of rendered HDR, a universal scaling restriction, or
+  a cable diagnosis. Restore temporary display modes and HDR settings after tests; keep
+  per-player-screen and physical mixed-display acceptance separate (see
+  [macOS display capability](MACOS.md#live-display-capability)).
 
 ### Backends and downloads
 

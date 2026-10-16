@@ -33,24 +33,10 @@ ownership belongs in the matching platform root.
 
 ## Build and test
 
-Install a compatible tvOS simulator runtime, then use the worktree-owned Apple TV simulator. Never
-target an arbitrary `booted` simulator:
-
-```sh
-scripts/worktree-sim.sh --platform tvos setup
-SIMID=$(scripts/worktree-sim.sh --platform tvos id)
-xcrun simctl boot "$SIMID" 2>/dev/null || true
-DD="$PWD/build/DerivedData-tvos"
-rm -rf "$DD"
-
-scripts/xcodebuild-versioned.sh \
-  -project Labstream.xcodeproj \
-  -scheme LabstreamTV \
-  -destination "platform=tvOS Simulator,id=$SIMID" \
-  -configuration Debug \
-  -derivedDataPath "$DD" \
-  build CODE_SIGNING_ALLOWED=NO
-```
+Install a compatible tvOS simulator runtime, then use the worktree-owned Apple TV simulator; never
+target an arbitrary `booted` simulator. The direct setup, build, install, launch, fixture, test, and
+shutdown commands live in
+[Development setup: Build for an Apple TV simulator](DEVELOPMENT.md#build-for-an-apple-tv-simulator).
 
 The native matrix driver is the source of truth for the affected and full test lanes:
 
@@ -60,8 +46,7 @@ scripts/native-test-matrix.py full
 ```
 
 Execution is lane-at-a-time and requires the repository's one-simulator lease. The driver reports
-the focused hosted and UI lanes, while [Development setup](DEVELOPMENT.md#build-for-an-apple-tv-simulator)
-contains the direct build, install, launch, fixture, test, and shutdown commands.
+the focused hosted and UI lanes.
 
 For complete agent-readable evidence, use the named wrapper after acquiring that lease:
 
@@ -86,12 +71,8 @@ bundle as a pass.
 ## Deterministic fixtures
 
 Debug-only launch arguments provide production-isolated signed-out and synthetic browse fixtures.
-They do not read or persist production credentials:
-
-```sh
-xcrun simctl launch "$SIMID" org.labstream.Labstream \
-  --ui-testing --ui-testing-backend plex --ui-testing-fixture browse
-```
+They do not read or persist production credentials; the shared `--ui-testing` launch command is in
+[Development setup](DEVELOPMENT.md#build-for-an-apple-tv-simulator).
 
 `LabstreamTVUITests.xctestplan` isolates the UI target from hosted test sources that may not belong
 to tvOS's streaming-only compile boundary. The small UI smoke tier covers launch and the

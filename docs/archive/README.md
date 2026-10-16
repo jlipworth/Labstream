@@ -27,7 +27,6 @@ Active implementation plans live in [`docs/plans/`](../plans/), unresolved inves
 - `research/` — closed investigations and historical research;
 - `downloads/` — superseded downloads designs and completed downloads-specific notes;
 - `macos/` — issue-specific notes from the first native Mac implementation;
-- `testing/` — superseded checklists and test snapshots;
 - `proposals/` — closed or superseded proposals that are not queued work;
 - `first-public-cleanup/` — the preserved first-public-documentation cleanup snapshot.
 
@@ -42,7 +41,6 @@ Historical prose and path literals may remain as written when they are part of t
 ## Archived plans and programs
 
 - [`2026-07-20-emby-bif-trickplay.md`](plans/2026-07-20-emby-bif-trickplay.md) — completed Emby ThumbnailSet/BIF online and offline trick-play implementation and accepted #238 verification journal.
-- [`2026-07-20-main-documentation-alignment.md`](plans/2026-07-20-main-documentation-alignment.md) — completed factual alignment, documentation taxonomy, Mermaid, and durable-governance work.
 - [`2026-07-20-macos-shell-redesign.md`](plans/2026-07-20-macos-shell-redesign.md) — completed native Mac source-list, toolbar Search, adaptive-window, and acceptance work for #232; follow-up presentation polish is tracked in #251.
 - [`2026-07-10-codebase-remediation.md`](plans/2026-07-10-codebase-remediation.md) — completed whole-repository correctness, concurrency, performance, backend/platform sharing, and build-cost remediation journal; accepted as complete 2026-07-24.
 - [`2026-07-20-tvos-implementation.md`](plans/2026-07-20-tvos-implementation.md) — completed first-class tvOS implementation and acceptance plan for #246; accepted as complete 2026-07-24.
@@ -53,10 +51,9 @@ Historical prose and path literals may remain as written when they are part of t
 
 - [`01-plex-api-transcoding.md`](research/01-plex-api-transcoding.md) — June 2026 research on Plex auth, browsing, server-side transcoded HLS, and offline download options for the original visionOS client.
 - [`02-visionos-playback-theater.md`](research/02-visionos-playback-theater.md) — June 2026 survey of visionOS HLS playback, cinema environments, and frame-packed 3D presentation.
-- [`03-app-architecture-sideload.md`](research/03-app-architecture-sideload.md) — June 2026 app-structure and free-Apple-ID sideload/provisioning analysis.
 - [`04-competitive-teardown.md`](research/04-competitive-teardown.md) — June 2026 snapshot of competing visionOS Plex clients for the original build/no-build decision.
 - [`05-mobile-client-ux-reference.md`](research/05-mobile-client-ux-reference.md) — June 2026 feature and navigation catalog of mature iOS/iPadOS media-server clients used as UX vocabulary.
-- [`06-prerequisites-licensing.md`](research/06-prerequisites-licensing.md) — June 2026 prerequisites and licensing checklist for the personal-use visionOS build.
+- [`06-prerequisites-licensing.md`](research/06-prerequisites-licensing.md) — June 2026 prerequisites and licensing checklist for the personal-use visionOS build, including the merged sideload limits and original module/storage architecture notes.
 - [`07-plex-official-api-surface.md`](research/07-plex-official-api-surface.md) — 2026-06-08 assessment of official versus community Plex API surface and auth-migration risk.
 - [`08-plex-client-library-catalog.md`](research/08-plex-client-library-catalog.md) — June 2026 catalog of Plex client libraries as transcode/streaming reference implementations.
 - [`09-transcode-api-deep-dive.md`](research/09-transcode-api-deep-dive.md) — version-dependent Plex universal transcode parameter and decision-code reference with per-row confidence tags.
@@ -72,7 +69,7 @@ Historical prose and path literals may remain as written when they are part of t
 - [`2026-06-27-offline-playback-compatibility.md`](research/2026-06-27-offline-playback-compatibility.md) — closed #167 implementation-research snapshot of offline download compatibility checks.
 - [`2026-07-21-tvos-session-report.md`](research/2026-07-21-tvos-session-report.md) — closed
   evidence-first session record for the tvOS focus/remote-input work; findings absorbed into
-  the archived tvOS plan and the active screen audit.
+  the archived tvOS plan and the active [screen audit plan](../plans/2026-07-20-tvos-screen-audit.md).
 - [`2026-08-22-jellyfin-public-demo.md`](research/2026-08-22-jellyfin-public-demo.md) —
   superseded evaluation of the official public Jellyfin stable demo for screenshots and App
   Review; compatibility passed, but the Labstream-controlled review catalog was chosen instead.
@@ -83,12 +80,13 @@ Historical prose and path literals may remain as written when they are part of t
 - [`DOWNLOADS-HOLISTIC-REFACTOR-PLAN.md`](downloads/DOWNLOADS-HOLISTIC-REFACTOR-PLAN.md) — completed/superseded holistic downloads refactor plan and branch-era checkpoints.
 - [`2026-07-10-static-range-segment-checkpointing.md`](downloads/2026-07-10-static-range-segment-checkpointing.md) — completed static-range segment-train checkpointing plan.
 - [`2026-07-15-optional-download-side-assets.md`](downloads/2026-07-15-optional-download-side-assets.md) — completed request-family audit behind the process-wide optional side-asset coordinator.
+- [`2026-07-10-downloads-engine-audit-plan.md`](downloads/2026-07-10-downloads-engine-audit-plan.md) — completed full downloads-engine audit plan and execution record; physical-device evidence remains an acceptance gate.
+- [`2026-07-10-downloads-state-machines.md`](downloads/2026-07-10-downloads-state-machines.md) — Phase-2 extracted download state machines versus documented intent at the audit baseline.
+- [`2026-07-11-downloads-phase4-coverage-matrix.md`](downloads/2026-07-11-downloads-phase4-coverage-matrix.md) — completed Phase-4 coverage-gap matrix snapshot. The retained Phase-6 [fault-injection harness record](../evidence/audits/2026-07-11-downloads-fault-injection-harness.md) stays in evidence.
 
 ## Archived macOS notes
 
-- [`MACOS-228-REMAINING-WORK.md`](macos/MACOS-228-REMAINING-WORK.md) — issue-era #228 plan for finishing the first native Mac implementation.
-- [`MACOS-228-VALIDATION.md`](macos/MACOS-228-VALIDATION.md) — issue-era #228 split between agent-runnable and user-only Mac validation.
-- [`MACOS-RELEASE-SCAFFOLDING.md`](macos/MACOS-RELEASE-SCAFFOLDING.md) — issue-era #228 release and versioning scaffolding.
+- [`MACOS-228-REMAINING-WORK.md`](macos/MACOS-228-REMAINING-WORK.md) — issue-era #228 plan for finishing the first native Mac implementation, including the merged agent-runnable/user-only validation split and completion rule.
 
 ## Archived reviews
 
@@ -98,10 +96,6 @@ Historical prose and path literals may remain as written when they are part of t
 ## Archived proposals
 
 - [`emby-jellyfin-code-sharing.md`](proposals/emby-jellyfin-code-sharing.md) — historical Jellyfin/Emby MediaBrowser code-sharing note from an earlier app version.
-
-## Archived testing snapshots
-
-- [`TESTING-CHECKLIST-2026-07-10.md`](testing/TESTING-CHECKLIST-2026-07-10.md) — the former rolling manual checklist as it existed on 2026-07-10.
 
 ## First-public-cleanup snapshot
 
