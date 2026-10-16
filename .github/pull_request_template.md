@@ -9,7 +9,9 @@ everything below is visible to anyone.
 
 ## Linked issue
 
-<!-- e.g. "Fixes #123" or "Refs #123". Open an issue first for non-trivial changes. -->
+<!-- e.g. "Fixes #123" or "Refs #123". Open an issue first for non-trivial changes and for any
+change to a path in .github/triage/sensitive-paths.txt; the maintainer may re-implement a PR's idea
+rather than merge it (see docs/CONTRIBUTING.md). -->
 
 ## Affected surface
 

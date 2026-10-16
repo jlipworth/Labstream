@@ -41,6 +41,9 @@ media details out of commits and public issues.
   the built app manifests. `testflight-release.py validate` runs it on archives. It is not Apple's
   signed-archive privacy report. See
   [privacy manifest packaging](../docs/DEVELOPMENT.md#required-reason-privacy-manifest-packaging).
+- `check-sensitive-paths.py` — lists the changed files in a PR (`--pr N`), a branch (`--base REF`),
+  or given paths that match `.github/triage/sensitive-paths.txt`, with their category. Read-only;
+  `--exit-code` exits 1 on any match.
 - `check-docs-mermaid.py` — verifies that published Mermaid source fences become
   generated Mermaid containers without external script dependencies.
 - `check-doc-links.py` — validates repository-local links and Markdown heading anchors across all

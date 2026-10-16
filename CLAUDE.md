@@ -415,7 +415,9 @@ credential copies after authentication. Existing app sessions should survive rel
 
 Before asking for merge review, update canonical docs when behavior/workflow changes,
 record unresolved gates in the PR, run local checks, push, and inspect CI to completion.
-Keep unrelated fixes on separate branches. Never merge without the user's approval.
+Keep unrelated fixes on separate branches. Never merge without the user's approval. Before
+proposing to merge a PR from anyone else, run `scripts/check-sensitive-paths.py --pr N`, report
+every match to the user, and review those files line by line rather than trusting the PR text.
 
 ## Documentation information architecture
 
