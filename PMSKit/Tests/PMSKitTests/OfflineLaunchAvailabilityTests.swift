@@ -22,27 +22,34 @@ struct OfflineLaunchAvailabilityTests {
         #expect(!OfflineLaunchAvailability.hasPlayableDownload(records: []) { _ in true })
     }
 
-    @Test("admits only a transient restore failure with a playable download on a download product")
+    @Test("admits only a transient restore failure with a playable download")
     func admitsOnlyTransientFailureWithPlayableDownload() {
         #expect(OfflineLaunchAvailability.admitsOfflineLaunch(
-            restoreOutcome: .temporarilyUnavailable, downloadsSupported: true,
-            hasPlayableDownload: true))
+            restoreOutcome: .temporarilyUnavailable, hasPlayableDownload: true))
 
         let refused: [SessionRestoreOutcome?] = [
-            nil, .restored, .missingCredential, .invalidCredential, .unconfirmedIdentity
+            nil, .restored, .missingCredential, .invalidCredential, .unconfirmedCredential
         ]
         for outcome in refused {
             #expect(!OfflineLaunchAvailability.admitsOfflineLaunch(
-                restoreOutcome: outcome, downloadsSupported: true, hasPlayableDownload: true))
+                restoreOutcome: outcome, hasPlayableDownload: true))
         }
         // No completed local media file: keep the sign-in/retry surface.
         #expect(!OfflineLaunchAvailability.admitsOfflineLaunch(
-            restoreOutcome: .temporarilyUnavailable, downloadsSupported: true,
-            hasPlayableDownload: false))
-        // tvOS ships no downloads capability.
+            restoreOutcome: .temporarilyUnavailable, hasPlayableDownload: false))
+    }
+
+    @Test("an HTTP 403 restore never opens Offline; 429/5xx/transport do")
+    func forbiddenNeverAdmitsOffline() {
+        #expect(SessionRestoreOutcome.preservedFailure(httpStatus: 403) == .unconfirmedCredential)
         #expect(!OfflineLaunchAvailability.admitsOfflineLaunch(
-            restoreOutcome: .temporarilyUnavailable, downloadsSupported: false,
-            hasPlayableDownload: true))
+            restoreOutcome: .preservedFailure(httpStatus: 403), hasPlayableDownload: true))
+        for status in [nil, 429, 500, 502, 503] as [Int?] {
+            #expect(SessionRestoreOutcome.preservedFailure(httpStatus: status)
+                == .temporarilyUnavailable)
+            #expect(OfflineLaunchAvailability.admitsOfflineLaunch(
+                restoreOutcome: .preservedFailure(httpStatus: status), hasPlayableDownload: true))
+        }
     }
 }
 
@@ -52,7 +59,7 @@ struct SessionRestoreOutcomeTests {
     func retainsSavedCredential() {
         #expect(SessionRestoreOutcome.restored.retainsSavedCredential)
         #expect(SessionRestoreOutcome.temporarilyUnavailable.retainsSavedCredential)
-        #expect(SessionRestoreOutcome.unconfirmedIdentity.retainsSavedCredential)
+        #expect(SessionRestoreOutcome.unconfirmedCredential.retainsSavedCredential)
         #expect(!SessionRestoreOutcome.missingCredential.retainsSavedCredential)
         #expect(!SessionRestoreOutcome.invalidCredential.retainsSavedCredential)
     }
@@ -60,7 +67,7 @@ struct SessionRestoreOutcomeTests {
     @Test("runtime readiness is authoritative")
     func reconcilesWithRuntimeReadiness() {
         let all: [SessionRestoreOutcome] = [
-            .restored, .missingCredential, .invalidCredential, .unconfirmedIdentity,
+            .restored, .missingCredential, .invalidCredential, .unconfirmedCredential,
             .temporarilyUnavailable
         ]
         for outcome in all {
@@ -72,8 +79,8 @@ struct SessionRestoreOutcomeTests {
             == .invalidCredential)
         #expect(SessionRestoreOutcome.missingCredential.reconciled(hasUsableSession: false)
             == .missingCredential)
-        #expect(SessionRestoreOutcome.unconfirmedIdentity.reconciled(hasUsableSession: false)
-            == .unconfirmedIdentity)
+        #expect(SessionRestoreOutcome.unconfirmedCredential.reconciled(hasUsableSession: false)
+            == .unconfirmedCredential)
         #expect(SessionRestoreOutcome.temporarilyUnavailable.reconciled(hasUsableSession: false)
             == .temporarilyUnavailable)
     }

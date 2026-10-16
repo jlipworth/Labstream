@@ -330,29 +330,44 @@ final class AuthManager {
             schedulePlexProfileRefreshIfNeeded(discovery)
             recordAuthDiagnostic("auth.plex.restore.success", fields: restoreFields)
             return .restored
-        } catch PlexError.unauthorized {
+        } catch {
             guard isCurrentAuthAttempt(attemptID) else { return nil }
+            let outcome = Self.plexRestoreFailureOutcome(for: error)
+            guard outcome == .invalidCredential else {
+                var fields = restoreFields
+                fields.merge(authErrorFields(error)) { _, new in new }
+                recordAuthDiagnostic("auth.plex.restore.discovery_failed", fields: fields)
+                if updateState { state = .failed("Signed in, but server discovery failed.") }
+                return outcome
+            }
             // Only wipe the Plex lane when it is the ACTIVE, user-facing backend. On the inactive
             // hydration path (a JF/Emby session warming Plex for cross-backend downloads), a transient
             // discovery 401 must NOT silently sign the user out of Plex — leave the saved token in
             // place and let the lane stay unhydrated until they switch back, where `updateState: true`
-            // handles a genuine sign-out with the proper UI teardown.
+            // handles a genuine sign-out with the proper UI teardown. Either way the outcome is
+            // `.invalidCredential`: a 401 never classifies as transient.
             recordAuthDiagnostic("auth.plex.restore.unauthorized", fields: restoreFields)
-            // The inactive lane keeps its token, but this attempt still proved nothing usable.
-            guard updateState else { return .temporarilyUnavailable }
+            guard updateState else { return outcome }
             SpotlightIndexer.deleteAll()
             appModel.isSwitchingBackend = false
             onBackendWillSignOut?(.plex)
             signOutPlex()
             state = .idle
+            return outcome
+        }
+    }
+
+    /// Classification of a Plex restore/discovery failure (#259), shared by the selected and
+    /// inactive-hydration paths: 401 is a rejected credential; 403 is an unconfirmed credential;
+    /// everything else (transport, discovery, 429, 5xx, decoding) is temporarily unavailable.
+    static func plexRestoreFailureOutcome(for error: Error) -> SessionRestoreOutcome {
+        switch error {
+        case PlexError.unauthorized:
             return .invalidCredential
-        } catch {
-            guard isCurrentAuthAttempt(attemptID) else { return nil }
-            var fields = restoreFields
-            fields.merge(authErrorFields(error)) { _, new in new }
-            recordAuthDiagnostic("auth.plex.restore.discovery_failed", fields: fields)
-            if updateState { state = .failed("Signed in, but server discovery failed.") }
-            return .temporarilyUnavailable
+        case PlexError.http(let status):
+            return .preservedFailure(httpStatus: status)
+        default:
+            return .preservedFailure(httpStatus: nil)
         }
     }
 
@@ -398,7 +413,7 @@ final class AuthManager {
                   updateState ? "true" : "false")
             clearRuntimeState(for: .jellyfin)
             if updateState { state = .failed("Signed in, but the Jellyfin session could not be confirmed.") }
-            return .unconfirmedIdentity
+            return .unconfirmedCredential
         } catch {
             guard isCurrentAuthAttempt(attemptID) else { return nil }
             // Preserve the keychain snapshot for a later retry, but do not leave the runtime lane
@@ -407,7 +422,9 @@ final class AuthManager {
             // user is trying to re-authenticate on a flaky network.
             clearRuntimeState(for: .jellyfin)
             if updateState { state = .failed("Signed in, but the Jellyfin server could not be reached.") }
-            return .temporarilyUnavailable
+            var status: Int?
+            if case JellyfinAuthError.http(let code) = error { status = code }
+            return .preservedFailure(httpStatus: status)
         }
     }
 
@@ -521,14 +538,16 @@ final class AuthManager {
             clearRuntimeState(for: .emby)
             if updateState { state = .failed("Signed in, but the Emby server could not be reached.") }
             var fields = restoreFields
+            var httpStatus: Int?
             if case EmbyAuthError.http(let status) = error {
+                httpStatus = status
                 fields["status"] = .int(status)
                 recordAuthDiagnostic("auth.emby.restore.http", fields: fields)
             } else {
                 fields.merge(authErrorFields(error)) { _, new in new }
                 recordAuthDiagnostic("auth.emby.restore.transport", fields: fields)
             }
-            return .temporarilyUnavailable
+            return .preservedFailure(httpStatus: httpStatus)
         }
     }
 

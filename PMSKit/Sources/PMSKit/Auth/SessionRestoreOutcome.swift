@@ -12,20 +12,28 @@ public enum SessionRestoreOutcome: Sendable, Equatable {
     case missingCredential
     /// The server explicitly rejected the saved credential (HTTP 401); it has been retired.
     case invalidCredential
-    /// The server answered, but the saved identity could not be confirmed (e.g. a 2xx probe for
-    /// a different user). The credential is preserved for retry, but this is not a reachability
-    /// failure, so it does not admit the Offline launch surface.
-    case unconfirmedIdentity
+    /// The server answered but did not accept the saved session as usable: HTTP 403, or a 2xx
+    /// identity probe for a different user. The credential is preserved for retry (only a 401
+    /// proves revocation), but this is not a reachability failure, so it does not admit the
+    /// Offline launch surface.
+    case unconfirmedCredential
     /// The credential is preserved but the server could not be used right now: network, DNS,
-    /// TLS, timeout, discovery, server-unreachable, or a non-401 HTTP failure.
+    /// TLS, timeout, discovery, server-unreachable, HTTP 429/5xx, or an unreadable reply.
     case temporarilyUnavailable
 
     /// True when the saved credential survives this outcome (a later retry can restore it).
     public var retainsSavedCredential: Bool {
         switch self {
-        case .restored, .unconfirmedIdentity, .temporarilyUnavailable: true
+        case .restored, .unconfirmedCredential, .temporarilyUnavailable: true
         case .missingCredential, .invalidCredential: false
         }
+    }
+
+    /// Classify a restore failure that preserved the saved credential. An HTTP 403 is the server
+    /// answering with a denial, so it never counts as transient; every other preserved failure
+    /// (transport, discovery, 429, 5xx, unreadable reply) is temporarily unavailable.
+    public static func preservedFailure(httpStatus: Int?) -> Self {
+        httpStatus == 403 ? .unconfirmedCredential : .temporarilyUnavailable
     }
 
     /// Runtime readiness is authoritative: a live lane is `.restored` whatever the helper

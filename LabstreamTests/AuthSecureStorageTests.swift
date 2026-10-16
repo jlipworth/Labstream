@@ -416,8 +416,12 @@ struct AuthSecureStorageTests {
         })
         _ = await manager.restoreSession()
         #expect(!model.isBrowseReady)
-        #expect(manager.sessionRestoreOutcome
-            == (status == 401 ? .invalidCredential : .temporarilyUnavailable))
+        let expected: SessionRestoreOutcome = switch status {
+        case 401: .invalidCredential
+        case 403: .unconfirmedCredential
+        default: .temporarilyUnavailable
+        }
+        #expect(manager.sessionRestoreOutcome == expected)
         #expect(store.token == (status == 401 ? nil : "saved-token"))
         #expect(store.selectedPlexServerID == (status == 401 ? nil : "preferred-server"))
     }
@@ -854,18 +858,55 @@ struct AuthSecureStorageTests {
         switch (probe, backend) {
         case (.unauthorized, _):
             expected = .invalidCredential
-        case (.otherUser, .jellyfin):
-            expected = .unconfirmedIdentity
+        case (.otherUser, .jellyfin), (.forbidden, _):
+            // The server answered without accepting the session: keep the credential, no Offline.
+            expected = .unconfirmedCredential
         case (.otherUser, _):
             // Emby's probe is /Users/{id}; a different id is treated as an auth failure.
             expected = .invalidCredential
-        case (.forbidden, _), (.serverError, _), (.offline, _), (.timedOut, _):
+        case (.serverError, _), (.offline, _), (.timedOut, _):
             expected = .temporarilyUnavailable
         }
         #expect(manager.sessionRestoreOutcome == expected)
         #expect(!model.isBrowseReady)
         let savedSnapshot = backend == .jellyfin ? store.jellyfinAccessToken : store.embyAccessToken
         #expect((savedSnapshot != nil) == expected.retainsSavedCredential)
+    }
+
+    @Test func plexRestoreFailureClassificationIsIndependentOfUpdateState() {
+        // The selected (updateState: true) and inactive-hydration (updateState: false) Plex
+        // restore paths share this classifier, so a 401 is always a rejected credential.
+        #expect(AuthManager.plexRestoreFailureOutcome(for: PlexError.unauthorized)
+            == .invalidCredential)
+        #expect(AuthManager.plexRestoreFailureOutcome(for: PlexError.http(403))
+            == .unconfirmedCredential)
+        #expect(AuthManager.plexRestoreFailureOutcome(for: PlexError.http(429))
+            == .temporarilyUnavailable)
+        #expect(AuthManager.plexRestoreFailureOutcome(for: PlexError.http(503))
+            == .temporarilyUnavailable)
+        #expect(AuthManager.plexRestoreFailureOutcome(for: PlexError.serverUnreachable)
+            == .temporarilyUnavailable)
+        #expect(AuthManager.plexRestoreFailureOutcome(for: URLError(.timedOut))
+            == .temporarilyUnavailable)
+    }
+
+    @Test func inactivePlexHydration401KeepsTokenButIsNotUsable() async {
+        #if !os(tvOS)
+        let store = KeychainStore(service: "com.visionplay.tests.plex-inactive-401.\(UUID().uuidString)",
+                                  synchronizesPlexToken: false, usesDevelopmentFileStorage: true)
+        defer { cleanupBackendKeys(store) }
+        #expect(store.saveSelectedBackend(.jellyfin))
+        #expect(store.saveToken("plex-account"))
+        let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "plex-inactive-401"))
+        let manager = AuthManager(appModel: model, keychain: store,
+                                  plexSessionDiscoverer: { _ in throw PlexError.unauthorized })
+
+        #expect(await manager.hydrateSavedSessionForDownloads(backend: .plex) == false)
+        #expect(store.token == "plex-account")
+        #expect(model.backendSession(for: .plex) == nil)
+        // Hydration never writes the selected-session outcome the launch gate reads.
+        #expect(manager.sessionRestoreOutcome == nil)
+        #endif
     }
 
     @Test func explicitSignOutResetsRestoreOutcomeToMissingCredential() async {

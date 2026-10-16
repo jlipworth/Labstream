@@ -220,7 +220,6 @@ struct ContentView: View {
         #else
         OfflineLaunchAvailability.admitsOfflineLaunch(
             restoreOutcome: authManager.sessionRestoreOutcome,
-            downloadsSupported: true,
             hasPlayableDownload: downloadManager.hasPlayableOfflineContent)
         #endif
     }
