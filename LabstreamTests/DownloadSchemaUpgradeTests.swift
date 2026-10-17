@@ -1,0 +1,128 @@
+#if !os(tvOS)
+import Foundation
+import PMSKit
+import Testing
+@testable import Labstream
+
+/// P3b pins: a v4 index stays v4 on disk until the upgrade stamps it, every snapshot after the
+/// stamp is v5, and the stamp fills `migratedUnknown` only where no reason exists.
+@Suite("Download schema upgrade", .serialized)
+struct DownloadSchemaUpgradeTests {
+    @Test("A new index is written as v5 and needs no upgrade")
+    func freshIndexIsCurrent() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            _ = try seed("plex:new", status: .complete, in: store)
+            #expect(!store.requiresSchemaUpgrade)
+            #expect(try schemaVersion(directory) == 5)
+        }
+    }
+
+    @Test("A v4 index keeps writing v4 until the stamp, then every snapshot is v5")
+    func v4StaysV4UntilStamped() async throws {
+        try await withAsyncDirectory { directory in
+            let first = DownloadStore(baseDirectory: directory)
+            _ = try seed("plex:a", status: .complete, in: first)
+            try rewriteEnvelope(directory) { $0["schemaVersion"] = 4 }
+
+            let store = DownloadStore(baseDirectory: directory)
+            #expect(store.requiresSchemaUpgrade)
+            // An ordinary write before the stamp keeps the loaded version.
+            _ = try seed("plex:b", status: .complete, in: store)
+            #expect(try schemaVersion(directory) == 4)
+
+            let ticket = store.stampSchemaV5()
+            guard case .committed = await store.flushPersistence(through: ticket, timeout: 5) else {
+                Issue.record("Expected the stamp to commit"); return
+            }
+            #expect(try schemaVersion(directory) == 5)
+            #expect(!store.requiresSchemaUpgrade)
+            _ = try seed("plex:c", status: .complete, in: store)
+            #expect(try schemaVersion(directory) == 5)
+
+            let reloaded = DownloadStore(baseDirectory: directory)
+            #expect(!reloaded.requiresSchemaUpgrade)
+            #expect(reloaded.record(for: "plex:a")?.status == .complete)
+        }
+    }
+
+    @Test("The stamp fills migratedUnknown only for unverified rows without a reason")
+    func stampFillsMissingUnverifiedReasons() async throws {
+        try await withAsyncDirectory { directory in
+            let first = DownloadStore(baseDirectory: directory)
+            let bare = try seed("plex:bare", status: .unverified, in: first)
+            let reasoned = try seed("plex:reasoned", status: .downloading, in: first)
+            _ = first.submitLifecycleEvent(.bodyAtWorking, for: reasoned,
+                                           facts: DownloadRowFacts(route: .staticRange))
+            let source = try #require(first.truncationSourceKey(for: reasoned))
+            _ = first.submitLifecycleEvent(
+                .finalizeOutcome(id: "miss", outcome: .unverified(reason: "probe_timeout"),
+                                 source: source), for: reasoned)
+            _ = first.submitLifecycleEvent(.promotionCommitted(.unverified), for: reasoned,
+                                           facts: DownloadRowFacts(route: .staticRange))
+            guard case .committed = await first.flushPersistence(timeout: 5) else {
+                Issue.record("Expected the seed to commit"); return
+            }
+            try rewriteEnvelope(directory) { $0["schemaVersion"] = 4 }
+
+            let store = DownloadStore(baseDirectory: directory)
+            let ticket = store.stampSchemaV5()
+            _ = await store.flushPersistence(through: ticket, timeout: 5)
+            #expect(store.lifecycleState(for: bare)?.history.unverifiedReason == .migratedUnknown)
+            if store.lifecycleState(for: reasoned)?.lifecycle == .unverified {
+                #expect(store.lifecycleState(for: reasoned)?.history.unverifiedReason
+                        == .probeMiss("probe_timeout"))
+            }
+        }
+    }
+
+    // MARK: - Fixtures
+
+    private func seed(_ ratingKey: String, status: DownloadStatus,
+                      in store: DownloadStore) throws -> DownloadAttemptKey {
+        let id = DownloadAttemptID(uuid: UUID())
+        let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: id)
+        let url = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
+        let terminal = status == .complete || status == .unverified
+        if terminal { try Data([1]).write(to: url) }
+        let record = DownloadRecord(
+            ratingKey: ratingKey, attemptID: id, title: "Item", localURL: url,
+            bytes: terminal ? 1 : 0, progress: terminal ? 1 : 0, status: status,
+            metadata: OfflineMetadata(ratingKey: ratingKey, title: "Item", type: "movie"))
+        #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
+        return key
+    }
+
+    private func schemaVersion(_ directory: URL) throws -> Int? {
+        let data = try Data(contentsOf: directory.appendingPathComponent("index.json"))
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return object?["schemaVersion"] as? Int
+    }
+
+    private func rewriteEnvelope(_ directory: URL, _ edit: (inout [String: Any]) -> Void) throws {
+        let url = directory.appendingPathComponent("index.json")
+        var object = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        edit(&object)
+        try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]).write(to: url)
+    }
+
+    private func withAsyncDirectory(_ body: (URL) async throws -> Void) async throws {
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("schema-upgrade-\(UUID().uuidString)", isDirectory: true)
+        let directory = parent.appendingPathComponent("Downloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        try await body(directory)
+    }
+
+    private func withDirectory(_ body: (URL) throws -> Void) throws {
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("schema-upgrade-\(UUID().uuidString)", isDirectory: true)
+        let directory = parent.appendingPathComponent("Downloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        try body(directory)
+    }
+}
+#endif

@@ -589,7 +589,7 @@ struct BackgroundDownloadStartupAdmissionTests {
 
             let indexData = try Data(contentsOf: directory.appendingPathComponent("index.json"))
             let index = try #require(JSONSerialization.jsonObject(with: indexData) as? [String: Any])
-            #expect(index["schemaVersion"] as? Int == 4)
+            #expect(index["schemaVersion"] as? Int == DownloadIndexCoding.currentSchemaVersion)
             #expect((index["rows"] as? [Any])?.isEmpty == true)
             #expect(!FileManager.default.fileExists(atPath: partialURL.path))
             #expect(try Data(contentsOf: cleanupSentinel) == Data("survive".utf8))

@@ -1348,6 +1348,8 @@ amended as follows.
 
 ### P3b revision 10 (2026-10-17): rescue only by completion
 
+*Approved in round 8 of the before-review (GPT-6.1-Sol, high), with no blocking findings. The tests must exercise both orderings: checkpoint submitted before the barrier, and a deferred submission after it.*
+
 Round 7 confirmed that revision 9 resolves round 6. It found one P2: while the pass awaits a
 Delete, a refresh with the queue paused can park an unprocessed static candidate as paused, and
 reclassification would then keep it.
