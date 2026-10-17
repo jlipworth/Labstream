@@ -124,7 +124,8 @@ actions, queue work, season admission and cleanup runs are therefore still close
   first, or a capsule is reserved, and the files go through the artifact queue.
 - **Rescue:** a removal candidate is spared only if a transfer completes it during the pass.
 - **Stamp:** then every later snapshot is stamped v5. A crash before the stamp commits leaves the
-  v4 index, whose rows are exactly the pre-upgrade rows, so the upgrade simply repeats.
+  latest committed v4 state. Some removals may already be barriered or finished, but no row
+  created after the upgrade is present, so the next launch reclassifies what remains.
 - **Notice:** the Offline library shows a dismissible notice counting the removed downloads, and
   any server jobs whose cleanup identity was unavailable. Unreadable or malformed current data fails closed rather than being guessed or reset.
 A schema newer than the binary (after a downgrade) is also kept and fails closed. Rows carry an

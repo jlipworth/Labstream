@@ -655,6 +655,30 @@ Acceptance is a phase's pins and inventory rows staying green.
     - the paused-queue checkpoint-ordering test;
     - the P5 item for a paused-static body finishing before reattach;
     - live and physical acceptance.
+- **2026-10-17 — P3b after-review, round 1: not ready, 4 P2s and 2 P3s.** All six were valid.
+  - **Season transaction.** It now validates retry rows with the lock-held work-admission
+    predicate, so a deleting row is never re-planned. The test (red-checked) shows the
+    transaction stays atomic.
+  - **Capsule halt.** `haltForPendingDeletion` takes the exact key and cancels marked OS tasks
+    as well, keeping held artifacts. Callback admission and the activation purge use
+    `attemptAdmitsWork`, so a capsule's surviving daemon tasks are rejected and cancelled.
+  - **Full-key marker match.** Tasks are matched on rating key and attempt ID together. The test
+    (red-checked) covers a legacy attempt ID shared across keys, for both marker formats.
+  - **More tests:**
+    - the candidate matrix: legacy promotion, existing deletion, paused static kept, paused
+      forward-only dropped;
+    - a crash after committed barriers but before the stamp, which reclassifies only what
+      remains;
+    - a pre-P3a v4 row without lifecycle fields, classified structurally.
+  - **Still not tested:** delayed v4 snapshots crossing the stamp (the version is captured
+    structurally under the lock at enqueue); deletion racing a suspended start, prep or optimize
+    step (guards in place); Retry Recovery during the pass (guarded by `startupRecoveryInFlight`);
+    season A→B replacement. All are journaled.
+  - **Notice.** It moved to `schema-upgrade-notice.json` in the authority directory, written by
+    atomic replace with file and directory fsync before the stamp is enqueued. This replaces
+    the UserDefaults deviation.
+  - **Docs and comments** now say that a crash before the stamp leaves the latest committed v4
+    state, and the next launch reclassifies what remains.
 
 ## P2 detailed plan — cleanup foundation
 
