@@ -16,6 +16,22 @@ struct PlexOptimizeCompletionPolicyTests {
             state: "complete", successfulCount: 0, failedCount: 1) == .failed)
     }
 
+    @Test("B42: every state the queue cleanup preserves as completed also completes the poll")
+    func sharedCompletedVocabulary() {
+        // The cleanup/cancel paths preserve "done" items as completed; the poll must agree, or a
+        // "done" job never arms the missing-output grace and waits for the 24 h deadline.
+        #expect(PlexOptimizeCompletionPolicy.outcome(
+            state: "done", successfulCount: 1, failedCount: 0) == .succeeded)
+        for state in BackgroundProcessingItems.completedStates {
+            #expect(PlexOptimizeCompletionPolicy.outcome(
+                state: state.uppercased(), successfulCount: nil, failedCount: nil) == .succeeded)
+            let items = BackgroundProcessingItems(items: [.init(id: "1", title: "t", state: state)])
+            #expect(items.cancellableItemID(queueTitle: "t") == nil)
+        }
+        #expect(BackgroundProcessingItems.completedStates
+            == PlexOptimizeCompletionPolicy.completedStates)
+    }
+
     @Test("A successful job gets a bounded metadata indexing grace period")
     func indexingGrace() {
         let observed: TimeInterval = 1_000
