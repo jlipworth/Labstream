@@ -139,7 +139,8 @@ struct DownloadItemPlanner {
                     try Self.requireSuccess(response)
                     let info = try JellyfinPlaybackInfoResponse.decode(from: data)
                     let decision = try JellyfinPlayback.downloadDecision(
-                        response: info, preferredMediaSourceId: selection.mediaSourceID)
+                        response: info, preferredMediaSourceId: selection.mediaSourceID,
+                        audioStreamIndex: audioStreamIndex)
                     let eligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
                         videoCodec: decision.videoCodec, audioCodec: decision.audioCodec,
                         sourceContainer: decision.container)
