@@ -199,7 +199,11 @@ extension DownloadManager {
             do {
                 try await triggerOptimize(item: sourceItem, targetName: targetName,
                                           queueTitle: queueTitle,
-                                          server: server, token: token, identity: identity)
+                                          server: server, token: token, identity: identity,
+                                          isStillCurrent: { [weak self] in
+                                              self?.inFlightAttempts.owns(attemptKey) == true
+                                                  && self?.store.attemptAdmitsWork(attemptKey) == true
+                                          })
                 markPlexOptimizeCreateConfirmed(for: attemptKey, queueTitle: queueTitle)
             } catch {
                 // Do not flash a terminal failed row here. Plex may reject duplicate/odd optimize
@@ -452,7 +456,8 @@ extension DownloadManager {
                                               metadata: OfflineMetadata,
                                               targetName: String) throws {
         let ratingKey = attemptKey.ratingKey
-        guard activeJobs.contains(ratingKey), inFlightAttempts.owns(attemptKey) else {
+        guard activeJobs.contains(ratingKey), inFlightAttempts.owns(attemptKey),
+              store.attemptAdmitsWork(attemptKey) else {
             throw DownloadLifecycleCancellation.staleOptimizeAttempt
         }
         if let queueTitle = metadata.optimizeQueueTitle {
@@ -490,7 +495,8 @@ extension DownloadManager {
     func triggerOptimize(item: MediaItem, targetName: String,
                                  queueTitle: String,
                                  server: URL, token: String,
-                                 identity: ClientIdentity) async throws {
+                                 identity: ClientIdentity,
+                                 isStillCurrent: () -> Bool = { true }) async throws {
         // 1. Background-processing playlist key.
         let bgKey: String
         do {
@@ -559,6 +565,9 @@ extension DownloadManager {
             throw DownloadError.optimizeFailed(
                 "No server source location for the optimize request.")
         }
+        // P3b: the steps above suspend repeatedly; a Delete or replacement in between must not
+        // be followed by creating a server job nobody owns.
+        guard isStillCurrent() else { throw DownloadLifecycleCancellation.staleOptimizeAttempt }
         do {
             try await appModel.client.send(create)
         } catch {

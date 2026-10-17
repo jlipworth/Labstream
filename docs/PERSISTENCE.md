@@ -108,12 +108,28 @@ on the row as `heldRangeSegments`. They may be rehydrated across relaunch only w
 exact attempt, length, and validator checks still match; mismatches fail closed and
 re-fetch. Do not treat held bodies as disposable temp files.
 
-The download index is currently a schema-v4 versioned envelope. Schemas 1–3 are no longer
-migrated: startup probes without mutating the root, drains every old OS task, moves the opaque
-root to a durable quarantine, installs a protected empty schema-v4 root, and only then opens
-admission. Unreadable or malformed current data fails closed rather than being guessed or reset.
+The download index is a versioned envelope at schema v5.
+
+- **v4 still loads.** It has the same row shape, and keeps being written as v4 until the
+  one-time upgrade described below stamps it.
+- **Schemas 1–3 are not migrated.** Startup probes without mutating the root, drains every old
+  OS task, moves the opaque root to a durable quarantine, installs a protected empty current
+  root, and only then opens admission.
+
+**The v4 → v5 upgrade** runs after transport activation and before startup reports ready. User
+actions, queue work, season admission and cleanup runs are therefore still closed while it runs.
+
+- **Kept:** complete, unverified and paused static-range rows.
+- **Removed:** every other row, through the ordinary Delete. Server obligations are journaled
+  first, or a capsule is reserved, and the files go through the artifact queue.
+- **Rescue:** a removal candidate is spared only if a transfer completes it during the pass.
+- **Stamp:** then every later snapshot is stamped v5. A crash before the stamp commits leaves the
+  latest committed v4 state. Some removals may already be barriered or finished, but no row
+  created after the upgrade is present, so the next launch reclassifies what remains.
+- **Notice:** the Offline library shows a dismissible notice counting the removed downloads, and
+  any server jobs whose cleanup identity was unavailable. Unreadable or malformed current data fails closed rather than being guessed or reset.
 A schema newer than the binary (after a downgrade) is also kept and fails closed. Rows carry an
-authoritative `lifecycle` and attempt `history` as additive schema-v4 fields, and the derived
+authoritative `lifecycle` and attempt `history` fields (added in v4), and the derived
 `status` is still written. An older binary that drops the new fields leaves rows whose lifecycle
 is re-derived from status on the next load; only truncation strikes and recorded reasons are lost
 that way.

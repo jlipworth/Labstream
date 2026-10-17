@@ -662,7 +662,19 @@ final class DownloadStore: @unchecked Sendable {
     private let cleanupAuthorityDirectory: URL       // survives destructive Downloads-root reset
     private let fileManager: FileManager
     private let embyCleanupJournal: EmbyConvertCleanupJournal
-    private let indexWriter: RevisionedPersistenceWriter<[Row]>
+    private let indexWriter: RevisionedPersistenceWriter<IndexSnapshot>
+    /// One persisted index revision: its rows and the schema version they are written as (P3b).
+    /// The version is captured with the snapshot under `lock`, so every snapshot enqueued after
+    /// `stampSchemaV5()` is v5 and every earlier one keeps the loaded version.
+    private struct IndexSnapshot: Sendable {
+        let schemaVersion: Int
+        let rows: [Row]
+    }
+    /// The version snapshots are encoded with (guarded by `lock`). An existing index keeps the
+    /// version it was loaded with (v4 until upgraded); a new or reset index is current.
+    private var indexSchemaVersion = DownloadIndexCoding.currentSchemaVersion
+    /// The version the index was loaded with, for the manager's upgrade decision.
+    private var loadedSchemaVersion = DownloadIndexCoding.currentSchemaVersion
     private let rootIndexPersistence: IndexPersistence
     private let artifactFilesystem: DownloadArtifactFilesystem
     private let checkpointFilesystem: DownloadStaticCheckpointFilesystem
@@ -746,8 +758,10 @@ final class DownloadStore: @unchecked Sendable {
         self.embyCleanupJournal = EmbyConvertCleanupJournal(
             directory: authority,
             persistence: embyCleanupPersistence ?? .live)
-        self.indexWriter = RevisionedPersistenceWriter<[Row]>(
-            encode: { rows in try DownloadIndexCoding.encode(rows) },
+        self.indexWriter = RevisionedPersistenceWriter<IndexSnapshot>(
+            encode: { snapshot in
+                try DownloadIndexCoding.encode(snapshot.rows, schemaVersion: snapshot.schemaVersion)
+            },
             commit: { data in try indexPersistence.atomicWrite(data, indexURL) },
             failureObserver: { failure in
                 NSLog("DownloadStore: index %@ failed at revision %llu (%@)",
@@ -2373,6 +2387,39 @@ final class DownloadStore: @unchecked Sendable {
         return !Self.hasPendingRowDeletion(row)
     }
 
+    /// P3b (rev 8): may new work start or continue for this exact attempt? Ownership alone is not
+    /// enough: a deletion-pending capsule still owns its row and files (cleanup authority), but
+    /// admits no transfer, finalizer, prep or season work.
+    func attemptAdmitsWork(_ key: DownloadAttemptKey) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return attemptAdmitsWorkLocked(key)
+    }
+
+    /// Lock-held variant for store transactions (season apply) that already hold `lock`.
+    private func attemptAdmitsWorkLocked(_ key: DownloadAttemptKey) -> Bool {
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else { return false }
+        return !Self.hasPendingRowDeletion(row) && !row.deletionPending
+    }
+
+    /// P3b (rev 9): phase-aware admission for a start chain that minted `attemptID` before the
+    /// store owns it. Before the seed the key must be empty or held by the exact expected
+    /// previous owner, which must itself admit work; after the seed the exact attempt must admit
+    /// work. `createAttemptOwnedRecord`'s compare-and-swap stays authoritative.
+    func startChainAdmits(ratingKey: String, attemptID: DownloadAttemptID,
+                          expectedPreviousOwner: DownloadAttemptID?) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[ratingKey] else { return true }
+        guard let owner = row.attemptID else {
+            // A legacy terminal row without an owner is replaced by an unowned compare-and-swap.
+            return expectedPreviousOwner == nil && !row.deletionPending
+                && !Self.hasPendingRowDeletion(row)
+        }
+        if owner == attemptID || owner == expectedPreviousOwner {
+            return attemptAdmitsWorkLocked(DownloadAttemptKey(ratingKey: ratingKey, attemptID: owner))
+        }
+        return false
+    }
+
     /// Where an attempt's row stands for server-cleanup eligibility (P2.2). Absence in memory is
     /// not proof of deletion: `executeRowDeletion` drops the row before its terminal revision
     /// commits and restores it if that commit fails, so that window and any staged deletion read
@@ -2472,6 +2519,56 @@ final class DownloadStore: @unchecked Sendable {
         rows[key.ratingKey] = row
         _ = enqueueAttemptPersistenceLocked()
         lock.unlock()
+    }
+
+    /// P3b: true while the index was loaded as v4 and has not been stamped v5 in this process.
+    /// Until the stamp commits, the v4 file holds the latest committed v4 state (possibly with
+    /// some removals already barriered or done); a relaunch reclassifies what remains. The manager runs the upgrade pass exactly when this holds.
+    var requiresSchemaUpgrade: Bool {
+        lock.withLock { loadedSchemaVersion < DownloadIndexCoding.currentSchemaVersion
+            && indexSchemaVersion < DownloadIndexCoding.currentSchemaVersion }
+    }
+
+    /// P3b candidates, fixed when the upgrade pass starts (maintainer decision "keep partials"):
+    /// every owned row that is not complete, unverified or paused on the static-range route, and
+    /// is not already being deleted or publishing a legacy validated promotion.
+    func schemaUpgradeCandidates() -> [DownloadAttemptKey] {
+        lock.lock(); defer { lock.unlock() }
+        return rows.values.compactMap { row -> DownloadAttemptKey? in
+            guard let attemptID = row.attemptID else { return nil }
+            switch row.lifecycle {
+            case .complete, .unverified: return nil
+            case .paused where row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey)
+                == .staticByteRange: return nil
+            default: break
+            }
+            guard row.pendingValidatedPromotionStatus == nil, !row.deletionPending,
+                  !Self.hasPendingRowDeletion(row) else { return nil }
+            return DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: attemptID)
+        }.sorted { $0.ratingKey < $1.ratingKey }
+    }
+
+    /// P3b rescue rule (rev 10): a candidate is spared only if transport has since completed it.
+    func schemaUpgradeRescues(_ key: DownloadAttemptKey) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else { return true }
+        return row.lifecycle == .complete || row.lifecycle == .unverified
+    }
+
+    /// P3b stamp: every snapshot enqueued from now on is v5. Unverified rows without a recorded
+    /// reason get `migratedUnknown` in the same snapshot. Not awaited by the caller: a failed
+    /// commit stays dirty for the ordinary writer, and a crash leaves the latest committed v4
+    /// state (no row created after the upgrade), so the next launch reclassifies what remains.
+    @discardableResult
+    func stampSchemaV5() -> PersistenceTicket {
+        lock.lock(); defer { lock.unlock() }
+        for (ratingKey, var row) in rows
+        where row.lifecycle == .unverified && row.history.unverifiedReason == nil {
+            row.history.unverifiedReason = .migratedUnknown
+            rows[ratingKey] = row
+        }
+        indexSchemaVersion = DownloadIndexCoding.currentSchemaVersion
+        return enqueuePersistenceLocked()
     }
 
     /// The exact attempt's P3a lifecycle and history.
@@ -3033,6 +3130,8 @@ final class DownloadStore: @unchecked Sendable {
                   return row.attemptID == key.attemptID
                       && row.status == .failed
                       && row.metadata != nil
+                      // P3b: a row being deleted (barrier or capsule) is never re-planned.
+                      && attemptAdmitsWorkLocked(key)
               }) else {
             lock.unlock()
             return .staleInput
@@ -3052,7 +3151,7 @@ final class DownloadStore: @unchecked Sendable {
             row.metadata = metadata
             rows[key.ratingKey] = row
         }
-        let candidateSnapshot = Array(rows.values)
+        let candidateSnapshot = IndexSnapshot(schemaVersion: indexSchemaVersion, rows: Array(rows.values))
         nextPersistenceRevision += 1
         let ticket = PersistenceTicket(revision: nextPersistenceRevision)
         indexWriter.submit(revision: ticket.revision, snapshot: candidateSnapshot)
@@ -3065,7 +3164,8 @@ final class DownloadStore: @unchecked Sendable {
         // Atomic replacement can succeed and then surface an error. Encoding is deterministic
         // (`sortedKeys` over the exact submitted snapshot value), so byte equality proves the
         // candidate is already durable; keep the published plan rather than compensating it away.
-        let candidateData = try? DownloadIndexCoding.encode(candidateSnapshot)
+        let candidateData = try? DownloadIndexCoding.encode(
+            candidateSnapshot.rows, schemaVersion: candidateSnapshot.schemaVersion)
         if let candidateData, (try? Data(contentsOf: indexURL)) == candidateData {
             return .applied(inserted: records.count, retried: retryAttempts.count)
         }
@@ -5676,6 +5776,8 @@ final class DownloadStore: @unchecked Sendable {
         // `decode([Row].self)` did exactly that). A non-zero skip is logged rather than
         // swallowed — silent truncation is the failure mode this guards against.
         let result = DownloadIndexCoding.decode(Row.self, from: data)
+        indexSchemaVersion = result.schemaVersion
+        loadedSchemaVersion = result.schemaVersion
         if result.skippedRowCount > 0 {
             NSLog("DownloadStore: skipped %d corrupt offline-index row(s) on load (schemaVersion %d); %d row(s) preserved",
                   result.skippedRowCount, result.schemaVersion, result.rows.count)
@@ -5771,7 +5873,8 @@ final class DownloadStore: @unchecked Sendable {
     private func enqueuePersistenceLocked() -> PersistenceTicket {
         nextPersistenceRevision += 1
         let ticket = PersistenceTicket(revision: nextPersistenceRevision)
-        indexWriter.submit(revision: ticket.revision, snapshot: Array(rows.values))
+        indexWriter.submit(revision: ticket.revision, snapshot: IndexSnapshot(
+            schemaVersion: indexSchemaVersion, rows: Array(rows.values)))
         return ticket
     }
 
@@ -5865,7 +5968,7 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     private static func mapPersistenceResult(
-        _ result: RevisionedPersistenceWriter<[Row]>.FlushResult
+        _ result: RevisionedPersistenceWriter<IndexSnapshot>.FlushResult
     ) -> PersistenceFlushResult {
         switch result {
         case .committed(let revision):

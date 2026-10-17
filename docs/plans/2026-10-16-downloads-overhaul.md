@@ -628,6 +628,66 @@ Acceptance is a phase's pins and inventory rows staying green.
     That test is unchanged from `main`, the overhaul does not touch the coordinator, and the test
     bounds its wait by 1,000 `Task.yield()` calls. Two immediate reruns of the lane passed, so it
     is recorded as a pre-existing timing flake.
+- **2026-10-17 — P3b implemented** on `downloads/p3b-v5`, stacked on P3a. The plan reached
+  revision 10 after eight before-review rounds (approved).
+  - **Maintainer decision on D1:** keep partials. Complete, unverified and paused static-range
+    rows survive the upgrade.
+  - **Codec.** v4 and v5 both load. Each snapshot carries its version, so v4 stays v4 until the
+    stamp. A fresh or reset index is v5.
+  - **Delete fixes** (pre-existing bugs found by the review):
+    - exact-attempt halt, including untracked OS tasks;
+    - immediate release of prep pollers and keepalive;
+    - a handoff result returned to the caller;
+    - an optimize create that re-checks admission right before the server call;
+    - a post-deletion progress clear that never touches a replacement.
+  - **Work admission.** `attemptAdmitsWork` (no barrier, no capsule) gates the session's start,
+    resume, finalize and revalidate entries; retry continuation; season admission; and optimize
+    polling. Start chains use the phase-aware check.
+  - **Upgrade pass.** It runs between activation and `.ready`. The candidate set is fixed when
+    the pass starts and a candidate is rescued only by completion. Each candidate goes through
+    Delete; the pass records a notice union, stamps v5, then publishes `.ready`.
+  - **Deviation:** the notice persists in UserDefaults rather than in the authority directory.
+    It is a UX record whose idempotence comes from attempt-ID sets.
+  - **Open:**
+    - a session-level test for `haltForDeletion` against real OS tasks;
+    - tests for a deletion racing a suspended start, prep or optimize continuation (the guards
+      are in place);
+    - the paused-queue checkpoint-ordering test;
+    - the P5 item for a paused-static body finishing before reattach;
+    - live and physical acceptance.
+- **2026-10-17 — P3b after-review, round 1: not ready, 4 P2s and 2 P3s.** All six were valid.
+  - **Season transaction.** It now validates retry rows with the lock-held work-admission
+    predicate, so a deleting row is never re-planned. The test (red-checked) shows the
+    transaction stays atomic.
+  - **Capsule halt.** `haltForPendingDeletion` takes the exact key and cancels marked OS tasks
+    as well, keeping held artifacts. Callback admission and the activation purge use
+    `attemptAdmitsWork`, so a capsule's surviving daemon tasks are rejected and cancelled.
+  - **Full-key marker match.** Tasks are matched on rating key and attempt ID together. The test
+    (red-checked) covers a legacy attempt ID shared across keys, for both marker formats.
+  - **More tests:**
+    - the candidate matrix: existing deletion, paused static kept, paused forward-only dropped
+      (the legacy-promotion exclusion is code-reviewed, not tested);
+    - a crash after committed barriers but before the stamp, which reclassifies only what
+      remains;
+    - a pre-P3a v4 row without lifecycle fields, classified structurally.
+  - **Still not tested:** delayed v4 snapshots crossing the stamp (the version is captured
+    structurally under the lock at enqueue); deletion racing a suspended start, prep or optimize
+    step (guards in place); Retry Recovery during the pass (guarded by `startupRecoveryInFlight`);
+    season A→B replacement. All are journaled.
+  - **Notice.** It moved to `schema-upgrade-notice.json` in the authority directory, written by
+    atomic replace with file and directory fsync before the stamp is enqueued. This replaces
+    the UserDefaults deviation.
+  - **Docs and comments** now say that a crash before the stamp leaves the latest committed v4
+    state, and the next launch reclassifies what remains.
+- **2026-10-17 — P3b after-review, round 2: ready with fixes (2 P3s).** It found no blocking
+  transport or capsule-recovery regression.
+  - **The stamp waits for a durable notice.** If the save fails, the index stays v4 and the next
+    launch repeats the pass. The entries are parked in a UserDefaults fallback that the next
+    load merges.
+  - **Full attempt keys.** Notice entries now use the full attempt key, so two items sharing a
+    legacy attempt ID count twice.
+  - **Test:** a failed save, the fallback merge, and shared legacy IDs.
+  - **Noted, still open:** the crash test does not suspend artifact execution at the barrier.
 
 ## P2 detailed plan — cleanup foundation
 
@@ -1157,6 +1217,219 @@ migration therefore means:
 - applying D1, which drops non-terminal rows;
 - journaling dropped rows' obligations;
 - bumping the version.
+
+### P3b revision 7 (2026-10-17): Delete every dropped row at ready, then stamp
+
+**Maintainer decision (2026-10-17, refining D1).** P3a made lifecycle authoritative inside v4, so
+the upgrade no longer has to reset everything that is not terminal. The maintainer chose "keep
+partials only":
+
+- **Kept:** `complete`, `unverified`, and every **paused static-range** row (a durable
+  checkpoint, even at zero bytes).
+- **Dropped:** every other row. That is planned (season) rows, admitted, serverPrep,
+  transferring, finalizing, failed, and paused rows on a non-static route.
+
+Rounds 3 and 4 of the before-review asked for rework of revisions 5 and 6. Both kept dropped
+rows alive while the app ran (pre-activation waits, then a durable retirement list), and so had
+to invent a new gate on Retry, starts, callbacks, finalization and season admission. That gate
+already exists: **Delete's row-deletion barrier.** Every one of those paths must already respect
+it, because a user can press Delete at any moment. Revision 7 performs exactly what a user
+pressing Delete on each dropped row at launch would do, and then stamps v5. It replaces
+revisions 4–6; where it conflicts with P3b.1 or P3b.2, it wins.
+
+1. **Codec.**
+   - Envelopes with version 4 or 5 decode; 1–3 reset; newer is unreadable.
+   - The row shape and envelope shape are unchanged: no new envelope fields.
+   - The store encodes each snapshot with the version captured when it is enqueued; that
+     includes the season-plan submission and its candidate encoding.
+2. **At `.ready`, in one MainActor turn.** When `activateDownloadsForCurrentStore` succeeds on a
+   store whose committed schema is v4, the manager does the following before publishing
+   `.ready` and before reattach.
+   1. **Classify** rows by the maintainer decision.
+      - **Kept as is:** a row with a legacy `pendingValidatedPromotionStatus`. Its body is being
+        published and becomes complete.
+      - **Left in place:** a row that is already deletion-pending, or that has a pending
+        row-deletion intent. Its deletion is already under way.
+   2. **Record the notice** (round 4, finding 5; round 3, finding 6). The upgrade notice file is
+      a small JSON in the authority directory, written with the P2 committer. It gets the
+      union of the dropped attempt IDs and the IDs whose server identity cannot be represented.
+      The union is computed deterministically from the rows, before any deletion, so a crash
+      and redo is idempotent. Nothing is added to the index envelope (round 4, finding 4).
+   3. **Delete each dropped row** through `delete(record:)`.
+      - Its synchronous part journals obligations first, keeping a capsule if the journal is
+        unavailable, then installs the row-deletion barrier, halts session work and cancels
+        exact cancellable work.
+      - Its asynchronous part removes the files through the existing artifact queue.
+      - Rows with earlier artifact heads get the deletion queued after them.
+   4. **Stamp.** `store.stampSchemaV5()` fills `migratedUnknown`, switches the encoding version
+      to 5 and enqueues the snapshot. The stamp is not awaited.
+
+   Then the manager publishes `.ready` and runs reattach.
+3. **Why there is no other gate.**
+   - **Barriered rows.** After step 3, every dropped attempt either has a row-deletion barrier,
+     so `ownsAttempt` is false and callbacks are rejected and cancelled on their next arrival,
+     or is a capsule (`deletionPending`). Both are states every Retry, start, finalizer and
+     season path must handle for a user Delete.
+   - **Hardening.** Where a path checks only `isDeletionPending`, it gains `ownsAttempt`. Retry
+     (`DownloadManager` ~2321) and the season selection are examples. This closes a window
+     that exists for user Delete today (round 4, findings 1–2).
+   - **Nothing to prune** (round 4, finding 3). There is no retirement list, so there is no
+     committed-absence proof to make.
+   - **Accurate counts** (round 4, finding 5). Rescue cannot happen, so the notice counts real
+     deletions.
+4. **Crash and retry.**
+   - **Before the stamp commits:** v4 stays on disk. It may already carry committed barriers or
+     capsules from step 3, and v4 recovery executes those. The next launch reclassifies the
+     remaining rows and repeats the phase, and the notice union absorbs the repeat.
+   - **After the stamp:** v5 is current, and in-flight deletions finish through ordinary
+     recovery.
+   - **Every snapshot after the stamp is v5.** A v4 index on disk therefore never contains a
+     row created after the upgrade.
+   - **Interrupted replacement:** this leaves a readable v4 or v5.
+5. **Notice UI.** The Offline library shows "N in-progress downloads were removed during an
+   update", plus a cleanup-gap line when there are gaps, until it is dismissed. Dismissing it
+   deletes the file.
+6. **Out of scope.**
+   - **The paused-static finish-before-reattach race** predates P3b. It is journaled for P5.
+   - **New artifact-intent cases** stay in P6.
+7. **Tests** (written first):
+   - kept/dropped matrix, including paused static at zero bytes, paused forward-only, a legacy
+     promotion row and a row already deletion-pending;
+   - every dropped row is barriered or a capsule before `.ready` is observable;
+   - Retry, start and season admission on a dropped attempt are refused;
+   - snapshots after the stamp are v5, including a v4 enqueue delayed across the stamp;
+   - a crash after barriers commit but before the stamp commits redoes the upgrade
+     idempotently, with the notice counted once;
+   - a journal-unavailable capsule;
+   - a pre-P3a v4 index upgrades directly;
+   - v5 loads as current; 1–3 reset; 6 is unreadable.
+
+### P3b revision 8 (2026-10-17): amend revision 7 by fixing Delete itself
+
+The round-5 review accepted revision 7's snapshot ordering, its startup recovery of committed v4
+barriers, and its removal of the retirement list and the envelope metadata. Its two P1 findings
+describe **existing defects in the user Delete path**, and they affect users today. Delete
+during Plex optimize preparation can still create the server job. Delete's `session.cancel` is a
+no-op once its own barrier is installed. The migration relies on Delete, so P3b fixes Delete
+rather than working around it. The rest of revision 7 stands, with the following amendments.
+
+A. **Delete quiescence** (round 5, finding 1; a pre-existing bug).
+   - `delete(record:)` captures the exact attempt key before submission. After an accepted
+     submission it calls a new `session.haltForDeletion(attemptKey:)`, which does not consult
+     `ownsAttempt`:
+     - it installs the halt fence for that attempt;
+     - it cancels tracked task IDs;
+     - it enumerates `getAllTasks` and cancels every OS task whose marker carries that exact
+       attempt, including untracked daemon tasks before reattach.
+   - Manager-owned work (pollers, keepalive, server-prep tasks) is stopped at once through the
+     exact-attempt release, while server-cleanup authority stays with the journaled intents.
+   - The capsule-persistence-failure branch performs the same quiescence and reports
+     `persistenceFailed`. It never claims a durable reservation.
+   - Delete reports its outcome through a returned value, used by the migration, while the UI
+     keeps ignoring it: `barriered`, `capsule`, `stale` or `persistenceFailed`.
+B. **One work-admission predicate** (round 5, finding 2; a pre-existing bug).
+   - `store.attemptAdmitsWork(key)` holds only for the exact owner with no row-deletion barrier
+     and no capsule.
+   - It replaces bare `ownsAttempt`/`isDeletionPending` checks at work-admission and
+     continuation boundaries:
+     - `acquireStartAttempt`, `acquireInFlightSlotForStart`, `startAttemptStillCurrent`,
+       `retryAttemptCanContinue`;
+     - season `admitSeasonPlannerRowsOnce`, `seasonAdmissionStillCurrent`, and the retry-row
+       validation inside `applySeasonPlanAtomically`, which happens under the store lock;
+     - `assertCurrentOptimizeAttempt`, `resumeOptimizePollerIsCurrent`, and
+       `pollForOptimizedPart`;
+     - `triggerOptimize`, immediately before the server create;
+     - the session's start, resume, range-resume and fresh-finalizer entry points.
+   - Publication paths keep their existing store fences.
+   - **Tests:** delete during a suspended start, prep continuation and optimize trigger; and
+     capsule admission refused at each boundary.
+C. **Notice after handoff** (round 5, finding 3).
+   - The notice union is written in the same MainActor turn, **after** the deletions return.
+     It contains only attempts whose Delete returned `barriered` or `capsule`, which are
+     confirmed handoffs that nothing can rescue.
+   - **Residual cost:** a crash between handoff and the notice write can undercount, never
+     overcount. This is journaled.
+   - **Upgrade blocked:** `persistenceFailed` or `stale` outcomes are left for the next launch,
+     and the stamp still runs. A capsule that never persisted is a row that v4 or v5 recovery
+     reclassifies.
+D. **Startup cost** (round 5, finding 4).
+   - Only rows with server obligations journal anything, and that means rows in server prep or
+     with an active encoder, which the queue's concurrency bounds. Every other dropped row costs
+     one in-memory barrier plus a coalesced index snapshot.
+   - The journal entries for all dropped rows are prepared in **one** batched journal write
+     (`ensure` over the batch) before the per-row barriers. This bounds the MainActor turn to a
+     single durable journal write plus in-memory work.
+
+### P3b revision 9 (2026-10-17): phase-aware admission, async upgrade pass
+
+Round 6 judged revision 8's approach feasible, with two corrections. Revisions 7 and 8 stand,
+amended as follows.
+
+1. **Phase-aware admission** (round 6, P1). `acquireStartAttempt` mints attempt B before the
+   store owns it, so a single predicate cannot cover the whole start.
+   - **Before the seed** (`acquireStartAttempt`, `acquireInFlightSlotForStart`, the
+     `startAttemptStillCurrent` call inside `persistAttemptSeed` before create):
+     - keep the existing token and slot validation;
+     - additionally require that the store holds either no row for the key, or the exact
+       expected previous owner;
+     - reject a row that carries a row-deletion barrier or a capsule.
+
+     The store's compare-and-swap in `createAttemptOwnedRecord` stays authoritative.
+   - **After the seed:** every continuation requires `attemptAdmitsWork(B)`.
+   - **Tests:** a successful fresh start and a successful A→B replacement, alongside the
+     deletion-race cases.
+   - **Season planner:** `applySeasonPlanAtomically` uses a lock-held variant of the
+     predicate, so it never calls a locking method under the store lock.
+2. **An async upgrade pass replaces the single MainActor turn** (round 6, P2). The upgrade runs
+   as an async sequence after activation succeeds and before `.ready` is published. Startup
+   stays `.preparing`, so no user action and no queue, season or runner work can start. For
+   each candidate:
+   - **Reclassify at its turn.** A row that healthy transport completed meanwhile is now kept.
+   - **Otherwise** `await` the row's Delete, then `Task.yield()`.
+
+   Each row costs what one user Delete costs. The MainActor is free between rows, so no
+   batching is required.
+   - Encoder release: the early process-work release uses a path that does not re-ensure
+     encoder intents the row's deletion has already sealed.
+   - `persistenceFailed` leaves the dirty capsule in memory. The stamp snapshot carries it, and
+     if no commit ever succeeds, v4 stays on disk and the upgrade runs again.
+   - The notice counts only confirmed handoffs (`barriered` or `capsule`) and is written after
+     the pass.
+   - The stamp follows the pass, then `.ready`, then reattach.
+3. **Implementation notes from round 6.**
+   - **Exact cancellation:** match the full `(ratingKey, attemptID)`, both for tracked entries
+     and for task markers. Never use the rating-key-wide removal.
+   - **Delayed cleanup:** guard rating-key-wide cleanup that runs after asynchronous deletion
+     (such as `clearOptimizeProgress`) by ownership.
+   - **Finalization and revalidation:** apply admission before revalidation's destructive
+     prechecks as well as before finalizer admission.
+   - **Existing paths:** deletion execution and recovery of committed promotions keep their
+     dedicated authority checks.
+
+### P3b revision 10 (2026-10-17): rescue only by completion
+
+*Approved in round 8 of the before-review (GPT-6.1-Sol, high), with no blocking findings. The tests must exercise both orderings: checkpoint submitted before the barrier, and a deferred submission after it.*
+
+Round 7 confirmed that revision 9 resolves round 6. It found one P2: while the pass awaits a
+Delete, a refresh with the queue paused can park an unprocessed static candidate as paused, and
+reclassification would then keep it.
+
+- **Rescue rule.** The candidate set is fixed when the pass starts. At a candidate's turn, it is
+  kept only if transport has since **completed** it, meaning it is now complete or unverified.
+  Any other change, including a pause applied during the pass, does not rescue it: the
+  candidate is deleted. This makes reclassification independent of refresh, so refresh needs no
+  extra fence.
+- **Startup state.** `startupRecoveryInFlight` stays true through the pass, the notice and the
+  stamp. Its success-path clear moves after the await, so Retry Recovery and the transient
+  retry cannot start a second activation. `.alreadyPurging` remains a coalesced wait and never
+  launches a second pass.
+- **Accepted interruption.** Background finish-events may release the OS handler and interrupt
+  the pass. The v4 redo, together with barrier and capsule recovery, makes that safe.
+- **Additional tests:**
+  - a paused-queue startup with an unprocessed transferring static checkpoint, which must be
+    deleted, not kept;
+  - season A→B replacement;
+  - retry-after-removal.
 
 ### P3b.1 Probe
 

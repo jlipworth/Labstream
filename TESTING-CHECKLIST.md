@@ -285,6 +285,21 @@ This section applies only to visionOS, iOS/iPadOS, and macOS. The tvOS app must 
 without the Downloads capability and expose no Offline tab, download action, storage control,
 background-session registration, or migration/recovery work.
 
+### Library upgrade (schema v5, one-time)
+
+- [ ] Install a v5 build over a build with an existing download library (v4). Check what
+      happens to each kind of download:
+  - complete, unverified and paused static-range downloads remain;
+  - queued, transferring, server-preparing, failed and paused live-stream downloads are
+    removed;
+  - a dismissible notice states how many were removed.
+- [ ] A server job belonging to a removed Plex or Emby download in preparation is cancelled
+      (Plex: a completed render stays).
+- [ ] Deleting a download during Plex optimize preparation never leaves a new optimize job on
+      the server.
+- [ ] Deleting an active download stops its transfer promptly. Check the network activity or
+      that no further bytes arrive.
+
 ### Route and presentation matrix
 
 | Route class | Expected behavior |
