@@ -727,6 +727,18 @@ final class DownloadStore: @unchecked Sendable {
         try? DownloadIndexFileCommitter.cleanupAbandonedTemps(
             for: indexURL,
             fileManager: fileManager)
+        // B18: the cleanup-authority directory carries the same protection and backup exclusion as
+        // the media root, including directories created by older builds, and its journals' own
+        // abandoned commit temps are swept like the index's.
+        try? CredentialArtifactStorage.applyProtectionAndBackupExclusion(
+            to: authority,
+            protection: CredentialArtifactStorage.authArtifactProtection,
+            fileManager: fileManager)
+        for name in ["download-cleanup-intents.json", "emby-convert-cleanup.json"] {
+            try? DownloadIndexFileCommitter.cleanupAbandonedTemps(
+                for: authority.appendingPathComponent(name),
+                fileManager: fileManager)
+        }
         try? DownloadArtifactFileCommitter.cleanupAbandonedResumeTemps(
             in: dir,
             fileManager: fileManager)
