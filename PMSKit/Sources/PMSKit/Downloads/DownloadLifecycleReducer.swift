@@ -293,6 +293,11 @@ public enum DownloadLifecycleReducer {
             guard lifecycle == .transferring || lifecycle == .admitted
                     || lifecycle == .finalizing || lifecycle == .paused
                     || lifecycle == .failed else { return illegal }
+            // Re-entering a body that is already finalizing (relaunch recovery) keeps its pending
+            // verdict: a committed repeated-truncation reason must survive to the promotion.
+            if lifecycle == .finalizing {
+                return .applied(next, event == .bodyAtWorking ? [.requestFinalization] : [])
+            }
             return to(.finalizing, event == .bodyAtWorking ? [.requestFinalization] : [])
 
         case .finalizeOutcome(let id, let outcome, let source):

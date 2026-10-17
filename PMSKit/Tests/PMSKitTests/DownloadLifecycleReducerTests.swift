@@ -72,6 +72,29 @@ struct DownloadLifecycleReducerTests {
 
     // MARK: - B54: truncation strikes survive attempts and relaunch
 
+    @Test func reenteringAFinalizingBodyKeepsItsPendingVerdict() throws {
+        // A second truncation parked the body; a crash before promotion re-enters finalizing.
+        var history = DownloadAttemptHistory.empty
+        history = history.recordingTruncation(outcomeID: "a#body-1", source: source).history
+        history = history.recordingTruncation(outcomeID: "b#body-1", source: source).history
+        history.unverifiedReason = .truncatedRepeated
+        guard case .applied(let next, let effects) = R.reduce(
+            state(.finalizing, history), .bodyAtWorking, facts: staticFacts) else {
+            Issue.record("bodyAtWorking must apply to a finalizing row"); return
+        }
+        #expect(next.history.unverifiedReason == .truncatedRepeated)
+        #expect(next.history.truncation?.strikes == 2)
+        #expect(effects == [.requestFinalization])
+        // The replayed outcome is refused, and the promotion keeps the reason.
+        #expect(R.reduce(next, .finalizeOutcome(id: "b#body-1", outcome: .truncated, source: source),
+                         facts: staticFacts) == .rejected(.replayed))
+        guard case .applied(let done, _) = R.reduce(
+            next, .promotionCommitted(.unverified), facts: staticFacts) else {
+            Issue.record("promotion must apply"); return
+        }
+        #expect(done.history.unverifiedReason == .truncatedRepeated)
+    }
+
     @Test func truncationStrikesSpanAttemptsAndParkAtTheBudget() throws {
         // Strike 1 on attempt A: fail and delete the working body.
         let first = R.reduce(state(.finalizing),

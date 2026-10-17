@@ -5698,14 +5698,21 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         switch outcome {
         case .truncated where verdictThroughReducer:
             guard let source = store.truncationSourceKey(for: attemptKey) else { return }
-            switch resolveLifecycleSubmission(submitLifecycleEvent(
+            let verdict = submitLifecycleEvent(
                 .finalizeOutcome(id: outcomeID, outcome: .truncated, source: source),
-                for: attemptKey, phase: "finalize_truncated_verdict")) {
+                for: attemptKey, phase: "finalize_truncated_verdict")
+            switch verdict {
             case .staleOrMissing:
                 return
             case .accepted(let change, _):
                 // `.noChange` is a replay: this body's outcome committed before a relaunch.
-                truncationVerdictCommitted = change == .applied
+                guard change == .applied else { break }
+                // The body may be deleted only once the verdict that condemns it has committed
+                // (admission-only under a pending background completion, like every other
+                // finalize verdict; the completion gate then owns the bounded outcome).
+                guard acceptedAttemptSubmission(
+                    verdict, key: attemptKey, phase: "finalize_truncated_verdict") else { return }
+                truncationVerdictCommitted = true
             }
             truncationFailures = store.truncationStrikes(for: attemptKey)
         case .truncated:

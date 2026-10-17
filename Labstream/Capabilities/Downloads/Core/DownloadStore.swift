@@ -645,8 +645,9 @@ final class DownloadStore: @unchecked Sendable {
     /// Truncation strikes of a row a Retry removed before seeding its replacement, keyed by
     /// rating key (guarded by `lock`). The replacement inherits them like an in-place
     /// replacement would (R2-5), with the same in-process lifetime the pre-P3a session counter
-    /// had. A user Delete (deletion-pending removal) or a cancel never stashes strikes.
-    private var retiredTruncation: [String: DownloadTruncationHistory] = [:]
+    /// had. Only `submitRemoveForRetry` stashes strikes; a Delete or a cancel never does.
+    private var retiredTruncation: [String: (attemptID: DownloadAttemptID?,
+                                             truncation: DownloadTruncationHistory)] = [:]
     private var sideAssetHydrationCache: [String: HydratedSideAssets] = [:] // guarded by `lock`
     private var lastProgressPersist = Date.distantPast   // guarded by `lock`
     private let baseDirectory: URL                  // Application Support/Downloads
@@ -2446,7 +2447,9 @@ final class DownloadStore: @unchecked Sendable {
     /// A complete verdict, or a user cancel that re-downloads from scratch, clears the strikes.
     func clearTruncationStrikes(for key: DownloadAttemptKey) {
         lock.lock()
-        retiredTruncation.removeValue(forKey: key.ratingKey)
+        if retiredTruncation[key.ratingKey]?.attemptID == key.attemptID {
+            retiredTruncation.removeValue(forKey: key.ratingKey)
+        }
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
               row.history.truncation != nil else {
             lock.unlock()
@@ -3313,7 +3316,7 @@ final class DownloadStore: @unchecked Sendable {
         // same transaction, so a Retry cannot reset the two-strike park (B54).
         let retired = retiredTruncation.removeValue(forKey: record.ratingKey)
         if let inheritedFrom = existing?.history
-            ?? retired.map({ DownloadAttemptHistory(truncation: $0) }) {
+            ?? retired.map({ DownloadAttemptHistory(truncation: $0.truncation) }) {
             newRow.history = inheritedFrom.inherited(
                 by: Self.truncationSourceKey(ratingKey: record.ratingKey, metadata: metadata))
         }
@@ -5205,7 +5208,8 @@ final class DownloadStore: @unchecked Sendable {
     func reconcile(liveRatingKeys: Set<String>, snapshotRatingKeys: Set<String>) {
         lock.lock()
         var changed = false
-        var deletions: [URL] = []
+        // Each deletion is fenced by the exact owner and the lifecycle that condemned it.
+        var deletions: [(ratingKey: String, attemptID: DownloadAttemptID?, lifecycle: DownloadLifecycle, url: URL)] = []
         for (ratingKey, var row) in rows {
             // A deletion-pending row is a sealed recovery capsule, and a row with pending artifact
             // intents is owned by the durable artifact queue (a staged `.validatedPromotion` head
@@ -5238,10 +5242,13 @@ final class DownloadStore: @unchecked Sendable {
                     newProgress = Self.progressForDurableBytes(
                         partialBytes, expectedBytes: Self.expectedBytesEstimate(row: row))
                 case .deleteWorkingBody:
-                    if let workingURL { deletions.append(workingURL) }
+                    if let workingURL {
+                        deletions.append((ratingKey, row.attemptID, next.lifecycle, workingURL))
+                    }
                 case .clearResumeBlob:
                     if let resume = row.metadata?.resumeDataRelativePath, !resume.isEmpty {
-                        deletions.append(baseDirectory.appendingPathComponent(resume))
+                        deletions.append((ratingKey, row.attemptID, next.lifecycle,
+                                          baseDirectory.appendingPathComponent(resume)))
                     }
                 case .deletePublishedBody, .publish, .requestFinalization:
                     break // Relaunch never publishes; finalization is re-requested by the manager.
@@ -5276,7 +5283,17 @@ final class DownloadStore: @unchecked Sendable {
             ])
             return
         }
-        for url in deletions { try? fileManager.removeItem(at: url) }
+        // Range I/O dispatched before reconcile may have moved the same attempt on (for example
+        // back to finalizing) while the commit was in flight. Delete under the lock, as before
+        // P3a, and only while the row is still the exact owner in the condemned lifecycle.
+        lock.lock()
+        for deletion in deletions {
+            guard let row = rows[deletion.ratingKey], row.attemptID == deletion.attemptID,
+                  row.lifecycle == deletion.lifecycle, row.pendingArtifactIntents.isEmpty,
+                  !row.deletionPending else { continue }
+            try? fileManager.removeItem(at: deletion.url)
+        }
+        lock.unlock()
     }
 
     /// Attempt-conditional removal. A stale finalizer/delete for attempt A cannot remove attempt B
@@ -5309,9 +5326,16 @@ final class DownloadStore: @unchecked Sendable {
         submitRemove(for: key, requiresDeletionPending: false)
     }
 
+    /// Retry's replace-by-removal: like `submitRemove`, and the replacement seeded next inherits
+    /// this attempt's truncation strikes (R2-5).
+    func submitRemoveForRetry(for key: DownloadAttemptKey) -> RowDeletionSubmission {
+        submitRemove(for: key, requiresDeletionPending: false, retainingTruncation: true)
+    }
+
     private func submitRemove(
         for key: DownloadAttemptKey,
-        requiresDeletionPending: Bool
+        requiresDeletionPending: Bool,
+        retainingTruncation: Bool = false
     ) -> RowDeletionSubmission {
         lock.lock()
         guard var existing = rows[key.ratingKey], existing.attemptID == key.attemptID,
@@ -5339,15 +5363,15 @@ final class DownloadStore: @unchecked Sendable {
             if let start { scheduleArtifactLifecycle(ticket: start.1, intent: start.0) }
             return .accepted(ticket: ticket)
         }
+        if retainingTruncation, let truncation = existing.history.truncation {
+            retiredTruncation[key.ratingKey] = (key.attemptID, truncation)
+        }
         return stageRowDeletionLocked(row: &existing, key: key,
                                       requiresDeletionPending: requiresDeletionPending)
     }
 
     private func stageRowDeletionLocked(row: inout Row, key: DownloadAttemptKey,
                                         requiresDeletionPending: Bool) -> RowDeletionSubmission {
-        if !requiresDeletionPending, let truncation = row.history.truncation {
-            retiredTruncation[key.ratingKey] = truncation
-        }
         var paths = artifactPathsReferenced(by: row)
         let stable = [row.relativePath] + sideAssetRelativePaths(for: row.metadata)
         for path in stable where Self.isSafeOneLevelRelativePath(path) {
