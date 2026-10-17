@@ -67,10 +67,30 @@ extension DownloadManager {
             })
     }
 
-    /// Backends with at least one journaled cleanup intent (read once per recovery pass).
-    func journaledCleanupBackends() -> Set<DownloadBackendKind> {
-        guard case .loaded(let intents) = cleanupIntentJournal.load() else { return [] }
-        return Set(intents.map(\.backend))
+    /// Backends that owe server cleanup and therefore need a session even while inactive: any
+    /// journaled intent, a terminal row whose launch sweep will journal a handle, or a legacy
+    /// tombstone awaiting migration. Read once per recovery pass, before session hydration.
+    func pendingCleanupBackends() -> Set<DownloadBackendKind> {
+        var backends: Set<DownloadBackendKind> = []
+        if case .loaded(let intents) = cleanupIntentJournal.load() {
+            backends.formUnion(intents.map(\.backend))
+        }
+        for record in records where record.status == .complete || record.status == .failed
+            || record.status == .unverified {
+            guard let metadata = record.metadata else { continue }
+            let backend = metadata.resolvedBackendKind(ratingKey: record.ratingKey)
+            if backend != .plex,
+               metadata.playSessionID?.isEmpty == false
+                || metadata.embyConvertJobID != nil
+                || metadata.hasEmbyConvertCrashWindowIdentity {
+                backends.insert(backend)
+            }
+        }
+        if case .loaded(let tombstones) = store.loadEmbyConvertCleanupTombstones(),
+           !tombstones.isEmpty {
+            backends.insert(.emby)
+        }
+        return backends
     }
 
     // MARK: - Producers
@@ -105,13 +125,21 @@ extension DownloadManager {
         return true
     }
 
-    /// The live session for `kind` when it targets `server`; otherwise a session for that server
-    /// carrying the caller's credentials (identity only — never used to pick a different server).
+    /// The live session for `kind` when it targets the same server *and user* the work captured;
+    /// otherwise a session built from the captured identity. Never rebinds old work to whichever
+    /// account is current.
     func cleanupSession(kind: DownloadBackendKind, server: URL, token: String,
                         userID: String?) -> BackendSession {
         if let live = appModel.backendSession(for: kind),
            BackendURLIdentity.sameBaseURL(live.baseURL, server) {
-            return live
+            let sameUser: Bool
+            switch (userID, live.userID) {
+            case (nil, _): sameUser = kind == .plex
+            case (let captured?, let current?):
+                sameUser = MediaBrowserUserIdentity.sameUser(captured, current)
+            case (_?, nil): sameUser = false
+            }
+            if sameUser { return live }
         }
         return BackendSession(kind: kind, baseURL: server, token: token, userID: userID,
                               serverID: nil)
@@ -119,12 +147,12 @@ extension DownloadManager {
 
     // MARK: - Launch barriers
 
-    /// Runs once per process after startup recovery is ready: migrate legacy tombstones and
-    /// legacy quarantined Plex intents into the journal, then open the runner. Until both
-    /// barriers have run, the runner executes nothing.
+    /// Runs on every recovery pass once startup recovery is ready: migrate legacy tombstones and
+    /// legacy quarantined Plex intents into the journal, then open the runner. Both barriers are
+    /// idempotent, so a transient failure (locked data, full disk) is retried by the next pass;
+    /// intents behind an unfinished barrier stay blocked meanwhile.
     func prepareCleanupRunnerIfNeeded() {
-        guard startupRecoveryState == .ready, !cleanupRunnerPrepared else { return }
-        cleanupRunnerPrepared = true
+        guard startupRecoveryState == .ready else { return }
         migrateLegacyEmbyCleanupTombstones()
         legacyCleanupImport = cleanupIntentJournal.importLegacyQuarantinedPlexIntents()
         if legacyCleanupImport.importedCount > 0 || legacyCleanupImport.blocksAllPlex
@@ -261,17 +289,52 @@ extension DownloadManager {
         }
     }
 
-    /// Rows other than the intent's own attempt (and its abandoning origin) that may claim the
-    /// same server resource. Rows being deleted claim nothing.
+    /// Rows that may still claim the intent's server resource, read at the moment of the call:
+    /// rows on the same persisted server and user, not being deleted. The intent's own attempt
+    /// counts only while its row is still active work — so an abandonment whose journal write
+    /// looked failed to its producer (which then kept the resource) can never cancel it.
     private func claimingRecords(for intent: DurableDownloadCleanupIntent) -> [DownloadRecord] {
-        var excluded: Set<DownloadAttemptKey> = [intent.attemptKey]
-        if case .abandonment(let origin) = intent.provenance { excluded.insert(origin) }
-        return store.records.filter { record in
-            guard let attemptID = record.attemptID else { return false }
+        store.records.filter { record in
+            guard let attemptID = record.attemptID,
+                  let metadata = record.metadata,
+                  metadata.resolvedBackendKind(ratingKey: record.ratingKey) == intent.backend,
+                  Self.persistedServer(of: metadata, matches: intent.server) else { return false }
             let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
-            guard !excluded.contains(key), !store.isDeletionPending(for: key) else { return false }
-            return record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey) == intent.backend
+            guard !store.isDeletionPending(for: key) else { return false }
+            if key == intent.attemptKey {
+                return !(record.status == .complete || record.status == .failed
+                    || record.status == .unverified)
+            }
+            return true
         }
+    }
+
+    /// Whether a row's persisted server/user identity can be the intent's. Missing row identity
+    /// matches (conservatively claims); a different server or user never does.
+    nonisolated static func persistedServer(
+        of metadata: OfflineMetadata,
+        matches server: DurableDownloadCleanupIntent.ServerIdentity
+    ) -> Bool {
+        func nonEmpty(_ value: String?) -> String? {
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed?.isEmpty == false ? trimmed : nil
+        }
+        if let serverID = server.serverID, let rowServerID = nonEmpty(metadata.backendServerID) {
+            guard serverID == rowServerID else { return false }
+        } else if let base = URL(string: server.baseURLString),
+                  let rowBase = nonEmpty(metadata.backendBaseURLString).flatMap(URL.init(string:)) {
+            guard BackendURLIdentity.sameBaseURL(base, rowBase) else { return false }
+        }
+        if let userID = server.userID, let rowUserID = nonEmpty(metadata.backendUserID) {
+            guard MediaBrowserUserIdentity.sameUser(userID, rowUserID) else { return false }
+        }
+        return true
+    }
+
+    /// Eligibility can change while an executor awaits the server; re-read it before acting.
+    private func cleanupStillEligible(_ intent: DurableDownloadCleanupIntent) -> Bool {
+        CleanupIntentEligibilityPolicy.decision(
+            provenance: intent.provenance, rowState: cleanupRowState(for: intent)) == .run
     }
 
     private func retire(_ intent: DurableDownloadCleanupIntent)
@@ -335,16 +398,17 @@ extension DownloadManager {
         }
     }
 
-    private func executeEmbyConvertCleanup(
-        _ intent: DurableDownloadCleanupIntent,
-        identity: DurableDownloadCleanupIntent.EmbyConvertIdentity,
-        live: BackendSession
-    ) async -> DownloadCleanupIntentRunner.ExecutionOutcome {
-        guard let currentUserID = live.userID else { return .failed }
-        let others = claimingRecords(for: intent).compactMap(\.metadata)
-        let otherJobIDs = Set(others.compactMap(\.embyConvertJobID))
-        let otherRecoveryIdentities: [EmbyConvertRecoveryPolicy.LiveRecoveryIdentity] =
-            others.compactMap { metadata in
+    /// Claims on Emby Convert jobs held by live rows, read at one instant.
+    private struct EmbyConvertClaims {
+        var jobIDs: Set<Int>
+        var recoveryIdentities: [EmbyConvertRecoveryPolicy.LiveRecoveryIdentity]
+    }
+
+    private func embyConvertClaims(for intent: DurableDownloadCleanupIntent) -> EmbyConvertClaims {
+        let rows = claimingRecords(for: intent).compactMap(\.metadata)
+        return EmbyConvertClaims(
+            jobIDs: Set(rows.compactMap(\.embyConvertJobID)),
+            recoveryIdentities: rows.compactMap { metadata in
                 guard metadata.embyConvertJobID == nil,
                       let baseline = metadata.embyConvertJobBaselineIDs,
                       let fingerprint = metadata.embyConvertRecoveryFingerprint,
@@ -352,14 +416,24 @@ extension DownloadManager {
                       let phase = metadata.embyConvertRecoveryPhase else { return nil }
                 return .init(baselineJobIDs: Set(baseline), fingerprint: fingerprint,
                              attemptStartedAtEpochSeconds: started, phase: phase)
-            }
+            })
+    }
+
+    private func executeEmbyConvertCleanup(
+        _ intent: DurableDownloadCleanupIntent,
+        identity: DurableDownloadCleanupIntent.EmbyConvertIdentity,
+        live: BackendSession
+    ) async -> DownloadCleanupIntentRunner.ExecutionOutcome {
+        guard let currentUserID = live.userID else { return .failed }
         let identityHeaders = appModel.identity.emby
-        let needsList: Bool
-        if case .ambiguousCreate = identity { needsList = true } else {
-            needsList = !otherRecoveryIdentities.isEmpty
-        }
         var list: EmbyConvertJobList?
-        if needsList {
+        var claims = embyConvertClaims(for: intent)
+        // The decision below must use claims read after the last await: a Convert create can
+        // publish a job id or recovery identity while the job list is in flight (B49).
+        while true {
+            var needsList = !claims.recoveryIdentities.isEmpty
+            if case .ambiguousCreate = identity { needsList = true }
+            guard needsList, list == nil else { break }
             do {
                 let request = try EmbyConvertRequest.jobListRequest(
                     server: live.baseURL, token: live.token, identity: identityHeaders)
@@ -371,14 +445,16 @@ extension DownloadManager {
             } catch {
                 return .failed
             }
+            guard cleanupStillEligible(intent) else { return .waiting }
+            claims = embyConvertClaims(for: intent)
+        }
+        if !claims.recoveryIdentities.isEmpty, list?.isComplete != true {
+            return .failed // Cannot prove another row's recovery does not own the job.
         }
         let now = Date().timeIntervalSince1970
         let claimed = EmbyConvertRecoveryPolicy.claimedJobIDs(
-            liveJobIDs: otherJobIDs, liveRecoveryIdentities: otherRecoveryIdentities,
+            liveJobIDs: claims.jobIDs, liveRecoveryIdentities: claims.recoveryIdentities,
             jobs: list?.items ?? [], nowEpochSeconds: now)
-        if !otherRecoveryIdentities.isEmpty, list?.isComplete != true {
-            return .failed // Cannot prove another row's recovery does not own the job.
-        }
 
         let jobToCancel: Int?
         switch identity {
@@ -419,17 +495,23 @@ extension DownloadManager {
         return await retire(intent)
     }
 
+    private func plexClaimedTitles(for intent: DurableDownloadCleanupIntent) -> Set<String> {
+        // Prep attempts register their title before any row exists; the intent's own attempt is
+        // only excluded once its row is gone or terminal (the same rule as `claimingRecords`).
+        let ownRowActive = claimingRecords(for: intent).contains {
+            $0.ratingKey == intent.attemptKey.ratingKey && $0.attemptID == intent.attemptKey.attemptID
+        }
+        return Set(claimingRecords(for: intent).compactMap { $0.metadata?.optimizeQueueTitle })
+            .union(serverPrepAttempts.protectedQueueTitles(
+                excluding: ownRowActive ? [] : [intent.attemptKey]))
+    }
+
     private func executePlexOptimizeCleanup(
         _ intent: DurableDownloadCleanupIntent,
         queueTitle: String,
         live: BackendSession
     ) async -> DownloadCleanupIntentRunner.ExecutionOutcome {
-        var excluded: Set<DownloadAttemptKey> = [intent.attemptKey]
-        if case .abandonment(let origin) = intent.provenance { excluded.insert(origin) }
-        let claimedTitles = Set(claimingRecords(for: intent).compactMap {
-            $0.metadata?.optimizeQueueTitle
-        }).union(serverPrepAttempts.protectedQueueTitles(excluding: excluded))
-        guard !claimedTitles.contains(queueTitle) else { return .waiting }
+        guard !plexClaimedTitles(for: intent).contains(queueTitle) else { return .waiting }
 
         let identity = appModel.identity
         guard let bgKey = await bgKeyForPolling(
@@ -440,6 +522,9 @@ extension DownloadManager {
             headers: PlexHeaders.standard(identity: identity, token: live.token))
         guard let queue = try? await appModel.client.send(
             listRequest, as: BackgroundProcessingItems.self) else { return .failed }
+        // Re-read eligibility and claims after the awaits, immediately before acting.
+        guard cleanupStillEligible(intent),
+              !plexClaimedTitles(for: intent).contains(queueTitle) else { return .waiting }
 
         let outcome = queue.cleanupOutcome(queueTitle: queueTitle)
         recordDownloadDiagnostic("downloads.optimize_cleanup_outcome", fields: [
@@ -460,9 +545,13 @@ extension DownloadManager {
         case .absent where intent.plexCreate == .confirmed:
             return await retire(intent)
         case .absent, .malformed, .uncertain:
+            // Only an unresolved create may expire; malformed or ambiguous evidence about an
+            // item is retained (slowly) until it becomes decidable.
+            let mayExpire = outcome == .absent
             switch CleanupIntentRetryPolicy.plexRetention(
                 recordedAtEpochSeconds: intent.recordedAtEpochSeconds,
-                nowEpochSeconds: Date().timeIntervalSince1970) {
+                nowEpochSeconds: Date().timeIntervalSince1970,
+                mayRetire: mayExpire) {
             case .retire:
                 recordDownloadDiagnostic("downloads.optimize_cleanup_expired", fields: [
                     "download_id": .identifier(intent.attemptKey.ratingKey),

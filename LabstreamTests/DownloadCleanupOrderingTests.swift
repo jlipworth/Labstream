@@ -431,6 +431,7 @@ struct DownloadCleanupOrderingTests {
 
         // Backend-switch edge: the same sweep that ran at launch.
         manager.teardownOrphanedEncodersOnLaunch()
+        await manager.launchSweepJournaling?.value
 
         guard case .loaded(let intents) = journal.load() else {
             Issue.record("Expected a readable cleanup journal"); return
@@ -470,6 +471,7 @@ struct DownloadCleanupOrderingTests {
         #expect(await waitUntil { manager.startupRecoveryState == .ready })
 
         manager.teardownOrphanedEncodersOnLaunch()
+        await manager.launchSweepJournaling?.value
 
         guard case .loaded(let intents) = journal.load() else {
             Issue.record("Expected a readable cleanup journal"); return

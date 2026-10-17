@@ -88,10 +88,12 @@ public enum CleanupIntentRetryPolicy {
 
     /// For a Plex queue response that cannot cancel or retire the intent on its own: an absent
     /// item whose create PUT is unresolved, a malformed list, or an uncertain match. `absent` with
-    /// a confirmed create retires immediately and never reaches this function.
+    /// a confirmed create retires immediately and never reaches this function. Only the
+    /// unresolved-create case (`mayRetire`) can expire; other evidence is retained, slowly.
     public static func plexRetention(
         recordedAtEpochSeconds: Double?,
-        nowEpochSeconds: Double
+        nowEpochSeconds: Double,
+        mayRetire: Bool = true
     ) -> PlexRetention {
         // Every Plex intent this build writes is timestamped; one without a timestamp is never
         // auto-retired.
@@ -99,7 +101,7 @@ public enum CleanupIntentRetryPolicy {
             return .retain(minimumDelaySeconds: 0)
         }
         let age = nowEpochSeconds - recorded
-        if age >= plexRetentionSeconds { return .retire }
+        if mayRetire, age >= plexRetentionSeconds { return .retire }
         return .retain(minimumDelaySeconds: age >= slowPlexAfterSeconds ? slowPlexBackoffSeconds : 0)
     }
 }

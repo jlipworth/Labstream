@@ -317,7 +317,11 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         var outcome = LegacyImportOutcome()
         guard let names = try? fileManager.contentsOfDirectory(atPath: quarantineDirectory.path)
-        else { return outcome }
+        else {
+            // Unreadable is not empty: a legacy file may be hiding there.
+            outcome.blocksAllPlex = true
+            return outcome
+        }
         for name in names.sorted() where name.hasPrefix(Self.legacyQuarantinePrefix) {
             let source = quarantineDirectory.appendingPathComponent(name)
             guard let data = try? persistence.read(source),

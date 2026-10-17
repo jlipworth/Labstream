@@ -90,6 +90,13 @@ struct CleanupIntentRetryPolicyTests {
             == .retain(minimumDelaySeconds: 0))
     }
 
+    @Test func onlyUnresolvedCreatesExpire() {
+        let week = CleanupIntentRetryPolicy.plexRetentionSeconds
+        #expect(CleanupIntentRetryPolicy.plexRetention(
+            recordedAtEpochSeconds: 0, nowEpochSeconds: week * 2, mayRetire: false)
+            == .retain(minimumDelaySeconds: CleanupIntentRetryPolicy.slowPlexBackoffSeconds))
+    }
+
     @Test func plexQueueOutcomesAreExplicit() throws {
         func queue(_ json: String) throws -> BackgroundProcessingItems {
             try JSONDecoder().decode(BackgroundProcessingItems.self, from: Data(json.utf8))

@@ -229,7 +229,7 @@ struct ContentView: View {
             downloadManager.records.lazy
                 .filter { $0.status.isActiveWork }
                 .map { DownloadJobSnapshot(record: $0).backend }
-        ).union(downloadManager.journaledCleanupBackends())
+        ).union(downloadManager.pendingCleanupBackends())
             .subtracting([appModel.activeBackend])
         for backend in inactiveDownloadBackends.sorted(by: { $0.rawValue < $1.rawValue }) {
             _ = await authManager.hydrateSavedSessionForDownloads(backend: backend)

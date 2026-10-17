@@ -22,7 +22,22 @@ struct DownloadCleanupIntentRunnerTests {
         await runner.waitUntilIdle()
 
         #expect(fake.executed == [deleted.id])
-        #expect(runner.nextWakeForTesting == nil)
+        // Waiting intents always keep a local recheck, so no trigger can be lost for good.
+        let wake = try #require(runner.nextWakeForTesting)
+        #expect(wake.timeIntervalSinceNow > DownloadCleanupIntentRunner.waitingRecheckSeconds - 5)
+    }
+
+    @Test("A waiting outcome is rechecked by the runner's own timer")
+    func waitingOutcomeIsRechecked() async throws {
+        let claimed = try intent(.abandonment(originAttempt: DownloadAttemptKey(
+            ratingKey: "jellyfin:x", attemptID: DownloadAttemptID(uuid: UUID()))))
+        let fake = FakeCleanupWorld(intents: [claimed])
+        fake.outcome = .waiting
+        let runner = fake.makeRunner()
+        runner.enable()
+        await runner.waitUntilIdle()
+        #expect(fake.executed == [claimed.id])
+        #expect(runner.nextWakeForTesting != nil)
     }
 
     @Test("Legacy entries are classified durably before they can run")
