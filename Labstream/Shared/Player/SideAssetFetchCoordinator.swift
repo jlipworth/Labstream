@@ -732,9 +732,15 @@ extension DownloadManager {
                                               fetchEntry: true, version: version)
 
         let policyRequest = Self.sideAssetRequest(applyingCellularPolicy: request)
+        #if DEBUG
+        let transport = optionalSideAssetSessionForTesting ?? SideAssetTransportPolicy.sharedSession
+        #else
+        let transport = SideAssetTransportPolicy.sharedSession
+        #endif
         return try await sideAssetFetchCoordinator.fetch(
             request: policyRequest,
             owner: owner,
+            session: transport,
             onTransportAdmission: { [weak self] in
                 guard let self else { throw SideAssetFetchError.retryBudgetExhausted }
                 let admitted = await MainActor.run {

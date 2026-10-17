@@ -185,8 +185,10 @@ rolls back a possible commit, frees an artifact head or releases a writer's leas
 callers compare the captured owner, action generation, source and exact server handle again before
 starting work or clearing metadata. Pause and Delete install immediate admission fences before
 asynchronous persistence. Startup classification, staging inventory, index decoding/loading and
-repair run on a worker. The store remains admission-closed and Offline availability unresolved
-until that load publishes; classification and loading reuse one decoded snapshot. Recovery journal
+repair run on a worker. The store remains admission-closed while that load runs. Offline
+availability stays unresolved until publication, or resolves as unreadable if the launch deadline
+expires. A late load completion can resume recovery only while its manager generation is still
+current; Retry supersedes older completions. Classification and loading reuse one decoded snapshot. Recovery journal
 work also runs on workers; some off-lock lookups still perform synchronous I/O. This is not an actor
 conversion or a claim of zero synchronous filesystem access.
 

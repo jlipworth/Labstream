@@ -131,6 +131,87 @@ struct AsyncDownloadIndexStartupTests {
         _ = completions
     }
 
+    @Test @MainActor
+    func expiredInitialLoadResolvesTheLaunchGateAndPublishesLateSuccess() async throws {
+        let f = try P6Fixture()
+        let row = f.record(status: .complete)
+        let seed = f.store()
+        try #require(seed.createAttemptOwnedRecord(row, attemptID: row.attemptID!)
+            == .committed(.init(ratingKey: row.ratingKey, attemptID: row.attemptID!)))
+        try Data([1]).write(to: row.localURL)
+        let gate = StartupIndexReadGate()
+        defer { gate.release.signal() }
+        let store = DownloadStore(baseDirectory: f.directory, startupOnWorker: true,
+            startupRepairWillBegin: { gate.hold() })
+        try #require(await p6Signal(gate.entered))
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+        defer { session.invalidateInjectedSessionForTesting() }
+        let manager = DownloadManager(appModel: AppModel(identity: PlatformClientIdentity.make(
+            clientIdentifier: "deadline-fixture")), store: store, session: session,
+            registerForBackgroundEvents: false, startupIndexDeadline: { .after(0) })
+        #expect(await manager.awaitStartupRecoveryForTesting() == false)
+        guard case .blocked = manager.startupRecoveryState else {
+            Issue.record("The injected deadline must block the held startup")
+            return
+        }
+        #expect(manager.offlineAvailabilityCache.value.scan == .resolved(hasPlayableFile: false))
+        #expect(manager.offlineAvailabilityCache.value.indexAccess == .unreadable)
+        // ContentView uses this exact gate after a transient session-restore failure.
+        // The sign-in/retry controls must be reachable instead of the restoring splash.
+        let restoreOutcome = SessionRestoreOutcome.temporarilyUnavailable
+        #expect(BrowseUIGate.state(isBrowseReady: false,
+            isRestoring: restoreOutcome == .temporarilyUnavailable && manager.offlineAvailabilityIsResolving,
+            isSwitchingBackend: false, hasEverBeenBrowseReady: false,
+            canOpenOffline: OfflineLaunchAvailability.admitsOfflineLaunch(restoreOutcome: restoreOutcome,
+                hasPlayableDownload: manager.hasPlayableOfflineContent)) == .login)
+        #expect(!manager.hasPlayableOfflineContent)
+        gate.release.signal()
+        _ = await store.resolve(try #require(store.initialStartupSubmission), deadline: .after(5))
+        await manager.startupIndexObservationTask?.value
+        #expect(await manager.awaitStartupRecoveryForTesting())
+        await manager.offlineAvailabilityCache.worker?.value
+        #expect(manager.startupRecoveryState == .ready)
+        #expect(manager.hasPlayableOfflineContent)
+        #expect(manager.records.map(\.ratingKey) == [row.ratingKey])
+    }
+
+    @Test @MainActor
+    func lateInitialCompletionCannotOverwriteANewerReprobe() async throws {
+        let f = try P6Fixture()
+        let index = f.directory.appendingPathComponent("index.json")
+        try Data("invalid".utf8).write(to: index)
+        let initial = StartupIndexReadGate()
+        let retry = StartupIndexReadGate()
+        defer { initial.release.signal(); retry.release.signal() }
+        let reads = Mutex(0)
+        let store = DownloadStore(baseDirectory: f.directory, indexPersistence: .init(read: { url in
+            let number = reads.withLock { $0 += 1; return $0 }
+            if number == 1 { initial.hold(); return Data("invalid".utf8) }
+            retry.hold()
+            return try Data(contentsOf: url)
+        }, atomicWrite: { data, url in
+            try DownloadIndexFileCommitter().commit(data, to: url)
+        }), startupOnWorker: true)
+        try #require(await p6Signal(initial.entered))
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+        defer { session.invalidateInjectedSessionForTesting() }
+        let manager = DownloadManager(appModel: AppModel(identity: PlatformClientIdentity.make(
+            clientIdentifier: "generation-fixture")), store: store, session: session,
+            registerForBackgroundEvents: false, startupIndexDeadline: { .after(0) })
+        #expect(await manager.awaitStartupRecoveryForTesting() == false)
+        let old = manager.startupIndexObservationTask
+        manager.retryDownloadStartupRecovery()
+        try Data(#"{"schemaVersion":5,"rows":[]}"#.utf8).write(to: index)
+        initial.release.signal()
+        try #require(await p6Signal(retry.entered))
+        await old?.value
+        #expect(manager.startupRecoveryState == .preparing)
+        #expect(manager.startupActivationSubmissionCountForTesting == 0)
+        retry.release.signal()
+        #expect(await manager.awaitStartupRecoveryForTesting())
+        #expect(manager.startupRecoveryState == .ready)
+    }
+
     @Test func offlineEmptyStateWaitsForStartupInsteadOfClaimingAnEmptyLibrary() throws {
         let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Labstream/Capabilities/Downloads/Core/OfflineLibraryView.swift")

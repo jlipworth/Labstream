@@ -225,7 +225,9 @@ public final class DownloadManager {
     /// store operations retain their own bounded deadlines and failure transitions.
     func awaitStartupRecoveryForTesting() async -> Bool {
         if startupRecoveryState == .ready && admission.recoveryComplete { return true }
-        if case .blocked = startupRecoveryState { return false }
+        // A late load may have resumed activation while the prior deadline banner is still
+        // visible. Join that in-flight recovery rather than returning its superseded failure.
+        if case .blocked = startupRecoveryState, !startupRecoveryInFlight { return false }
         let id = UUID()
         return await withCheckedContinuation { continuation in
             startupCompletionWaiters[id] = continuation
@@ -247,6 +249,8 @@ public final class DownloadManager {
     /// tokens, persistence error descriptions, or server values are exposed to UI/diagnostics.
     public private(set) var startupRecoveryState: StartupRecoveryState = .preparing
     @ObservationIgnored private var startupRecoveryInFlight = false
+    @ObservationIgnored private(set) var startupIndexObservationTask: Task<Void, Never>?
+    @ObservationIgnored private let startupIndexDeadline: @Sendable () -> DownloadStoreDeadline
     @ObservationIgnored private var didRunInitialStartupReattach = false
     @ObservationIgnored private var startupRecoveryErrorKeys: Set<String> = []
     @ObservationIgnored private var startupRecoveryRetryTask: Task<Void, Never>?
@@ -292,6 +296,9 @@ public final class DownloadManager {
         FileManager.default.fileExists(atPath: $0.path)
     }
 
+    #if DEBUG
+    @ObservationIgnored var optionalSideAssetSessionForTesting: URLSession?
+    #endif
     @ObservationIgnored var optionalSideAssetControlWillDeliver:
         ((OptionalSideAssetControl, SideAssetOwner, Bool) async -> Void)?
     @ObservationIgnored var optionalSideAssetControlDidDeliver:
@@ -537,11 +544,13 @@ public final class DownloadManager {
          cleanupIntentJournal injectedCleanupIntentJournal: DownloadCleanupIntentJournal? = nil,
          sideAssetFetchCoordinator injectedSideAssetFetchCoordinator: SideAssetFetchCoordinator? = nil,
          backgroundCompletionRegistry: BackgroundDownloadCompletionRegistry = .shared,
-         registerForBackgroundEvents: Bool = true) {
+         registerForBackgroundEvents: Bool = true,
+         startupIndexDeadline: @escaping @Sendable () -> DownloadStoreDeadline = { .after(30) }) {
         #if DEBUG && os(tvOS)
         Self.debugConstructionCount += 1
         #endif
         self.appModel = appModel
+        self.startupIndexDeadline = startupIndexDeadline
         #if PERFORMANCE_AUDIT
         let downloadStoreSpan = PerformanceInstrumentation.begin(.runtimeDownloadStore,
                                                                   backend: "App")
@@ -778,32 +787,52 @@ public final class DownloadManager {
             backgroundCompletionRegistry.register(self.session)
         }
         if let submission = store.initialStartupSubmission {
-            startupRecoveryInFlight = true
-            Task { @MainActor [weak self, store] in
-                let deadline = DownloadStoreDeadline.after(30)
-                let result = await store.resolve(submission, deadline: deadline)
-                guard let self else { return }
-                startupRecoveryInFlight = false
-                switch result {
-                case .observed(let admission):
-                    guard await proveStartupPersistence(admission, deadline: deadline) else { return }
-                    continueStartupRecovery(with: admission)
-                case .timedOut:
-                    blockDownloadStartup(affectedRatingKeys: store.allRatingKeys,
-                        message: "Downloads recovery timed out. Try recovery again.", reason: "initial_load_timed_out")
-                }
-            }
+            observeStartupIndex(submission, generation: startupReprobeGeneration,
+                deadline: startupIndexDeadline(), timeoutReason: "initial_load_timed_out")
         } else {
             continueStartupRecovery(with: startupAdmission, deferCurrentActivation: true)
         }
     }
 
+    /// A deadline ends the launch wait, not the physical load. Keep observing that exact worker;
+    /// Retry owns a newer generation and must never be overwritten by an older completion.
+    private func observeStartupIndex(_ submission: DownloadStore.RecoverySubmission,
+                                     generation: UUID, deadline: DownloadStoreDeadline,
+                                     timeoutReason: String) {
+        startupRecoveryInFlight = true
+        startupIndexObservationTask = Task { @MainActor [weak self, store] in
+            let result = await store.resolve(submission, deadline: deadline)
+            guard self?.startupReprobeGeneration == generation else { return }
+            let admission: DownloadStore.StartupIndexAdmission
+            let persistenceDeadline: DownloadStoreDeadline
+            switch result {
+            case .observed(let observed):
+                admission = observed
+                persistenceDeadline = deadline
+            case .timedOut:
+                self?.blockDownloadStartup(affectedRatingKeys: store.allRatingKeys,
+                    message: "Downloads recovery timed out. Try recovery again.", reason: timeoutReason)
+                admission = await submission.completion()
+                // A late successful load gets its own bounded durability check. The expired
+                // launch deadline cannot prove (or disprove) the worker's eventual commit.
+                persistenceDeadline = .after(30)
+            }
+            guard let self, startupReprobeGeneration == generation else { return }
+            guard await proveStartupPersistence(admission, deadline: persistenceDeadline,
+                                                 generation: generation),
+                  startupReprobeGeneration == generation else { return }
+            startupRecoveryInFlight = false
+            continueStartupRecovery(with: admission)
+        }
+    }
+
     /// The worker's observation alone cannot authorize transport after a failed repair commit.
     private func proveStartupPersistence(_ admission: DownloadStore.StartupIndexAdmission,
-                                         deadline: DownloadStoreDeadline) async -> Bool {
+                                         deadline: DownloadStoreDeadline, generation: UUID) async -> Bool {
         guard admission == .current else { return true }
         startupRecoveryInFlight = true
         let proof = await store.flushPersistence(through: store.currentPersistenceTicket(), deadline: deadline)
+        guard startupReprobeGeneration == generation else { return false }
         startupRecoveryInFlight = false
         guard case .committed = proof else {
             blockDownloadStartup(affectedRatingKeys: store.allRatingKeys,
@@ -828,21 +857,9 @@ public final class DownloadManager {
         // B16/B21: re-examine the store instead of replaying the admission cached at launch.
         let generation = UUID()
         startupReprobeGeneration = generation
-        startupRecoveryInFlight = true
         let submission = store.submitReprobeBlockedIndex()
-        Task { @MainActor [weak self, store] in
-            let deadline = DownloadStoreDeadline.after(30)
-            let result = await store.resolve(submission, deadline: deadline)
-            guard let self, startupReprobeGeneration == generation else { return }
-            startupRecoveryInFlight = false
-            switch result {
-            case .observed(let admission):
-                guard await proveStartupPersistence(admission, deadline: deadline) else { return }
-                continueStartupRecovery(with: admission)
-            case .timedOut:
-                blockDownloadStartup(affectedRatingKeys: store.allRatingKeys, message: "Downloads recovery timed out. Try recovery again.", reason: "reprobe_timed_out")
-            }
-        }
+        observeStartupIndex(submission, generation: generation, deadline: .after(30),
+                            timeoutReason: "reprobe_timed_out")
     }
 
     private func scheduleTransientStartupRecoveryRetry() {

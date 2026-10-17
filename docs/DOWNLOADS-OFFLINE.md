@@ -500,7 +500,8 @@ Recovery also:
   off-main, validates image/BIF/text payloads before promotion, and batches metadata publication.
   Retry authority is exact attempt + source + resource kind and is charged only when an eligible
   waiter actually admits transport; coalesced cancellation or a stale waiter hands authority to the
-  next eligible waiter. Playlist repair audits every locally referenced tile. Successful promotion,
+  next eligible waiter. The worker inventories every owned side asset even after finding a missing file, so playlist
+  repair retains later existing tiles when their server requests would fail. Successful promotion,
   including a same-path replacement, advances the side-asset generation so byte accounting and
   storage-cap snapshots cannot retain stale cache values;
 - keeps completed media available without requiring the source server to be reachable;

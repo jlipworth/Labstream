@@ -33,6 +33,15 @@ struct CompletedSideAssetInventory: Sendable {
             observations[relative] = result
             return result
         }
+        // Missing-kind discovery may short-circuit after its first absent file. Reuse needs
+        // exhaustive evidence for every owned asset, including later tiles/subtitles and kinds
+        // that do not currently need repair. Ownership validation remains in the store seam.
+        var ownedPaths = [metadata.posterRelativePath, metadata.plexBIFRelativePath,
+            metadata.embyBIFRelativePath, metadata.jellyfinTrickPlayPlaylistRelativePath].compactMap { $0 }
+        ownedPaths += metadata.jellyfinTrickPlayTileRelativePaths ?? []
+        ownedPaths += Array((metadata.chapterImageRelativePaths ?? [:]).values)
+        ownedPaths += (metadata.offlineTextSubtitles ?? []).map(\.relativePath)
+        for path in Set(ownedPaths) { _ = exists(path) }
         let missing = DownloadSideAssetRepairInventory.missingKinds(record: record, fileExists: exists,
             jellyfinPlaylistTiles: { relative in
                 guard let data = try? Data(contentsOf: root.appendingPathComponent(relative)),

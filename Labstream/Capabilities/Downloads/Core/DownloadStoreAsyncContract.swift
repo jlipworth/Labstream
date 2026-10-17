@@ -26,6 +26,7 @@ final class DownloadStoreWork<Result: Sendable>: @unchecked Sendable {
     let epoch = UUID()
     private let lock = NSLock()
     private var result: Result?
+    private var completionWaiters: [CheckedContinuation<Result, Never>] = []
     private let workerQueue = DispatchQueue(label: "org.labstream.download-store-work", qos: .utility)
 
     let timeoutResult: Result?
@@ -35,7 +36,10 @@ final class DownloadStoreWork<Result: Sendable>: @unchecked Sendable {
             let value = operation()
             lock.lock()
             result = value
+            let waiters = completionWaiters
+            completionWaiters.removeAll()
             lock.unlock()
+            for waiter in waiters { waiter.resume(returning: value) }
         }
     }
 
@@ -43,6 +47,21 @@ final class DownloadStoreWork<Result: Sendable>: @unchecked Sendable {
     private func observedResult() -> Result? {
         lock.lock(); defer { lock.unlock() }
         return result
+    }
+
+    /// Observe physical completion after a bounded waiter expires, without polling or cancelling
+    /// the worker. Callers must still fence the result against their current generation.
+    func completion() async -> Result {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if let result {
+                lock.unlock()
+                continuation.resume(returning: result)
+            } else {
+                completionWaiters.append(continuation)
+                lock.unlock()
+            }
+        }
     }
 
     func observe(deadline: DownloadStoreDeadline) async -> Result? {
