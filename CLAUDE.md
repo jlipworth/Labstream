@@ -343,8 +343,8 @@ Use the named platform runners in `docs/TESTING-STRATEGY.md`: semantic XCUITest 
 the isolated Accessibility runner for macOS, XCUITest/XCUIRemote for tvOS, and the passive/probe-first
 runner documented by the **`sim-driving` skill** for visionOS. Xcode Device Interaction is an
 iPhone/iPad exploratory path only; it is not the durable regression contract and does not support
-the visionOS simulator. On Xcode 27, do not invoke the retained visionOS click scenario or use
-free-form/coordinate clicking. Hand off authentication, gaze/hover, pinch-drag, immersive UI, and
+the visionOS simulator. On Xcode 27, do not use free-form/coordinate clicking
+for visionOS. Hand off authentication, gaze/hover, pinch-drag, immersive UI, and
 hardware-only checks to the user/headset. Self-serve runner artifacts, screenshots, and logs rather
 than asking the user to collect them.
 
