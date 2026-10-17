@@ -181,7 +181,7 @@ final class LibraryPagingModel {
 
     private struct CollapsingPageResult: Sendable {
         let offset: Int
-        let page: LibraryPagingPage
+        let outcome: Result<LibraryPagingPage, any Error>
     }
 
     /// Load EVERY page of a collapsing movie source up front, ingesting each into the
@@ -239,18 +239,25 @@ final class LibraryPagingModel {
             // Keep paging until we've covered the reported total (or hit an empty page). Later
             // pages are requested through a small window so the remaining round trips overlap,
             // but they are ingested strictly in offset order, so the collapser sees exactly the
-            // same page sequence (and first-seen representative order) as a serial walk.
+            // same page sequence (and first-seen representative order) as a serial walk. A
+            // fetch failure is likewise surfaced only when ingestion reaches its offset, so a
+            // failed page past an empty page is ignored exactly as a serial walk never asks.
             let superseded = try await withThrowingTaskGroup(of: CollapsingPageResult.self) { group in
                 var nextRequest = pageSize
                 var nextIngest = pageSize
-                var arrived: [Int: LibraryPagingPage] = [:]
+                var arrived: [Int: Result<LibraryPagingPage, any Error>] = [:]
 
                 func requestAvailablePages() {
                     while !lastPageWasEmpty, nextRequest < serverTotal,
                           nextRequest - nextIngest < Self.collapsingPageWindow * pageSize {
                         let offset = nextRequest
                         group.addTask {
-                            CollapsingPageResult(offset: offset, page: try await fetchPage(offset, pageSize))
+                            do {
+                                return CollapsingPageResult(offset: offset,
+                                                            outcome: .success(try await fetchPage(offset, pageSize)))
+                            } catch {
+                                return CollapsingPageResult(offset: offset, outcome: .failure(error))
+                            }
                         }
                         nextRequest += pageSize
                     }
@@ -258,12 +265,13 @@ final class LibraryPagingModel {
 
                 requestAvailablePages()
                 while !lastPageWasEmpty, nextIngest < serverTotal, let result = try await group.next() {
-                    arrived[result.offset] = result.page
-                    while !lastPageWasEmpty, let page = arrived.removeValue(forKey: nextIngest) {
+                    arrived[result.offset] = result.outcome
+                    while !lastPageWasEmpty, let outcome = arrived.removeValue(forKey: nextIngest) {
                         guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
                             group.cancelAll()
                             return true
                         }
+                        let page = try outcome.get()
                         ingestCollapsed(page.items)
                         loadedPages += 1
                         lastPageWasEmpty = page.items.isEmpty
@@ -278,7 +286,10 @@ final class LibraryPagingModel {
                 group.cancelAll()
                 return false
             }
-            guard !superseded else {
+            // Leaving the group waits for any cancelled speculative fetches to finish; a newer
+            // load can start during that wait, so re-check before publishing completion.
+            guard !superseded,
+                  isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
                 completeSpan.end(result: "superseded")
                 span.end(result: "stale")
                 return

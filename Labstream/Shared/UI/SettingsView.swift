@@ -542,24 +542,24 @@ struct SettingsView: View {
         for serverID in serverIDs {
             plexServerStatuses[serverID] = .checking
         }
-        // Probe servers concurrently so one unreachable server does not hold every later
-        // row in "Checking" for its full probe timeout.
+        // Probe servers concurrently and publish each row as its own probe finishes, so one
+        // unreachable server does not hold any other row in "Checking" for its full probe
+        // timeout. A newer check (different operation ID) suppresses stale publications.
         let authManager = authManager
         let probes = serverIDs.map { serverID in
-            (serverID, Task { await authManager.probePlexServer(id: serverID) })
-        }
-        let superseded = await withTaskCancellationHandler {
-            for (serverID, probe) in probes {
-                let ok = await probe.value
-                guard plexServerOperationID == operationID else { return true }
+            Task { @MainActor in
+                let ok = await authManager.probePlexServer(id: serverID)
+                guard plexServerOperationID == operationID else { return }
                 plexServerStatuses[serverID] = ok ? .reachable(.now) : .unreachable(.now)
             }
-            return false
-        } onCancel: {
-            probes.forEach { $0.1.cancel() }
         }
-        guard !superseded else {
-            probes.forEach { $0.1.cancel() }
+        await withTaskCancellationHandler {
+            for probe in probes { await probe.value }
+        } onCancel: {
+            probes.forEach { $0.cancel() }
+        }
+        guard plexServerOperationID == operationID else {
+            probes.forEach { $0.cancel() }
             return
         }
         if let selectedID = appModel.selectedServer?.clientIdentifier,

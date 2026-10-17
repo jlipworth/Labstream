@@ -1276,6 +1276,9 @@ final class AuthManager {
         appModel.clearResolvedPlexBrowseSession()
     }
 
+    /// Maximum candidate servers whose connections are probed at once during discovery.
+    static let plexServerProbeWindow = 4
+
     /// Performs all suspension-prone Plex work without touching runtime or secure state.
     /// Callers can generation-check the result and then commit synchronously on MainActor.
     private func discoverPlexSession(token accountToken: String,
@@ -1300,10 +1303,13 @@ final class AuthManager {
             candidates = servers
         }
 
-        // Resolve every candidate server concurrently but keep preference order: the
-        // preferred server still wins whenever it is reachable, and an unreachable
-        // preferred server no longer costs a full probe timeout before the next is tried.
-        let winner = await PreferredProbe.firstSuccess(count: candidates.count) { [weak self] index in
+        // Resolve candidate servers concurrently (a few at a time, in preference order, so a
+        // large shared-server list does not open every server's connections at once) and
+        // keep preference order: the preferred server still wins whenever it is reachable,
+        // and an unreachable preferred server no longer costs a full probe timeout before the
+        // next is tried. Servers past the window are never contacted once one is decided.
+        let winner = await PreferredProbe.firstSuccess(count: candidates.count,
+                                                       maxConcurrent: Self.plexServerProbeWindow) { [weak self] index in
             let server = candidates[index]
             let ranked = ResourceDiscovery.rankedConnections(server.connections)
             return await self?.resolvePlexConnection(ranked,
