@@ -3665,10 +3665,39 @@ public final class DownloadManager {
         PlaybackPreferences.downloadStorageLimitBytes()
     }
 
-    public func storageLimitMessage(adding expectedBytes: Int?) -> String? {
-        DownloadStorageLimitPolicy.rejectionMessage(adding: expectedBytes,
-                                                    currentBytes: totalDownloadedBytes,
-                                                    limitBytes: storageLimitBytes)
+    /// P5 (B24): the one cap rule. Every row is counted once, active rows reserve their known
+    /// remaining bytes, and a start that replaces an existing row (a retry or re-download) swaps
+    /// that row's contribution for its new estimate instead of adding to it.
+    public func storageLimitMessage(adding expectedBytes: Int?,
+                                    replacingRatingKey: String? = nil) -> String? {
+        DownloadStorageAdmissionPolicy.capRejection(
+            rows: storageCapRows(), addingBytes: expectedBytes,
+            replacingRowID: replacingRatingKey, limitBytes: storageLimitBytes)
+    }
+
+    func storageCapRows() -> [DownloadStorageAdmissionPolicy.CapRow] {
+        store.records.map { record in
+            let reserves = record.lifecycle == .admitted || record.lifecycle == .serverPrep
+                || record.lifecycle == .transferring
+            return DownloadStorageAdmissionPolicy.CapRow(
+                id: record.ratingKey, retainedBytes: record.bytes,
+                sideAssetBytes: record.sideAssetBytes,
+                estimatedTotalBytes: reserves ? expectedDownloadBytes(for: record) : nil,
+                reservesRemaining: reserves)
+        }
+    }
+
+    /// The season projection (P5.2): new rows' known bytes plus each included retry row's
+    /// remaining estimate, against the self-consistent usage.
+    func seasonStorageLimitMessage(newKnownBytes: Int, retryAttempts: [DownloadAttemptKey]) -> String? {
+        let retryRemaining = retryAttempts.reduce(0) { total, key in
+            guard let record = store.record(for: key),
+                  let expected = expectedDownloadBytes(for: record) else { return total }
+            return total + max(0, expected - record.bytes)
+        }
+        let adding = newKnownBytes + retryRemaining
+        guard adding > 0 else { return nil }
+        return storageLimitMessage(adding: adding)
     }
 
     public func estimatedBytes(for item: MediaItem, choice: DownloadChoice,
@@ -3685,7 +3714,8 @@ public final class DownloadManager {
                                                                  partIndex: partIndex)
     }
     func rejectIfOverStorageLimit(ratingKey: String, backend: String, expectedBytes: Int?) -> Bool {
-        guard let message = storageLimitMessage(adding: expectedBytes) else { return false }
+        guard let message = storageLimitMessage(adding: expectedBytes,
+                                                replacingRatingKey: ratingKey) else { return false }
         recordDownloadDiagnostic("downloads.enqueue_failed", fields: [
             "download_id": .identifier(ratingKey),
             "backend": .label(backend),

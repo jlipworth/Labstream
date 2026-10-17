@@ -765,7 +765,14 @@ struct DownloadOptionsSheet: View {
                 mediaIndex: resolvedSelection.mediaIndex,
                 partIndex: resolvedSelection.partIndex)
         }
-        return downloadManager.storageLimitMessage(adding: addedBytes)
+        // pu-13 (P5): an unknown size is said, not silently counted as zero.
+        guard let addedBytes else {
+            return "Size unknown — this download is not counted toward the storage limit."
+        }
+        return downloadManager.storageLimitMessage(
+            adding: addedBytes,
+            replacingRatingKey: DownloadRecordIdentity.recordKey(for: item.ratingKey,
+                                                                 backend: sheetBackend))
     }
 
     private var resolvedSelection: DownloadOptionsModel.ResolvedSelection? {
