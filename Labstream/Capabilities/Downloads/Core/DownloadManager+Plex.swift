@@ -163,6 +163,15 @@ extension DownloadManager {
                     releaseInFlight(for: attemptKey)
                     return
                 }
+                // B41 (P5): check the storage cap before asking the server to render.
+                if rejectIfOverStorageLimit(
+                    ratingKey: ratingKey, backend: "Plex",
+                    expectedBytes: estimatedBytes(for: item, choice: .optimize(targetName: fallback),
+                                                  mediaIndex: mediaIndex, partIndex: partIndex,
+                                                  backend: .plex)) {
+                    releaseInFlight(for: attemptKey)
+                    return
+                }
                 await selectPlexAudioForPreparedDownloadIfNeeded(
                     part: part, audioStreamIndex: audioStreamIndex,
                     server: server, token: token)
@@ -312,6 +321,14 @@ extension DownloadManager {
         guard admissionMayEnterServerPrep(ratingKey) else { return }
         let item = metadata.makeMediaItem()
         let target = Self.originalFallbackOptimizeTarget()
+        // B41 (P5): check the storage cap before asking the server to render.
+        if rejectIfOverStorageLimit(
+            ratingKey: ratingKey, backend: "Plex",
+            expectedBytes: estimatedBytes(for: item, choice: .optimize(targetName: target),
+                                          mediaIndex: metadata.mediaIndex ?? 0,
+                                          partIndex: metadata.partIndex ?? 0, backend: .plex)) {
+            return
+        }
         recordDownloadDiagnostic("downloads.original_validation_fallback", fields: [
             "download_id": .identifier(ratingKey),
             "target": .label(target),
