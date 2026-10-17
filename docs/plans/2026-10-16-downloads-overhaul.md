@@ -1549,3 +1549,113 @@ This is every edge case the history shows the module has had to handle. *Status*
 | Public-repo hygiene: a code comment names a real media title | unhandled | Labstream/Capabilities/Downloads/Core/DownloadManager.swift:5251-5253 |
 | #210 refresh/resume recursion backstop | handled | DownloadManager.swift:2088-2104; markStartAbortedBeforeTransfer ordering :3556-3586 |
 | #125 existing-version offline-compatibility gate also applies to season 'Use Existing Versions' | handled | DownloadExistingVersionOptionPolicy.swift:52-68 (playableOffline); SeasonDownloadPlanningPolicy nearestIndex skips !playable (:123-126); DownloadOptionsSheet.s… |
+
+## Appendix C — P3a call-site transition matrix
+
+Every production status write and reconcile branch on `downloads/p3-lifecycle`, mapped to the
+P3a event that replaces it.
+
+- **Line numbers** are approximate, from the P3 code map.
+- **Lifecycle column:** `*` means unchanged; `→X` is the new lifecycle.
+- **"Effects"** lists durable effects (P3a.5).
+- **"Keep"** means bytes and checkpoint are recorded through a constrained mutator, with no
+  lifecycle change.
+
+### C.1 Store primitives
+
+| Site | Today | Event | Lifecycle | Effects / notes |
+|---|---|---|---|---|
+| `submitProgress` (~4677) | queued/paused/failed → downloading, implicitly | `transferProgress`; anything other than admitted/transferring becomes `checkpointAdvanced` | admitted→transferring; else * | the implicit promotion is removed (B09) |
+| `markCompleteIfUnverified` (~4788) | unverified → complete | `localPlaybackProgressed` | unverified→complete | — |
+| `executeValidatedPromotion` (~1200) | downloading → terminal | `promotionCommitted(terminal)` | finalizing→terminal | strike reset if complete |
+| `abandonUnrecoverablePromotion` (~1246) | → failed | `promotionAbandoned` | finalizing→failed | `lastFailure = internal` |
+| `recoverPendingValidatedPromotion` (~1322) | → legacy marker | `promotionRecovered(terminal)` | →terminal | resolved before other events |
+| `createAttemptOwnedRecord` | writes `record.status` | creation takes an initial lifecycle | planned \| admitted \| serverPrep | history inherited (R2-5) |
+| `applySeasonPlanAtomically` | new rows `.failed` + flag | creation | planned + `admissionIntent = seasonPlanned` | legacy flag still projected (R2-3) |
+| `reconcile` (~4833) | table | `relaunchObserved(facts)` / `foregroundObserved(facts)` | see C.5 | deletions become effects |
+
+### C.2 BackgroundDownloadSession
+
+| Site | Today → | Event | Lifecycle |
+|---|---|---|---|
+| 1327 rebuild grace expired | paused | `rebuildExpired` | transferring→paused(`deferredResume`) |
+| 1712 reattach, requestNeeded | queued | `transferRebuilding` | →transferring |
+| 1722 reattach, adopted task | downloading | `taskAdopted(gen)` (task gate) | →transferring |
+| 2272/2336 segment enqueue | downloading | `transferStarted` | admitted\|transferring→transferring |
+| 2579/2642/2772 user pause | paused | `pause(user)` | →paused(user) |
+| 2911/2971 oversized body / counter reset | queued | `transferRebuilding` | * (transferring) |
+| 3871/4265 halt/pause while finishing | paused | `checkpointAdvanced`, then `pause(cause)` | →paused |
+| 4312 halt with no task | paused | `pause(haltCause)` | →paused |
+| 4544 held-drain halt | paused | `checkpointAdvanced` + `pause` | →paused (bytes kept) |
+| 4589 `setFailedPurgingHeldSegments` (~25 callers) | failed | `transferFailed(reason)` | →failed |
+| 4705/4726 continue / pause after body | queued / paused | `transferRebuilding` / `pause` | * / →paused |
+| 4792 offset-mismatch retry | queued | `transferRebuilding` | * |
+| 4905/4927 changed resource | queued / paused | `resourceChanged` / `pause` | * / →paused |
+| 5259/5280 move-failure retry | queued | `transferRebuilding` | * |
+| 3261/3296 body arrives (B10) | — | `bodyCaptured(path)`, then `bodyAtWorking` | →finalizing (R2-4) |
+| 5525–5662 `finalizeTransferredFile` | per outcome | `finalizeOutcome(id, outcome)` | finalizing→failed / finalizing (promote) |
+| 5683 promote | complete / unverified | promotion recipe | stays finalizing until commit |
+| 5721 promotion rejected | failed | `promotionAbandoned` | →failed |
+| 5622 revalidation | complete / unverified / failed | `publishedBodyRevalidated(outcome, id)` | per rule (B54) |
+| 5974 system cancel | paused | `transferInterrupted(systemCancel)` | →paused(`systemInterrupted`) |
+| 6086/6090 adopted failed remainder | queued / paused | `transferRebuilding` / `pause` | * / →paused |
+| 6184 opaque interruption, blob | paused | `transferInterrupted(network)` | →paused |
+| 6464 blob failure | queued | `transferRebuilding` | * |
+| 6589 blob-resumed adoption | downloading | `taskAdopted(gen)` | →transferring |
+| 6673 401/403 rehydrate | queued | `transferRebuilding(auth)` | * |
+
+### C.3 DownloadManager
+
+| Site | Today → | Event | Lifecycle |
+|---|---|---|---|
+| 1626/1632 pause | paused | `pause(user)` | →paused(user) |
+| 1951/1957/1960 deferred resume | queued / paused / failed | `backendUnavailable(disposition)` | per disposition |
+| 2053 queue paused with checkpoint | paused | `pause(queuePaused)` | →paused |
+| 2260 retry, Emby convert | preparing | `retry(convertResume)` | →serverPrep |
+| 2295 retry with blob | downloading | `retry(resumeBlob)` | →transferring |
+| 2332 blob refused | failed | `transferFailed(blobRefused)` | →failed |
+| 2361 retry, static | queued | `retry(staticCheckpoint \| freshAttempt)` | →admitted |
+| 2398/2441 retry, auth / part missing | failed | `retryRejected(reason)` | →failed |
+| 2577 resume Plex prep | queued | `retry(prepReattach)` | →serverPrep |
+| 2594/2606 Plex retry, auth / server | paused | `backendUnavailable` | →paused(`awaitingSession`) |
+| 2650/2672/2717/2738 JF/Emby retry, auth / server | failed | `retryRejected` | →failed |
+| 2866 relaunch Convert recovery | preparing | `prepReattached` | →serverPrep |
+| 2900/2932 Convert identity mismatch / expired | failed | `prepFailed(reason)` | →failed |
+| 3187/3353/3379 Plex optimize deadline / poller error | failed | `prepFailed(reason)` | →failed |
+| 3469 start aborted | failed | `transferFailed(aborted)` | →failed |
+| 3732/3738 transfer start threw | failed | `transferFailed(start)` | →failed |
+| 3780 local playback | complete | `localPlaybackProgressed` | unverified→complete |
+| 3826 size audit | failed | `sizeAuditFailed` | terminal→failed |
+| 3962/4044 refresh, queue paused | paused | `pause(queuePaused)` | →paused |
+| 4251 forward-only stall | failed | `stallDetected` | transferring→failed (B61: facts-driven) |
+| 912/1786 reattach + reconcile | table | `relaunchObserved` / `foregroundObserved` | see C.5 |
+
+### C.4 Extensions
+
+| Site | Today → | Event | Lifecycle |
+|---|---|---|---|
+| +Plex 80/243, +Jellyfin 86/322, +Emby 94/352, +PlexOptimize 101/173/345 | seed queued | creation | admitted (P4 makes it planned → admitted) |
+| +EmbyConvert 92/275/300/391 | seed preparing | creation | serverPrep |
+| +SeasonPlanner 123 | queued \| failed+flag | creation | admitted \| planned |
+| +SeasonPlanner 205 admission | calls `retry` | `admissionGranted` | planned→admitted |
+| +Plex 260, +PlexOptimize 111/268/290/311, +Jellyfin 314/334/351/374, +Emby 157/196/274/344, +EmbyConvert 747/765, +SeasonPlanner 254/287 | failed | `transferFailed` / `prepFailed(reason)` | →failed |
+| +Emby 396 queue paused before Convert→static | paused | `pause(queuePaused)` | →paused |
+| Convert→static handoff | new static record | `prepHandoff(route)` | serverPrep→admitted, same attempt |
+
+### C.5 Reconcile as `relaunchObserved` (facts → lifecycle)
+
+The order is preserved from today's reconcile:
+
+| Facts | Lifecycle | Effects |
+|---|---|---|
+| pending artifact head, or deletion pending | * | none (skipped today) |
+| finalizing with a capture or working body | finalizing | re-request finalization (B10) |
+| Plex prep route, queued/transferring, no task | serverPrep, bytes reset | — |
+| live static task | transferring | — |
+| prep checkpoint (paused + target or Emby job) or app Range checkpoint > 0 | paused(`deferredResume`), bytes = durable | — |
+| complete/unverified + published body | * | — |
+| complete/unverified, no body | failed | — |
+| queued/transferring, no task, no checkpoint | failed | `deleteBody(working)`, `clearResumeBlob` (effects, outside the lock) |
+| paused with a blob or static restart | paused | — |
+| paused, nothing resumable | failed | `deleteBody(working)` |
+| planned | planned | — (not in today's table; added) |
