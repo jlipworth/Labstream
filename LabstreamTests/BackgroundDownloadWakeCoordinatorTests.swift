@@ -99,6 +99,23 @@ struct BackgroundDownloadWakeCoordinatorTests {
         #expect(!coordinator.hasGrace(forRatingKey: attempt.ratingKey))
     }
 
+    @Test("Finishing all awaiting events keeps operations and graces holding the release (B07)")
+    func finishAllAwaitingEventsRespectsHolds() throws {
+        let coordinator = BackgroundDownloadWakeCoordinator()
+        let attempt = try key("finish-all")
+        let token = deterministicToken(5)
+        coordinator.storeHandler(identifier: "wake", token: token)
+        _ = coordinator.beginGrace(for: attempt)
+
+        #expect(coordinator.finishAllAwaitingEvents() == .none)
+        #expect(coordinator.hasGrace(forRatingKey: attempt.ratingKey))
+        #expect(coordinator.snapshot.pendingOperationCount == 1)
+
+        let ended = coordinator.endGrace(for: attempt)
+        #expect(ended.drain.completionBatches == [batch("wake", token)])
+        #expect(!coordinator.hasPendingHandler)
+    }
+
     @Test("Startup abort clears grace ownership and permits a balanced rearm")
     func abortClearsGraceOwnership() throws {
         let coordinator = BackgroundDownloadWakeCoordinator()
