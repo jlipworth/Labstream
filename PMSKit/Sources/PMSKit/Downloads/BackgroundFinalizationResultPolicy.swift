@@ -34,9 +34,14 @@ public enum BackgroundFinalizationResultPolicy {
     /// (the re-probe re-derives `.truncated` and lands back here), recoverable by delete+re-add.
     public static let maxConsecutiveTruncationFailures = 2
 
+    /// `revalidatingPublishedFile`: the probe re-checked an already-published `.unverified` body
+    /// (no working file is being promoted). The strike count is in memory only, so after a
+    /// relaunch a parked body would re-derive strike 1; a published body is therefore never
+    /// failed or deleted for truncation here — it stays parked (B54).
     public static func result(
         for outcome: DownloadCompletionValidation.CompletionOutcome,
-        consecutiveTruncationFailures: Int = 0
+        consecutiveTruncationFailures: Int = 0,
+        revalidatingPublishedFile: Bool = false
     ) -> BackgroundFinalizationResult {
         switch outcome {
         case .complete:
@@ -66,7 +71,8 @@ public enum BackgroundFinalizationResultPolicy {
                 userFacingErrorMessage: "Download is incomplete (\(actualBytes / 1_000_000) of \(expectedBytes / 1_000_000) MB). Retry to continue."
             )
         case .truncated(let actualDurationMs, let expectedDurationMs):
-            if consecutiveTruncationFailures >= maxConsecutiveTruncationFailures {
+            if consecutiveTruncationFailures >= maxConsecutiveTruncationFailures
+                || revalidatingPublishedFile {
                 return BackgroundFinalizationResult(
                     status: .unverified,
                     resultLabel: "unverified_truncated_parked",
