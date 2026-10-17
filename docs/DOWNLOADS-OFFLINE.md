@@ -212,6 +212,19 @@ sequenceDiagram
   missing, malformed, stale, exhausted, or backed by a deleted temp file, is rejected and cleared
   together with its display watermark. Recovery then re-plans from the durable partial's current
   file size rather than appending unvalidated bytes.
+- **Free-space admission follows the physical append timeline.** Start, continuation, blob Resume,
+  and automatic storage-full parking charge the remaining network bytes, the largest upcoming
+  append copy, and headroom. Durable checkpoints and held bodies already on disk are counted once.
+  A blob refused for space keeps its resume authority and display watermark; it reports storage
+  exhaustion without treating the blob as corrupt or restarting the transfer.
+- **Transient Range retries are bounded by durable progress.** Optimistic URLSession progress does
+  not reset the retry budget. Positive appends, including held-body drains, reset it; explicit user
+  start/Resume resets it too. Transport drops get four retries with delays of 1, 2, 4, and 8 seconds. Delayed retries hold the background completion
+  gate through successor registration and check attempt, train epoch, and restart generation.
+  Pause/Resume invalidates old timers while preserving already finished bodies.
+- **Stash sweeps respect in-process ownership.** Both temporary and durable held bodies are claimed
+  before their rename and remain protected through queued append or manifest publication until
+  consumption/discard. The final claim check and orphan deletion share one lock boundary.
 - **HTTP safety checks still guard the append.** Completed bodies are validated for
   `Content-Range` start alignment, pinned validator mismatches, HTTP `200` full-body
   replacement/restart behavior, `416` total validation, temp disappearance fallback, and safe
@@ -382,7 +395,7 @@ transport, recovery work, persistence barriers, or background-completion durabil
   last failure was storage-full is not automatically redriven: every automatic static-range
   redrive (rebuilds, backend-ready drains, launch recovery) first re-measures free space —
   counting iOS purgeable space, matching the Settings storage gauge — and, if the volume still
-  cannot hold the remaining bytes plus headroom, parks the row as a pending resume instead of
+  cannot hold the remaining network bytes, largest append copy and headroom, parks the row as a pending resume instead of
   retrying. A user-initiated Retry always dispatches regardless of this gate;
 - migrates legacy Emby tombstones and pre-upgrade quarantined Plex intents into the cleanup
   journal, then runs required server cleanup through the cleanup runner (see

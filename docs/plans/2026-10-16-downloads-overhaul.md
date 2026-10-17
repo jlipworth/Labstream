@@ -853,6 +853,21 @@ Acceptance is a phase's pins and inventory rows staying green.
     ordinary and held appends, ignores zero-byte advances, and resets at start only for an
     explicit user start or resume.
 
+
+- **2026-10-17 — P5 session transport implemented** on `downloads/p5-transport` from the P5
+  contract base. Session starts/continuations, blob resumes and manager storage-full parking use
+  the physical storage policy without changing its semantics. Typed blob outcomes preserve authority
+  on storage refusal; callbacks carry exact attempts; delayed retries hold the wake gate and check
+  attempt, epoch and pause/restart generation through task registration. Transport drops get four
+  retries (1/2/4/8 seconds), reset only by positive ordinary/held appends or explicit user resume.
+  Both stash sweeps re-check locked claims, including the durable rename-to-manifest window; HEVC
+  fixup walks bounded top-level boxes (including extended/zero sizes) and scans every `moov`.
+  Red-checked pins 2, 7–12 by restoring the original affected behaviors behind the test seams;
+  pin 13 failed against the original HEVC implementation. The durable sweep's existing legacy-name
+  filter remains narrow; current attempt-stage files are not added to orphan deletion authority.
+  Validation: 1,614 hermetic PMSKit tests; 785 Swift Testing + 66 XCTest Mac tests; hygiene
+  (386 tooling tests and strict documentation/link/Mermaid checks). No simulator or live gate run.
+
 ## P2 detailed plan — cleanup foundation
 
 *Revision 3.1 (2026-10-17). The round-3 co-review approved it with three changes, applied here:
