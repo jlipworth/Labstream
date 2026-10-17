@@ -807,6 +807,32 @@ Acceptance is a phase's pins and inventory rows staying green.
   5. **Missing items.** A refresh that proves the item gone (HTTP 404/410, no metadata item) fails
      the planned row as source-missing; other refresh errors defer.
   - **Pin:** missing-item classification. The others are code-reviewed only.
+- **2026-10-17 — P5 plan co-review, round 1: rework (1 blocker, 14 majors, 1 minor).**
+  - **Blocker:** the owned-work snapshot conflated retained files with live transport.
+  - **Majors:**
+    - sweep claim boundaries;
+    - rebuild authorisation and generations;
+    - the B08 reset watermark;
+    - the admission continuation contract;
+    - the free-space formula double-counting held bodies;
+    - cap reservation atomicity;
+    - unknown-size consent semantics;
+    - blob resumes bypassing gates;
+    - B06 and B13 release safety;
+    - paused-body finalization;
+    - B56 precedence;
+    - the regression gate and integration ownership.
+  - **Response, revision 2:**
+    - targeted fixes only: B01, B03, B04, B08, B12, B14, B24, B41, B56, B81 and pu-13;
+    - corrected physical and cap formulas, with the concurrent-start residual stated;
+    - a claim set for stashes;
+    - epoch-checked, operation-held delayed retries;
+    - a durable-advance budget reset;
+    - blob-resume preflights;
+    - an informational unknown-size note;
+    - deferred: the rebuild primitive, `RangeAttemptState`, the owned-work snapshot, opaque
+      removal, the DEBUG move, B06, B13 and the paused-finish item;
+    - the lead owns the contracts and manager edits.
 
 ## P2 detailed plan — cleanup foundation
 
@@ -2045,167 +2071,156 @@ These amendments override the sections above where they differ.
 
 ## P5 detailed plan — storage admission and session transport
 
-**Status:** revision 1 (2026-10-17), before the co-review. Built on P4 (`downloads/p4-admission`).
-**Shape:** one PR. Two halves with disjoint files, implemented in parallel: storage (lead) and
-session transport (delegated).
+**Status:** revision 2 (2026-10-17). Revision 1 got **rework** from the co-review. Revision 2 cuts
+P5 down to the confirmed, still-reproducing bugs, with the formulas the review corrected. The
+optional consolidation is deferred, as the review suggested, so the overhaul can reach P7.
 
-### What the code map showed (HEAD `7be89209`)
+**Shape:**
+- One PR.
+- The lead owns the storage half, the PMSKit policy contracts and every manager-side edit.
+- A delegate owns the transport fixes inside `BackgroundDownloadSession.swift`, including the
+  session side of the attempt-keyed callbacks, against a policy and callback contract the lead
+  commits first.
+- The PR closes with one combined regression gate.
 
-**Storage**
+### Deferred out of P5 (journaled; not dropped silently)
 
-Each gate uses its own formula, and none counts held bodies or the append-copy peak. An unknown
-media size collapses differently in each gate:
+| Item | Why it is deferred |
+|---|---|
+| The single rebuild primitive replacing the 12 restart sites | No listed bug needs it. Consolidating safely needs operation generations, halt-aware authorisation and epoch serialisation (round-1 findings 3–4). |
+| `RangeAttemptState` packaging of the eight dictionaries | Behaviour-neutral. |
+| A unified owned-work snapshot | B03 gets a targeted claim set instead (round-1 findings 1–2). |
+| Deleting the opaque resume-data path | Still reachable for legacy rows without metadata. |
+| Moving DEBUG fault injection out of the session file | Behaviour-neutral. |
+| B06, the late OS handler | Uncertain. A safe fix needs startup-state distinctions (finding 11). |
+| B13, the leaked-operation timeout | Uncertain. A safe fix needs identified operation handles (finding 12). |
+| The P3 carry-over: a paused body that finishes before reattach | `writeThenPause` already preserves validated bytes. Finalizing needs whole-file rules (finding 13). |
 
-| Gate | Where | What it does |
-|---|---|---|
-| sheet preview | `DownloadOptionsSheet.swift` | no unknown-size path |
-| season summary | `SeasonDownloadStoragePolicy` | counts unknown sizes |
-| cap check | `DownloadStorageLimitPolicy` | passes nil (fails open) |
-| start preflight | `DownloadDiskSpacePolicy`, called from `BackgroundDownloadSession.swift` ~2131 | remaining + 500 MB, or headroom only when unknown |
-| continuation preflight | `BackgroundDownloadSession.swift` ~2286 | `(expected ?? 0)` |
-| storage-full park | `StaticRangeRecoveryPolicy.shouldParkAutoResumeAfterStorageFull` | `?? 0` |
+These are candidates for P6, or for separate issues if P6 does not reach them.
 
-The bugs behind those gaps:
+### P5.1 Storage policy (PMSKit, pure) — lead, committed first as the contract
 
-- **B81.** `DownloadStorageEstimatePolicy.totalBytes` turns an unknown media size into a known
-  extras-only number. The test at `DownloadStorageEstimatePolicyTests.swift:45` pins that wrong
-  contract.
-- **B56.** Every MediaBrowser `Part` is built with `size: nil`, because the DTO never decodes
-  `MediaSource.Size`.
-- **B24.** Cap usage is Σ`bytes` + Σ side assets. A retried partial is counted again with its full
-  estimate, and admitted rows' remaining bytes are not reserved.
-- **B41.** The Plex original → optimize fallback creates a server job with no cap check up front.
-- **B01.** Held bodies and the copy peak are not counted. P1 fixed the checkpoint half.
+**`DownloadStorageAdmissionPolicy`**
 
-**Session (`BackgroundDownloadSession.swift`, about 7.5k lines)**
+- **`requiredAdditionalFreeBytes`**
+  - **Inputs:** `expectedBytes: Int?`, `durableCheckpointBytes`, `heldBodyBytes`,
+    `largestPendingAppendBytes`, `futureSideAssetBytes`, `headroom = 500 MB`.
+  - **Result:**
 
-- **12 hand-written rebuild/restart sequences** (B04, B12):
-  - `reattachToResumedTasks` loop, ~1840;
-  - `didWriteData` closed-range oversize, ~3077;
-  - `didWriteData` counter-reset rebuild, ~3137;
-  - `continueRangeAfterBody`, ~4878;
-  - `retryRangeOffsetMismatch`, ~4938;
-  - `restartRangeFromChangedResource`, ~5038;
-  - `recoverRangeMoveFailure`, ~5464;
-  - `didCompleteWithError` `.requestNeeded`, ~6380;
-  - `retryTransientRangeFailure`, ~6640;
-  - `restartRangeFromDurableCheckpointAfterResumeDataFailure`, ~6739;
-  - `requestRangeRehydrationAfterHTTPFailure`, ~6948;
-  - `retryTransientRangeHTTPFailure`, ~6993.
-- **Three `rangeRetryQueue.asyncAfter` retries.** Only the auth-rehydrate one holds a grace; none
-  holds the wake gate. The move-failure rehydrate begins no grace (B04).
-- **B08.** The transport-drop retry has no backoff, and `didWriteData` resets its budget.
-- **`onError` and `onRangeRequestNeeded` carry only the rating key** (B12).
-- **Eight parallel per-attempt dictionaries:** held segments, retained predecessors, train epochs,
-  halt kinds, halt causes, retry counts, rehydrate counts, blob-resume counts.
-- **Three notions of "owned work."** The tmp stash sweep keeps only `getAllTasks` IDs and held
-  bodies, so it deletes a stash whose append is still queued (B03).
-- **The opaque-lane resume-data path is effectively dead.** It is reachable only for a legacy row
-  with a blob and no resume mode, whose nil mode the lane function and
-  `supportsPersistedResumeData` read in opposite ways.
-- **DEBUG fault injection is about 420 lines inside the session file.**
-- **B06** (a late OS handler is never released), **B13** (no timeout on a leaked gate
-  operation) and **B14** (HEVC hev1 scan windows) are still open.
-- **B22 is mostly mitigated.** Held bodies now use staging names under the inventory-gated sweep.
+    ```
+    remainingNetworkBytes = max(0, expected − checkpoint − heldBodyBytes)
+    required = remainingNetworkBytes + largestPendingAppendBytes + futureSideAssetBytes + headroom
+    ```
 
-### P5.1 One storage policy (PMSKit, pure) — lead
+    This is the physical timeline (finding 7): bytes already on disk, held bodies included, are
+    never counted again. Only the append duplication peak, the largest single body being copied,
+    is added.
+  - **Unknown size.** An unknown `expected` requires the append peak, future side assets and
+    headroom only, which is today's behaviour. Reactive ENOSPC handling stays.
+  - **Measurement.** It stays purgeable-inclusive (sd-01). An unavailable measurement fails open,
+    as it does today.
+- **`capUsage(rows:)`**
+  - Each row counts once: the larger of its durable checkpoint and `bytes`, plus its side-asset
+    bytes (B24).
+  - **Retry self-exclusion.** `capProjection(adding:replacingRow:)` subtracts the replaced row's
+    own current contribution before adding its full estimate (B24).
+  - **Reservations.** Admitted, server-prep and transferring rows with a known estimate add their
+    remaining bytes, `max(0, estimate − counted)`.
+  - **Unknown estimates** add nothing. They are surfaced by the unknown-size UI (P5.3).
+  - **Residual.** Two starts that pass the cap concurrently, before either publishes its size, are
+    not fenced. P4 admission caps concurrency at 3, and reactive ENOSPC and the cap's next check
+    bound the overshoot. This is a stated residual (finding 8).
+- **`DownloadStorageEstimatePolicy.totalBytes`.** An unknown media size stays unknown, whatever the
+  side assets (B81). The wrong test is replaced.
 
-**`DownloadStorageAdmissionPolicy`** replaces the per-gate formulas.
+### P5.2 Gates using it — lead (manager and UI), delegate (session preflights)
 
-- **Size is a type.** `enum DownloadSizeEstimate { known(Int), unknown }`. Side assets are
-  separate, and an unknown media size stays `unknown` (B81). The wrong test is replaced.
-- **Free space required:**
+- **Manager cap check (lead).** It uses `capProjection(replacingRow:)` for every start, including
+  retries.
+- **Before any server-prep create (B41, lead).** The Plex original → optimize fallback and the
+  fallback after an original fails validation both get a cap check before the create.
+- **Session preflights (delegate).** The start, continuation and storage-full park checks call
+  `requiredAdditionalFreeBytes` with held-body and append-peak inputs from session state. Both
+  blob-resume entry points (`adoptBlobResumedRangeTask`) get the same preflight (finding 10).
+  - **On refusal**, the checkpoint and blob authority are preserved, and the row fails or parks
+    with `.storage` exactly as the existing storage-full path does.
+- **Season commit (lead).** The projection includes the retry rows' remaining estimates.
 
-  ```
-  free ≥ remainingMediaBytes + heldBodiesNotYetAppended + largestPendingAppendPeak + headroom (500 MB)
-  ```
+### P5.3 Sizes and unknown sizes — lead
 
-  This covers B01. An unknown size requires a conservative fixed reservation (2 GiB) plus
-  headroom.
-- **Cap usage** counts each row's retained bytes once (B24): the larger of its durable checkpoint
-  and its `bytes`, plus side assets. It adds the reserved remaining bytes of every admitted,
-  `serverPrep` or transferring row, from its known estimate, or the fixed reservation when the
-  size is unknown.
-- **Cap verdict:** `fits`, `exceedsCap(message)`, or `unknownNeedsConfirmation`.
-- **One formula, every gate:** the single-item sheet, the season aggregate, the manager cap check
-  before every start and before any server-prep create (B41, including the Plex fallback), the
-  session's start and continuation preflights, and the storage-full park.
+- **B56.** Decode `Size` in the MediaBrowser item `MediaSource` DTO into `Part.size`.
+  - **Precedence.** The negotiated PlaybackInfo size keeps priority wherever it already applies:
+    Jellyfin remux, and Emby original and remux. A remux size is an estimate.
+  - **Jellyfin Original.** It uses the decoded item size.
+- **pu-13, single-item sheet.** An unknown size shows "Size unknown — not counted toward the
+  storage limit." This is informational: no persisted consent and no reservation. The season sheet
+  keeps its confirmation, which now actually triggers because B81 is fixed.
 
-### P5.2 Sizes from the server (B56) — lead
+### P5.4 Transport fixes — delegate (`BackgroundDownloadSession.swift`)
 
-- Decode `MediaSource.Size` in the MediaBrowser DTO into `Part.size`.
-- The Jellyfin and Emby original and remux paths use the PlaybackInfo size when the item size is
-  missing.
+1. **B04.**
+   - The move-failure rehydrate begins the rebuild grace.
+   - The move-retry and HTTP 52x/503 delayed retries hold a background completion operation
+     (`begin/endPendingBackgroundCompletionOperation`) from scheduling until the closure has run
+     its currency check. The auth rehydrate already holds its grace.
+   - Each closure re-checks attempt **and train epoch**, so an old timer after a same-attempt
+     Pause → Resume does not fire (finding 4).
+2. **B08.**
+   - The transport-drop retry budget resets only when the durable checkpoint advances (the
+     append path), never on `didWriteData`.
+   - Internal rebuilds preserve the budget; a user start or resume resets it (bg-48).
+   - The transport-drop retry gets backoff (1, 2, 4, 8 s) through the same gated delayed path.
+3. **B12.**
+   - `onError` and `onRangeRequestNeeded` carry the `DownloadAttemptKey`.
+   - The manager handlers ignore a stale attempt. Owned continuations keep going through
+     `resumeStaticRangeWhenReady`, which P4 already admits as a continuation. `onError` stays an
+     error and presentation callback.
+4. **B03.**
+   - A stash URL is claimed in a locked set when it is created, synchronously in the delegate, and
+     released after its append or discard.
+   - The tmp sweep re-checks the claim set under the same lock immediately before deleting each
+     path, so a stash created after enumeration is never deleted (finding 2).
+5. **B14.** HEVC: walk the top-level boxes to locate `moov`, and scan the whole `moov` with
+   bounded reads, in addition to the windows. Malformed or extended box sizes stop the walk
+   safely.
 
-### P5.3 Unknown-size confirmation (pu-13) — lead
-
-- **Single-item sheet.** An unknown size shows "Size unknown — about N GB is reserved" and
-  requires a confirm tap.
-- **Season sheet.** Keeps its existing copy. With B81 fixed, it now really sees unknown sizes.
-
-### P5.4 Session transport — delegated (disjoint: `BackgroundDownloadSession.swift`, new files)
-
-1. **One attempt-keyed rebuild primitive.**
-   `requestRangeRebuild(_ key: DownloadAttemptKey, reason:, grace: .hold | .none)` replaces the 12
-   sequences. Every path to `onRangeRequestNeeded` holds the grace (B04, the move-rehydrate
-   gap). The reducer refuses rebuilds for paused or halted rows, as P3a's `transferRebuilding`
-   already does.
-2. **One gated retry.** `scheduleRangeRestart(_ key:, reason:, delay:)` holds the background
-   wake gate through the delay and checks currency on firing. It replaces the three `asyncAfter`
-   copies. The transport-drop retry gets exponential backoff (1, 2, 4, 8 s, capped), and its
-   budget resets only when progress passes the offset of the last retry (B08).
-3. **Attempt-keyed callbacks (B12).** `onError(DownloadAttemptKey, …)` and
-   `onRangeRequestNeeded(DownloadAttemptKey, …)`. The manager fences them on the exact attempt.
-   They are routed through P4 admission as continuations.
-4. **`RangeAttemptState` struct.** It holds the eight dictionaries under the same lock, and the
-   behaviour is unchanged.
-5. **One owned-work snapshot** (B03): live tasks, `rangeInflight`, held bodies, stashes with a
-   queued append, graces and finalizers. Reattach `liveKeys`, the tmp stash sweep and the B00
-   check all use it.
-6. **Opaque resume-data path.** Delete it. A legacy row with a blob and no resume mode resumes as
-   static range, which is what `supportsPersistedResumeData` already assumes.
-7. **DEBUG fault injection** moves to `Debug/DebugDownloadFaultURLProtocol.swift`. The behaviour
-   and the launch arguments are unchanged.
-8. **B13.** A gate operation carries a deadline (10 min). It is force-ended with a fault
-   diagnostic.
-9. **B06.** A handler stored while startup is blocked or dormant is released at once.
-10. **B14.** HEVC: when both windows miss, locate the `moov` atom by walking top-level boxes and
-    scan only it.
-
-### P5.5 Carried from P3
-
-A paused static body that finishes before reattach. A finished body for a paused row is adopted
-to finalizing, not discarded, under the halt kind `writeThenPause`. A pin is required.
-
-### Pins (written first; each must fail on current code)
+### Pins (each fails on the current code)
 
 **Storage:**
-1. B81: an unknown media size plus side assets is unknown.
-2. B24: a retried partial is counted once, and admitted rows' remaining bytes are reserved.
-3. B01: held bodies and the append peak are counted in the start and continuation preflights.
-4. B41: a fallback create checks the cap first.
-5. B56: the MediaSource size is decoded.
-6. The single-item sheet asks for confirmation of an unknown size.
-7. The same verdict holds across every gate (a table test).
+1. B81: an unknown size plus side assets is unknown.
+2. B01 numeric:
+   - a held-only completion needs the append peak plus headroom;
+   - future segments;
+   - side assets.
+3. B24:
+   - a retried partial is counted once;
+   - an admitted row's remaining bytes are reserved;
+   - a failed row counts its bytes only.
+4. B41: the fallback create is refused over the cap.
+5. B56: the item DTO decodes `Size` (large, missing and null values).
+6. The season projection includes retries.
+7. A blob resume refused for space keeps its blob.
 
-**Session:**
-8. B04: a move-failure rehydrate holds the grace.
-9. B04: a delayed retry holds the wake gate.
-10. B08: a flapping link backs off and exhausts its budget.
+**Transport:**
+8. B04: the move rehydrate holds the grace; a delayed retry holds an operation.
+9. An old timer after the same attempt's Pause → Resume does nothing.
+10. B08: repeated identical segment prefixes exhaust the budget.
 11. B12: a stale-attempt callback is ignored.
-12. B03: a queued-append stash survives the sweep.
-13. B13: a leaked operation is force-ended.
-14. B06: a late handler is released.
-15. B14: hev1 beyond the windows is rewritten.
-16. A paused body that finishes before reattach is finalized.
+12. B03: a stash created after enumeration survives.
+13. B14: an out-of-window `hev1` is rewritten when another sample entry was found in a window.
 
-**Retained:** every handled `bg-*` row keeps its existing pins.
+**Retained.** The behaviour of the handled-but-unpinned rows that P5 touches is preserved:
+bg-19, bg-27, bg-29, bg-30, bg-33, bg-34, bg-35, bg-48. Named coverage is added only where a
+P5 edit touches the row.
 
-### Out of P5
+### Commits
 
-- The store half of section 6 (P6).
-- UI beyond the unknown-size confirmation (P7).
-- Mac background recovery (bg-43), which stays an acceptance gate.
+1. **Policy contract** (lead): PMSKit `DownloadStorageAdmissionPolicy`, B81, and the callback
+   signatures.
+2. **Storage gates** (lead): manager, UI, B56, season.
+3. **Transport fixes** (delegate).
+4. **Integration** (lead).
+5. **Docs**, then the combined matrix.
 
 ## Open gates (never claimed by this work)
 
