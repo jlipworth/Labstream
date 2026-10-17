@@ -612,6 +612,22 @@ Acceptance is a phase's pins and inventory rows staying green.
   That function now returns 0 for a condemned current owner, an empty usable checkpoint. Every
   caller treats 0 as "start fresh", so the replacement starts from zero. The layout change had no
   other blocking regression.
+- **2026-10-17 — P3a after-review, round 10: ready.** The round-9 blocker is resolved. A review
+  of every caller of the checkpoint size found no regression: integrity audits read the
+  published body first, and stale-partial eligibility still needs the fenced working URL.
+  - **Journaled, open:** a manager-level pin for condemned Retry while the backend is
+    unavailable, then backend-ready, then a replacement that starts at byte zero.
+  - **Verification on c6c87d79.** These passed:
+    - Linux PMSKit, and the visionOS, iOS, tvOS and macOS builds;
+    - iOS hosted (719);
+    - the iOS UI smoke;
+    - the visionOS smoke (alive, no faults, Plex browse UI).
+
+    One run of the iOS hosted lane failed in
+    `SideAssetFetchCoordinatorTests.testTaskCancellationWinsWhenSuccessfulCompletionRacesCancellation`.
+    That test is unchanged from `main`, the overhaul does not touch the coordinator, and the test
+    bounds its wait by 1,000 `Task.yield()` calls. Two immediate reruns of the lane passed, so it
+    is recorded as a pre-existing timing flake.
 
 ## P2 detailed plan — cleanup foundation
 
