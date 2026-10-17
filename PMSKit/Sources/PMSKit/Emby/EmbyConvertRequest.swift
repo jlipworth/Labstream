@@ -427,14 +427,19 @@ public enum EmbyConvertRecoveryPolicy {
     /// Recovery/cancellation must run under the same public Emby user that created the job. The
     /// Sync-list `UserId` is an incomparable internal integer, so ownership is enforced against the
     /// two public ids we control and persist locally instead.
+    ///
+    /// Equality is GUID-format-insensitive (`MediaBrowserUserIdentity.sameUser`), the same rule
+    /// `BackendSession.matchesPersistedServer` applies (B52): Emby may reformat the same user GUID
+    /// across re-logins, and a raw compare would skip recovery and cleanup forever.
     public static func publicUserMatches(currentSessionUserID: String?,
                                          persistedBackendUserID: String?,
                                          fingerprintUserID: String?) -> Bool {
-        let values = [currentSessionUserID, persistedBackendUserID, fingerprintUserID].map {
+        let values = [currentSessionUserID, persistedBackendUserID, fingerprintUserID].compactMap {
             $0?.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        guard values.allSatisfy({ $0?.isEmpty == false }) else { return false }
-        return values[0] == values[1] && values[1] == values[2]
+        }.filter { !$0.isEmpty }
+        guard values.count == 3 else { return false }
+        return MediaBrowserUserIdentity.sameUser(values[0], values[1])
+            && MediaBrowserUserIdentity.sameUser(values[1], values[2])
     }
 
     /// Durable cleanup entries are attempt-scoped by UUID, not rating key. Re-downloading and
