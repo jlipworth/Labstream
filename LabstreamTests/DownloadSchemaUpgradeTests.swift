@@ -141,9 +141,121 @@ struct DownloadSchemaUpgradeTests {
         }
     }
 
+    @Test("Deletion matches an OS task by the full key, never by attempt ID alone")
+    func deletionMatchesTasksByFullKey() {
+        let shared = DownloadAttemptID(rawValue: "legacy-shared-id")!
+        let mine = DownloadAttemptKey(ratingKey: "plex:mine", attemptID: shared)
+        let other = DownloadAttemptKey(ratingKey: "plex:other", attemptID: shared)
+        let task = URLSession.shared.downloadTask(with: URL(string: "https://example.invalid/a")!)
+        defer { task.cancel() }
+        task.taskDescription = DownloadAttemptMarker.taskDescription(
+            ratingKey: mine.ratingKey, attemptID: mine.attemptID)
+        #expect(BackgroundDownloadSession.taskCarries(mine, task))
+        #expect(!BackgroundDownloadSession.taskCarries(other, task))
+        let segment = URLSession.shared.downloadTask(with: URL(string: "https://example.invalid/b")!)
+        defer { segment.cancel() }
+        segment.taskDescription = StaticRangeSegmentMarker.taskDescription(
+            ratingKey: mine.ratingKey, offset: 0, attemptID: mine.attemptID)
+        #expect(BackgroundDownloadSession.taskCarries(mine, segment))
+        #expect(!BackgroundDownloadSession.taskCarries(other, segment))
+    }
+
+    @Test("A season plan never re-plans a row that is being deleted")
+    func seasonPlanRefusesDeletingRetryRow() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let retry = try seed("plex:season-retry", status: .failed, in: store)
+            guard case .accepted = store.submitRemove(for: retry) else {
+                Issue.record("Expected the removal to be accepted"); return
+            }
+            let inserted = DownloadRecord(
+                ratingKey: "plex:season-new", attemptID: .generated(), title: "New",
+                localURL: directory.appendingPathComponent("new.mp4"), status: .queued,
+                metadata: OfflineMetadata(ratingKey: "plex:season-new", title: "New",
+                                          type: "episode", seasonPlannerPendingAdmission: true))
+            #expect(store.applySeasonPlanAtomically(
+                newRecords: [inserted], retryAttempts: [retry]) == .staleInput)
+            #expect(store.record(for: "plex:season-new") == nil, "the transaction stays atomic")
+        }
+    }
+
+    @Test("Upgrade candidates: keep finished and paused static; skip promotions and deletions")
+    func upgradeCandidateMatrix() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let complete = try seed("plex:complete", status: .complete, in: store)
+            let pausedStatic = try seed("plex:paused-static", status: .paused,
+                                        mode: .staticByteRange, in: store)
+            let pausedLive = try seed("jellyfin:paused-live", status: .paused,
+                                      mode: .liveForwardOnly, in: store)
+            let failed = try seed("plex:failed", status: .failed, in: store)
+            let barriered = try seed("plex:barriered", status: .failed, in: store)
+            guard case .accepted = store.submitRemove(for: barriered) else {
+                Issue.record("Expected the removal to be accepted"); return
+            }
+            let candidates = Set(store.schemaUpgradeCandidates())
+            #expect(candidates == [pausedLive, failed])
+            #expect(!candidates.contains(complete) && !candidates.contains(pausedStatic))
+        }
+    }
+
+    @Test("A crash after barriers commit but before the stamp reclassifies what remains")
+    func crashBeforeStampReclassifies() async throws {
+        try await withAsyncDirectory { directory in
+            let first = DownloadStore(baseDirectory: directory)
+            let failed = try seed("plex:failed", status: .failed, in: first)
+            let queued = try seed("plex:queued", status: .queued, in: first)
+            guard case .committed = await first.flushPersistence(timeout: 5) else {
+                Issue.record("Expected the seed to commit"); return
+            }
+            try rewriteEnvelope(directory) { $0["schemaVersion"] = 4 }
+
+            // The pass barriers one row, the barrier commits as v4, then the process dies.
+            let interrupted = DownloadStore(baseDirectory: directory)
+            #expect(interrupted.requiresSchemaUpgrade)
+            guard case .accepted = interrupted.submitRemove(for: failed) else {
+                Issue.record("Expected the removal to be accepted"); return
+            }
+            _ = await interrupted.flushPersistence(timeout: 5)
+            #expect(try schemaVersion(directory) == 4)
+
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.requiresSchemaUpgrade)
+            #expect(Set(relaunched.schemaUpgradeCandidates()) == [queued],
+                    "a barriered row is finished by v4 recovery, not re-counted")
+        }
+    }
+
+    @Test("A pre-P3a v4 row without lifecycle fields is classified structurally")
+    func prePhaseThreeRowsClassifyStructurally() throws {
+        try withDirectory { directory in
+            let first = DownloadStore(baseDirectory: directory)
+            let paused = try seed("jellyfin:legacy", status: .paused, mode: .liveForwardOnly,
+                                  in: first)
+            try rewriteEnvelope(directory) { envelope in
+                envelope["schemaVersion"] = 4
+                if var rows = envelope["rows"] as? [[String: Any]] {
+                    for index in rows.indices {
+                        rows[index].removeValue(forKey: "lifecycle")
+                        rows[index].removeValue(forKey: "history")
+                    }
+                    envelope["rows"] = rows
+                }
+            }
+            let store = DownloadStore(baseDirectory: directory)
+            #expect(store.requiresSchemaUpgrade)
+            #expect(store.schemaUpgradeCandidates() == [paused])
+        }
+    }
+
     // MARK: - Fixtures
 
     private func seed(_ ratingKey: String, status: DownloadStatus,
+                      in store: DownloadStore) throws -> DownloadAttemptKey {
+        try seed(ratingKey, status: status, mode: .staticByteRange, in: store)
+    }
+
+    private func seed(_ ratingKey: String, status: DownloadStatus, mode: DownloadResumeMode,
                       in store: DownloadStore) throws -> DownloadAttemptKey {
         let id = DownloadAttemptID(uuid: UUID())
         let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: id)
@@ -153,7 +265,11 @@ struct DownloadSchemaUpgradeTests {
         let record = DownloadRecord(
             ratingKey: ratingKey, attemptID: id, title: "Item", localURL: url,
             bytes: terminal ? 1 : 0, progress: terminal ? 1 : 0, status: status,
-            metadata: OfflineMetadata(ratingKey: ratingKey, title: "Item", type: "movie"))
+            metadata: {
+                var metadata = OfflineMetadata(ratingKey: ratingKey, title: "Item", type: "movie")
+                metadata.resumeMode = mode
+                return metadata
+            }())
         #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
         return key
     }

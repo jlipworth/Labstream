@@ -290,7 +290,7 @@ public final class DownloadManager {
     /// cleanup obligation (legacy row without server identity). Read right after the call.
     @ObservationIgnored var deleteCleanupGapObserved = false
     /// P3b: what the upgrade removed, shown once in the Offline library until dismissed.
-    public private(set) var upgradeNotice: DownloadUpgradeNotice? = DownloadUpgradeNotice.load()
+    public private(set) var upgradeNotice: DownloadUpgradeNotice?
     /// Process-wide pacing/coalescing for optional download hydration. DownloadManager remains the
     /// lifecycle owner, while the shared default prevents multiple app scenes/managers from creating
     /// independent request budgets for the same server origin.
@@ -471,6 +471,8 @@ public final class DownloadManager {
         downloadStoreSpan.end(fields: ["default_store": injectedStore == nil ? 1 : 0])
         #endif
         self.store = store
+        self.upgradeNotice = DownloadUpgradeNotice.load(
+            from: store.durableCleanupAuthorityDirectory)
         self.session = injectedSession ?? BackgroundDownloadSession(store: store)
         self.backgroundCompletionRegistry = backgroundCompletionRegistry
         let keepaliveSession = self.session
@@ -851,12 +853,14 @@ public final class DownloadManager {
         var notice = upgradeNotice ?? DownloadUpgradeNotice()
         notice.retiredAttemptIDs.formUnion(retired)
         notice.cleanupGapAttemptIDs.formUnion(cleanupGaps)
-        notice.save()
+        if !notice.save(to: store.durableCleanupAuthorityDirectory) {
+            recordDownloadDiagnostic("downloads.upgrade_notice_save_failed")
+        }
         upgradeNotice = notice
     }
 
     public func dismissUpgradeNotice() {
-        DownloadUpgradeNotice.clear()
+        DownloadUpgradeNotice.clear(from: store.durableCleanupAuthorityDirectory)
         upgradeNotice = nil
     }
 
@@ -3311,7 +3315,7 @@ public final class DownloadManager {
     /// `releaseInFlight`: it also executes/clears external encoder authority, which must remain in
     /// the sealed row until every cleanup intent is independently durable in the journal.
     private func haltManagerOwnedWorkForPendingDeletion(_ key: DownloadAttemptKey) {
-        session.haltForPendingDeletion(ratingKey: key.ratingKey)
+        session.haltForPendingDeletion(attemptKey: key)
         _ = downloadWorkRegistry.cancelCancellableWork(for: key)
         _ = serverPrepAttempts.releaseAll(for: key)
         serverPrepPollerTasks.removeValue(forKey: key)?.cancel()
