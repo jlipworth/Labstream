@@ -22,11 +22,18 @@ public enum DownloadRetryPolicy {
     /// A paused static-byte-range row can resume from an app-managed partial file even when no
     /// URLSession resume blob exists. Promote it out of `.paused` before backend-specific async
     /// retry guards run; otherwise those guards can treat the row as user-paused and no-op.
+    ///
+    /// `durablePartialURL` is the exact-attempt working partial (the store's attempt working file),
+    /// not `record.localURL`: nonterminal static bodies are written to attempt staging and only the
+    /// validated terminal promotion publishes them at the stable path (B00). `nil` means the row has
+    /// no exact-attempt checkpoint authority, so there is no durable partial to preserve.
     public static func shouldPromotePausedStaticPartial(_ record: DownloadRecord,
+                                                        durablePartialURL: URL?,
                                                         fileExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) },
                                                         fileSize: (URL) -> Int? = Self.defaultFileSize) -> Bool {
         record.status == .paused
-            && hasStaticPartialCheckpoint(record, fileExists: fileExists, fileSize: fileSize)
+            && hasStaticPartialCheckpoint(record, durablePartialURL: durablePartialURL,
+                                          fileExists: fileExists, fileSize: fileSize)
     }
 
     /// A queued/downloading static-byte-range partial with no live task is not real active work: it
@@ -36,21 +43,25 @@ public enum DownloadRetryPolicy {
     public static func shouldDemoteStaleQueuedStaticPartial(_ record: DownloadRecord,
                                                            isActive: Bool,
                                                            hasPendingResumeIntent: Bool = false,
+                                                           durablePartialURL: URL?,
                                                            fileExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) },
                                                            fileSize: (URL) -> Int? = Self.defaultFileSize) -> Bool {
         (record.status == .queued || record.status == .downloading)
             && !isActive
             && !hasPendingResumeIntent
-            && hasStaticPartialCheckpoint(record, fileExists: fileExists, fileSize: fileSize)
+            && hasStaticPartialCheckpoint(record, durablePartialURL: durablePartialURL,
+                                          fileExists: fileExists, fileSize: fileSize)
     }
 
     private static func hasStaticPartialCheckpoint(_ record: DownloadRecord,
+                                                   durablePartialURL: URL?,
                                                    fileExists: (URL) -> Bool,
                                                    fileSize: (URL) -> Int?) -> Bool {
-        guard record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange else {
+        guard record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange,
+              let durablePartialURL else {
             return false
         }
-        if let durableBytes = fileSize(record.localURL) {
+        if let durableBytes = fileSize(durablePartialURL) {
             return durableBytes > 0
         }
         // Compatibility fallback for tests/callers that can only answer existence. Production callers
@@ -58,7 +69,7 @@ public enum DownloadRetryPolicy {
         // not treated as a durable checkpoint when the partial file is absent or empty.
         return record.bytes > 0
             && record.progress < 0.999
-            && fileExists(record.localURL)
+            && fileExists(durablePartialURL)
     }
 
     @usableFromInline

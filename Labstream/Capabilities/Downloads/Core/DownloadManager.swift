@@ -1903,6 +1903,12 @@ public final class DownloadManager {
         return DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
     }
 
+    /// B00: the exact-attempt working partial that holds a nonterminal static checkpoint. Static
+    /// partials are never at `record.localURL` until validated promotion publishes them.
+    private func durableStaticPartialURL(for record: DownloadRecord) -> URL? {
+        attemptKey(for: record).flatMap { store.attemptWorkingFileURL(for: $0) }
+    }
+
     private func isDeletionPending(_ record: DownloadRecord) -> Bool {
         guard let key = attemptKey(for: record) else { return false }
         return store.isDeletionPending(for: key)
@@ -2429,7 +2435,8 @@ public final class DownloadManager {
             isJellyfinRecord: DownloadRecordIdentity.isJellyfinRecordKey(ratingKey),
             isEmbyRecord: DownloadRecordIdentity.isEmbyRecordKey(ratingKey),
             optimizeTargetName: record.metadata?.optimizeTargetName,
-            hasIncompleteStaticPartial: DownloadRetryPolicy.shouldPromotePausedStaticPartial(record)
+            hasIncompleteStaticPartial: DownloadRetryPolicy.shouldPromotePausedStaticPartial(
+                record, durablePartialURL: durableStaticPartialURL(for: record))
         ), let targetName = record.metadata?.optimizeTargetName {
             resumePausedPlexServerPrep(record: record, targetName: targetName)
             return
@@ -2510,7 +2517,7 @@ public final class DownloadManager {
             // the persisted static target, preserving the partial when present and otherwise
             // redownloading the same existing Part from byte 0.
             if StaticRangeRecoveryPolicy.isStaticRangeRecord(record),
-               (DownloadRetryPolicy.shouldPromotePausedStaticPartial(record) || metadata?.sourcePartID != nil || metadata?.isServerPreparedVersion == true) {
+               (DownloadRetryPolicy.shouldPromotePausedStaticPartial(record, durablePartialURL: self.durableStaticPartialURL(for: record)) || metadata?.sourcePartID != nil || metadata?.isServerPreparedVersion == true) {
                 let resolved = self.resolveStaticRetryTarget(record: record,
                                                             fallbackMediaIndex: mediaIndex,
                                                             fallbackPartIndex: partIndex,
@@ -2577,7 +2584,7 @@ public final class DownloadManager {
             // This also removes any leftover invalid/partial file from the failed attempt.
             guard self.retryAttemptCanContinue(for: retryAttemptKey, token: retryToken) else { return }
             self.releaseInFlight(for: retryAttemptKey)
-            if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record) {
+            if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record, durablePartialURL: self.durableStaticPartialURL(for: record)) {
                 guard await self.removeAttempt(retryAttemptKey, context: "retry_replace") else { return }
             }
             await self.download(currentItem, choice: choice, mediaIndex: mediaIndex, partIndex: partIndex,
@@ -2704,7 +2711,7 @@ public final class DownloadManager {
                 "target": .label(targetName),
             ])
             self.releaseInFlight(for: key)
-            if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record) {
+            if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record, durablePartialURL: self.durableStaticPartialURL(for: record)) {
                 guard await self.removeAttempt(key, context: "plex_optimize_replace") else { return }
             }
             await self.download(currentItem, choice: .optimize(targetName: targetName),
@@ -4099,11 +4106,14 @@ public final class DownloadManager {
                   record.metadata?.seasonPlannerPendingAdmission != true else { return false }
             return DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
                 record,
-                isActive: session.isTrackingTransfer(ratingKey: record.ratingKey),
+                // B00: a queued append, delayed range retry, or claimed finalizer is still live
+                // session work even though no URLSession task is tracked for the row.
+                isActive: session.ownsInProgressStaticRangeWork(ratingKey: record.ratingKey),
                 // #210: a backend-unavailable static Range resume is intentionally preserved as a
                 // queued pending intent. Reprocessing it here re-enters resume/defer/refresh until
                 // the main-thread stack overflows during launch.
-                hasPendingResumeIntent: staticRangeRecovery.hasPendingResume(record.ratingKey)
+                hasPendingResumeIntent: staticRangeRecovery.hasPendingResume(record.ratingKey),
+                durablePartialURL: durableStaticPartialURL(for: record)
             )
         }
         if !staleQueuedStaticPartials.isEmpty {
