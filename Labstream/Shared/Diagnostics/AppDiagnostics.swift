@@ -51,10 +51,8 @@ enum AppDiagnostics {
     }
 
     /// Flush the serial file buffer at a lifecycle boundary. Diagnostics are never download
-    /// recovery authority, so callers cannot promote them to the exact `.barrier` contract.
-    static func flush(durability: PersistenceDurabilityTier = .bestEffort) {
-        precondition(durability == .bestEffort || durability == .ephemeral)
-        guard durability == .bestEffort else { return }
+    /// recovery authority.
+    static func flush() {
         fileSink.flush()
     }
 
@@ -69,7 +67,7 @@ enum AppDiagnostics {
             return nil
         }
         logger(for: category).debug("\(event.summaryLine, privacy: .public)")
-        fileSink.append(event, durability: .bestEffort)
+        fileSink.append(event)
         return event
     }
 

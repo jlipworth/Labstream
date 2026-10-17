@@ -43,14 +43,8 @@ final class DiagnosticFileLogSink: @unchecked Sendable {
         self.queue = queue ?? DispatchQueue(label: "org.labstream.Labstream.diagnostics.file")
     }
 
-    var diagnosticsDirectory: URL { directoryURL }
-
-    func append(_ event: DiagnosticEvent,
-                durability: PersistenceDurabilityTier = .bestEffort) {
-        precondition(durability == .bestEffort || durability == .ephemeral,
-                     "Diagnostics cannot satisfy recovery or durable-barrier contracts")
-        guard durability == .bestEffort,
-              let data = (event.jsonLine() + "\n").data(using: .utf8) else { return }
+    func append(_ event: DiagnosticEvent) {
+        guard let data = (event.jsonLine() + "\n").data(using: .utf8) else { return }
         queue.async { [self] in
             bufferedLines.append(data)
             bufferedBytes += data.count
