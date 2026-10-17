@@ -248,7 +248,10 @@ still publishes a late completion under generation fencing; and the side-asset r
 now observes every owned asset, so a missing first Jellyfin tile can no longer drop references to
 existing tiles. The iPhone-simulator lane exposed fixture races (premature encoder cleanup,
 startup reconciliation of synthetic transfers, overlapping foreground stats) that hung or failed
-only there; those fixtures now use bounded acknowledgements.
+only there; those fixtures now use bounded acknowledgements. Round 3 found that a load finishing
+after an expired background wake still returned before publishing; readable rows and Offline
+availability now publish with transport dormant, and a pending in-memory edge resumes startup on
+foreground or a new wake under generation fencing.
 
 ## Verification checkpoint
 
