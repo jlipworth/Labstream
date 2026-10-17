@@ -354,6 +354,20 @@ maintainer gate**. It is never claimed as passed.
 Bug counts and estimated line removal (roughly 5–8k net) are indicators, not acceptance criteria.
 Acceptance is a phase's pins and inventory rows staying green.
 
+## Progress journal
+
+- **2026-10-16 — P1 implemented** on `downloads/manager-overhaul`. These were fixed with
+  regression tests: B00 (plus a rebuild-grace ownership guard), B01, B02, B05, B07, B09, B11, B15,
+  B25, B26, B34, B36, B38, B39, B42, B43, B44/B49 (containment), B45, B46, B47, B48, B52, B54
+  (publication), B58, B59, B60, B68, B70, B71, B77 and D5.
+  - **B53 is not a bug.** A retry without negotiated media cannot take the static route, so it
+    fails closed; it is pinned by a router test.
+  - **Still open from P1:** the B02 foreground-recovery capture race, B09 parking as Paused with
+    no automatic resume, and a B54 park that a re-probe can still delete after relaunch (P3).
+  - **Live A/B pending:** the Jellyfin keepalive reports a fixed position of 0 until D3 decides.
+  - **Test fixtures:** PMSKit fixtures still use media-like titles outside Downloads; this is left
+    to a separate hygiene pass.
+
 ## Open gates (never claimed by this work)
 
 - Live Plex, Jellyfin and Emby acceptance for every shared-behaviour phase.

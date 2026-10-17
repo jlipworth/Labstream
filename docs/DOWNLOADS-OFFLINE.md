@@ -230,7 +230,7 @@ User-facing expectations worth setting (the "downloads disclaimer"):
 | Component | Owns |
 | --- | --- |
 | `DownloadManager` | Main-actor queue coordination and user-visible state. |
-| `DownloadKeepaliveCoordinator` | Exact-attempt Jellyfin/Emby keepalive task ownership and credential-generation quarantine. |
+| `DownloadKeepaliveCoordinator` | Exact-attempt Jellyfin/Emby keepalive task ownership and credential-generation quarantine. A keepalive runs only while the session tracks a live transfer for that attempt. Emby sends Ping only; Jellyfin currently sends Playing/Progress at a fixed position of 0 so a download never moves the user's resume point, pending the live Ping-only A/B decision. |
 | Backend-specific manager extensions | Plex/Jellyfin/Emby route setup and server-prep polling. |
 | `BackgroundDownloadSession` | URLSession tasks, segment-train enqueue/refill, transfer callbacks, finalization, and wake-release effects. |
 | `BackgroundDownloadWakeCoordinator` | Locked background-completion gate, atomic deferred-revalidation keys, and range-rebuild grace generations. |
@@ -296,6 +296,14 @@ transport, recovery work, persistence barriers, or background-completion durabil
   including a same-path replacement, advances the side-asset generation so byte accounting and
   storage-cap snapshots cannot retain stale cache values;
 - keeps completed media available without requiring the source server to be reachable;
+- keeps a failed Emby Convert row's server job when Retry would resume it: the launch and
+  backend-switch cleanup sweep cancels Convert jobs only for completed, deleted or abandoned rows,
+  using the same predicate as the retry gate. Forward-only encoders of failed rows are still
+  stopped, because they cannot resume;
+- parks a static row at its durable checkpoint when the system (not the user) cancels its
+  background task, and fails a forward-only row as retryable in the same case;
+- fails a Jellyfin download or retry with "version no longer available" when the requested
+  MediaSource has disappeared, instead of silently fetching another edition;
 - treats sign-out of a backend as a resumable pause of that backend's active rows. Records
   and files stay; `DownloadManager.pauseDownloadsForBackendSignOut` runs while credentials
   still exist so encoder teardown can use the right session. This is not cancel or delete.
