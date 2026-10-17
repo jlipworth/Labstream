@@ -869,6 +869,17 @@ struct DownloadOptionsSheet: View {
                 } else {
                     ProgressView()
                 }
+            } else if let waitingCaption = existingDownloadWaitingCaption(for: record) {
+                // #362: a queued row with no live slot/task (e.g. a season row waiting for
+                // admission) is waiting, not transferring. Match the offline list's wording and
+                // show no transfer spinner.
+                Label(waitingCaption, systemImage: "clock")
+                    .foregroundStyle(.secondary)
+                existingDownloadActionButton(title: "Pause Download",
+                                             systemImage: "pause.circle") {
+                    downloadManager.pause(ratingKey: DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: sheetBackend))
+                    dismiss()
+                }
             } else {
                 Label(existingDownloadPhaseLabel(for: record), systemImage: "arrow.down.circle")
                 if let fraction = downloadManager.displayFraction(for: record) {
@@ -948,6 +959,13 @@ struct DownloadOptionsSheet: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
+    }
+
+    private func existingDownloadWaitingCaption(for record: DownloadRecord) -> String? {
+        DownloadRowStatusCaptionPolicy.compactWaitingCaption(
+            status: record.status,
+            isActive: downloadManager.activeJobs.contains(record.ratingKey),
+            resumeMode: record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey))
     }
 
     private func existingDownloadPhaseLabel(for record: DownloadRecord) -> String {

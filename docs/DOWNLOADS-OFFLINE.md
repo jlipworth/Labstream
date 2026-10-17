@@ -231,7 +231,7 @@ User-facing expectations worth setting (the "downloads disclaimer"):
 | Backend-specific manager extensions | Plex/Jellyfin/Emby route setup and server-prep polling. |
 | `BackgroundDownloadSession` | URLSession tasks, segment-train enqueue/refill, transfer callbacks, finalization, and wake-release effects. |
 | `BackgroundDownloadWakeCoordinator` | Locked background-completion gate, atomic deferred-revalidation keys, and range-rebuild grace generations. |
-| `DownloadManager+SeasonPlanner` and `SeasonDownloadPlannerSheet` | Immutable season drafts and one atomic Store commit of new rows plus retry markers. |
+| `DownloadManager+SeasonPlanner` and `SeasonDownloadPlannerSheet` | Immutable season drafts, one atomic Store commit of new rows plus retry markers, and lane-capped concurrent admission. |
 | `DownloadOptionsModel` | Typed per-item option resolution for the download sheet; it does not own season planning. |
 | `DownloadVolumeFreeSpace` | Purgeable-inclusive free-space measurement used by storage-full parking. |
 | `DownloadStore` | Schema-v4 index state, exact-attempt mutation admission, and transactional artifact state. |
@@ -326,3 +326,22 @@ atomic-write outcome remain distinct, with the last case pausing download admiss
 snapshots contain scalar presentation/action identity only; full records resolve at exact-attempt
 action or playback edges. Storage presentation separates known, unknown, and not-applicable bytes
 instead of turning unknown side assets or reservations into false zeroes.
+
+Committed season rows wait in `.queued` with a pending-admission marker. A single worker admits
+them through `SeasonDownloadAdmissionPolicy`'s caps: at most three rows in total, with up to two
+static file transfers, one server preparation (Plex optimize or Emby Convert) and one live-forward
+stream. Each admitted row starts in its own task. A row counts against its lane from admission
+until its start returns, and then while it holds its in-flight slot. A server-prep start does not
+return until the server job finishes and hands off to the static lane, so it occupies only the
+`serverPreparation` lane. Originals and existing or converted versions in the same batch keep
+transferring alongside it. Emby itself processes Convert jobs from its *Convert Media*
+scheduled task, which Emby staff have described as one conversion at a time. A second Labstream
+Convert can therefore wait as server-side `Queued` even outside Labstream's own lane cap. Static
+downloads need no conversion and are not tied to that server queue.
+
+A queued row that holds no in-flight slot is waiting, not transferring. Both the offline list and
+the download sheet show it as **Queued…**, or **Preparing on server…** for a server-prep row.
+**Downloading optimized** is the static transfer of an existing or converted version. When it reads
+0% with a spinner, the row is active but URLSession has delivered no body bytes yet. Common reasons
+are the window before the first byte, OS scheduling, and the per-host connection limit, since each
+static row can queue two segment tasks.

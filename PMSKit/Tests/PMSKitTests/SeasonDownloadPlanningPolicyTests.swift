@@ -87,6 +87,28 @@ struct SeasonDownloadPlanningPolicyTests {
         #expect(admitted.count == SeasonDownloadAdmissionPolicy.maximumTotal)
     }
 
+    /// #362: an in-progress server preparation (Emby Convert / Plex optimize) occupies only its
+    /// own lane. Static and live-forward rows stay admissible up to their caps, and rows whose
+    /// starts are still in flight count as active so repeated passes cannot over-admit.
+    @Test func serverPreparationOccupiesOnlyItsOwnLane() {
+        let pending = [
+            SeasonDownloadAdmissionCandidate(id: "prep-2", lane: .serverPreparation),
+            .init(id: "static-1", lane: .staticFile),
+            .init(id: "static-2", lane: .staticFile),
+            .init(id: "static-3", lane: .staticFile),
+        ]
+        let active = [SeasonDownloadAdmissionCandidate(id: "prep-1", lane: .serverPreparation)]
+        #expect(SeasonDownloadAdmissionPolicy.admitted(pending: pending, active: active).map(\.id)
+            == ["static-1", "static-2"])
+
+        let inFlight = active + [
+            SeasonDownloadAdmissionCandidate(id: "static-1", lane: .staticFile),
+            .init(id: "static-2", lane: .staticFile),
+        ]
+        #expect(SeasonDownloadAdmissionPolicy.admitted(
+            pending: [.init(id: "static-3", lane: .staticFile)], active: inFlight).isEmpty)
+    }
+
     @Test func backendLanesPreserveExistingTransferBehavior() {
         #expect(SeasonDownloadAdmissionPolicy.lane(backend: .plex, downloadLane: .optimize)
             == .serverPreparation)
