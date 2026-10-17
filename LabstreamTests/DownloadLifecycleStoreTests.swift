@@ -205,6 +205,44 @@ struct DownloadLifecycleStoreTests {
         }
     }
 
+    @Test("Retry Recovery admits an index that was unreadable at launch once it reads cleanly (B16)")
+    func retryRecoveryReprobesARepairedIndex() throws {
+        try withDirectory { directory in
+            let index = directory.appendingPathComponent("index.json")
+            try Data("not-json".utf8).write(to: index)
+            let store = DownloadStore(baseDirectory: directory)
+            #expect(store.startupIndexAdmission() == .unreadableIndex)
+            // Still unreadable: Retry keeps it blocked and leaves the bytes alone.
+            #expect(store.reprobeBlockedIndex() == .unreadableIndex)
+            #expect(try Data(contentsOf: index) == Data("not-json".utf8))
+
+            // The bytes become readable (for example protected data unlocked, or a repair).
+            let id = DownloadAttemptID(uuid: UUID())
+            let row: [String: Any] = [
+                "ratingKey": "plex:kept", "attemptID": id.rawValue, "title": "Kept",
+                "relativePath": "kept.mp4", "bytes": 1, "progress": 1, "status": "complete",
+                "metadata": ["ratingKey": "plex:kept", "title": "Kept", "type": "movie",
+                             "downloadAttemptID": id.rawValue],
+            ]
+            try JSONSerialization.data(withJSONObject: ["schemaVersion": 4, "rows": [row]])
+                .write(to: index)
+            #expect(store.reprobeBlockedIndex() == .current)
+            #expect(store.record(for: "plex:kept")?.status == .complete)
+        }
+    }
+
+    @Test("An indeterminate season commit is its own state and clears once memory re-commits (B21)")
+    func indeterminateSeasonCommitRecovers() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            _ = try seed("plex:season", status: .complete, in: store)
+            store.markSeasonCommitIndeterminateForTesting()
+            #expect(store.startupIndexAdmission() == .seasonCommitIndeterminate)
+            #expect(store.reprobeBlockedIndex() == .current)
+            #expect(store.record(for: "plex:season")?.status == .complete)
+        }
+    }
+
     private func profiled(_ profile: String) -> OfflineMetadata {
         var metadata = OfflineMetadata(ratingKey: "plex:strike", title: "Item", type: "movie")
         metadata.requestedProfileLabel = profile

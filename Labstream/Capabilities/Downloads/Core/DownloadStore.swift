@@ -68,6 +68,9 @@ final class DownloadStore: @unchecked Sendable {
         /// Unknown/corrupt bytes are not assumed to be legacy. Keep them for diagnosis and stop.
         case unreadableIndex
         case malformedCurrentRows([String])
+        /// B21: a season plan's commit could not be proven either way. Memory is consistent (the
+        /// plan was withdrawn); re-committing it resolves the block.
+        case seasonCommitIndeterminate
     }
 
     enum AttemptRecordCreateResult: Sendable, Equatable {
@@ -660,6 +663,7 @@ final class DownloadStore: @unchecked Sendable {
         label: "com.visionplay.download-artifact-lifecycle", qos: .utility)
     private var nextPersistenceRevision: UInt64 = 0 // guarded by `lock`
     private var startupSchemaProbe: DownloadIndexCoding.StartupProbe // guarded by `lock`
+    private var seasonCommitIndeterminate = false // guarded by `lock`
     private var activeArtifactIntentIDs: Set<UUID> = [] // guarded by `lock`
     private var pendingResumeArtifactData: [UUID: Data] = [:] // guarded by `lock`
     private var artifactLifecycleTickets: [UUID: DownloadArtifactLifecycleCoordinator.Ticket] = [:]
@@ -716,36 +720,12 @@ final class DownloadStore: @unchecked Sendable {
         let indexURL = dir.appendingPathComponent("index.json")
         let pendingQuarantine = dir.deletingLastPathComponent().appendingPathComponent(
             ".\(dir.lastPathComponent)-unsupported-reset-pending", isDirectory: true)
-        var startupProbe: DownloadIndexCoding.StartupProbe
-        var startupIndexData: Data?
-        if fileManager.fileExists(atPath: indexURL.path) {
-            do {
-                let data = try indexPersistence.read(indexURL)
-                startupIndexData = data
-                startupProbe = DownloadIndexCoding.startupProbe(data: data)
-            } catch {
-                startupProbe = .unreadable
-            }
-        } else if fileManager.fileExists(atPath: pendingQuarantine.path) {
-            // A prior rollback was interrupted after the opaque root was quarantined. Never
-            // classify the absent live root as a new empty library; retry from the durable pending
-            // quarantine after task drainage.
-            startupProbe = .unsupported(schemaVersion: nil)
-        } else {
-            startupProbe = .missing
-        }
-        if startupProbe == .current, let startupIndexData {
-            let decoded = DownloadIndexCoding.decode(Row.self, from: startupIndexData)
-            let keys = decoded.rows.map(\.ratingKey)
-            if decoded.skippedRowCount > 0 || Set(keys).count != keys.count {
-                startupProbe = .unreadable
-            }
-        }
+        let (startupProbe, startupIndexData) = Self.classifyIndex(
+            at: indexURL, pendingQuarantine: pendingQuarantine,
+            read: indexPersistence.read, fileManager: fileManager)
         self.startupSchemaProbe = startupProbe
-        self.startupStagingInventory = Set(
-            ((startupProbe == .missing || startupProbe == .current)
-                ? ((try? fileManager.contentsOfDirectory(atPath: dir.path)) ?? []) : [])
-                .filter(Self.isAttemptStagingRelativePath))
+        self.startupStagingInventory = Self.stagingInventory(
+            in: dir, probe: startupProbe, fileManager: fileManager)
         self.indexURL = indexURL
         let authority = dir.deletingLastPathComponent().appendingPathComponent(
             ".\(dir.lastPathComponent)-download-authority", isDirectory: true)
@@ -766,13 +746,67 @@ final class DownloadStore: @unchecked Sendable {
         // Probe above is deliberately the first filesystem interaction that can affect admission.
         // Unsupported/unreadable roots remain byte-for-byte untouched until the session drain.
         guard startupProbe == .missing || startupProbe == .current else { return }
+        completeAdmissibleStartup(probe: startupProbe, indexData: startupIndexData)
+    }
+
+    /// Classify the on-disk index without mutating anything (the first admission decision).
+    private static func classifyIndex(
+        at indexURL: URL,
+        pendingQuarantine: URL,
+        read: (URL) throws -> Data?,
+        fileManager: FileManager
+    ) -> (DownloadIndexCoding.StartupProbe, Data?) {
+        var probe: DownloadIndexCoding.StartupProbe
+        var indexData: Data?
+        if fileManager.fileExists(atPath: indexURL.path) {
+            do {
+                let data = try read(indexURL)
+                indexData = data
+                probe = DownloadIndexCoding.startupProbe(data: data)
+            } catch {
+                probe = .unreadable
+            }
+        } else if fileManager.fileExists(atPath: pendingQuarantine.path) {
+            // A prior rollback was interrupted after the opaque root was quarantined. Never
+            // classify the absent live root as a new empty library; retry from the durable pending
+            // quarantine after task drainage.
+            probe = .unsupported(schemaVersion: nil)
+        } else {
+            probe = .missing
+        }
+        if probe == .current, let indexData {
+            let decoded = DownloadIndexCoding.decode(Row.self, from: indexData)
+            let keys = decoded.rows.map(\.ratingKey)
+            if decoded.skippedRowCount > 0 || Set(keys).count != keys.count {
+                probe = .unreadable
+            }
+        }
+        return (probe, indexData)
+    }
+
+    private static func stagingInventory(
+        in dir: URL, probe: DownloadIndexCoding.StartupProbe, fileManager: FileManager
+    ) -> Set<String> {
+        Set(((probe == .missing || probe == .current)
+             ? ((try? fileManager.contentsOfDirectory(atPath: dir.path)) ?? []) : [])
+            .filter(Self.isAttemptStagingRelativePath))
+    }
+
+    /// The admissible-startup tail: directories, authority migration, protection, temp sweeps,
+    /// load, and artifact recovery. Runs from `init`, or from `reprobeBlockedIndex` once an index
+    /// that was unreadable at launch reads cleanly (B16).
+    private func completeAdmissibleStartup(
+        probe startupProbe: DownloadIndexCoding.StartupProbe, indexData startupIndexData: Data?
+    ) {
+        let dir = baseDirectory
+        let authority = cleanupAuthorityDirectory
         do {
             try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
             try fileManager.createDirectory(at: authority, withIntermediateDirectories: true)
             try Self.syncDirectory(dir.deletingLastPathComponent())
             try moveCleanupAuthorityFilesOutOfVersionedRoot()
         } catch {
-            startupSchemaProbe = .unreadable
+            lock.withLock { startupSchemaProbe = .unreadable }
             return
         }
         // Exclude the offline cache from iCloud/device backups and give newly-created
@@ -3048,7 +3082,7 @@ final class DownloadStore: @unchecked Sendable {
         // Neither authority can be proven. Mark startup admission unreadable so the manager
         // can stop the queue rather than report an ordinary save failure and continue.
         lock.lock()
-        startupSchemaProbe = .unreadable
+        seasonCommitIndeterminate = true
         lock.unlock()
         return .persistenceIndeterminate
     }
@@ -4188,6 +4222,7 @@ final class DownloadStore: @unchecked Sendable {
     /// as one opaque root; malformed current rows are retained byte-for-byte and fail closed.
     func startupIndexAdmission() -> StartupIndexAdmission {
         lock.lock(); defer { lock.unlock() }
+        if seasonCommitIndeterminate { return .seasonCommitIndeterminate }
         switch startupSchemaProbe {
         case .unsupported(let schemaVersion):
             return .requiresDestructiveReset(schemaVersion: schemaVersion)
@@ -4208,6 +4243,43 @@ final class DownloadStore: @unchecked Sendable {
                 stableRelativePath: row.relativePath)
         }.map(\.ratingKey).sorted()
         return malformed.isEmpty ? .current : .malformedCurrentRows(malformed)
+    }
+
+    /// Retry Recovery (B16, B21): re-examine a blocked admission in process instead of returning
+    /// the probe cached at launch.
+    /// - An indeterminate season commit re-commits the (consistent) in-memory index; once that
+    ///   commits, disk and memory agree again.
+    /// - An index that was unreadable at launch, before any row was loaded, is classified again;
+    ///   if it now reads as current or missing, the normal startup tail runs.
+    func reprobeBlockedIndex() -> StartupIndexAdmission {
+        lock.lock()
+        let indeterminate = seasonCommitIndeterminate
+        let unreadableAtLaunch = startupSchemaProbe == .unreadable && rows.isEmpty
+        lock.unlock()
+        if indeterminate {
+            lock.lock()
+            let ticket = enqueuePersistenceLocked()
+            lock.unlock()
+            if Self.mapPersistenceResult(indexWriter.waitSynchronouslyForOutcome(
+                through: ticket.revision)).committed(through: ticket) {
+                lock.withLock { seasonCommitIndeterminate = false }
+            }
+        } else if unreadableAtLaunch {
+            let pendingQuarantine = baseDirectory.deletingLastPathComponent().appendingPathComponent(
+                ".\(baseDirectory.lastPathComponent)-unsupported-reset-pending", isDirectory: true)
+            let (probe, data) = Self.classifyIndex(
+                at: indexURL, pendingQuarantine: pendingQuarantine,
+                read: rootIndexPersistence.read, fileManager: fileManager)
+            lock.withLock {
+                startupSchemaProbe = probe
+                startupStagingInventory = Self.stagingInventory(
+                    in: baseDirectory, probe: probe, fileManager: fileManager)
+            }
+            if probe == .current || probe == .missing {
+                completeAdmissibleStartup(probe: probe, indexData: data)
+            }
+        }
+        return startupIndexAdmission()
     }
 
     /// #169: reset persisted static byte-range progress to the bytes that are actually durable in
@@ -5649,6 +5721,10 @@ enum DownloadStoreTestHooks {
 }
 
 extension DownloadStore {
+    func markSeasonCommitIndeterminateForTesting() {
+        lock.withLock { seasonCommitIndeterminate = true }
+    }
+
     static func legacyLifecycleForTesting(for status: DownloadStatus, current: DownloadLifecycle?,
                                           admissionPending: Bool) -> DownloadLifecycle {
         Row.legacyLifecycle(for: status, current: current, admissionPending: admissionPending)
