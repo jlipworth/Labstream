@@ -283,6 +283,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// blob adoption). If their delegate completions race in after
     /// cancellation, ignore their temp bytes.
     private var supersededRangeTaskIdentifiers: Set<Int> = []
+    /// B00 containment: per-row count of session-owned static-range work that is queued but has no
+    /// `rangeInflight` entry — a finished body's append hop on `rangeIOQueue`, or a delayed range
+    /// retry/rehydration on `rangeRetryQueue`. The manager's stale queued/downloading detector must
+    /// not treat those windows as abandoned residue and start a duplicate train.
+    private var pendingStaticRangeWorkCounts: [String: Int] = [:]
     /// #227: bounded per-row budget for re-resuming a failed continuous remainder from the resume
     /// data the OS handed back. Cleared with the other retry counters once durable bytes append.
     private var rangeBlobResumeCounts: [DownloadAttemptKey: Int] = [:]
@@ -486,6 +491,34 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.lock(); defer { lock.unlock() }
         return inflight.values.contains { $0.ratingKey == ratingKey }
             || rangeInflight.values.contains { $0.ratingKey == ratingKey }
+    }
+
+    /// B00: true while the session still owns static-range work for the row even though no
+    /// URLSession task is tracked — a live task, a queued body append, a delayed range retry, or a
+    /// claimed finalizer. Used by the stale queued/downloading self-heal, which may restart only rows
+    /// the session has genuinely abandoned.
+    func ownsInProgressStaticRangeWork(ratingKey: String) -> Bool {
+        if isTrackingTransfer(ratingKey: ratingKey) { return true }
+        lock.lock()
+        let pending = (pendingStaticRangeWorkCounts[ratingKey] ?? 0) > 0
+        lock.unlock()
+        if pending { return true }
+        return finalizationStateQueue.sync {
+            finalizerRequestIDsByAttempt.keys.contains { $0.ratingKey == ratingKey }
+        }
+    }
+
+    private func beginPendingStaticRangeWork(ratingKey: String) {
+        lock.lock()
+        pendingStaticRangeWorkCounts[ratingKey, default: 0] += 1
+        lock.unlock()
+    }
+
+    private func endPendingStaticRangeWork(ratingKey: String) {
+        lock.lock()
+        let remaining = (pendingStaticRangeWorkCounts[ratingKey] ?? 1) - 1
+        pendingStaticRangeWorkCounts[ratingKey] = remaining > 0 ? remaining : nil
+        lock.unlock()
     }
 
     /// Counter-only callers can omit filesystem inspection; omitted temp bytes are zero.
@@ -700,12 +733,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             segmentLength: segmentLength, responseStatus: 206, bodyBytesWritten: 0,
             remainderReason: nil)
         beginPendingBackgroundCompletionOperation()
+        beginPendingStaticRangeWork(ratingKey: entry.ratingKey)
         rangeIOQueue.async { [self] in
             applyFinishedRangeBody(entry: entry, write: .append, stash: stash,
                                    validator: nil, contentRangeStart: contentRangeStart,
                                    contentRangeTotal: nil,
                                    responseContentLength: segmentLength,
                                    bodyTrainEpoch: 0)
+            endPendingStaticRangeWork(ratingKey: entry.ratingKey)
             endPendingBackgroundCompletionOperation()
             onApplied?()
         }
@@ -3505,8 +3540,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     // holding the background-completion gate across the hop (mirrors the
                     // append/replace dispatch below).
                     beginPendingBackgroundCompletionOperation()
+                    beginPendingStaticRangeWork(ratingKey: effectiveEntry.ratingKey)
                     rangeIOQueue.async { [self] in
-                        defer { endPendingBackgroundCompletionOperation() }
+                        defer {
+                            endPendingStaticRangeWork(ratingKey: effectiveEntry.ratingKey)
+                            endPendingBackgroundCompletionOperation()
+                        }
                         restartRangeFromChangedResource(entry: effectiveEntry)
                     }
                 }
@@ -3524,8 +3563,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             let contentRangeTotal = RangeTransferHTTPPolicy.contentRangeTotal(from: http)
             let contentLength = (http?.expectedContentLength).flatMap { $0 > 0 ? Int($0) : nil }
             beginPendingBackgroundCompletionOperation()
+            beginPendingStaticRangeWork(ratingKey: entry.ratingKey)
             rangeIOQueue.async { [self] in
-                defer { endPendingBackgroundCompletionOperation() }
+                defer {
+                    endPendingStaticRangeWork(ratingKey: entry.ratingKey)
+                    endPendingBackgroundCompletionOperation()
+                }
                 applyFinishedRangeBody(entry: entry, write: write, stash: stash,
                                    validator: validator, contentRangeStart: contentRangeStart,
                                    contentRangeTotal: contentRangeTotal,
@@ -5130,7 +5173,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "delay_ms": .int(Int(delay * 1000)),
         ])
         _ = resolveLifecycleSubmission(store.submitStatus(for: entry.attemptKey, .queued))
+        beginPendingStaticRangeWork(ratingKey: entry.ratingKey)
         rangeRetryQueue.asyncAfter(deadline: .now() + delay) { [self] in
+            defer { endPendingStaticRangeWork(ratingKey: entry.ratingKey) }
             do {
                 try startRangeRemainder(ratingKey: entry.ratingKey,
                                     with: request,
@@ -6429,7 +6474,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // completion handler across the delayed rebuild (#212).
         beginRangeRequestRebuildGrace(for: entry.attemptKey)
         _ = resolveLifecycleSubmission(store.submitStatus(for: entry.attemptKey, .queued))
+        beginPendingStaticRangeWork(ratingKey: entry.ratingKey)
         rangeRetryQueue.asyncAfter(deadline: .now() + delay) { [self] in
+            endPendingStaticRangeWork(ratingKey: entry.ratingKey)
             onRangeRequestNeeded?(entry.ratingKey, .serverAuthorizationRejected)
             onChange?()
         }
@@ -6470,7 +6517,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "delay_ms": .int(Int(delay * 1000)),
         ])
 
+        beginPendingStaticRangeWork(ratingKey: entry.ratingKey)
         rangeRetryQueue.asyncAfter(deadline: .now() + delay) { [self] in
+            defer { endPendingStaticRangeWork(ratingKey: entry.ratingKey) }
             do {
                 try startRangeRemainder(ratingKey: entry.ratingKey,
                                     with: request,

@@ -86,6 +86,7 @@ struct DownloadRetryPolicyTests {
 
         #expect(DownloadRetryPolicy.shouldPromotePausedStaticPartial(
             record,
+            durablePartialURL: url,
             fileExists: { $0 == url },
             fileSize: { $0 == url ? 15 * 1_024 * 1_024 : nil }
         ))
@@ -108,6 +109,7 @@ struct DownloadRetryPolicyTests {
                                         metadata: liveMetadata)
         #expect(!DownloadRetryPolicy.shouldPromotePausedStaticPartial(
             liveRecord,
+            durablePartialURL: url,
             fileExists: { _ in true },
             fileSize: { _ in 15 * 1_024 * 1_024 }
         ))
@@ -125,6 +127,7 @@ struct DownloadRetryPolicyTests {
                                                                                resumeMode: .staticByteRange))
         #expect(!DownloadRetryPolicy.shouldPromotePausedStaticPartial(
             staticRecordWithoutFile,
+            durablePartialURL: url,
             fileExists: { _ in false },
             fileSize: { _ in nil }
         ))
@@ -155,11 +158,13 @@ struct DownloadRetryPolicyTests {
 
         #expect(!DownloadRetryPolicy.shouldPromotePausedStaticPartial(
             complete,
+            durablePartialURL: url,
             fileExists: { _ in true },
             fileSize: { _ in 10_000 }
         ))
         #expect(!DownloadRetryPolicy.shouldPromotePausedStaticPartial(
             unstarted,
+            durablePartialURL: url,
             fileExists: { _ in true },
             fileSize: { _ in 0 }
         ))
@@ -183,6 +188,7 @@ struct DownloadRetryPolicyTests {
 
         #expect(DownloadRetryPolicy.shouldPromotePausedStaticPartial(
             record,
+            durablePartialURL: url,
             fileExists: { _ in true },
             fileSize: { _ in 10_000 }
         ))
@@ -205,6 +211,7 @@ struct DownloadRetryPolicyTests {
 
         #expect(!DownloadRetryPolicy.shouldPromotePausedStaticPartial(
             record,
+            durablePartialURL: url,
             fileExists: { $0 == url },
             fileSize: { _ in 0 }
         ))
@@ -227,6 +234,7 @@ struct DownloadRetryPolicyTests {
 
         #expect(DownloadRetryPolicy.shouldPromotePausedStaticPartial(
             record,
+            durablePartialURL: url,
             fileExists: { $0 == url },
             fileSize: { _ in 8 * 1_024 * 1_024 }
         ))
@@ -253,12 +261,14 @@ struct DownloadRetryPolicyTests {
         #expect(DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
             record,
             isActive: false,
+            durablePartialURL: url,
             fileExists: { $0 == url },
             fileSize: { _ in 25 * 1_024 * 1_024 }
         ))
         #expect(!DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
             record,
             isActive: true,
+            durablePartialURL: url,
             fileExists: { $0 == url },
             fileSize: { _ in 25 * 1_024 * 1_024 }
         ))
@@ -266,14 +276,52 @@ struct DownloadRetryPolicyTests {
             record,
             isActive: false,
             hasPendingResumeIntent: true,
+            durablePartialURL: url,
             fileExists: { $0 == url },
             fileSize: { _ in 25 * 1_024 * 1_024 }
         ))
         #expect(!DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
             record,
             isActive: false,
+            durablePartialURL: url,
             fileExists: { _ in false },
             fileSize: { _ in nil }
         ))
+    }
+
+    // B00: in-flight static partials live in the attempt working file, never at the published
+    // `localURL`. Both the stale queued/downloading detector and the paused-partial promotion must
+    // measure the durable working partial the caller supplies.
+    @Test("Stale static detector measures the attempt working partial, not the published path")
+    func staleStaticDetectorMeasuresWorkingPartial() throws {
+        let published = URL(fileURLWithPath: "/tmp/labstream-published.mp4")
+        let working = URL(fileURLWithPath: "/tmp/.attempt-stage-v1-working.stage")
+        let metadata = OfflineMetadata(ratingKey: "plex-item",
+                                       title: "Working Partial",
+                                       type: "movie",
+                                       downloadLane: .original,
+                                       resumeMode: .staticByteRange)
+        let partialBytes = 40 * 1_024 * 1_024
+        let fileExists: (URL) -> Bool = { $0 == working }
+        let fileSize: (URL) -> Int? = { $0 == working ? partialBytes : nil }
+        for status in [DownloadStatus.queued, .downloading] {
+            let record = DownloadRecord(ratingKey: "plex-item", title: "Working Partial",
+                                        localURL: published, bytes: partialBytes, progress: 0.4,
+                                        status: status, metadata: metadata)
+            #expect(DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
+                record, isActive: false, durablePartialURL: working,
+                fileExists: fileExists, fileSize: fileSize))
+            // No exact-attempt working partial means no durable checkpoint authority.
+            #expect(!DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
+                record, isActive: false, durablePartialURL: nil,
+                fileExists: fileExists, fileSize: fileSize))
+        }
+        let paused = DownloadRecord(ratingKey: "plex-item", title: "Working Partial",
+                                    localURL: published, bytes: partialBytes, progress: 0.4,
+                                    status: .paused, metadata: metadata)
+        #expect(DownloadRetryPolicy.shouldPromotePausedStaticPartial(
+            paused, durablePartialURL: working, fileExists: fileExists, fileSize: fileSize))
+        #expect(!DownloadRetryPolicy.shouldPromotePausedStaticPartial(
+            paused, durablePartialURL: nil, fileExists: fileExists, fileSize: fileSize))
     }
 }
