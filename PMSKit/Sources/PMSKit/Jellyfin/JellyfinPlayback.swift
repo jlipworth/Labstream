@@ -119,7 +119,8 @@ public struct JellyfinDownloadPlaybackDecision: Sendable, Equatable {
     public let size: Int?
     public let container: String?
     public let bitrate: Int?
-    /// Source video/audio codec tokens (first video/audio stream), for compatible-remux eligibility.
+    /// Source video/audio codec tokens, for compatible-remux eligibility. Video is the first video
+    /// stream; audio is the selected audio stream when one was requested, else the first.
     public let videoCodec: String?
     public let audioCodec: String?
     public let transcodeReasons: [String]
@@ -224,10 +225,23 @@ public enum JellyfinPlayback {
 
     /// Distill a download/remux PlaybackInfo response into the typed verdict used by the offline
     /// compatible-remux lane. Throws when the response cannot identify a playable media source.
+    ///
+    /// `audioStreamIndex` is the user-selected audio track (B58). When it names an audio stream of
+    /// the chosen source, that stream's codec drives remux audio-copy eligibility, mirroring
+    /// `playbackSourceMetadata(audioStreamIndex:)`; otherwise the first audio stream is used.
     public static func downloadDecision(response: JellyfinPlaybackInfoResponse,
-                                        preferredMediaSourceId: String? = nil) throws -> JellyfinDownloadPlaybackDecision {
+                                        preferredMediaSourceId: String? = nil,
+                                        audioStreamIndex: Int? = nil) throws -> JellyfinDownloadPlaybackDecision {
         guard let playSessionId = response.playSessionId, !playSessionId.isEmpty else {
             throw JellyfinPlaybackError.missingPlaySessionId
+        }
+        // B59: a requested version that the server no longer returns must not silently become a
+        // different edition (download, retry and stall restart all pass the persisted id). Fail
+        // closed like the playback path; the server's own choice applies only when unpinned.
+        if let preferredMediaSourceId,
+           !preferredMediaSourceId.isEmpty,
+           !response.mediaSources.contains(where: { $0.id == preferredMediaSourceId }) {
+            throw JellyfinPlaybackError.preferredMediaSourceUnavailable(preferredMediaSourceId)
         }
         guard let source = chooseDownloadSource(response.mediaSources, preferredMediaSourceId: preferredMediaSourceId) else {
             throw JellyfinPlaybackError.noMediaSources
@@ -236,7 +250,11 @@ public enum JellyfinPlayback {
             throw JellyfinPlaybackError.missingMediaSourceId
         }
         let videoStream = source.mediaStreams.first { $0.type == "Video" }
-        let audioStream = source.mediaStreams.first { $0.type == "Audio" }
+        let selectedAudioStream = audioStreamIndex.flatMap { index in
+            source.mediaStreams.first { $0.type == "Audio" && $0.index == index }
+        }
+        let audioCodec = selectedAudioStream.map { $0.codec ?? source.audioCodec }
+            ?? (source.audioCodec ?? source.mediaStreams.first { $0.type == "Audio" }?.codec)
         return JellyfinDownloadPlaybackDecision(
             playSessionId: playSessionId,
             mediaSourceId: mediaSourceId,
@@ -247,7 +265,7 @@ public enum JellyfinPlayback {
             container: source.container?.split(separator: ",").first.map(String.init),
             bitrate: source.bitrate,
             videoCodec: source.videoCodec ?? videoStream?.codec,
-            audioCodec: source.audioCodec ?? audioStream?.codec,
+            audioCodec: audioCodec,
             transcodeReasons: source.transcodeReasons)
     }
 

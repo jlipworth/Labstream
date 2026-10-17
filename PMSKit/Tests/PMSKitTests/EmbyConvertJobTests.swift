@@ -23,8 +23,10 @@ struct EmbyConvertJobTests {
         let cases: [(String, EmbyConvertJobStatus)] = [
             ("Queued", .queued),
             ("Converting", .converting),
+            ("ReadyToTransfer", .readyToTransfer),
             ("Transferring", .transferring),
             ("Completed", .completed),
+            ("CompletedWithError", .completedWithError),
             ("Failed", .failed),
             ("Cancelled", .cancelled),
         ]
@@ -198,6 +200,55 @@ struct EmbyConvertJobTests {
         #expect(!EmbyConvertRecoveryPolicy.publicUserMatches(
             currentSessionUserID: "user-a", persistedBackendUserID: "user-a",
             fingerprintUserID: nil))
+    }
+
+    // B52: BackendSession.matchesPersistedServer treats a reformatted GUID as the same user, so the
+    // convert recovery/cleanup ownership check must agree. A raw compare logged emby_user_mismatch
+    // and skipped recovery forever after a re-login that only changed GUID formatting.
+    @Test("recovery user ownership uses the same GUID-normalized equality as the session")
+    func publicUserOwnershipNormalizesGUIDFormatting() {
+        let dashed = "4C1A2B3C-0000-4000-8000-00000000ABCD"
+        let dashless = "4c1a2b3c00004000800000000000abcd"
+        #expect(EmbyConvertRecoveryPolicy.publicUserMatches(
+            currentSessionUserID: dashless, persistedBackendUserID: dashed,
+            fingerprintUserID: dashed.lowercased()))
+        #expect(MediaBrowserUserIdentity.sameUser(dashless, dashed))
+        #expect(!EmbyConvertRecoveryPolicy.publicUserMatches(
+            currentSessionUserID: "4c1a2b3c00004000800000000000abce", persistedBackendUserID: dashed,
+            fingerprintUserID: dashed))
+        #expect(!EmbyConvertRecoveryPolicy.publicUserMatches(
+            currentSessionUserID: "  ", persistedBackendUserID: dashed,
+            fingerprintUserID: dashed))
+    }
+
+    // B47: pausing while POST /Sync/Jobs was in flight cancelled the new job, but the paused row kept
+    // its dispatchAmbiguous identity, so resume found zero matches and failed. A row this attempt
+    // still owns adopts the job; only a deleted or replaced row cancels it.
+    @Test("post-create on a stale attempt adopts onto a parked owned row and cancels only orphans")
+    func postCreateStaleDisposition() {
+        typealias Policy = EmbyConvertRecoveryPolicy
+        // Paused (or failed) row still owned by this attempt, no job yet → adopt, keep it parked.
+        #expect(Policy.staleCreateDisposition(rowOwnedByAttempt: true, rowStatus: .paused,
+                                              persistedJobID: nil, createdJobID: 7) == .adoptOntoParkedRow)
+        #expect(Policy.staleCreateDisposition(rowOwnedByAttempt: true, rowStatus: .failed,
+                                              persistedJobID: nil, createdJobID: 7) == .adoptOntoParkedRow)
+        // Deleted or replaced → nothing owns the job: cancel it.
+        #expect(Policy.staleCreateDisposition(rowOwnedByAttempt: false, rowStatus: nil,
+                                              persistedJobID: nil, createdJobID: 7) == .cancel)
+        #expect(Policy.staleCreateDisposition(rowOwnedByAttempt: false, rowStatus: .preparing,
+                                              persistedJobID: nil, createdJobID: 7) == .cancel)
+        // Pause then resume re-entered recovery under a newer server-prep attempt: that chain owns
+        // the evidence and will adopt the job itself. Never cancel or race it.
+        #expect(Policy.staleCreateDisposition(rowOwnedByAttempt: true, rowStatus: .preparing,
+                                              persistedJobID: nil, createdJobID: 7) == .leaveToCurrentOwner)
+        #expect(Policy.staleCreateDisposition(rowOwnedByAttempt: true, rowStatus: .paused,
+                                              persistedJobID: 7, createdJobID: 7) == .leaveToCurrentOwner)
+        // The owned row already holds a DIFFERENT job: ours is an orphan.
+        #expect(Policy.staleCreateDisposition(rowOwnedByAttempt: true, rowStatus: .paused,
+                                              persistedJobID: 9, createdJobID: 7) == .cancel)
+        // A completed row (or any other settled status) never adopts a server job.
+        #expect(Policy.staleCreateDisposition(rowOwnedByAttempt: true, rowStatus: .complete,
+                                              persistedJobID: nil, createdJobID: 7) == .cancel)
     }
 
     @Test("cleanup queue preserves multiple attempt UUIDs for the same rating key")
@@ -382,12 +433,17 @@ struct EmbyConvertJobTests {
 
     // MARK: - isTerminal / didSucceed
 
-    @Test("isTerminal is true only for Completed/Failed/Cancelled; didSucceed only for Completed",
+    // B48: `CompletedWithError` is part of Emby's SyncJobStatus. Decoding it to `.unknown` kept a
+    // finished-with-error job non-terminal, so every healthy 200 reset the poll budget and the row
+    // showed "Preparing on server…" forever.
+    @Test("isTerminal covers Completed/CompletedWithError/Failed/Cancelled; didSucceed only Completed",
           arguments: [
               (EmbyConvertJobStatus.queued, false, false),
               (.converting, false, false),
+              (.readyToTransfer, false, false),
               (.transferring, false, false),
               (.unknown, false, false),
+              (.completedWithError, true, false),
               (.completed, true, true),
               (.failed, true, false),
               (.cancelled, true, false),
@@ -395,6 +451,16 @@ struct EmbyConvertJobTests {
     func terminalAndSuccessFlags(row: (status: EmbyConvertJobStatus, terminal: Bool, succeeded: Bool)) {
         #expect(row.status.isTerminal == row.terminal)
         #expect(row.status.didSucceed == row.succeeded)
+    }
+
+    @Test("Terminal failures carry a readable user-facing phrase")
+    func terminalFailureDescriptions() {
+        #expect(EmbyConvertJobStatus.failed.terminalFailureDescription == "failed")
+        #expect(EmbyConvertJobStatus.cancelled.terminalFailureDescription == "was cancelled")
+        #expect(EmbyConvertJobStatus.completedWithError.terminalFailureDescription
+                == "finished with an error")
+        #expect(EmbyConvertJobStatus.completed.terminalFailureDescription == nil)
+        #expect(EmbyConvertJobStatus.readyToTransfer.terminalFailureDescription == nil)
     }
 
     // MARK: - createJobRequest body shape

@@ -165,7 +165,8 @@ extension DownloadManager {
                 }
                 let info = try JellyfinPlaybackInfoResponse.decode(from: data)
                 let decision = try JellyfinPlayback.downloadDecision(response: info,
-                                                                     preferredMediaSourceId: jellyfinMediaSourceID)
+                                                                     preferredMediaSourceId: jellyfinMediaSourceID,
+                                                                     audioStreamIndex: audioStreamIndex)
                 let sourcePlan = JellyfinDownloadSourcePlan.transcode(decision: decision,
                                                                       durationMs: item.duration,
                                                                       profile: profile)
@@ -222,7 +223,8 @@ extension DownloadManager {
                 }
                 let info = try JellyfinPlaybackInfoResponse.decode(from: data)
                 let decision = try JellyfinPlayback.downloadDecision(response: info,
-                                                                     preferredMediaSourceId: jellyfinMediaSourceID)
+                                                                     preferredMediaSourceId: jellyfinMediaSourceID,
+                                                                     audioStreamIndex: audioStreamIndex)
                 let fallbackProfile = DownloadPresetPolicy.jellyfinTranscodeProfile(named: DownloadPresetPolicy.jellyfinDefaultDownloadPreset)
                 let sourcePlan = JellyfinDownloadSourcePlan.compatible(
                     decision: decision,
@@ -300,8 +302,15 @@ extension DownloadManager {
                 "backend": .label("Jellyfin"),
                 "error": .error(error),
             ])
-            lastError[ratingKey] = .transferFailed(
-                DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
+            if case JellyfinPlaybackError.preferredMediaSourceUnavailable = error {
+                // B59: the persisted version vanished from PlaybackInfo. Fail the row (retryable)
+                // instead of downloading a different edition under it.
+                lastError[ratingKey] = .transferFailed(
+                    "The requested server version is no longer available. Choose another version and retry.")
+            } else {
+                lastError[ratingKey] = .transferFailed(
+                    DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
+            }
             _ = store.setStatus(for: attemptKey, .failed)
             clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(for: attemptKey)

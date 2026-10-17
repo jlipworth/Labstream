@@ -63,7 +63,8 @@ root, plus the shared `PMSKit` package. The public mobile support floor is iOS/i
   AirPlay buttons. A hairline outline keeps the glass platter legible over letterbox/pillarbox
   black.
 - Cellular downloads default to **off**. The Settings download toggle controls the
-  cellular policy stamped onto freshly created request-based transfer tasks; existing
+  cellular, Low Data Mode and expensive-network policy stamped onto freshly created
+  request-based transfer tasks; existing
   active/resume-data tasks keep the policy they were created with. Labstream does not
   sync offline media between devices.
 - Spotlight and App Intents route through the active backend/session only. Plex, Jellyfin,

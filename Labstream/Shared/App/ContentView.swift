@@ -131,22 +131,13 @@ struct ContentView: View {
             await DebugPlexPlaybackProbe.runIfRequested(appModel: appModel)
 #endif
             #if !os(tvOS)
-            // Restore the selected browse lane first, then hydrate only inactive backends that
-            // currently own durable active work. Paused/failed/completed rows remain cold until
-            // their explicit resume, retry, or side-asset dispatch edge.
-            let inactiveDownloadBackends = Set(
-                downloadManager.records.lazy
-                    .filter { $0.status.isActiveWork }
-                    .map { DownloadJobSnapshot(record: $0).backend }
-            ).subtracting([appModel.activeBackend])
-            for backend in inactiveDownloadBackends.sorted(by: { $0.rawValue < $1.rawValue }) {
-                _ = await authManager.hydrateSavedSessionForDownloads(backend: backend)
+            bootstrap.launchDownloadRecovery.beginLaunchPass(browseReady: appModel.isBrowseReady)
+            await runLaunchDownloadRecovery(reason: "session_restored")
+            // B77: a Reconnect that landed while this offline pass was still hydrating.
+            if bootstrap.launchDownloadRecovery.finishLaunchPass(
+                browseReady: appModel.isBrowseReady) {
+                await runLaunchDownloadRecovery(reason: "backend_ready")
             }
-            downloadManager.resumePendingServerPrepDownloads()
-            downloadManager.rehydrateMissingOptionalSideAssetsForCompletedRows(
-                reason: "session_restored")
-            downloadManager.scheduleServerPrepResumeRetries()
-            downloadManager.teardownOrphanedEncodersOnLaunch()
             #endif
 #if DEBUG
             await DebugRawURLPlaybackProbe.runIfRequested()
@@ -178,10 +169,17 @@ struct ContentView: View {
                 // mounted (BrowseUIGate) instead of bouncing through the restore splash.
                 bootstrap.hasEverBeenBrowseReady = true
                 #if !os(tvOS)
-                downloadManager.resumePendingServerPrepDownloads()
-                downloadManager.rehydrateMissingOptionalSideAssetsForCompletedRows(
-                    reason: "backend_ready")
-                downloadManager.scheduleServerPrepResumeRetries()
+                if bootstrap.launchDownloadRecovery.browseBecameReady() {
+                    // B77: Reconnect after an offline launch. The launch pass ran while every
+                    // server was unreachable, so rerun all of it, including inactive-backend
+                    // hydration and the orphaned-encoder sweep.
+                    Task { await runLaunchDownloadRecovery(reason: "backend_ready") }
+                } else {
+                    downloadManager.resumePendingServerPrepDownloads()
+                    downloadManager.rehydrateMissingOptionalSideAssetsForCompletedRows(
+                        reason: "backend_ready")
+                    downloadManager.scheduleServerPrepResumeRetries()
+                }
                 #endif
             }
         }
@@ -219,6 +217,26 @@ struct ContentView: View {
             #endif
         }
     }
+
+    #if !os(tvOS)
+    /// Launch download recovery: restore the selected browse lane first, then hydrate only
+    /// inactive backends that currently own durable active work. Paused/failed/completed rows
+    /// remain cold until their explicit resume, retry, or side-asset dispatch edge.
+    private func runLaunchDownloadRecovery(reason: String) async {
+        let inactiveDownloadBackends = Set(
+            downloadManager.records.lazy
+                .filter { $0.status.isActiveWork }
+                .map { DownloadJobSnapshot(record: $0).backend }
+        ).subtracting([appModel.activeBackend])
+        for backend in inactiveDownloadBackends.sorted(by: { $0.rawValue < $1.rawValue }) {
+            _ = await authManager.hydrateSavedSessionForDownloads(backend: backend)
+        }
+        downloadManager.resumePendingServerPrepDownloads()
+        downloadManager.rehydrateMissingOptionalSideAssetsForCompletedRows(reason: reason)
+        downloadManager.scheduleServerPrepResumeRetries()
+        downloadManager.teardownOrphanedEncodersOnLaunch()
+    }
+    #endif
 
     /// #259: only a preserved credential after a transient restore failure, with at least one
     /// completed local media file, opens the restricted Offline surface.

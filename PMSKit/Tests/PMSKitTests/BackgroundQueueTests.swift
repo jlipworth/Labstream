@@ -216,6 +216,49 @@ func decodesTranscodeSpeed(job: String, expected: Double?) throws {
     #expect(jobs.job(ratingKey: "missing") == nil)
 }
 
+@Test func attributedJobNeverClaimsAnotherClientsSoleJob() {
+    // B39: our row is queued behind someone else's optimize. The single background job carries
+    // no ratingKey/title of ours and the conversion queue does not mark our item active, so it
+    // must not be attributed — even if this is our only active download.
+    let theirs = BackgroundTranscodeJobs(jobs: [
+        .init(progress: 40, state: "running", speed: 1.2, ratingKey: nil, title: "Other"),
+    ])
+    #expect(theirs.attributedJob(ratingKey: "101", title: "Mine",
+                                 isActiveConversion: false) == nil)
+    // The conversion queue marking OUR item active makes a single job attributable.
+    #expect(theirs.attributedJob(ratingKey: "101", title: "Mine",
+                                 isActiveConversion: true)?.progress == 40)
+    // With several jobs, active-conversion attribution alone is ambiguous.
+    let two = BackgroundTranscodeJobs(jobs: [
+        .init(progress: 40, state: "running"), .init(progress: 10, state: "running"),
+    ])
+    #expect(two.attributedJob(ratingKey: "101", title: "Mine", isActiveConversion: true) == nil)
+    // Per-job ratingKey and unique exact title still attribute.
+    let keyed = BackgroundTranscodeJobs(jobs: [
+        .init(progress: 7, state: "running", ratingKey: "999"),
+        .init(progress: 55, state: "running", ratingKey: "101"),
+    ])
+    #expect(keyed.attributedJob(ratingKey: "101", title: nil, isActiveConversion: false)?.progress == 55)
+    let titled = BackgroundTranscodeJobs(jobs: [.init(progress: 12, state: "running", title: "Mine")])
+    #expect(titled.attributedJob(ratingKey: "101", title: "Mine", isActiveConversion: false)?.progress == 12)
+}
+
+@Test func attributedJobNeverOverridesAContradictoryJobRatingKey() {
+    // B39: the queue snapshot and the job list are separate requests and can straddle a queue
+    // transition. A sole job that explicitly names another item is never ours.
+    let other = BackgroundTranscodeJobs(jobs: [
+        .init(progress: 80, state: "running", ratingKey: "202", title: "Mine"),
+    ])
+    #expect(other.attributedJob(ratingKey: "101", title: "Mine", isActiveConversion: true) == nil)
+    #expect(other.attributedJob(ratingKey: "101", title: "Mine", isActiveConversion: false) == nil)
+    // An unidentified title match still wins next to a job naming another item.
+    let mixed = BackgroundTranscodeJobs(jobs: [
+        .init(progress: 80, state: "running", ratingKey: "202", title: "Mine"),
+        .init(progress: 30, state: "running", title: "Mine"),
+    ])
+    #expect(mixed.attributedJob(ratingKey: "101", title: "Mine", isActiveConversion: false)?.progress == 30)
+}
+
 @Test func decodesSingleBackgroundJobObjectAndRatingKeyVariants() throws {
     let json = """
     {"MediaContainer":{"size":1,"TranscodeJob":

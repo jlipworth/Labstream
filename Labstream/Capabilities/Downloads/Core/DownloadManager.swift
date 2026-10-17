@@ -472,7 +472,16 @@ public final class DownloadManager {
         self.store = store
         self.session = injectedSession ?? BackgroundDownloadSession(store: store)
         self.backgroundCompletionRegistry = backgroundCompletionRegistry
-        self.keepaliveCoordinator = DownloadKeepaliveCoordinator(appModel: appModel, store: store)
+        let keepaliveSession = self.session
+        self.keepaliveCoordinator = DownloadKeepaliveCoordinator(
+            appModel: appModel,
+            store: store,
+            isTrackingTransfer: { [weak keepaliveSession, weak store] key in
+                // B60: the session tracks transfers per row; the store fences the exact attempt.
+                guard let keepaliveSession, let store else { return false }
+                return store.ownsAttempt(key)
+                    && keepaliveSession.isTrackingTransfer(ratingKey: key.ratingKey)
+            })
         self.sideAssetFetchCoordinator = injectedSideAssetFetchCoordinator ?? .shared
         self.cleanupIntentJournal = injectedCleanupIntentJournal
             ?? DownloadCleanupIntentJournal(directory: store.durableCleanupAuthorityDirectory)
@@ -1031,7 +1040,17 @@ public final class DownloadManager {
                     cleanupAuthorityDurable = false
                 }
             }
-            if Self.hasEmbyConvertCleanupAuthority(metadata) {
+            // B44/B49: a failed row whose Retry resumes its Convert job (poll-health or 401/403
+            // failure) or crash-window recovery keeps that authority. Cleaning it up here would
+            // DELETE the live job, or race recovery for it. Same inputs as the retry gate.
+            let retryKeepsConvertAuthority = DownloadRetryPreparationPolicy
+                .shouldKeepEmbyConvertAuthorityForRetry(
+                    status: record.status,
+                    resumeMode: metadata.resolvedResumeMode(ratingKey: record.ratingKey),
+                    isEmbyRecord: DownloadRecordIdentity.isEmbyRecordKey(record.ratingKey),
+                    hasEmbyConvertJobID: metadata.embyConvertJobID != nil,
+                    hasEmbyConvertRecoveryIdentity: metadata.hasEmbyConvertRecoveryIdentity)
+            if !retryKeepsConvertAuthority, Self.hasEmbyConvertCleanupAuthority(metadata) {
                 if let intent = persistEmbyConvertCleanupIntent(
                     attemptKey: key, metadata: metadata
                 ) {
@@ -1884,6 +1903,12 @@ public final class DownloadManager {
         return DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
     }
 
+    /// B00: the exact-attempt working partial that holds a nonterminal static checkpoint. Static
+    /// partials are never at `record.localURL` until validated promotion publishes them.
+    private func durableStaticPartialURL(for record: DownloadRecord) -> URL? {
+        attemptKey(for: record).flatMap { store.attemptWorkingFileURL(for: $0) }
+    }
+
     private func isDeletionPending(_ record: DownloadRecord) -> Bool {
         guard let key = attemptKey(for: record) else { return false }
         return store.isDeletionPending(for: key)
@@ -2410,7 +2435,8 @@ public final class DownloadManager {
             isJellyfinRecord: DownloadRecordIdentity.isJellyfinRecordKey(ratingKey),
             isEmbyRecord: DownloadRecordIdentity.isEmbyRecordKey(ratingKey),
             optimizeTargetName: record.metadata?.optimizeTargetName,
-            hasIncompleteStaticPartial: DownloadRetryPolicy.shouldPromotePausedStaticPartial(record)
+            hasIncompleteStaticPartial: DownloadRetryPolicy.shouldPromotePausedStaticPartial(
+                record, durablePartialURL: durableStaticPartialURL(for: record))
         ), let targetName = record.metadata?.optimizeTargetName {
             resumePausedPlexServerPrep(record: record, targetName: targetName)
             return
@@ -2447,8 +2473,9 @@ public final class DownloadManager {
             ?? MediaItem(ratingKey: record.ratingKey, title: record.title, type: "movie")
         let mediaIndex = metadata?.mediaIndex ?? 0
         let partIndex = metadata?.partIndex ?? 0
-        // Re-probe so the retry takes the correct path: a now-compatible file goes direct,
-        // otherwise re-render via the optimizer using the user's explicit default preset. Keep the
+        // A row with a persisted optimize target retries that target. Otherwise re-probe so the
+        // retry takes the correct path: a now-compatible file goes direct, otherwise re-render via
+        // the optimizer using the user's explicit default preset. Keep the
         // failed row visible until after auth/server preflight succeeds; otherwise tapping retry
         // while disconnected/not-ready removes the only visible retry affordance.
         Task { [weak self] in
@@ -2490,7 +2517,7 @@ public final class DownloadManager {
             // the persisted static target, preserving the partial when present and otherwise
             // redownloading the same existing Part from byte 0.
             if StaticRangeRecoveryPolicy.isStaticRangeRecord(record),
-               (DownloadRetryPolicy.shouldPromotePausedStaticPartial(record) || metadata?.sourcePartID != nil || metadata?.isServerPreparedVersion == true) {
+               (DownloadRetryPolicy.shouldPromotePausedStaticPartial(record, durablePartialURL: self.durableStaticPartialURL(for: record)) || metadata?.sourcePartID != nil || metadata?.isServerPreparedVersion == true) {
                 let resolved = self.resolveStaticRetryTarget(record: record,
                                                             fallbackMediaIndex: mediaIndex,
                                                             fallbackPartIndex: partIndex,
@@ -2538,18 +2565,26 @@ public final class DownloadManager {
                 self.refreshRecords()
                 return
             }
-            let probe = await self.directPlayProbe(for: currentItem, server: server, token: token,
-                                                   mediaIndex: mediaIndex, partIndex: partIndex)
-            let media = currentItem.media?.indices.contains(mediaIndex) == true ? currentItem.media?[mediaIndex] : currentItem.media?.first
-            let part = probe.part ?? (media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : media?.part.first)
-            let choice: DownloadChoice = (probe.direct && OfflineDownloadDecision.isLocallyPlayableOriginal(part: part))
-                ? .original
-                : .optimize(targetName: Self.originalFallbackOptimizeTarget())
+            // B34: a failed optimize row (24 h deadline, completed_part_missing,
+            // optimize_status_failed, ...) retries the user's persisted requested target. Only
+            // rows without one re-probe and fall back to the default preset.
+            let choice: DownloadChoice
+            if let persistedTarget = DownloadBackendRetryIntentPolicy.plexPersistedOptimizeTarget(for: record) {
+                choice = .optimize(targetName: persistedTarget)
+            } else {
+                let probe = await self.directPlayProbe(for: currentItem, server: server, token: token,
+                                                       mediaIndex: mediaIndex, partIndex: partIndex)
+                let media = currentItem.media?.indices.contains(mediaIndex) == true ? currentItem.media?[mediaIndex] : currentItem.media?.first
+                let part = probe.part ?? (media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : media?.part.first)
+                choice = (probe.direct && OfflineDownloadDecision.isLocallyPlayableOriginal(part: part))
+                    ? .original
+                    : .optimize(targetName: Self.originalFallbackOptimizeTarget())
+            }
             // Drop the stale `.failed` row only once we know the replacement can be seeded.
             // This also removes any leftover invalid/partial file from the failed attempt.
             guard self.retryAttemptCanContinue(for: retryAttemptKey, token: retryToken) else { return }
             self.releaseInFlight(for: retryAttemptKey)
-            if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record) {
+            if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record, durablePartialURL: self.durableStaticPartialURL(for: record)) {
                 guard await self.removeAttempt(retryAttemptKey, context: "retry_replace") else { return }
             }
             await self.download(currentItem, choice: choice, mediaIndex: mediaIndex, partIndex: partIndex,
@@ -2676,7 +2711,7 @@ public final class DownloadManager {
                 "target": .label(targetName),
             ])
             self.releaseInFlight(for: key)
-            if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record) {
+            if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record, durablePartialURL: self.durableStaticPartialURL(for: record)) {
                 guard await self.removeAttempt(key, context: "plex_optimize_replace") else { return }
             }
             await self.download(currentItem, choice: .optimize(targetName: targetName),
@@ -2956,7 +2991,9 @@ public final class DownloadManager {
                     guard let self else { return }
                     await self.pollAndDownloadEmbyConvertJob(
                         item: item, ratingKey: ratingKey, jobId: jobId,
-                        snapshotIds: resumeSnapshot, targetName: targetName, server: server,
+                        snapshotIds: resumeSnapshot,
+                        primaryMediaSourceID: metadata.mediaSourceID,
+                        targetName: targetName, server: server,
                         token: token, identity: identity, userId: userId,
                         audioStreamIndex: metadata.audioStreamIndex,
                         attemptKey: key, attemptID: attemptID)
@@ -2990,6 +3027,7 @@ public final class DownloadManager {
                         item: item, ratingKey: ratingKey, baselineJobIDs: Set(baseline),
                         fingerprint: fingerprint, attemptStartedAtEpochSeconds: startedAt,
                         recoveryPhase: recoveryPhase, snapshotIds: resumeSnapshot,
+                        primaryMediaSourceID: metadata.mediaSourceID,
                         targetName: targetName, server: server, token: token, identity: identity,
                         userId: userId, audioStreamIndex: metadata.audioStreamIndex,
                         attemptKey: key, attemptID: attemptID)
@@ -4068,11 +4106,14 @@ public final class DownloadManager {
                   record.metadata?.seasonPlannerPendingAdmission != true else { return false }
             return DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
                 record,
-                isActive: session.isTrackingTransfer(ratingKey: record.ratingKey),
+                // B00: a queued append, delayed range retry, or claimed finalizer is still live
+                // session work even though no URLSession task is tracked for the row.
+                isActive: session.ownsInProgressStaticRangeWork(ratingKey: record.ratingKey),
                 // #210: a backend-unavailable static Range resume is intentionally preserved as a
                 // queued pending intent. Reprocessing it here re-enters resume/defer/refresh until
                 // the main-thread stack overflows during launch.
-                hasPendingResumeIntent: staticRangeRecovery.hasPendingResume(record.ratingKey)
+                hasPendingResumeIntent: staticRangeRecovery.hasPendingResume(record.ratingKey),
+                durablePartialURL: durableStaticPartialURL(for: record)
             )
         }
         if !staleQueuedStaticPartials.isEmpty {
@@ -4862,7 +4903,6 @@ public final class DownloadManager {
             // to us. `recordServerQueueProbe` below reads `/status/sessions/background`, whose
             // per-job `ratingKey` is the safer progress source under concurrency.
             await pollOptimizeActivity(ratingKey: ratingKey, mediaTitle: mediaTitle,
-                                       allowSoleFallback: false,
                                        server: server, token: token, identity: identity)
             // Disambiguation probe: distinguish "completed-item clutter" (inert) from a genuinely
             // stalled or idle-paused server conversion queue. Privacy-safe COUNTS + short state
@@ -4975,7 +5015,7 @@ public final class DownloadManager {
             .mediaContainer.metadata.first
     }
 
-    private static func currentMediaItemRequest(ratingKey: String, server: URL, token: String,
+    static func currentMediaItemRequest(ratingKey: String, server: URL, token: String,
                                                 identity: ClientIdentity) -> PlexRequest {
         PlexRequest(url: server.appendingPathComponent("/library/metadata/\(ratingKey)"),
                     method: "GET",
@@ -5062,7 +5102,6 @@ public final class DownloadManager {
     /// never logged. We emit a single redaction-safe shape probe per poll (structural facts
     /// + numeric progress only) so the real PMS shape can be confirmed from logs.
     private func pollOptimizeActivity(ratingKey: String, mediaTitle: String,
-                                      allowSoleFallback: Bool,
                                       server: URL, token: String,
                                       identity: ClientIdentity) async {
         let req = ActivitiesRequest.list(server: server, token: token, identity: identity)
@@ -5075,8 +5114,7 @@ public final class DownloadManager {
         // progress — never a title/subtitle VALUE. The "types" string is a list of dotted
         // activity types (e.g. "media.optimize,library.update.section"), which are
         // server-vocabulary identifiers, not media titles, and pass through unredacted.
-        let shape = activities.probeShape(ratingKey: ratingKey, title: mediaTitle,
-                                          allowSoleFallback: allowSoleFallback)
+        let shape = activities.probeShape(ratingKey: ratingKey, title: mediaTitle)
         var probeFields: [String: DiagnosticFieldValue] = [
             "download_id": .identifier(ratingKey),
             "activity_count": .int(Int(shape["activity_count"] ?? "0") ?? 0),
@@ -5101,8 +5139,7 @@ public final class DownloadManager {
         recordDownloadDiagnostic("downloads.optimize_activity_probe", fields: probeFields)
 
         guard let activity = activities.optimizeActivity(ratingKey: ratingKey,
-                                                         title: mediaTitle,
-                                                         allowSoleFallback: allowSoleFallback) else {
+                                                         title: mediaTitle) else {
             return
         }
 
@@ -5242,21 +5279,14 @@ public final class DownloadManager {
             fields["bg_job_count"] = .int(jobs.jobs.count)
             let matchingJob = jobs.job(ratingKey: ratingKey)
             let matchingTitleJob = jobs.uniqueJob(title: mediaTitle)
-            let attributedJob: BackgroundTranscodeJobs.Job? = matchingJob
-                // PMS shapes that omit per-job ratingKey may still carry a title/subtitle. Use it
-                // only when it uniquely identifies this media among running background jobs; the
-                // title value stays in memory and is never logged.
-                ?? matchingTitleJob
-                // If Plex's conversion queue says THIS item is the active conversion, then a single
-                // background transcode job is attributable even while another backend (e.g. Emby) is
-                // also active in Labstream. This is the live Devil Wears Prada shape: the background
-                // job has progress/speed but no per-job ratingKey.
-                ?? ((jobs.jobs.count == 1 && thisIsActiveConversion) ? jobs.jobs.first : nil)
-                // Legacy fallback for older PMS shapes without per-job ratingKey/title/queue active
-                // attribution: if there is exactly one background job and exactly one active
-                // Labstream download, it is unambiguous. Never use first-job fallback when PMS
-                // reports multiple jobs.
-                ?? ((jobs.jobs.count == 1 && activeJobs.count == 1) ? jobs.jobs.first : nil)
+            // B39: ratingKey, then a unique exact title (kept in memory, never logged), then the
+            // single job only when the conversion queue marks THIS item active (a live shape
+            // where the background job has progress/speed but no per-job ratingKey). There is
+            // no "one job and one active Labstream download" fallback: that lone job can be
+            // another client's transcode while this row is still queued (b40168c5 rejected the
+            // same reasoning for /activities).
+            let attributedJob = jobs.attributedJob(ratingKey: ratingKey, title: mediaTitle,
+                                                   isActiveConversion: thisIsActiveConversion)
             let isActiveConversion = attributedJob != nil
             if matchingJob != nil { fields["bg_rk_match"] = .bool(true) }
             if matchingTitleJob != nil { fields["bg_name_match"] = .bool(true) }

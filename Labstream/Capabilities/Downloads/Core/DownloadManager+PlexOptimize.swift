@@ -519,13 +519,25 @@ extension DownloadManager {
 
         // 3. PUT the optimize job to the background-processing playlist.
         let settings = custom?.settings ?? DownloadPresetPolicy.mediaSettings(forTargetName: serverTargetName)
-        let create = OptimizeRequest.createOnPlaylist(
-            server: server, token: token, identity: identity,
-            backgroundProcessingKey: bgKey, ratingKey: item.ratingKey,
-            sourceURI: source?.uri, locationID: source?.locationID ?? -1,
-            title: queueTitle, targetTagID: targetTagID,
-            targetName: custom == nil ? serverTargetName : "Custom: \(custom!.deviceProfile)",
-            deviceProfile: custom?.deviceProfile, mediaSettings: settings)
+        // B38: when the library source URI is unavailable, the fallback Location URI must name
+        // the SERVER's machine identifier. Only trust the live Plex session's identity when it is
+        // the same server this request targets.
+        let liveSession = appModel.backendSession(for: .plex)
+        let serverMachineIdentifier = liveSession?.baseURL == server ? liveSession?.serverID : nil
+        let create: PlexRequest
+        do {
+            create = try OptimizeRequest.createOnPlaylist(
+                server: server, token: token, identity: identity,
+                backgroundProcessingKey: bgKey, ratingKey: item.ratingKey,
+                sourceURI: source?.uri, serverMachineIdentifier: serverMachineIdentifier,
+                locationID: source?.locationID ?? -1,
+                title: queueTitle, targetTagID: targetTagID,
+                targetName: custom == nil ? serverTargetName : "Custom: \(custom!.deviceProfile)",
+                deviceProfile: custom?.deviceProfile, mediaSettings: settings)
+        } catch {
+            throw DownloadError.optimizeFailed(
+                "No server source location for the optimize request.")
+        }
         do {
             try await appModel.client.send(create)
         } catch {

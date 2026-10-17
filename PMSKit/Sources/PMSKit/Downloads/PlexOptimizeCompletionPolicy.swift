@@ -20,10 +20,19 @@ public enum PlexOptimizeCompletionPolicy {
         case failMissingOutput
     }
 
+    /// The single type-42 vocabulary for "this job finished" (lowercased). The poll's completion
+    /// check and the queue cleanup/cancel guards (`BackgroundProcessingItems`) must agree, or a
+    /// state one side treats as finished is polled forever by the other.
+    public static let completedStates: Set<String> = ["complete", "completed", "successful", "success", "done"]
+
+    public static func isCompleted(state: String?) -> Bool {
+        guard let normalized = state?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        else { return false }
+        return completedStates.contains(normalized)
+    }
+
     public static func outcome(state: String?, successfulCount: Int?, failedCount: Int?) -> Outcome {
-        let normalized = state?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let isComplete = ["complete", "completed", "successful", "success"].contains(normalized)
-        guard isComplete else { return .active }
+        guard isCompleted(state: state) else { return .active }
         if (failedCount ?? 0) > 0 && (successfulCount ?? 0) == 0 { return .failed }
         return .succeeded
     }

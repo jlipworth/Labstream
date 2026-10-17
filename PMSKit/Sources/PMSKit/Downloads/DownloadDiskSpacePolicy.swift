@@ -16,6 +16,24 @@ public enum DownloadDiskSpacePolicy {
         }
     }
 
+    /// Fixed free-space margin kept for the OS and the temp-then-move copy.
+    public static let startHeadroomBytes: Int64 = 500_000_000
+
+    /// Free space a transfer start must find before it creates work (B01). A static byte-range
+    /// resume continues from its durable checkpoint, so it needs only the remaining bytes plus the
+    /// headroom — the same formula as the continuation preflight and the auto-resume park check.
+    /// `durableCheckpointBytes` is `nil` for lanes without a checkpoint. A checkpoint larger than
+    /// the expected size is discarded by the range start, so it reserves nothing.
+    public static func requiredFreeBytesToStart(expectedBytes: Int?,
+                                                durableCheckpointBytes: Int?,
+                                                headroomBytes: Int64 = startHeadroomBytes) -> Int64 {
+        guard let expectedBytes, expectedBytes > 0 else { return headroomBytes }
+        let expected = Int64(expectedBytes)
+        var checkpoint = Int64(max(0, durableCheckpointBytes ?? 0))
+        if checkpoint > expected { checkpoint = 0 }
+        return max(headroomBytes, expected - checkpoint + headroomBytes)
+    }
+
     /// Walks the `NSUnderlyingErrorKey` chain (bounded): URLSession and FileHandle wrap the
     /// POSIX ENOSPC several layers deep.
     public static func isOutOfSpace(_ error: Error) -> Bool {

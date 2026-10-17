@@ -138,8 +138,7 @@ struct LiveDownloadStatusProbeTests {
                                                              token: cfg.token,
                                                              identity: cfg.identity))
             let activities = try JSONDecoder().decode(Activities.self, from: data)
-            let shape = activities.probeShape(ratingKey: cfg.ratingKey, title: nil,
-                                              allowSoleFallback: false)
+            let shape = activities.probeShape(ratingKey: cfg.ratingKey, title: nil)
             print("""
             >>> DLSTAT activities count=\(shape["activity_count"] ?? "0") \
             optimize_count=\(shape["optimize_count"] ?? "0") \

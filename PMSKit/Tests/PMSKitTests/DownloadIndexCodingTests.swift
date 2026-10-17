@@ -24,8 +24,12 @@ struct DownloadIndexCodingTests {
         #expect(DownloadIndexCoding.startupProbe(data: data("[]")) == .unsupported(schemaVersion: 1))
         #expect(DownloadIndexCoding.startupProbe(
             data: data(#"{"schemaVersion":2,"rows":[]}"#)) == .unsupported(schemaVersion: 2))
+        // A newer schema (written by a later build, then downgraded) is kept and fails closed:
+        // never the destructive reset that older schemas get.
         #expect(DownloadIndexCoding.startupProbe(
-            data: data(#"{"schemaVersion":99,"rows":[]}"#)) == .unsupported(schemaVersion: 99))
+            data: data(#"{"schemaVersion":99,"rows":[]}"#)) == .unreadable)
+        #expect(DownloadIndexCoding.startupProbe(
+            data: data(#"{"schemaVersion":5,"rows":[]}"#)) == .unreadable)
         #expect(DownloadIndexCoding.startupProbe(data: data("not-json")) == .unreadable)
         #expect(DownloadIndexCoding.startupProbe(
             data: data(#"{"schemaVersion":4,"rows":"wrong"}"#)) == .unreadable)

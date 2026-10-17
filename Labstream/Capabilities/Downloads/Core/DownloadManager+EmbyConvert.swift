@@ -190,14 +190,29 @@ extension DownloadManager {
         // Snapshot the existing File MediaSources. Used both to (a) reuse an already-converted version
         // instead of re-converting, and (b) identify the freshly-converted source once a new job
         // completes (a second `File` source appears on the same item).
-        let fileSources = await embyFileSources(server: server, token: token, identity: identity,
-                                                userId: userId, itemId: itemId)
+        let fetchedFileSources = await fetchEmbyFileSources(server: server, token: token,
+                                                            identity: identity,
+                                                            userId: userId, itemId: itemId)
         guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
                                           targetName: targetName) else {
             recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "preflight_sources")
             return
         }
-        let snapshotIds = Set(fileSources.compactMap { $0.id })
+        // B46: a failed or empty fetch is not a real snapshot. Persisting it empty let pickup adopt
+        // the original or an older sibling, so fail closed before any job exists (Retry is fresh:
+        // no recovery identity has been written yet).
+        guard let snapshotIds = EmbyConvertedSourcePolicy.preConversionSnapshotIDs(
+            fetched: fetchedFileSources, primaryMediaSourceID: metadata.mediaSourceID) else {
+            recordDownloadDiagnostic("downloads.convert_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "phase": .label("snapshot"),
+                "fetch_failed": .bool(fetchedFileSources == nil),
+            ])
+            failEmbyConvert(for: storeAttemptKey, .transferFailed(
+                "Couldn't read this item's versions from the server. Retry to continue."))
+            return
+        }
+        let fileSources = fetchedFileSources ?? []
 
         // REUSE PREFLIGHT (#126 on the auto-convert path): if a server-prepared converted version that
         // satisfies this preset's output resolution ALREADY exists, download THAT via the resumable
@@ -413,14 +428,36 @@ extension DownloadManager {
         }
 
         // Persist the job id so a relaunch resumes polling (not restarts) and a row delete can
-        // cancel the server-side job (`DELETE /Sync/Jobs/{id}`). If the user deleted/cancelled the
-        // row while `POST /Sync/Jobs` was in flight, do NOT upsert it back into existence; cancel the
-        // server job best-effort and leave the row gone.
+        // cancel the server-side job (`DELETE /Sync/Jobs/{id}`). If the user deleted the row, or a
+        // new attempt replaced it, while `POST /Sync/Jobs` was in flight, do NOT upsert it back into
+        // existence; cancel the server job best-effort and leave the row gone. B47: a row that was
+        // only PAUSED is still ours. Cancelling there left it with a dispatchAmbiguous identity that
+        // Resume could never match, so adopt the job onto the parked row instead.
         guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
                                           targetName: targetName) else {
             recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "post_create", jobId: job.id)
-            cancelEmbyConvertJob(jobId: job.id, ratingKey: ratingKey,
-                                 server: server, token: token, identity: identity)
+            let ownedRow = store.ownsAttempt(storeAttemptKey) ? store.record(for: storeAttemptKey) : nil
+            switch EmbyConvertRecoveryPolicy.staleCreateDisposition(
+                rowOwnedByAttempt: ownedRow?.metadata?.optimizeTargetName == targetName,
+                rowStatus: ownedRow?.status,
+                persistedJobID: ownedRow?.metadata?.embyConvertJobID,
+                createdJobID: job.id) {
+            case .adoptOntoParkedRow:
+                // On a persistence failure the job is still NOT cancelled: the row keeps its
+                // dispatchAmbiguous identity and recovery can match this exact new job on Resume.
+                if adoptEmbyConvertJobOntoParkedRow(jobId: job.id, targetName: targetName,
+                                                    for: storeAttemptKey) {
+                    recordDownloadDiagnostic("downloads.convert_job_adopted_parked", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "job_id": .int(job.id),
+                    ])
+                }
+            case .leaveToCurrentOwner:
+                break
+            case .cancel:
+                cancelEmbyConvertJob(jobId: job.id, ratingKey: ratingKey,
+                                     server: server, token: token, identity: identity)
+            }
             refreshRecords()
             return
         }
@@ -438,7 +475,9 @@ extension DownloadManager {
         refreshRecords()
 
         await pollAndDownloadEmbyConvertJob(item: item, ratingKey: ratingKey, jobId: job.id,
-                                            snapshotIds: snapshotIds, targetName: targetName,
+                                            snapshotIds: snapshotIds,
+                                            primaryMediaSourceID: metadata.mediaSourceID,
+                                            targetName: targetName,
                                             server: server, token: token, identity: identity,
                                             userId: userId, audioStreamIndex: audioStreamIndex,
                                             attemptKey: storeAttemptKey,
@@ -452,7 +491,9 @@ extension DownloadManager {
                                         fingerprint: EmbyConvertRecoveryPolicy.Fingerprint,
                                         attemptStartedAtEpochSeconds: Double,
                                         recoveryPhase: EmbyConvertRecoveryPolicy.Phase,
-                                        snapshotIds: Set<String>, targetName: String,
+                                        snapshotIds: Set<String>,
+                                        primaryMediaSourceID: String?,
+                                        targetName: String,
                                         server: URL, token: String,
                                         identity: EmbyClientIdentity, userId: String,
                                         audioStreamIndex: Int?,
@@ -531,6 +572,7 @@ extension DownloadManager {
 
         await pollAndDownloadEmbyConvertJob(
             item: item, ratingKey: ratingKey, jobId: jobId, snapshotIds: snapshotIds,
+            primaryMediaSourceID: primaryMediaSourceID,
             targetName: targetName, server: server, token: token, identity: identity,
             userId: userId, audioStreamIndex: audioStreamIndex,
             attemptKey: storeAttemptKey, attemptID: attemptID)
@@ -540,7 +582,9 @@ extension DownloadManager {
     /// plumbing ("Preparing on server… N%"), then hand the converted source to the resumable
     /// `.original` lane. Shared by the initial trigger and the relaunch-resume path.
     func pollAndDownloadEmbyConvertJob(item: MediaItem, ratingKey: String, jobId: Int,
-                                               snapshotIds: Set<String>, targetName: String,
+                                               snapshotIds: Set<String>,
+                                               primaryMediaSourceID: String?,
+                                               targetName: String,
                                                server: URL, token: String,
                                                identity: EmbyClientIdentity, userId: String,
                                                audioStreamIndex: Int? = nil,
@@ -551,12 +595,9 @@ extension DownloadManager {
         // that reusable server-prepared source before entering the long job-status loop so rows that
         // were at "Preparing on server… 100%" do not sit there until the user retries manually.
         let requestedHeight = EmbyConvertedSourcePolicy.presetOutputHeight(forLabel: targetName)
-        let primaryMediaSourceId: String?
-        if let id = item.media?.first?.id {
-            primaryMediaSourceId = String(id)
-        } else {
-            primaryMediaSourceId = nil
-        }
+        // B45: the real source id (persisted on the row), never the synthesized `Media.id`.
+        let primaryMediaSourceId = EmbyConvertedSourcePolicy.primaryMediaSourceID(
+            persisted: primaryMediaSourceID, item: item)
         let resumedReusableSource = await refreshAndPollReusableEmbyConvertedSource(
             server: server, token: token, identity: identity, userId: userId, itemId: item.ratingKey,
             ratingKey: ratingKey, requestedHeight: requestedHeight,
@@ -717,13 +758,15 @@ extension DownloadManager {
                     markServerPrepFinalizing(ratingKey: ratingKey)
                     refreshRecords()
                     await finishEmbyConvert(item: item, ratingKey: ratingKey, jobId: jobId,
-                                            snapshotIds: snapshotIds, targetName: targetName,
+                                            snapshotIds: snapshotIds,
+                                            primaryMediaSourceId: primaryMediaSourceId,
+                                            targetName: targetName,
                                             server: server, token: token, identity: identity,
                                             userId: userId, audioStreamIndex: audioStreamIndex,
                                             attemptKey: storeAttemptKey,
                                             attemptID: attemptID)
                 } else {
-                    // Server-side Failed/Cancelled → fail the row (retry-only; the server job
+                    // Server-side Failed/Cancelled/CompletedWithError → fail the row (retry-only; the server job
                     // itself is left alone — deleting it wouldn't delete a partial file anyway).
                     recordDownloadDiagnostic("downloads.convert_failed", fields: [
                         "download_id": .identifier(ratingKey),
@@ -737,7 +780,7 @@ extension DownloadManager {
                     guard clearEmbyConvertJobIDIfExact(
                         for: storeAttemptKey, expectedJobID: jobId) else { return }
                     failEmbyConvert(for: storeAttemptKey,
-                                    .transferFailed("Server conversion \(job.status.rawValue.lowercased())."))
+                                    .transferFailed("Server conversion \(job.status.terminalFailureDescription ?? "failed")."))
                 }
                 return
             }
@@ -808,6 +851,24 @@ extension DownloadManager {
         }
     }
 
+    /// B47: persist a just-created job id onto the exact parked (paused/failed) row that dispatched
+    /// it, leaving its status alone, so Resume polls this job instead of re-entering recovery.
+    private func adoptEmbyConvertJobOntoParkedRow(jobId: Int, targetName: String,
+                                                  for key: DownloadAttemptKey) -> Bool {
+        var matched = false
+        let result = store.updateMetadata(for: key) { metadata in
+            guard metadata.embyConvertJobID == nil,
+                  metadata.optimizeTargetName == targetName else { return }
+            matched = true
+            metadata.adoptEmbyConvertJobID(jobId)
+        }
+        switch result {
+        case .applied: return true
+        case .noChange: return matched
+        case .staleOrMissing, .persistenceFailed: return false
+        }
+    }
+
     func clearEmbyConvertRecoveryIfExact(
         for key: DownloadAttemptKey,
         expected: OfflineMetadata
@@ -861,7 +922,9 @@ extension DownloadManager {
     /// then hand off to the resumable `.original` static lane via `downloadEmby(…override:)`. The
     /// converted file is KEPT (no Sync-job cleanup) so #126's reuse serves the next download.
     private func finishEmbyConvert(item: MediaItem, ratingKey: String, jobId: Int,
-                                   snapshotIds: Set<String>, targetName: String,
+                                   snapshotIds: Set<String>,
+                                   primaryMediaSourceId: String?,
+                                   targetName: String,
                                    server: URL, token: String,
                                    identity: EmbyClientIdentity, userId: String,
                                    audioStreamIndex: Int?,
@@ -886,8 +949,8 @@ extension DownloadManager {
         var newSource: EmbyMediaSourceInfo?
         // Tier facts for the pickup sanity gate: a source with known dimensions far below what this
         // job could have rendered is a foreign sibling, not our output.
+        // `primaryMediaSourceId` is the real source id resolved by the poll chain (B45).
         let requestedHeight = EmbyConvertedSourcePolicy.presetOutputHeight(forLabel: targetName)
-        let primaryMediaSourceId = (item.media?.first?.id).map(String.init)
         markServerPrepFinalizing(ratingKey: ratingKey)
         recordDownloadDiagnostic("downloads.convert_finalizing", fields: [
             "download_id": .identifier(ratingKey),
@@ -990,18 +1053,26 @@ extension DownloadManager {
     /// non-empty id are returned. Best-effort: empty array on any error.
     private func embyFileSources(server: URL, token: String, identity: EmbyClientIdentity,
                                  userId: String, itemId: String) async -> [EmbyMediaSourceInfo] {
+        await fetchEmbyFileSources(server: server, token: token, identity: identity,
+                                   userId: userId, itemId: itemId) ?? []
+    }
+
+    /// `embyFileSources`, but nil on any HTTP/transport/decode error so a caller that must not
+    /// mistake a failure for "no sources" (the pre-conversion snapshot, B46) can fail closed.
+    private func fetchEmbyFileSources(server: URL, token: String, identity: EmbyClientIdentity,
+                                      userId: String, itemId: String) async -> [EmbyMediaSourceInfo]? {
         do {
             let req = try EmbyPlayback.downloadPlaybackInfoRequest(
                 server: server, token: token, identity: identity, userId: userId, itemId: itemId,
                 mediaSourceId: nil, maxStaticBitrate: 200_000_000)
             let (data, response) = try await URLSession.shared.data(for: req)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                return []
+                return nil
             }
             let sources = try EmbyPlaybackInfoResponse.decode(from: data).mediaSources
             return EmbyConvertedSourcePolicy.fileSources(sources)
         } catch {
-            return []
+            return nil
         }
     }
 

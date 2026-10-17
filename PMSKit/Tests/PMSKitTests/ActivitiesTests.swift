@@ -131,7 +131,7 @@ func decodesActivityProgressShapes(_ shape: ActivityProgressShape) throws {
     #expect(a.optimizeActivity(ratingKey: nil, title: "Blade Runner") != nil)
 }
 
-@Test func soleOptimizerTakenOnlyWhenFallbackAllowed() throws {
+@Test func soleOptimizerIsNeverAttributedWithoutAMatch() throws {
     // A single optimize job is running, but it is NOT ours (no ratingKey/title match).
     let json = """
     {"MediaContainer":{"Activity":[
@@ -140,12 +140,8 @@ func decodesActivityProgressShapes(_ shape: ActivityProgressShape) throws {
     ]}}
     """.data(using: .utf8)!
     let a = try JSONDecoder().decode(Activities.self, from: json)
-    // Default (fallback disallowed): never mis-attribute another job's progress.
+    // Never mis-attribute another job's progress, even when it is the only optimizer.
     #expect(a.optimizeActivity(ratingKey: "101", title: "My Movie") == nil)
-    // Allowed (this client has a single active download): take the sole optimizer.
-    let match = try #require(a.optimizeActivity(ratingKey: "101", title: "My Movie",
-                                                allowSoleFallback: true))
-    #expect(match.progress == 17)
 }
 
 @Test func ambiguousTitleMatchReturnsNil() throws {
@@ -158,14 +154,13 @@ func decodesActivityProgressShapes(_ shape: ActivityProgressShape) throws {
     ]}}
     """.data(using: .utf8)!
     let a = try JSONDecoder().decode(Activities.self, from: json)
-    #expect(a.optimizeActivity(ratingKey: nil, title: "Alien", allowSoleFallback: true) == nil)
+    #expect(a.optimizeActivity(ratingKey: nil, title: "Alien") == nil)
     // The longer, unambiguous title still resolves correctly.
     #expect(a.optimizeActivity(ratingKey: nil, title: "Aliens")?.progress == 70)
 }
 
 @Test func concurrentJobsDisambiguatedByContextRatingKey() throws {
-    // Two concurrent optimize jobs: the right one is picked by Context.ratingKey, even with
-    // the sole-optimizer fallback allowed (it must not fire when count > 1).
+    // Two concurrent optimize jobs: the right one is picked by Context.ratingKey.
     let json = """
     {"MediaContainer":{"Activity":[
       {"type":"media.optimize","progress":12,"Context":{"ratingKey":999}},
@@ -174,7 +169,7 @@ func decodesActivityProgressShapes(_ shape: ActivityProgressShape) throws {
     """.data(using: .utf8)!
     let a = try JSONDecoder().decode(Activities.self, from: json)
     #expect(a.activities[0].contextRatingKey == "999")  // Int ratingKey tolerated
-    #expect(a.optimizeActivity(ratingKey: "101", title: "x", allowSoleFallback: true)?.progress == 55)
+    #expect(a.optimizeActivity(ratingKey: "101", title: "x")?.progress == 55)
 }
 
 @Test func matchesMediaDownloadByContextMetadataID() throws {
@@ -207,7 +202,7 @@ func decodesActivityProgressShapes(_ shape: ActivityProgressShape) throws {
     ]}}
     """.data(using: .utf8)!
     let a = try JSONDecoder().decode(Activities.self, from: json)
-    #expect(a.optimizeActivity(ratingKey: "101", title: "T", allowSoleFallback: true) == nil)
+    #expect(a.optimizeActivity(ratingKey: "101", title: "T") == nil)
 }
 
 @Test func probeShapeOmitsTitleValues() throws {

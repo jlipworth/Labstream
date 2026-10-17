@@ -199,14 +199,15 @@ extension DownloadManager {
     private func selectPlexAudioForPreparedDownloadIfNeeded(
         part: Part?, audioStreamIndex: Int?, server: URL, token: String
     ) async {
+        // B43: send the matched stream's Stream.id, never the raw value (it may be a container
+        // index, which Plex would reject or resolve to a different stream).
         guard let part, let audioStreamIndex,
-              part.audioStreams.contains(where: {
-                  $0.id == audioStreamIndex || $0.index == audioStreamIndex
-              }) else { return }
+              let match = DownloadAudioSelectionPolicy.matchedAudioStream(
+                part: part, streamIdentifier: audioStreamIndex) else { return }
         do {
             try await appModel.client.send(StreamSelectionRequest.selectAudioStream(
                 server: server, token: token, identity: appModel.identity,
-                partID: part.id, audioStreamID: audioStreamIndex))
+                partID: part.id, audioStreamID: match.id))
         } catch {
             recordDownloadDiagnostic("downloads.audio_preference_fallback", fields: [
                 "backend": .label("Plex"),
