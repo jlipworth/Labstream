@@ -31,6 +31,25 @@ struct OfflinePlaybackLaunch {
     let chapterImageURLs: [Int: URL]
     let textSubtitles: [OfflineTextSubtitleTrack]
     let events: any OfflinePlaybackEventSink
+
+    init(attemptKey: DownloadAttemptKey, presentationRequest: OfflinePlaybackPresentationRequest,
+         fileURL: URL, item: MediaItem, backend: DownloadBackendKind, posterURL: URL?,
+         artworkSource: OfflineArtworkSource? = nil, preview: Preview, chapters: [OfflineChapter],
+         chapterImageURLs: [Int: URL], textSubtitles: [OfflineTextSubtitleTrack],
+         events: any OfflinePlaybackEventSink) {
+        self.attemptKey = attemptKey
+        self.presentationRequest = presentationRequest
+        self.fileURL = fileURL
+        self.item = item
+        self.backend = backend
+        self.posterURL = posterURL
+        self.artworkSource = artworkSource
+        self.preview = preview
+        self.chapters = chapters
+        self.chapterImageURLs = chapterImageURLs
+        self.textSubtitles = textSubtitles
+        self.events = events
+    }
 }
 
 /// Explicit Play Offline fails closed; rejection never requests a remote fallback.
