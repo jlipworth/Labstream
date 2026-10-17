@@ -42,18 +42,23 @@ A third `ship` run the same day built clean **1.7.2 (build 1503)** archives for 
 from `b63d1757`, after the Emby/Plex season-download admission fix (#363) merged. All four
 processed to **VALID**, are in the internal TestFlight group, and were selected for their 1.7.2
 platform versions with `select-build --yes`, replacing build 2. Nothing was submitted for review.
-The latest recorded processed distribution and the selected review candidate are both the
-**1.7.2 (build 1503)** archive set at `b63d1757` (the earlier candidate was build 2 at `ce97958f`), and
+A fourth `ship` run the same day built clean **1.7.2 (build 1506)** archives for all four targets
+from `6faff16f`, after the player Stats signal-chain redesign (#367) merged. All four processed to
+**VALID** and are in the internal TestFlight group. They are TestFlight builds only and are not
+selected for the platform versions.
+The latest recorded processed distribution is the **1.7.2 (build 1506)** archive set at
+`6faff16f`; the selected review candidate remains the **1.7.2 (build 1503)** set at `b63d1757`
+(the earlier candidate was build 2 at `ce97958f`), and
 the previous release was the **1.6.1 (build 2)** set at `abd1ddcac351`. Keep the source version
 and the processed binary version separate when reporting release status. Later `auto` builds
-and any hand-bumped `CURRENT_PROJECT_VERSION` for 1.7.2 must exceed 1503.
+and any hand-bumped `CURRENT_PROJECT_VERSION` for 1.7.2 must exceed 1506.
 
 | Product | Current source | Latest recorded processed distribution |
 | --- | --- | --- |
-| Apple Vision Pro (`Labstream`) | 1.7.2 (build 2) | **1.7.2 (build 1503):** a clean `b63d1757` archive is processed, selected for the platform version, and in the internal TestFlight group. **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, previously selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` and **1.7.2 (build 1501)** from `4b65b353` are also processed and in the internal group, not selected. Physical TestFlight acceptance and review access remain pending. |
-| iPhone and iPad (`LabstreamMobile`) | 1.7.2 (build 2) | **1.7.2 (build 1503):** a clean `b63d1757` archive is processed, selected for the platform version, and in the internal TestFlight group. **1.7.2 (build 2):** the repository records a clean `ce97958f` universal iOS archive uploaded and processed, previously selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` and **1.7.2 (build 1501)** from `4b65b353` are also processed and in the internal group, not selected. Physical iPhone and iPad acceptance remain pending. |
-| Apple TV (`LabstreamTV`) | 1.7.2 (build 2) | **1.7.2 (build 1503):** a clean `b63d1757` archive is processed, selected for the platform version, and in the internal TestFlight group. **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, previously selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` and **1.7.2 (build 1501)** from `4b65b353` are also processed and in the internal group, not selected. Physical Apple TV acceptance remains pending. |
-| Mac (`LabstreamMac`) | 1.7.2 (build 2) | **1.7.2 (build 1503):** a clean `b63d1757` archive is processed, selected for the platform version, and in the internal TestFlight group. **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, previously selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` and **1.7.2 (build 1501)** from `4b65b353` are also processed and in the internal group, not selected. A 1.7.2 TestFlight install on a Mac is not recorded; the earlier 1.6.1 (build 2) build was installed from TestFlight and passed launch and receipt/signature checks. Deeper sandbox and live-host acceptance remain pending. |
+| Apple Vision Pro (`Labstream`) | 1.7.2 (build 2) | **1.7.2 (build 1506):** a clean `6faff16f` archive is processed and in the internal TestFlight group, not selected. **1.7.2 (build 1503):** a clean `b63d1757` archive is processed, selected for the platform version, and in the internal TestFlight group. **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, previously selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` and **1.7.2 (build 1501)** from `4b65b353` are also processed and in the internal group, not selected. Physical TestFlight acceptance and review access remain pending. |
+| iPhone and iPad (`LabstreamMobile`) | 1.7.2 (build 2) | **1.7.2 (build 1506):** a clean `6faff16f` archive is processed and in the internal TestFlight group, not selected. **1.7.2 (build 1503):** a clean `b63d1757` archive is processed, selected for the platform version, and in the internal TestFlight group. **1.7.2 (build 2):** the repository records a clean `ce97958f` universal iOS archive uploaded and processed, previously selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` and **1.7.2 (build 1501)** from `4b65b353` are also processed and in the internal group, not selected. Physical iPhone and iPad acceptance remain pending. |
+| Apple TV (`LabstreamTV`) | 1.7.2 (build 2) | **1.7.2 (build 1506):** a clean `6faff16f` archive is processed and in the internal TestFlight group, not selected. **1.7.2 (build 1503):** a clean `b63d1757` archive is processed, selected for the platform version, and in the internal TestFlight group. **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, previously selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` and **1.7.2 (build 1501)** from `4b65b353` are also processed and in the internal group, not selected. Physical Apple TV acceptance remains pending. |
+| Mac (`LabstreamMac`) | 1.7.2 (build 2) | **1.7.2 (build 1506):** a clean `6faff16f` archive is processed and in the internal TestFlight group, not selected. **1.7.2 (build 1503):** a clean `b63d1757` archive is processed, selected for the platform version, and in the internal TestFlight group. **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, previously selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` and **1.7.2 (build 1501)** from `4b65b353` are also processed and in the internal group, not selected. A 1.7.2 TestFlight install on a Mac is not recorded; the earlier 1.6.1 (build 2) build was installed from TestFlight and passed launch and receipt/signature checks. Deeper sandbox and live-host acceptance remain pending. |
 
 The 1.7.1 source milestone includes bounded DV/HDR delivery investigation and probe
 validation. The P7 HDR10-base candidate remains default-off and DEBUG-only on macOS;
@@ -285,6 +290,9 @@ and App Store Connect state before relying on them for a new submission.
 - [x] Clean **1.7.2 (build 1503)** archives from `b63d1757` were built, validated, uploaded, and
       processed for all four platforms on 2026-10-16, added to the internal TestFlight group, and
       selected for each 1.7.2 platform version.
+- [x] Clean **1.7.2 (build 1506)** archives from `6faff16f` were built, validated, uploaded, and
+      processed for all four platforms on 2026-10-16 and added to the internal TestFlight group.
+      They are not selected for the platform versions.
 - [ ] A physical Vision Pro TestFlight smoke covers first launch, sign-in, browse, playback,
       seeking, subtitles, audio, Cinema, background/foreground, and diagnostics. Simulator smoke
       is useful but does not replace this gate.
