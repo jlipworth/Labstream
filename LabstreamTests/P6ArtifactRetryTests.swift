@@ -42,8 +42,11 @@ struct P6ArtifactRetryTests {
         coordinator.failArtifact(first, errorType: "Original")
         hold.arm()
         defer { hold.release.signal() }
-        let waiter = Task.detached { coordinator.waitSynchronously(for: first) }
-        try #require(await p6Signal(hold.entered))
+        // Synchronous coordinator waits belong on a dedicated thread, never the cooperative
+        // executor whose scheduling this test is trying to observe.
+        let resultAcknowledgement = P6Acknowledgement<DownloadArtifactLifecycleCoordinator.FlushResult>()
+        Thread.detachNewThread { resultAcknowledgement.signal(coordinator.waitSynchronously(for: first)) }
+        try #require(await hold.acknowledgement.wait())
         coordinator.abandonIntent(first.intentID)
         for round in 2...601 {
             let ticket = coordinator.register(key: key, generation: 1, intentID: UUID(), preparedRevision: .init(revision: UInt64(round)))
@@ -52,7 +55,7 @@ struct P6ArtifactRetryTests {
         }
         #expect(coordinator.retiredFailureCountForTesting == 512)
         hold.release.signal()
-        let result = await waiter.value
+        let result = await resultAcknowledgement.wait()
         #expect(result == .failed(.artifact(errorType: "Original")))
 
     }
@@ -80,6 +83,38 @@ struct P6ArtifactRetryTests {
         #expect(after == before)
 
     }
+    @Test("unrelated successful artifact completion preserves a failed head's suppression")
+    func unrelatedArtifactDoesNotRetryFailedHead() async throws {
+        let fixture = try P6Fixture()
+        let initial = fixture.store()
+        let key = try fixture.seed(initial)
+        let other = fixture.record("other", status: .paused, ratingKey: "plex:other", filename: "other.mp4")
+        try #require(initial.createAttemptOwnedRecord(other, attemptID: other.attemptID!) == .committed(
+            .init(ratingKey: other.ratingKey, attemptID: other.attemptID!)))
+        let attempts = Mutex(0)
+        let live = DownloadArtifactFilesystem.live
+        let store = DownloadStore(baseDirectory: fixture.directory, artifactFilesystem: .init(
+            writeAuthArtifact: { data, url, manager in
+                if data == Data([1]) {
+                    attempts.withLock { $0 += 1 }
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                try live.writeAuthArtifact(data, url, manager)
+            }, removeItem: live.removeItem, fileExists: live.fileExists))
+        guard case .artifactWriteFailed = await store.resolve(store.submitResumeData(for: key, Data([1])), deadline: .after(2)) else {
+            Issue.record("head did not fail"); return
+        }
+        let before = attempts.withLock { $0 }
+        let otherKey = DownloadAttemptKey(ratingKey: other.ratingKey, attemptID: other.attemptID!)
+        #expect(await store.resolve(store.submitResumeData(for: otherKey, Data([2])), deadline: .after(2)) == .applied)
+        await store.drainArtifactWorkerForP6Testing()
+        #expect(attempts.withLock { $0 } == before)
+        // Explicit recovery still retries the failed head.
+        let retry = try #require(store.recoverArtifactTicketsForP6Testing().first { $0.key == key })
+        _ = await store.resolveArtifact(retry, deadline: .after(2))
+        #expect(attempts.withLock { $0 } == before + 1)
+    }
+
     @Test("a retry beyond a captured watermark still gates its unresolved durable intent")
     func retryPreservesBoundaryAuthority() async {
         let coordinator = DownloadArtifactLifecycleCoordinator()

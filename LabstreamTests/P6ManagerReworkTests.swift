@@ -37,7 +37,7 @@ struct P6ManagerReworkTests {
                 store: store, session: session, registerForBackgroundEvents: false)
             return (manager, session)
         }
-        try #require(await p6Signal(hold.entered))
+        try #require(await hold.acknowledgement.wait())
         let heartbeat = DispatchSemaphore(value: 0)
         let inspection = Task { @MainActor in
             let (manager, session) = await construction.value
@@ -52,12 +52,8 @@ struct P6ManagerReworkTests {
         let (manager, session) = await construction.value
         defer { session.invalidateInjectedSessionForTesting() }
         await inspection.value
-        let deadline = DownloadStoreDeadline.after(5)
-        while await MainActor.run(body: {
-            fails ? manager.startupRecoveryState == .preparing : !manager.admission.recoveryComplete
-        }), deadline.remaining > 0 {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        let recovered = await manager.awaitStartupRecoveryForTesting()
+        #expect(recovered == !fails)
         await MainActor.run {
             if fails {
                 guard case .blocked = manager.startupRecoveryState else { Issue.record("failed normalization admitted transport"); return }

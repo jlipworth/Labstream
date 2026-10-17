@@ -219,6 +219,21 @@ public final class DownloadManager {
 
     /// Live records (in-progress + completed), backed by `DownloadStore`.
     public private(set) var records: [DownloadRecord] = []
+    #if DEBUG
+    @ObservationIgnored private var startupCompletionWaiters: [CheckedContinuation<Bool, Never>] = []
+    /// Observe the actual terminal startup edge. Scheduling delay is not a startup failure;
+    /// store operations retain their own bounded deadlines and failure transitions.
+    func awaitStartupRecoveryForTesting() async -> Bool {
+        if startupRecoveryState == .ready && admission.recoveryComplete { return true }
+        if case .blocked = startupRecoveryState { return false }
+        return await withCheckedContinuation { startupCompletionWaiters.append($0) }
+    }
+    private func acknowledgeStartupRecoveryForTesting(_ ready: Bool) {
+        let waiters = startupCompletionWaiters
+        startupCompletionWaiters.removeAll()
+        for waiter in waiters { waiter.resume(returning: ready) }
+    }
+    #endif
     /// Fail-closed schema/task admission state. The message is fixed application text: no paths,
     /// tokens, persistence error descriptions, or server values are exposed to UI/diagnostics.
     public private(set) var startupRecoveryState: StartupRecoveryState = .preparing
@@ -723,6 +738,13 @@ public final class DownloadManager {
         // Register only after callbacks exist, but while the session is still dormant. If the app
         // delegate already holds a background completion handler, registration records it in the
         // session's completion gate before activation constructs URLSession and events can arrive.
+        self.session.onBackgroundWakeAuthorized = { [weak self] in
+            Task { @MainActor in
+                guard let self, self.startupRecoveryState == .preparing,
+                      !self.startupRecoveryInFlight else { return }
+                self.continueStartupRecovery(with: self.store.startupIndexAdmission(), deferCurrentActivation: true)
+            }
+        }
         if registerForBackgroundEvents {
             backgroundCompletionRegistry.register(self.session)
         }
@@ -863,6 +885,7 @@ public final class DownloadManager {
     }
 
     private func activateDownloadsAfterUnsupportedSchemaReset() {
+        guard !session.startupAuthorizationExpired else { return }
         startupRecoveryInFlight = true
         session.activateAfterResettingUnsupportedStore { [weak self] result in
             Task { @MainActor in
@@ -888,7 +911,14 @@ public final class DownloadManager {
         }
     }
 
+    #if DEBUG
+    var startupActivationDecisionForTesting: (@Sendable () -> Void)?
+    #endif
     private func activateDownloadsForCurrentStore() {
+        #if DEBUG
+        startupActivationDecisionForTesting?()
+        #endif
+        guard !session.startupAuthorizationExpired else { return }
         startupRecoveryDeferredActivationTask?.cancel()
         startupRecoveryDeferredActivationTask = nil
         startupRecoveryInFlight = true
@@ -987,13 +1017,18 @@ public final class DownloadManager {
         for key in candidates {
             if !store.schemaUpgradeRescues(key), let record = store.record(for: key) {
                 deleteCleanupGapObserved = false
-                switch delete(record: record) {
+                var handoff = delete(record: record)
+                if case .preparing(let pendingKey) = handoff,
+                   let preparation = deletionPreparationTasks[pendingKey] {
+                    handoff = await preparation.task.value
+                }
+                switch handoff {
                 case .barriered, .capsule:
                     // Full key: legacy attempt IDs need not be unique across items.
                     let entry = DownloadUpgradeNotice.entry(for: key)
                     retired.append(entry)
                     if deleteCleanupGapObserved { cleanupGaps.append(entry) }
-                case .persistenceFailed, .stale:
+                case .persistenceFailed, .stale, .preparing:
                     break
                 }
             }
@@ -1027,6 +1062,9 @@ public final class DownloadManager {
         session.releaseBackgroundCompletionAfterStartupFailure()
         startupRecoveryInFlight = false
         startupRecoveryState = .blocked(message: message)
+        #if DEBUG
+        acknowledgeStartupRecoveryForTesting(false)
+        #endif
         startupRecoveryErrorKeys = affectedRatingKeys
         for key in affectedRatingKeys { lastError[key] = .transferFailed(message) }
         recordDownloadDiagnostic("downloads.startup_admission_blocked", fields: [
@@ -1125,6 +1163,9 @@ public final class DownloadManager {
                 // P4: admission opens only after tasks and pollers were reattached, so surviving
                 // work is counted before anything new is granted.
                 self.admission.recoveryComplete = true
+                #if DEBUG
+                self.acknowledgeStartupRecoveryForTesting(true)
+                #endif
                 self.scheduleAdmissionPump()
             }
         }
@@ -1152,53 +1193,60 @@ public final class DownloadManager {
             guard let attemptID = record.attemptID else { continue }
             let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
             if let pending = store.deletionPendingCleanupIntents(for: key) {
-                switch DownloadCleanupOrdering.prepareForDestructiveDeletion(
-                    candidates: pending,
-                    key: key,
-                    journal: cleanupIntentJournal,
-                    store: store
-                ) {
-                case .ready(let durable):
-                    // Every cleanup operation is now independent of row lifetime. Remove A under
-                    // exact ownership before starting cleanup; a replacement B is rejected while
-                    // the deletion-pending reservation exists.
-                    session.cancel(ratingKey: key.ratingKey)
-                    let submission = store.submitCompletePendingDeletion(for: key)
-                    if case .accepted = submission {
-                        _ = downloadWorkRegistry.cancelCancellableWork(for: key)
-                    }
-                    Task { [weak self] in
-                        guard let self else { return }
-                        let outcome = await store.resolveRowDeletion(submission)
-                        guard case .removed = outcome else {
-                            // A non-`.removed` outcome means the accepted completion never proved
-                            // exact removal (terminal-barrier persistence/cleanup failed, or the
-                            // owner changed underneath us). Mirror the interactive delete() and
-                            // removeAttempt() paths: emit a diagnostic and surface a retry-able
-                            // lastError instead of guard-returning silently, which left the
-                            // deletion-pending row frozen until a manual Delete. The durable
-                            // reservation survives, so the next launch's migration re-drives it and
-                            // the surfaced "tap Delete to retry" gives the user an in-session action.
-                            recordStartupDeletionResolutionFailure(outcome, key: key)
-                            lastError[key.ratingKey] = .transferFailed(
-                                "Deletion could not finish safely. Free storage if needed, then tap Delete to retry.")
-                            refreshRecords()
-                            return
+                let fence = managerActionGenerations[key.ratingKey, default: 0]
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    let result = await DownloadCleanupOrdering.prepareForDestructiveDeletionAsync(
+                        candidates: pending,
+                        key: key,
+                        journal: cleanupIntentJournal,
+                        store: store, deadline: .after(30)
+                    )
+                    guard managerActionGenerations[key.ratingKey, default: 0] == fence,
+                          store.isDeletionPending(for: key) else { return }
+                    switch result {
+                    case .ready(let durable):
+                        // Every cleanup operation is now independent of row lifetime. Remove A under
+                        // exact ownership before starting cleanup; a replacement B is rejected while
+                        // the deletion-pending reservation exists.
+                        session.cancel(ratingKey: key.ratingKey)
+                        let submission = store.submitCompletePendingDeletion(for: key)
+                        if case .accepted = submission {
+                            _ = downloadWorkRegistry.cancelCancellableWork(for: key)
                         }
-                        _ = durable
-                        cleanupRunner?.kick(reason: "pending_deletion_completed")
-                        lastError[key.ratingKey] = nil
-                        refreshRecords()
+                        Task { [weak self] in
+                            guard let self else { return }
+                            let outcome = await store.resolveRowDeletion(submission)
+                            guard case .removed = outcome else {
+                                // A non-`.removed` outcome means the accepted completion never proved
+                                // exact removal (terminal-barrier persistence/cleanup failed, or the
+                                // owner changed underneath us). Mirror the interactive delete() and
+                                // removeAttempt() paths: emit a diagnostic and surface a retry-able
+                                // lastError instead of guard-returning silently, which left the
+                                // deletion-pending row frozen until a manual Delete. The durable
+                                // reservation survives, so the next launch's migration re-drives it and
+                                // the surfaced "tap Delete to retry" gives the user an in-session action.
+                                recordStartupDeletionResolutionFailure(outcome, key: key)
+                                lastError[key.ratingKey] = .transferFailed(
+                                    "Deletion could not finish safely. Free storage if needed, then tap Delete to retry.")
+                                refreshRecords()
+                                return
+                            }
+                            _ = durable
+                            cleanupRunner?.kick(reason: "pending_deletion_completed")
+                            lastError[key.ratingKey] = nil
+                            refreshRecords()
+                        }
+                    case .deletionPending:
+                        haltManagerOwnedWorkForPendingDeletion(key)
+                        lastError[key.ratingKey] = .transferFailed(
+                            "Deletion is pending until server cleanup can be saved. Tap Delete to retry.")
+                    case .indexPersistenceFailed:
+                        lastError[key.ratingKey] = .transferFailed(
+                            "Deletion could not be saved. Free storage if needed, then tap Delete to retry.")
+                    case .staleOrMissing:
+                        break
                     }
-                case .deletionPending:
-                    haltManagerOwnedWorkForPendingDeletion(key)
-                    lastError[key.ratingKey] = .transferFailed(
-                        "Deletion is pending until server cleanup can be saved. Tap Delete to retry.")
-                case .indexPersistenceFailed:
-                    lastError[key.ratingKey] = .transferFailed(
-                        "Deletion could not be saved. Free storage if needed, then tap Delete to retry.")
-                case .staleOrMissing:
-                    break
                 }
                 continue
             }
@@ -1997,6 +2045,10 @@ public final class DownloadManager {
         let isActive = reason == .aggregateSceneBecameActive
         isAppSceneActive = isActive
         if isActive {
+            session.noteForegroundAuthorization()
+            if startupRecoveryState == .preparing && !startupRecoveryInFlight {
+                continueStartupRecovery(with: store.startupIndexAdmission(), deferCurrentActivation: true)
+            }
             beginDownloadRateForegroundRebaseline()
             // #187: headset reattach can deliver a burst of background-session progress and scene
             // activation events while the Offline window is being reconstructed. Coalesce the first
@@ -3982,6 +4034,7 @@ public final class DownloadManager {
     enum DeleteHandoff: Sendable, Equatable {
         /// The row-deletion barrier is installed; the artifact queue finishes removal.
         case barriered
+        case preparing(DownloadAttemptKey)
         /// Journaling was unavailable; a durable deletion-pending reservation holds the row.
         case capsule
         /// The deletion could not be saved; the row is unchanged.
@@ -4073,50 +4126,61 @@ public final class DownloadManager {
         }
         deleteCleanupGapObserved = serverCleanupLeakDisclosure != nil
         if let rowAttemptKey, !cleanupIntentsToExecute.isEmpty {
-            // Journal first, destructive local deletion second. If the standalone queue is
-            // unavailable, reserve every exact operation (including transient PlaySessionId) in
-            // the index and return with the row/files intact. A retry or relaunch can then migrate
-            // the reservation without inventing authority from whichever attempt is current.
-            switch DownloadCleanupOrdering.prepareForDestructiveDeletion(
-                candidates: cleanupIntentsToExecute,
-                key: rowAttemptKey,
-                journal: cleanupIntentJournal,
-                store: store
-            ) {
-            case .ready(let durable):
-                cleanupIntentsToExecute = durable
-            case .deletionPending(_, let failure):
-                haltManagerOwnedWorkForPendingDeletion(rowAttemptKey)
-                lastError[ratingKey] = .transferFailed(
-                    "Deletion is pending until server cleanup can be saved. Tap Delete to retry.")
-                recordDownloadDiagnostic("downloads.delete_deferred", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "reason": .label(Self.cleanupOrderingFailureLabel(failure)),
-                    "authority": .label("index_deletion_pending"),
-                ])
-                refreshRecords()
-                return .capsule
-            case .indexPersistenceFailed(_, let persistence):
-                // The reservation may be dirty in memory; stop process-owned work either way.
-                haltManagerOwnedWorkForPendingDeletion(rowAttemptKey)
-                lastError[ratingKey] = .transferFailed(
-                    "Deletion could not be saved. Free storage if needed, then tap Delete to retry.")
-                recordDownloadDiagnostic("downloads.delete_deferred", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "reason": .label(Self.startupPersistenceFailureLabel(persistence)),
-                    "authority": .label("existing_row_unchanged"),
-                ])
-                refreshRecords()
-                return .persistenceFailed
-            case .staleOrMissing:
-                recordDownloadDiagnostic("downloads.delete_deferred", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "reason": .label("cleanup_owner_changed"),
-                ])
-                refreshRecords()
-                return .stale
+            let reservation = store.submitDeletionPending(for: rowAttemptKey, cleanupIntents: cleanupIntentsToExecute)
+            guard case .accepted = reservation else { return .stale }
+            haltManagerOwnedWorkForPendingDeletion(rowAttemptKey)
+            let fence = managerActionGenerations[ratingKey, default: 0]
+            let candidates = cleanupIntentsToExecute
+            let disclosure = serverCleanupLeakDisclosure
+            let task = Task { @MainActor [weak self] () -> DeleteHandoff in
+                guard let self else { return .stale }
+                defer {
+                    if deletionPreparationTasks[rowAttemptKey]?.generation == fence {
+                        deletionPreparationTasks.removeValue(forKey: rowAttemptKey)
+                    }
+                }
+                let result = await DownloadCleanupOrdering.prepareForDestructiveDeletionAsync(
+                    candidates: candidates, key: rowAttemptKey, journal: cleanupIntentJournal,
+                    store: store, deadline: .after(30), reservation: reservation)
+                guard managerActionGenerations[ratingKey, default: 0] == fence,
+                      store.isDeletionPending(for: rowAttemptKey) else { return .stale }
+                switch result {
+                case .ready(let durable):
+                    return finishDeletion(record: rowToDelete, rowAttemptKey: rowAttemptKey,
+                        wasDeletionPending: true, cleanupIntentsToExecute: durable,
+                        serverCleanupLeakDisclosure: disclosure)
+                case .deletionPending(_, let failure):
+                    lastError[ratingKey] = .transferFailed(
+                        "Deletion is pending until server cleanup can be saved. Tap Delete to retry.")
+                    recordDownloadDiagnostic("downloads.delete_deferred", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "reason": .label(Self.cleanupOrderingFailureLabel(failure)),
+                        "authority": .label("index_deletion_pending"),
+                    ])
+                    refreshRecords()
+                    return .capsule
+                case .indexPersistenceFailed:
+                    lastError[ratingKey] = .transferFailed(
+                        "Deletion could not be saved. Free storage if needed, then tap Delete to retry.")
+                    refreshRecords()
+                    return .persistenceFailed
+                case .staleOrMissing: return .stale
+                }
             }
+            deletionPreparationTasks[rowAttemptKey] = (fence, task)
+            return .preparing(rowAttemptKey)
         }
+        return finishDeletion(record: rowToDelete, rowAttemptKey: rowAttemptKey,
+            wasDeletionPending: wasDeletionPending, cleanupIntentsToExecute: cleanupIntentsToExecute,
+            serverCleanupLeakDisclosure: serverCleanupLeakDisclosure)
+    }
+
+    @ObservationIgnored private var deletionPreparationTasks: [DownloadAttemptKey: (generation: UInt64, task: Task<DeleteHandoff, Never>)] = [:]
+
+    private func finishDeletion(record rowToDelete: DownloadRecord, rowAttemptKey: DownloadAttemptKey?,
+        wasDeletionPending: Bool, cleanupIntentsToExecute: [DurableDownloadCleanupIntent],
+        serverCleanupLeakDisclosure: DownloadError?) -> DeleteHandoff {
+        let ratingKey = rowToDelete.ratingKey
         guard let deletedAttemptKey = rowAttemptKey else { return .stale }
         let deletionSubmission = wasDeletionPending
             ? store.submitCompletePendingDeletion(for: deletedAttemptKey)

@@ -429,7 +429,7 @@ struct DownloadCleanupOrderingTests {
             registerForBackgroundEvents: false)
         manager.appModel.embyAccessToken = nil
         manager.setQueuePausedForTesting(false)
-        #expect(await waitUntil { manager.startupRecoveryState == .ready && manager.admission.recoveryComplete })
+        #expect(await manager.awaitStartupRecoveryForTesting())
 
         // Backend-switch edge: the same sweep that ran at launch.
         manager.teardownOrphanedEncodersOnLaunch()

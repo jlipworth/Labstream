@@ -52,6 +52,7 @@ final class BackgroundDownloadWakeCoordinator: @unchecked Sendable {
     private var wake: Wake?
     private var operations: [UUID: DownloadWakeOperation] = [:]
     private var expiredOperations: Set<UUID> = []
+    private var backgroundAuthorizationExpired = false
     private var anonymousOperations: [DownloadWakeOperation] = []
     private var deferredRevalidationKeys: Set<DownloadAttemptKey> = []
     private var graceGenerations: [DownloadAttemptKey: (GraceGeneration, DownloadWakeOperation, UInt64)] = [:]
@@ -83,15 +84,23 @@ final class BackgroundDownloadWakeCoordinator: @unchecked Sendable {
             return min(flush.remaining, remaining(current.deadline))
         }
     }
+    var hasExpiredBackgroundAuthorization: Bool {
+        lock.withLock { backgroundAuthorizationExpired }
+    }
     var isWindingDown: Bool {
-        lock.withLock { wake?.windingDown == true || !expiredOperations.isEmpty }
+        lock.withLock { backgroundAuthorizationExpired || wake?.windingDown == true || !expiredOperations.isEmpty }
+    }
+    /// OS handler release does not authorize foreground work. Only a new wake or an
+    /// explicit active-scene edge can restore that permission after expiry.
+    func noteForegroundAuthorization() {
+        lock.withLock { backgroundAuthorizationExpired = false }
     }
     var remainingTimeout: TimeInterval {
         lock.withLock { wake.map { remaining($0.deadline) } ?? budget.operation }
     }
     func deferRevalidationIfWakePending(_ key: DownloadAttemptKey?) -> Bool {
         lock.withLock {
-            guard wake != nil || !expiredOperations.isEmpty else {
+            guard backgroundAuthorizationExpired || wake != nil || !expiredOperations.isEmpty else {
                 if let key { deferredRevalidationKeys.remove(key) }
                 return false
             }
@@ -146,6 +155,7 @@ final class BackgroundDownloadWakeCoordinator: @unchecked Sendable {
         lock.lock()
         let isNew = wake == nil
         if isNew {
+            backgroundAuthorizationExpired = false
             wake = Wake(generation: .init(id: UUID()), deadline: receipt.absoluteDeadline,
                         receivedAt: receipt.receivedAt, required: Set(operations.keys).subtracting(expiredOperations))
         }
@@ -365,7 +375,10 @@ final class BackgroundDownloadWakeCoordinator: @unchecked Sendable {
         let batches = current.finished + current.awaiting.keys.sorted().map {
             BackgroundDownloadCompletionReleaseBatch(identifier: $0, tokens: current.awaiting[$0]!)
         }
-        if outcome == .timedOut { expiredOperations.formUnion(current.required) }
+        if outcome == .timedOut {
+            backgroundAuthorizationExpired = true
+            expiredOperations.formUnion(current.required)
+        }
         wake = nil
         // Timed-out deferred probes remain parked until an authorized foreground edge.
         let keys = outcome == .drained ? deferredRevalidationKeys : []
