@@ -269,8 +269,11 @@ public enum DownloadLifecycleReducer {
             return pause(cause)
 
         case .bodyCaptured, .bodyAtWorking:
+            // A complete body also re-enters finalizing from a paused or failed row: launch
+            // recovery re-finalizes a complete static checkpoint that relaunch had parked.
             guard lifecycle == .transferring || lifecycle == .admitted
-                    || lifecycle == .finalizing else { return illegal }
+                    || lifecycle == .finalizing || lifecycle == .paused
+                    || lifecycle == .failed else { return illegal }
             return to(.finalizing, event == .bodyAtWorking ? [.requestFinalization] : [])
 
         case .finalizeOutcome(let id, let outcome, let source):
