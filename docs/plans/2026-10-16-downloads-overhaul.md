@@ -356,6 +356,53 @@ Acceptance is a phase's pins and inventory rows staying green.
 
 ## Progress journal
 
+- **2026-10-17 — P7.2/P7.5 playback lane** on `t3/offline-playback-launch`, based on
+  P7.1 `4c0bc1d3`. Detail now admits an exact attempt after orientation through the shared
+  factory, with independent presentation-request and playback-session generations. The factory
+  reconstructs local resume/rewind once and chooses metadata-owned previews, chapters, subtitles
+  and artwork. Its sink separates actual-playing verification from saved position, preserves
+  repeated-truncation warnings, coalesces progress behind one bounded P6 async resolver, retains
+  terminal close samples, rejects replacement/deletion and supersedes older sessions. Persistence
+  failures remain typed and emit a fixed diagnostic; close performs no synchronous flush.
+  Embedded and sidecar subtitles share one menu/Off row, with mutual exclusion and item/session/
+  selection fences after asynchronous work. Sidecar menus remain available before item preparation
+  and never parse merely by opening. Availability uses off-MainActor generation-tagged scans;
+  progress/body reads do not stat, terminal publication and foreground refresh do, empty candidates
+  withdraw immediately, and stale scans cannot revive removed rows. Recovery keeps the launch
+  splash until its local snapshot/scan resolves. Readable blocked rows remain playable without
+  mutation authority; opaque indices cannot admit Offline. Restricted Offline owns persistent
+  focus state and acknowledges returns by identity, as does normal Root, without changing the
+  existing reconnect/recovery scheduler.
+  **Integration seam / additive APIs:** `DownloadManager.offlinePlaybackLaunchFactory` returns
+  the same manager-owned factory for its lifetime;
+  `CustomPlayerView(offlineLaunch:trickPlayProvider:onClose:)` consumes `launch.events` itself.
+  `OfflinePlaybackLaunch.artworkSource` is an optional additive carrier, defaulted in its explicit
+  initializer to preserve existing construction; it retains the persisted artwork owner/generation.
+  Local player/session initializers also accept optional observed/close callbacks, and the router
+  exposes identity-checked acknowledgement. Frozen factory/sink protocol signatures, v5 and the
+  metadata schema are unchanged.
+  **Red-to-green:** the unchanged baseline reproduced 22 expected hosted issues across 16 test
+  functions plus both truncation assertions in PMSKit. Pins 01–05, 09–11, presentation generation
+  and the Detail halves of 06/orientation are green. Only `06-library` (two rewind arguments) and
+  `orientation-library` remain wrapped in this lane's tests: P7.4 owns the untouched library
+  factory/presentation wiring. Playback pins exercise Detail's actual player adapter and the
+  shared admitted-launch player; the final library end-to-end wiring remains with that lane.
+  **Hosted flake:** unsupported-root reclamation runs on a shared serial utility queue. Under
+  parallel load the full test took 18.5 seconds, then 12.9 seconds; the old ten-second polling
+  window assigned an unrelated bound to utility-queue scheduling. A test-owned directory mutation
+  acknowledgement, installed before activation, now awaits actual quarantine removal without
+  modifying store/session internals. No product reclamation stall was observed.
+  **Validation:** hermetic PMSKit passed **1,621 test functions** with **7 expected known issues**;
+  the full parallel Mac hosted matrix passed **938 functions** (**872 Swift Testing + 66 XCTest**),
+  with **23 expected known issues**, zero unexpected failures and zero skips, **twice on the final
+  code** with normal parallel testing and the exclusive Xcode lock for each run. Hygiene passed
+  **386 tooling tests**, public redaction, strict MkDocs, rendered links and Mermaid checks. One
+  clean parallel run exposed the separate inherited P6 two-second startup-heartbeat deadline while
+  `DownloadSignOutPauseTests` synchronously waited on persistence on MainActor; those fixtures
+  remain unedited under lane ownership. No simulator was booted;
+  no push, PR, merge or release/version change was performed. `Generic` is unchanged. Live Plex,
+  Jellyfin/Emby, decoded-frame, hardware and final integrated library acceptance remain open.
+
 - **2026-10-17 — P7.1 contracts and red fixtures** on `t3/p7-offline-playback-contracts`,
   based on integrated P6 `6bc8f59a`. Frozen ephemeral launch/factory, attempt/session-bound event
   sink and generation-tagged availability contracts; admission-blocked readable rows are distinct
