@@ -253,7 +253,7 @@ public struct BackgroundProcessingItems: Decodable, Sendable, Equatable {
     /// PMS states that mean the job finished. Deleting a completed background-processing item
     /// also deletes the rendered optimized version on the server, so the download pipeline must
     /// preserve these until the client has positively downloaded or explicitly removed them.
-    static let completedStates: Set<String> = ["complete", "completed", "successful", "success", "done"]
+    static let completedStates: Set<String> = PlexOptimizeCompletionPolicy.completedStates
 
     /// IDs of items that are SAFE to delete: those whose title carries `marker` (i.e. this
     /// client created them), whose title is NOT in `protectedTitles` (a currently-active
