@@ -125,6 +125,8 @@ struct P7OfflinePlaybackTests {
         let submission = f.store.submitAttemptOwnedRecord(replacement,
             attemptID: replacement.attemptID!, replacing: f.key.attemptID)
         _ = await f.store.resolve(submission, deadline: .after(5))
+        old.recordLocalPlaybackPosition(120_000)
+        old.observeTimeControlStatus(.playing)
         old.stop()
         await f.manager.drainManagerOperationsForTesting()
         #expect(f.store.record(for: replacement.ratingKey)?.metadata?.localPlaybackPositionMs == 91_000)

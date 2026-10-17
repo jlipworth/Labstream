@@ -1413,8 +1413,11 @@ final class PlaybackController {
         let url = base.appendingPathComponent(track.relativePath)
         let playerItem = player.currentItem
         let generation = playbackGeneration
+        let selectionGeneration = offlineSubtitleSelectionAuthority.generation
         let cues = try await offlineSubtitleCueLoader(url)
-        guard generation == playbackGeneration, player.currentItem === playerItem, !offlinePlaybackClosed else { return }
+        guard generation == playbackGeneration, player.currentItem === playerItem,
+              selectionGeneration == offlineSubtitleSelectionAuthority.generation,
+              !Task.isCancelled, !offlinePlaybackClosed else { return }
         guard !cues.isEmpty else { throw SubtitleTrackLoadError.selectionDidNotApply }
         offlineSubtitleCuesByTrackID[track.id] = cues
     }
@@ -1761,8 +1764,13 @@ final class PlaybackController {
                     && offlineSubtitleSelectionAuthority.accepts(token, isCancelled: Task.isCancelled)
             }
             let group: AVMediaSelectionGroup?
-            if let playerItem { group = try? await playerItem.asset.loadMediaSelectionGroup(for: .legible) }
-            else { group = nil }
+            if let playerItem {
+                do { group = try await playerItem.asset.loadMediaSelectionGroup(for: .legible) }
+                catch {
+                    guard current() else { return }
+                    throw SubtitleTrackLoadError.groupLoadFailed(error)
+                }
+            } else { group = nil }
             guard current() else { return }
             if let group { playerItem?.select(nil, in: group) }
             if let offlineTrack {
@@ -1847,6 +1855,9 @@ final class PlaybackController {
             case .avFoundationOff: nil
             case .avFoundation(_, let option): option
             default: nil
+            }
+            guard requestedOption.map({ group.options.contains($0) }) ?? true else {
+                throw SubtitleTrackLoadError.selectionDidNotApply
             }
             playerItem.select(requestedOption, in: group)
             let applied = playerItem.currentMediaSelection.selectedMediaOption(in: group)
