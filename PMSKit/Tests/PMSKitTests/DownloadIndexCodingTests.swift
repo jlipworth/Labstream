@@ -29,7 +29,14 @@ struct DownloadIndexCodingTests {
         #expect(DownloadIndexCoding.startupProbe(
             data: data(#"{"schemaVersion":99,"rows":[]}"#)) == .unreadable)
         #expect(DownloadIndexCoding.startupProbe(
-            data: data(#"{"schemaVersion":5,"rows":[]}"#)) == .unreadable)
+            data: data(#"{"schemaVersion":6,"rows":[]}"#)) == .unreadable)
+        // P3b: v4 (not yet upgraded) and v5 are both admissible current shapes; 3 still resets.
+        #expect(DownloadIndexCoding.startupProbe(
+            data: data(#"{"schemaVersion":4,"rows":[]}"#)) == .current)
+        #expect(DownloadIndexCoding.startupProbe(
+            data: data(#"{"schemaVersion":5,"rows":[]}"#)) == .current)
+        #expect(DownloadIndexCoding.startupProbe(
+            data: data(#"{"schemaVersion":3,"rows":[]}"#)) == .unsupported(schemaVersion: 3))
         #expect(DownloadIndexCoding.startupProbe(data: data("not-json")) == .unreadable)
         #expect(DownloadIndexCoding.startupProbe(
             data: data(#"{"schemaVersion":4,"rows":"wrong"}"#)) == .unreadable)
@@ -43,6 +50,16 @@ struct DownloadIndexCodingTests {
         #expect(result.rows == rows)
         #expect(result.schemaVersion == DownloadIndexCoding.currentSchemaVersion)
         #expect(result.skippedRowCount == 0)
+    }
+
+    @Test func encodingKeepsTheRequestedVersionAndDecodeReportsIt() throws {
+        let rows = [StubRow(key: "a", bytes: 1, note: nil)]
+        let v4 = DownloadIndexCoding.decode(
+            StubRow.self, from: try DownloadIndexCoding.encode(rows, schemaVersion: 4))
+        #expect(v4.schemaVersion == 4)
+        #expect(v4.rows == rows)
+        let v5 = DownloadIndexCoding.decode(StubRow.self, from: try DownloadIndexCoding.encode(rows))
+        #expect(v5.schemaVersion == 5)
     }
 
     // MARK: - H8: per-row decode isolation
