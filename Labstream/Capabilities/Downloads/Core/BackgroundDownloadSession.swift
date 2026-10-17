@@ -5539,10 +5539,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ])
             guard !Task.isCancelled else { return }
             clearRetryCount(for: attemptKey)
-            guard acceptedAttemptSubmission(
-                resolveLifecycleSubmission(store.submitStatus(for: attemptKey, finalizationResult.status)),
-                key: attemptKey, phase: "finalize_truncated_status"
-            ) else { return }
+            if finalizationResult.status == .unverified, publishesWorkingFile {
+                // B54 containment: the repeated-truncation park keeps playable bytes. Publish them
+                // at the stable path through the same validated promotion as a probe-miss
+                // `.unverified`, instead of leaving the body in attempt staging.
+                guard await promoteValidatedWorkingFile(
+                    for: attemptKey, status: .unverified,
+                    phase: "finalize_truncated_park_promote") else { return }
+            } else {
+                guard acceptedAttemptSubmission(
+                    resolveLifecycleSubmission(store.submitStatus(for: attemptKey, finalizationResult.status)),
+                    key: attemptKey, phase: "finalize_truncated_status"
+                ) else { return }
+            }
             if finalizationResult.shouldDeleteFile,
                !Task.isCancelled,
                stillOwnsAttempt(attemptKey, phase: "finalize_truncated_delete") {
