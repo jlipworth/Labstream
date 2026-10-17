@@ -183,11 +183,29 @@ public enum SeasonDownloadStoragePolicy {
 /// Original quality for an episode with no locally playable original, no Plex original preset
 /// and no compatible remux (B69).
 public enum SeasonDownloadOriginalQualityPolicy {
-    /// A definitive "not offline-playable" verdict keeps the episode as its own failed row. A
-    /// probe that failed (no session, a PlaybackInfo or network error) proves nothing: the row is
-    /// planned anyway and re-probed when admission starts it, which fails it then if the original
-    /// really is unsupported.
+    public enum Resolution: Sendable, Equatable {
+        case original
+        case optimize(targetName: String)
+        case compatibleRemux
+        /// The probe failed: plan the row with its route unresolved and resolve it at admission.
+        case unresolved
+        /// A definitive verdict: no offline-playable original, Plex original preset or remux.
+        case unsupported
+    }
+
+    /// The Original-quality route for one episode, in the sheet's order: a locally playable
+    /// original, a Plex original-quality preset, a compatible remux. A failed probe proves
+    /// nothing (B69), so it never becomes an "unsupported" failed row.
+    public static func resolve(hasOriginal: Bool, plexOriginalPreset: String?,
+                               hasCompatibleRemux: Bool, probeFailed: Bool) -> Resolution {
+        if hasOriginal { return .original }
+        if let plexOriginalPreset { return .optimize(targetName: plexOriginalPreset) }
+        if hasCompatibleRemux { return .compatibleRemux }
+        return probeFailed ? .unresolved : .unsupported
+    }
+
     public static func shouldStartUnmatchedOriginal(probeFailed: Bool) -> Bool {
-        probeFailed
+        resolve(hasOriginal: false, plexOriginalPreset: nil, hasCompatibleRemux: false,
+                probeFailed: probeFailed) == .unresolved
     }
 }

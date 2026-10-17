@@ -11,6 +11,8 @@ struct SeasonEpisodeDownloadPlan {
     let mediaSourceIDOverride: String?
     let estimatedBytes: Int?
     let shouldStart: Bool
+    /// B69: an Original-quality episode whose probe failed; its route is resolved at admission.
+    var routeUnresolved: Bool = false
 
     var recordKey: String {
         DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: backend)
@@ -144,13 +146,15 @@ extension DownloadManager {
             downloadLane: DownloadChoicePolicy.downloadLane(for: plan.choice),
             serverPreparedVersion: DownloadChoicePolicy.isServerPreparedVersion(for: plan.choice),
             seasonPlannerPendingAdmission: plan.shouldStart)
+        var seedMetadata = metadata
+        if plan.routeUnresolved { seedMetadata.admissionRouteUnresolved = true }
         return DownloadRecord(
             ratingKey: plan.recordKey,
             attemptID: DownloadAttemptID.generated(),
             title: plan.item.title,
             localURL: store.destinationURL(ratingKey: plan.recordKey, ext: "mp4"),
             bytes: 0, progress: 0, status: plan.shouldStart ? .queued : .failed,
-            metadata: metadata)
+            metadata: seedMetadata)
     }
 
     /// Persist planned seeds atomically. Admission stays closed (`seasonPlanCommitsInFlight`)
@@ -213,7 +217,7 @@ extension DownloadManager {
         // Refresh suspends before a start-attempt exists. Deletion/replacement must
         // revoke admission instead of letting the public enqueue API recreate the row.
         guard seasonAdmissionStillCurrent(record) else { return }
-        let choice: DownloadIntentChoice = {
+        var choice: DownloadIntentChoice = {
             if metadata.isServerPreparedVersion == true { return .existingVersion }
             switch metadata.resolvedDownloadLane() {
             case .original: return .original
@@ -223,6 +227,12 @@ extension DownloadManager {
                     ?? DownloadPresetPolicy.jellyfinDefaultDownloadPreset)
             }
         }()
+        if metadata.admissionRouteUnresolved == true {
+            // B69: the planner's probe failed, so resolve the Original-quality route now.
+            guard let resolved = await resolveUnresolvedOriginalRoute(
+                record, item: item, backend: backend, planner: planner) else { return }
+            choice = resolved
+        }
         var mediaIndex = metadata.mediaIndex ?? 0
         var partIndex = metadata.partIndex ?? 0
         // Media arrays may be reordered between confirmation and admission. Re-find the exact

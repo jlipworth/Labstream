@@ -265,6 +265,7 @@ struct SeasonDownloadPlannerSheet: View {
             var mediaSourceID: String?
             var estimate: Int?
             var shouldStart = true
+            var routeUnresolved = false
             if useExistingVersions,
                let nearest = nearestExistingSelections[option.item.ratingKey] ?? nil,
                option.existingVersions.indices.contains(nearest) {
@@ -276,20 +277,28 @@ struct SeasonDownloadPlannerSheet: View {
                 case .embyMediaSource(let id, _): mediaSourceID = id
                 }
             } else if selectedQuality == DownloadPresetPolicy.compatibleOriginalQualityName {
-                if option.original != nil {
+                switch SeasonDownloadOriginalQualityPolicy.resolve(
+                    hasOriginal: option.original != nil,
+                    plexOriginalPreset: backend == .plex
+                        ? DownloadPresetPolicy.plexOriginalQualityPreset(in: option.presets) : nil,
+                    hasCompatibleRemux: option.compatibleRemux != nil,
+                    probeFailed: option.probeFailed) {
+                case .original:
                     choice = .original
-                } else if backend == .plex,
-                          let originalPreset = DownloadPresetPolicy.plexOriginalQualityPreset(in: option.presets) {
-                    choice = .optimize(targetName: originalPreset)
-                } else if option.compatibleRemux != nil {
+                case .optimize(let target):
+                    choice = .optimize(targetName: target)
+                case .compatibleRemux:
                     choice = .optimizeCompatible
-                } else {
+                case .unresolved:
+                    // B69: a failed probe proves nothing; plan the row and resolve its route at
+                    // admission.
+                    choice = .original
+                    routeUnresolved = true
+                case .unsupported:
                     // Keep the unsupported episode visible as its own ordinary failed row. Do not
                     // substitute a materially unrelated bitrate rendition for Original quality.
-                    // B69: a failed probe proves nothing; plan it and re-probe at admission.
                     choice = .original
-                    shouldStart = SeasonDownloadOriginalQualityPolicy.shouldStartUnmatchedOriginal(
-                        probeFailed: option.probeFailed)
+                    shouldStart = false
                 }
                 estimate = downloadManager.estimatedBytes(
                     for: option.item, choice: choice, mediaIndex: mediaIndex, partIndex: 0,
@@ -306,7 +315,8 @@ struct SeasonDownloadPlannerSheet: View {
                 audioStreamIndex: choice == .original || choice == .existingVersion ? nil : audio,
                 mediaSourceIDOverride: mediaSourceID,
                 estimatedBytes: estimate,
-                shouldStart: shouldStart)
+                shouldStart: shouldStart,
+                routeUnresolved: routeUnresolved)
         }
     }
 

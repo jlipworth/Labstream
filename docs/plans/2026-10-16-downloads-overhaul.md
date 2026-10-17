@@ -766,6 +766,32 @@ Acceptance is a phase's pins and inventory rows staying green.
     B72 are covered by the ported season integration tests.
   - **Not yet pinned:** the Pause All exemption end to end, a lane-full reroute, relaunch
     grandfathering over the caps, and a finalizing row freeing its lane (policy-level only).
+- **2026-10-17 — P4 after-review, round 1: not ready (2 P1, 8 P2). All fixed:**
+  1. **Paused forward-only rows.** A paused Jellyfin or Emby stream restarts fresh before
+     dispatch. A granted start that leaves a user-paused row unchanged withdraws its request, so
+     it is not re-granted.
+  2. **Range rebuilds.** A row that already holds a lane continues under its own admission
+     (`admissionHasRoom`).
+  3. **Lane switches.** A supervised lane switch wins over row metadata until the route is
+     stamped.
+  4. **Taps.** A tap with an existing parked row waits through that row's retry; any other tap
+     while lanes are full is refused visibly. A failed waiting-seed save shows an error and never
+     starts directly.
+  5. **Deferral writes.** Backoff is recorded even when the deferral write fails.
+  6. **Pause All exemption.** Static admission honours the row exemption and the manual-resume
+     marker; the pump's drain check is capacity-only.
+  7. **Transient failures.** A start failing with `server` or `network` waits with backoff, up to
+     6 deferrals; other failures stay definitive.
+  8. **Emby scanner.** The crash-window scanner skips rows waiting for admission.
+  9. **B69.** An unresolved Original-quality route is persisted (`admissionRouteUnresolved`) and
+     re-planned at admission through the shared `SeasonDownloadOriginalQualityPolicy.resolve`,
+     with a lane check.
+  10. **Legacy flag.** Absorption ignores rows with start evidence (bytes, a resume blob, held
+      bodies, a Plex queue item, an Emby job or identity, a server-prepared handoff).
+  - **Pins:** the evidence fixture and the route-resolution policy. The others are code-reviewed
+    only.
+  - **Flaky test:** `BackgroundDownloadStartupAdmissionTests.unsupportedSchemaIsOpaqueUntilTaskDrainThenRootIsQuarantined`
+    failed once and passed 3/3 reruns. It is pre-existing and P4 does not touch that code.
 
 ## P2 detailed plan — cleanup foundation
 
