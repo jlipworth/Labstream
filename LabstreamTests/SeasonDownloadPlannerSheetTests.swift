@@ -30,5 +30,29 @@ struct SeasonDownloadPlannerSheetTests {
             "Labstream/Shared/UI/ContainerBrowserView.swift"), encoding: .utf8)
         #expect(browser.contains("SeasonDownloadPlannerSheet(season: container, backend:"))
     }
+
+    /// B71: a payload returning one item id twice must not trap the sheet's keyed view state;
+    /// the first entry wins.
+    @Test func keyedPlannerStateKeepsFirstEntryForDuplicateRatingKey() {
+        let keyed = SeasonDownloadPlannerSheet.firstEntryPerKey([
+            ("episode-1", "first"), ("episode-2", "other"), ("episode-1", "duplicate"),
+        ])
+        #expect(keyed == ["episode-1": "first", "episode-2": "other"])
+    }
+
+    @Test func resolvedOptionsKeepOneRowPerRatingKey() {
+        func option(_ id: String, title: String) -> DownloadItemPlanningOptions {
+            DownloadItemPlanningOptions(
+                item: MediaItem(ratingKey: id, title: title, type: "episode"),
+                original: nil, compatibleRemux: nil, presets: [], probeFailed: false,
+                originalStreamableButOfflineUnsupported: false, existingVersions: [])
+        }
+        let unique = SeasonDownloadPlannerSheet.firstOptionPerRatingKey([
+            option("episode-1", title: "A"), option("episode-2", title: "B"),
+            option("episode-1", title: "C"),
+        ])
+        #expect(unique.map(\.item.ratingKey) == ["episode-1", "episode-2"])
+        #expect(unique.first?.item.title == "A")
+    }
 }
 #endif
