@@ -29,9 +29,7 @@ struct P6PathLeaseTests {
         // Deadline expiry is a waiter outcome, never permission to release the active append.
         let attempted = await store.acquirePathLease(for: key, relativePaths: [working.lastPathComponent],
                                                      purpose: .reconcile, deadline: .after(0))
-        withKnownIssue("P6 red pin: P6.4 — actual append has not joined the shared path-lease API") {
-            #expect(attempted == .timedOut)
-        }
+        #expect(attempted == .timedOut)
         if case .acquired(let unintended) = attempted { store.releasePathLease(unintended) }
         if reconcile {
             guard case .accepted(_, let ticket) = store.submitLifecycleEvent(.pause(.user), for: key) else {
