@@ -2457,8 +2457,9 @@ public final class DownloadManager {
             ?? MediaItem(ratingKey: record.ratingKey, title: record.title, type: "movie")
         let mediaIndex = metadata?.mediaIndex ?? 0
         let partIndex = metadata?.partIndex ?? 0
-        // Re-probe so the retry takes the correct path: a now-compatible file goes direct,
-        // otherwise re-render via the optimizer using the user's explicit default preset. Keep the
+        // A row with a persisted optimize target retries that target. Otherwise re-probe so the
+        // retry takes the correct path: a now-compatible file goes direct, otherwise re-render via
+        // the optimizer using the user's explicit default preset. Keep the
         // failed row visible until after auth/server preflight succeeds; otherwise tapping retry
         // while disconnected/not-ready removes the only visible retry affordance.
         Task { [weak self] in
@@ -2548,13 +2549,21 @@ public final class DownloadManager {
                 self.refreshRecords()
                 return
             }
-            let probe = await self.directPlayProbe(for: currentItem, server: server, token: token,
-                                                   mediaIndex: mediaIndex, partIndex: partIndex)
-            let media = currentItem.media?.indices.contains(mediaIndex) == true ? currentItem.media?[mediaIndex] : currentItem.media?.first
-            let part = probe.part ?? (media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : media?.part.first)
-            let choice: DownloadChoice = (probe.direct && OfflineDownloadDecision.isLocallyPlayableOriginal(part: part))
-                ? .original
-                : .optimize(targetName: Self.originalFallbackOptimizeTarget())
+            // B34: a failed optimize row (24 h deadline, completed_part_missing,
+            // optimize_status_failed, ...) retries the user's persisted requested target. Only
+            // rows without one re-probe and fall back to the default preset.
+            let choice: DownloadChoice
+            if let persistedTarget = DownloadBackendRetryIntentPolicy.plexPersistedOptimizeTarget(for: record) {
+                choice = .optimize(targetName: persistedTarget)
+            } else {
+                let probe = await self.directPlayProbe(for: currentItem, server: server, token: token,
+                                                       mediaIndex: mediaIndex, partIndex: partIndex)
+                let media = currentItem.media?.indices.contains(mediaIndex) == true ? currentItem.media?[mediaIndex] : currentItem.media?.first
+                let part = probe.part ?? (media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : media?.part.first)
+                choice = (probe.direct && OfflineDownloadDecision.isLocallyPlayableOriginal(part: part))
+                    ? .original
+                    : .optimize(targetName: Self.originalFallbackOptimizeTarget())
+            }
             // Drop the stale `.failed` row only once we know the replacement can be seeded.
             // This also removes any leftover invalid/partial file from the failed attempt.
             guard self.retryAttemptCanContinue(for: retryAttemptKey, token: retryToken) else { return }
