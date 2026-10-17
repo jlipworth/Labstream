@@ -506,6 +506,9 @@ public final class DownloadManager {
     }
 
     #if DEBUG
+    var scheduledRefreshTaskForTesting: Task<Void, Never>? { refreshRecordsTask }
+    @ObservationIgnored var foregroundRecoveryDidResolveForTesting: ((Bool) -> Void)?
+
     func drainManagerOperationsForTesting() async {
         let tasks = managerOperations.values.map { $0.1 }
         for task in tasks { await task.value }
@@ -2207,6 +2210,12 @@ public final class DownloadManager {
                 let proof = await store.resolve(submission, deadline: .after(30))
                 guard let self else { return }
                 self.foregroundStaticRangeRecoveryInFlight = false
+                #if DEBUG
+                let succeeded: Bool
+                if case .committed = proof { succeeded = self.startupRecoveryState == .ready }
+                else { succeeded = false }
+                defer { self.foregroundRecoveryDidResolveForTesting?(succeeded) }
+                #endif
                 guard case .committed = proof, self.startupRecoveryState == .ready else { return }
                 self.refreshRecords()
                 guard !self.isQueuePaused else { return }

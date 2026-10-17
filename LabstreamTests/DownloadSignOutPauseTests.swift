@@ -7,6 +7,13 @@ import Testing
 // MainActor fixtures' two-second P6 startup heartbeat under normal parallel testing.
 @MainActor
 struct DownloadSignOutPauseTests {
+    @Test func acknowledgementHasAFailFastBoundAndAcceptsALateSignal() async {
+        let acknowledgement = P6Acknowledgement<Bool>()
+        #expect(await acknowledgement.wait(seconds: 0.01) == nil)
+        acknowledgement.signal(true)
+        #expect(await acknowledgement.wait(seconds: 1) == true)
+    }
+
     @Test func renderedRowActionsRejectAnOvertakenAttempt() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
             "download-row-attempt-fence-\(UUID().uuidString)", isDirectory: true)
@@ -16,14 +23,17 @@ struct DownloadSignOutPauseTests {
         let store = DownloadStore(baseDirectory: directory)
         let first = try #require(makeRecord(
             store: store, ratingKey: "plex:item", backend: .plex, attemptSuffix: "first"))
-        #expect(await store.createAttemptOwnedRecordAsync(first.record, attemptID: first.key.attemptID)
-                == .committed(first.key))
 
         let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "row-action-fence"))
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         let manager = DownloadManager(appModel: model, store: store, session: session,
                                       registerForBackgroundEvents: false)
         defer { session.invalidateInjectedSessionForTesting() }
+        try #require(await manager.awaitStartupRecoveryForTesting())
+        manager.setQueuePausedForTesting(false)
+        #expect(await store.createAttemptOwnedRecordAsync(first.record, attemptID: first.key.attemptID)
+                == .committed(first.key))
+        manager.refreshRecords()
 
         let replacement = try #require(makeRecord(
             store: store, ratingKey: "plex:item", backend: .plex, attemptSuffix: "replacement"))
@@ -43,7 +53,7 @@ struct DownloadSignOutPauseTests {
             ratingKey: replacement.key.ratingKey, attemptID: replacement.key.attemptID)
         #expect(manager.currentRecord(for: current)?.attemptID == replacement.key.attemptID)
         #expect(manager.pause(current))
-        await manager.drainManagerOperationsForTesting()
+        try #require(await p6AwaitTask(Task { await manager.drainManagerOperationsForTesting() }))
         #expect(store.record(for: replacement.key)?.status == .paused)
     }
 
@@ -57,25 +67,28 @@ struct DownloadSignOutPauseTests {
         let emby = try #require(makeRecord(store: store, ratingKey: "emby:item", backend: .emby))
         let jellyfin = try #require(makeRecord(store: store, ratingKey: "jellyfin:item", backend: .jellyfin))
         let plex = try #require(makeRecord(store: store, ratingKey: "plex:item", backend: .plex))
-        #expect(await store.createAttemptOwnedRecordAsync(emby.record, attemptID: emby.key.attemptID) == .committed(emby.key))
-        #expect(await store.createAttemptOwnedRecordAsync(jellyfin.record, attemptID: jellyfin.key.attemptID) == .committed(jellyfin.key))
-        #expect(await store.createAttemptOwnedRecordAsync(plex.record, attemptID: plex.key.attemptID) == .committed(plex.key))
 
         let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "download-signout"))
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         let manager = DownloadManager(appModel: model, store: store, session: session,
                                       registerForBackgroundEvents: false)
         defer { session.invalidateInjectedSessionForTesting() }
+        try #require(await manager.awaitStartupRecoveryForTesting())
+        manager.setQueuePausedForTesting(false)
+        #expect(await store.createAttemptOwnedRecordAsync(emby.record, attemptID: emby.key.attemptID) == .committed(emby.key))
+        #expect(await store.createAttemptOwnedRecordAsync(jellyfin.record, attemptID: jellyfin.key.attemptID) == .committed(jellyfin.key))
+        #expect(await store.createAttemptOwnedRecordAsync(plex.record, attemptID: plex.key.attemptID) == .committed(plex.key))
+        manager.refreshRecords()
 
         manager.pauseDownloadsForBackendSignOut(.emby)
-        await manager.drainManagerOperationsForTesting()
+        try #require(await p6AwaitTask(Task { await manager.drainManagerOperationsForTesting() }))
 
         #expect(store.record(for: emby.key)?.status == .paused)
         #expect(store.record(for: jellyfin.key)?.status == .downloading)
         #expect(store.record(for: plex.key)?.status == .downloading)
 
         manager.pauseDownloadsForBackendSignOut(.jellyfin)
-        await manager.drainManagerOperationsForTesting()
+        try #require(await p6AwaitTask(Task { await manager.drainManagerOperationsForTesting() }))
 
         #expect(store.record(for: jellyfin.key)?.status == .paused)
         #expect(store.record(for: plex.key)?.status == .downloading)
@@ -93,11 +106,6 @@ struct DownloadSignOutPauseTests {
             return try #require(makeRecord(
                 store: store, ratingKey: "\(backend.rawValue):item", backend: kind))
         }
-        for row in rows {
-            #expect(await store.createAttemptOwnedRecordAsync(row.record, attemptID: row.key.attemptID)
-                    == .committed(row.key))
-            try Data("download".utf8).write(to: row.record.localURL)
-        }
 
         let model = AppModel(identity: PlatformClientIdentity.make(
             clientIdentifier: "download-signout-all"))
@@ -105,9 +113,17 @@ struct DownloadSignOutPauseTests {
         let manager = DownloadManager(appModel: model, store: store, session: session,
                                       registerForBackgroundEvents: false)
         defer { session.invalidateInjectedSessionForTesting() }
+        try #require(await manager.awaitStartupRecoveryForTesting())
+        manager.setQueuePausedForTesting(false)
+        for row in rows {
+            #expect(await store.createAttemptOwnedRecordAsync(row.record, attemptID: row.key.attemptID)
+                    == .committed(row.key))
+            try Data("download".utf8).write(to: row.record.localURL)
+        }
+        manager.refreshRecords()
 
         MediaBackendKind.allCases.forEach(manager.pauseDownloadsForBackendSignOut)
-        await manager.drainManagerOperationsForTesting()
+        try #require(await p6AwaitTask(Task { await manager.drainManagerOperationsForTesting() }))
 
         #expect(store.records.count == rows.count)
         for row in rows {
@@ -131,8 +147,17 @@ struct DownloadSignOutPauseTests {
                 try live.commit(data, url)
             }, syncDirectory: live.syncDirectory))
         defer { hold.release.signal() }
-        await f.manager.cleanupRunner?.waitUntilIdle()
+        try #require(await p6AwaitTask(f.manager.launchSweepJournaling))
+        try #require(await p6AwaitTask(Task { await f.manager.cleanupRunner?.waitUntilIdle() }))
         f.manager.cleanupRunner = nil
+        f.session.onChange = nil
+        try #require(await p6AwaitTask(f.manager.scheduledRefreshTaskForTesting))
+        // Install an encoder only after this synthetic row is active. A paused row's encoder
+        // is correctly cleaned by refreshRecords, so exposing it during setup races the gate.
+        f.manager.setQueuePausedForTesting(false)
+        f.manager.activeJobs.insert(f.key.ratingKey)
+        f.manager.inFlightAttempts.acquire(f.key)
+        try #require(await f.manager.applyLifecycleEvent(.retry(.freshAttempt), for: f.key, context: "signout_fixture"))
         let model = f.manager.appModel
         if backend == .emby {
             model.embyServerBaseURL = URL(string: "https://media.invalid")!
@@ -155,9 +180,7 @@ struct DownloadSignOutPauseTests {
             $0.resumeMode = .liveForwardOnly
             $0.playSessionID = "old-session"
         }
-        #expect(await f.manager.applyLifecycleEvent(.retry(.freshAttempt), for: f.key, context: "signout_fixture"))
-        f.manager.activeJobs.insert(f.key.ratingKey)
-        f.manager.inFlightAttempts.acquire(f.key)
+        // A queued session callback can run at this suspension boundary; exercise it directly.
         f.manager.refreshRecords()
         let resolved = P6Acknowledgement<Bool>()
         f.manager.encoderCleanupDidResolveForTesting = { [key = f.key] resolvedKey, handle, committed in
@@ -165,7 +188,7 @@ struct DownloadSignOutPauseTests {
         }
         hold.arm()
         f.manager.pauseDownloadsForBackendSignOut(backend)
-        _ = await hold.acknowledgement.wait()
+        try #require(await hold.acknowledgement.wait(seconds: 5) == true)
         // Reaching MainActor with the physical journal commit still held is the heartbeat proof.
         #expect(!completed.value)
         #expect(f.store.record(for: f.key)?.status == .paused)
@@ -181,8 +204,9 @@ struct DownloadSignOutPauseTests {
             else { f.manager.jellyfinPlaySessionByAttempt[f.key] = "new-session" }
         }
         hold.release.signal()
-        #expect(await resolved.wait() == !fails)
-        await f.manager.drainManagerOperationsForTesting()
+        let committed = try #require(await resolved.wait(seconds: 10))
+        #expect(committed == !fails)
+        try #require(await p6AwaitTask(Task { await f.manager.drainManagerOperationsForTesting() }))
         let expected = replaces ? "new-session" : (fails ? "old-session" : nil)
         #expect(f.store.record(for: f.key)?.metadata?.playSessionID == expected)
         let transient = backend == .emby ? f.manager.embyPlaySessionByAttempt[f.key] : f.manager.jellyfinPlaySessionByAttempt[f.key]
@@ -190,7 +214,7 @@ struct DownloadSignOutPauseTests {
         if case .loaded(let intents) = f.manager.cleanupIntentJournal.load() {
             #expect(intents.contains { $0.operation == .activeEncoding(playSessionID: "old-session") } == !fails)
         } else { Issue.record("Expected readable cleanup journal") }
-        await f.finish()
+        try #require(await p6AwaitTask(Task { await f.finish() }))
     }
     #endif
 

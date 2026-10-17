@@ -15,15 +15,20 @@ struct DownloadSideAssetInventoryPerformanceTests {
             var row = f.files.record(status: .complete, ratingKey: key, filename: "fixture-\(index).mp4")
             let chapter = f.store.chapterImageDestinationURL(ratingKey: key, index: 0)
             try Data([1]).write(to: chapter)
+            try Data([1]).write(to: row.localURL)
             row.metadata?.chapters = [OfflineChapter(thumb: "/fixture"), OfflineChapter(thumb: "/missing")]
             row.metadata?.chapterImageRelativePaths = [0: chapter.lastPathComponent]
             _ = await f.store.createAttemptOwnedRecordAsync(row, attemptID: row.attemptID!)
         }
         f.manager.refreshRecords() // Warm published metadata hydration before the foreground edge.
         f.manager.setQueuePausedForTesting(false)
+        let recovered = P6Acknowledgement<Bool>()
+        f.manager.foregroundRecoveryDidResolveForTesting = { recovered.signal($0) }
         let mainBefore = filesystem.mainStats.value
         f.manager.noteAppSceneRecovery(.aggregateSceneBecameActive)
-        await f.manager.completedSideAssetInventoryWorker?.value
+        try #require(await p6AwaitTask(f.manager.completedSideAssetInventoryWorker))
+        try #require(await recovered.wait(seconds: 10) == true)
+        try #require(await p6AwaitTask(f.manager.scheduledRefreshTaskForTesting))
         #expect(filesystem.mainStats.value == mainBefore)
         #expect(f.manager.completedSideAssetInventories.count == 13)
         let beforeSetup = filesystem.stats.value
@@ -35,7 +40,7 @@ struct DownloadSideAssetInventoryPerformanceTests {
             #expect(inventory.resources[.chapterImages]?.count == 1)
         }
         #expect(filesystem.stats.value == beforeSetup)
-        await f.finish()
+        try #require(await p6AwaitTask(Task { await f.finish() }))
     }
 
     @Test func firstMissingTileDoesNotHideExistingTilesFromRepair() async throws {
@@ -62,9 +67,9 @@ struct DownloadSideAssetInventoryPerformanceTests {
         }
         let record = try #require(f.store.record(for: f.key))
         let mainBefore = filesystem.mainStats.value
-        let inventory = try #require(await Task.detached {
+        let inventory = try #require(await p6TaskResult(Task.detached {
             CompletedSideAssetInventory.observe(record: record, store: f.store)
-        }.value)
+        }) ?? nil)
         f.manager.completedSideAssetInventories[f.key] = inventory
         for tile in tiles.dropFirst() {
             let reusable = await f.manager.reusableSideAssetObservations(for: f.key, destinations: [tile])
@@ -90,12 +95,12 @@ struct DownloadSideAssetInventoryPerformanceTests {
             server: URL(string: "https://media.invalid")!, token: "fixture",
             identity: f.manager.appModel.identity.jellyfin)
         // Join the real work registry's completion without a polling/scheduling deadline.
-        await f.manager.downloadWorkRegistry.waitForSideCacheForTesting(for: f.key)
+        try #require(await p6AwaitTask(Task { await f.manager.downloadWorkRegistry.waitForSideCacheForTesting(for: f.key) }))
         let tileRequests = requested.value.filter { $0.hasSuffix(".jpg") }
         #expect(tileRequests == ["tile-0.jpg"])
         let published = try JellyfinTrickPlayPlaylistParser.parse(String(contentsOf: playlistURL, encoding: .utf8))
         #expect(published.tiles.map(\.uri) == tiles.map(\.lastPathComponent))
-        await f.finish()
+        try #require(await p6AwaitTask(Task { await f.finish() }))
     }
 
     @Test(arguments: [DownloadBackendKind.plex, .jellyfin, .emby])
@@ -118,13 +123,13 @@ struct DownloadSideAssetInventoryPerformanceTests {
             else { $0.plexBIFRelativePath = bif.lastPathComponent }
         }
         let record = try #require(f.store.record(for: f.key))
-        let inventory = try #require(await Task.detached {
+        let inventory = try #require(await p6TaskResult(Task.detached {
             CompletedSideAssetInventory.observe(record: record, store: f.store)
-        }.value)
+        }) ?? nil)
         #expect(inventory.reusable.isSuperset(of: [chapter.lastPathComponent, subtitle.lastPathComponent, bif.lastPathComponent]))
         #expect(inventory.missing.contains(.chapterImages))
         #expect(inventory.missing.contains(.textSubtitles))
-        await f.finish()
+        try #require(await p6AwaitTask(Task { await f.finish() }))
     }
 
     @Test(arguments: [false, true])
@@ -142,7 +147,7 @@ struct DownloadSideAssetInventoryPerformanceTests {
         f.manager.setQueuePausedForTesting(false)
         filesystem.attributeHold.arm()
         f.manager.rehydrateMissingOptionalSideAssetsForCompletedRows(reason: "fixture")
-        _ = await filesystem.attributeHold.acknowledgement.wait()
+        try #require(await filesystem.attributeHold.acknowledgement.wait(seconds: 5) == true)
         let worker = f.manager.completedSideAssetInventoryWorker
         if changeSource {
             _ = await f.store.updateMetadataAsync(for: f.key) { $0.mediaSourceID = "replacement-source" }
@@ -151,10 +156,10 @@ struct DownloadSideAssetInventoryPerformanceTests {
             _ = await f.store.createAttemptOwnedRecordAsync(replacement, attemptID: replacement.attemptID!, replacing: f.key.attemptID)
         }
         filesystem.attributeHold.release.signal()
-        await worker?.value
+        try #require(await p6AwaitTask(worker))
         #expect(f.manager.completedSideAssetInventories[f.key] == nil)
         #expect(f.requests.value == 0)
-        await f.finish()
+        try #require(await p6AwaitTask(Task { await f.finish() }))
     }
 }
 #endif
