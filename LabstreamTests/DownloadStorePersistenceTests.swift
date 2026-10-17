@@ -71,9 +71,12 @@ struct DownloadStorePersistenceTests {
             for record in inserted {
                 let row = try #require(restored.record(for: record.ratingKey))
                 #expect(row.status == .queued)
-                #expect(row.metadata?.seasonPlannerPendingAdmission == true)
+                #expect(row.lifecycle == .planned)
+                #expect(row.admissionIntent == .seasonPlanned)
+                #expect(row.metadata?.seasonPlannerPendingAdmission == nil)
             }
-            #expect(restored.record(for: retryKey.ratingKey)?.metadata?.seasonPlannerPendingAdmission == true)
+            #expect(restored.record(for: retryKey.ratingKey)?.lifecycle == .failed)
+            #expect(restored.record(for: retryKey.ratingKey)?.admissionIntent == .retryRequested)
         }
     }
 
@@ -140,6 +143,7 @@ struct DownloadStorePersistenceTests {
             let retryRow = try #require(store.record(for: retryKey.ratingKey))
             #expect(retryRow.status == .failed)
             #expect(retryRow.metadata?.seasonPlannerPendingAdmission == nil)
+            #expect(retryRow.admissionIntent == nil, "rollback withdraws the plan's retry request")
 
             let restored = DownloadStore(baseDirectory: directory)
             #expect(restored.record(for: inserted.ratingKey) == nil)

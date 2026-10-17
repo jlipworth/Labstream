@@ -439,15 +439,38 @@ final class DownloadStore: @unchecked Sendable {
         /// express (finalizing, planned). Call sites move to reducer events; the shim is removed
         /// by the end of P3a.
         var status: DownloadStatus {
-            // `planned` keeps today's `.failed` + admission-flag projection until the season
-            // planner converts to reducer events, so behaviour and older binaries are unchanged.
-            get { lifecycle == .planned ? .failed : lifecycle.derivedStatus }
+            // P4: `planned` (waiting for an admission lane) projects as `.queued`, as the legacy
+            // season-pending rows did.
+            get { lifecycle.derivedStatus }
             set { lifecycle = Self.legacyLifecycle(for: newValue, current: lifecycle,
                                                    admissionPending: admissionPending) }
         }
-        /// Season-planner admission stays authoritative in metadata during P3a so P1/P2 binaries
-        /// keep enforcing it after a rollback (R2-3).
+        /// The legacy season-planner flag. P4 no longer writes it: a row carrying it is absorbed
+        /// into lifecycle `planned` plus an admission intent on load (`absorbLegacyAdmissionFlag`).
         var admissionPending: Bool { metadata?.seasonPlannerPendingAdmission == true }
+
+        /// P4.8: the legacy season flag becomes lifecycle and history. Authoritative facts win: a
+        /// deleting, finalizing, transferring, paused-by-user or finished row keeps its lifecycle,
+        /// and only a pending first start becomes `planned`.
+        mutating func absorbLegacyAdmissionFlag(promotionPending: Bool) {
+            guard metadata?.seasonPlannerPendingAdmission == true else { return }
+            metadata?.seasonPlannerPendingAdmission = nil
+            guard !deletionPending, !promotionPending else { return }
+            switch lifecycle {
+            case .admitted, .planned:
+                // Queued and flagged: the first start never began.
+                lifecycle = .planned
+                history.admissionIntent = history.admissionIntent ?? .seasonPlanned
+            case .failed:
+                // A failed row the planner queued for retry stays failed until its retry runs.
+                history.admissionIntent = history.admissionIntent ?? .retryRequested
+            case .paused:
+                // Paused while waiting (B65): Resume re-requests the same first start.
+                history.admissionIntent = history.admissionIntent ?? .seasonPlanned
+            case .serverPrep, .transferring, .finalizing, .complete, .unverified:
+                break
+            }
+        }
         // D5: snapshot of the source item + the locally-cached poster path. Both are
         // optional and decoded with `decodeIfPresent` so rows written before D5 load.
         var metadata: OfflineMetadata?
@@ -535,10 +558,14 @@ final class DownloadStore: @unchecked Sendable {
                     finalizingEvidence: promotionPending)
             }
             history = try c.decodeIfPresent(DownloadAttemptHistory.self, forKey: .history) ?? .empty
+            // P3a/P3b projected a flagged retry row as `planned` + `.failed`; it is a failed
+            // attempt waiting for its retry, which the flag absorption below records as an intent.
+            if lifecycle == .planned, decodedStatus == .failed, admission { lifecycle = .failed }
             decodedTopLevelAttemptIDPresent = topLevelAttemptID != nil
             decodedAttemptIdentityDisagrees = topLevelAttemptID != nil
                 && nestedAttemptID != nil
                 && topLevelAttemptID != nestedAttemptID
+            absorbLegacyAdmissionFlag(promotionPending: promotionPending)
         }
 
         init(ratingKey: String, attemptID: DownloadAttemptID? = nil,
@@ -562,9 +589,9 @@ final class DownloadStore: @unchecked Sendable {
             self.bytes = bytes
             self.progress = progress
             self.metadata = metadata
-            self.lifecycle = Self.legacyLifecycle(
-                for: status, current: nil,
-                admissionPending: metadata?.seasonPlannerPendingAdmission == true)
+            // P4.8: the flag is absorbed below from the status itself (a failed flagged row
+            // waits for its retry), not by the P3a structural `planned` mapping.
+            self.lifecycle = Self.legacyLifecycle(for: status, current: nil, admissionPending: false)
             self.history = .empty
             self.deletionPending = deletionPending
             self.deletionPendingCleanupIntents = deletionPendingCleanupIntents
@@ -574,6 +601,7 @@ final class DownloadStore: @unchecked Sendable {
             self.pendingArtifactIntents = pendingArtifactIntents
             self.decodedTopLevelAttemptIDPresent = attemptID != nil
             self.decodedAttemptIdentityDisagrees = false
+            absorbLegacyAdmissionFlag(promotionPending: false)
         }
 
         func encode(to encoder: Encoder) throws {
@@ -2727,6 +2755,8 @@ final class DownloadStore: @unchecked Sendable {
                               progress: row.progress,
                               status: row.status,
                               metadata: row.metadata,
+                              lifecycle: row.lifecycle,
+                              admissionIntent: row.history.admissionIntent,
                               posterURL: sideAssets.posterURL,
                               plexBIFURL: sideAssets.plexBIFURL,
                               embyBIFURL: sideAssets.embyBIFURL,
@@ -3136,19 +3166,19 @@ final class DownloadStore: @unchecked Sendable {
             lock.unlock()
             return .staleInput
         }
-        var priorRetryAdmissionFlags: [DownloadAttemptKey: Bool?] = [:]
+        var priorRetryAdmissionIntents: [DownloadAttemptKey: DownloadAdmissionIntent?] = [:]
         for record in records {
             guard let row = Self.seasonPlannedRow(for: record) else { continue }
             rows[record.ratingKey] = row
             sideAssetHydrationCache.removeValue(forKey: record.ratingKey)
         }
         for key in retryAttempts {
-            guard var row = rows[key.ratingKey], var metadata = row.metadata else { continue }
-            // updateValue, not subscript assignment: a nil prior flag must be stored as an entry
+            guard var row = rows[key.ratingKey] else { continue }
+            // updateValue, not subscript assignment: a nil prior intent must be stored as an entry
             // holding nil (restore-to-nil), which the subscript setter would instead drop.
-            priorRetryAdmissionFlags.updateValue(metadata.seasonPlannerPendingAdmission, forKey: key)
-            metadata.seasonPlannerPendingAdmission = true
-            row.metadata = metadata
+            priorRetryAdmissionIntents.updateValue(row.history.admissionIntent, forKey: key)
+            // P4: a failed row the planner includes waits for an admission lane as a retry.
+            row.history.admissionIntent = .retryRequested
             rows[key.ratingKey] = row
         }
         let candidateSnapshot = IndexSnapshot(schemaVersion: indexSchemaVersion, rows: Array(rows.values))
@@ -3174,7 +3204,7 @@ final class DownloadStore: @unchecked Sendable {
         // wait are never clobbered, then the rollback snapshot supersedes the writer's dirty
         // candidate so a future flush retries current authority, not an unreported season plan.
         lock.lock()
-        withdrawSeasonPlanLocked(records: records, priorRetryAdmissionFlags: priorRetryAdmissionFlags)
+        withdrawSeasonPlanLocked(records: records, priorRetryAdmissionIntents: priorRetryAdmissionIntents)
         let rollbackTicket = enqueuePersistenceLocked()
         lock.unlock()
         let rollbackResult = indexWriter.waitSynchronouslyForOutcome(through: rollbackTicket.revision)
@@ -3195,9 +3225,8 @@ final class DownloadStore: @unchecked Sendable {
             }
             for key in retryAttempts {
                 guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-                      var metadata = row.metadata else { continue }
-                metadata.seasonPlannerPendingAdmission = true
-                row.metadata = metadata
+                      row.lifecycle == .failed else { continue }
+                row.history.admissionIntent = .retryRequested
                 rows[key.ratingKey] = row
             }
             _ = enqueuePersistenceLocked()
@@ -3237,10 +3266,11 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     /// Must be called with `lock` held. Removes the plan's inserted rows and restores retry rows'
-    /// prior admission flags, each only while the row still belongs to the plan's exact attempt.
+    /// prior admission intents, each only while the row still belongs to the plan's exact attempt
+    /// and still carries the plan's own change (a concurrent pause, retry or delete wins).
     private func withdrawSeasonPlanLocked(
         records: [DownloadRecord],
-        priorRetryAdmissionFlags: [DownloadAttemptKey: Bool?]
+        priorRetryAdmissionIntents: [DownloadAttemptKey: DownloadAdmissionIntent?]
     ) {
         for record in records {
             guard let attemptID = record.attemptID,
@@ -3248,12 +3278,11 @@ final class DownloadStore: @unchecked Sendable {
             rows.removeValue(forKey: record.ratingKey)
             sideAssetHydrationCache.removeValue(forKey: record.ratingKey)
         }
-        for (key, priorFlag) in priorRetryAdmissionFlags {
+        for (key, priorIntent) in priorRetryAdmissionIntents {
             guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-                  var metadata = row.metadata,
-                  metadata.seasonPlannerPendingAdmission == true else { continue }
-            metadata.seasonPlannerPendingAdmission = priorFlag
-            row.metadata = metadata
+                  row.lifecycle == .failed,
+                  row.history.admissionIntent == .retryRequested else { continue }
+            row.history.admissionIntent = priorIntent
             rows[key.ratingKey] = row
         }
     }
