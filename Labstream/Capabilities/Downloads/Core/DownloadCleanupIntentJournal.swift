@@ -256,8 +256,10 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
             ))
         }
 
+        // Evidence only: everything this build can decode is already back in the canonical queue,
+        // so these files are never import candidates (see `importLegacyQuarantinedPlexIntents`).
         let quarantineURL = quarantineDirectory.appendingPathComponent(
-            "download-cleanup-intents-quarantine-\(UUID().uuidString).json")
+            "\(Self.rejectedPrefix)\(UUID().uuidString).json")
         if let error = DurableJournalCommit.commit(data, to: quarantineURL, using: persistence.commit) {
             return .failed(Self.failure(.commit, error))
         }
@@ -272,6 +274,80 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
             return .failed(Self.failure(.commit, error))
         }
         return .loaded(recovered)
+    }
+
+    // MARK: - Downgrade compatibility (P2.2)
+
+    /// Builds before P2 quarantined elements they could not decode, rewriting the canonical queue
+    /// without them. After a downgrade and re-upgrade those elements include `plexOptimize`
+    /// intents that the older build could not run. This build's own repairs write
+    /// `rejectedPrefix` files instead, so only the legacy name is an import candidate.
+    static let legacyQuarantinePrefix = "download-cleanup-intents-quarantine-"
+    static let rejectedPrefix = "download-cleanup-intents-rejected-"
+    static let importedPrefix = "download-cleanup-intents-imported-"
+
+    struct LegacyImportOutcome: Sendable, Equatable {
+        var importedCount = 0
+        /// IDs present in a legacy file whose import receipt is not yet durable. The runner must
+        /// not execute them: once one drained, a later import would recreate it.
+        var blockedIDs: Set<UUID> = []
+        /// A legacy file could not be read or parsed, so its IDs are unknown; every `plexOptimize`
+        /// intent waits until it can be processed.
+        var blocksAllPlex = false
+    }
+
+    /// Re-import only `plexOptimize` elements from legacy quarantine files, then rename each file
+    /// to the imported prefix (the durable receipt). Elements that conflict with an existing ID or
+    /// still do not decode stay in the renamed file as evidence. Run before the cleanup runner.
+    func importLegacyQuarantinedPlexIntents(fileManager: FileManager = .default) -> LegacyImportOutcome {
+        lock.lock(); defer { lock.unlock() }
+        var outcome = LegacyImportOutcome()
+        guard let names = try? fileManager.contentsOfDirectory(atPath: quarantineDirectory.path)
+        else { return outcome }
+        for name in names.sorted() where name.hasPrefix(Self.legacyQuarantinePrefix) {
+            let source = quarantineDirectory.appendingPathComponent(name)
+            guard let data = try? persistence.read(source),
+                  let raw = try? JSONSerialization.jsonObject(with: data) as? [Any] else {
+                outcome.blocksAllPlex = true
+                continue
+            }
+            let candidates: [DurableDownloadCleanupIntent] = raw.compactMap { element in
+                guard let object = element as? [String: Any],
+                      object["operationType"] as? String == "plexOptimize",
+                      let elementData = try? JSONSerialization.data(withJSONObject: object)
+                else { return nil }
+                return try? JSONDecoder().decode(DurableDownloadCleanupIntent.self, from: elementData)
+            }
+            let fileIDs = Set(candidates.map(\.id))
+            var values: [DurableDownloadCleanupIntent]
+            switch readLocked() {
+            case .loaded(let loaded): values = loaded
+            case .failed:
+                outcome.blockedIDs.formUnion(fileIDs)
+                continue
+            }
+            let existingIDs = Set(values.map(\.id))
+            let additions = candidates.filter { !existingIDs.contains($0.id) }
+            if !additions.isEmpty {
+                values.append(contentsOf: additions)
+                guard let encoded = try? persistence.encode(values),
+                      DurableJournalCommit.commit(encoded, to: fileURL, using: persistence.commit) == nil
+                else {
+                    outcome.blockedIDs.formUnion(fileIDs)
+                    continue
+                }
+                outcome.importedCount += additions.count
+            }
+            let receipt = quarantineDirectory.appendingPathComponent(
+                Self.importedPrefix + name.dropFirst(Self.legacyQuarantinePrefix.count))
+            do {
+                try fileManager.moveItem(at: source, to: receipt)
+                try persistence.syncDirectory(receipt)
+            } catch {
+                outcome.blockedIDs.formUnion(fileIDs)
+            }
+        }
+        return outcome
     }
 
     private static func failure(_ stage: Failure.Stage, _ error: any Error) -> Failure {

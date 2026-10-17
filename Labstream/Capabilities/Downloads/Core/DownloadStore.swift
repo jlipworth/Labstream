@@ -2262,6 +2262,40 @@ final class DownloadStore: @unchecked Sendable {
         return !Self.hasPendingRowDeletion(row)
     }
 
+    /// Where an attempt's row stands for server-cleanup eligibility (P2.2). Absence in memory is
+    /// not proof of deletion: `executeRowDeletion` drops the row before its terminal revision
+    /// commits and restores it if that commit fails, so that window and any staged deletion read
+    /// as `.retiring`. `.unknown` covers a store whose index could not be opened as current, where
+    /// an empty row map says nothing about what is durable.
+    enum CleanupDisposition: Sendable, Equatable {
+        case present(DownloadRecord)
+        case retiring
+        case committedAbsent
+        case unknown
+    }
+
+    func cleanupDisposition(for key: DownloadAttemptKey) -> CleanupDisposition {
+        lock.lock()
+        guard startupSchemaProbe == .current || startupSchemaProbe == .missing else {
+            lock.unlock()
+            return .unknown
+        }
+        if artifactRetirementKeys.contains(key) {
+            lock.unlock()
+            return .retiring
+        }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else {
+            lock.unlock()
+            return .committedAbsent
+        }
+        let stagedDeletion = row.deletionPending || row.pendingArtifactIntents.contains {
+            if case .rowDeletion = $0.operation { return true }
+            return false
+        }
+        lock.unlock()
+        return stagedDeletion ? .retiring : .present(hydratedRecord(row))
+    }
+
     func isDeletionPending(for key: DownloadAttemptKey) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else { return false }

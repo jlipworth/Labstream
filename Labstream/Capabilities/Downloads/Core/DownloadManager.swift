@@ -993,6 +993,7 @@ public final class DownloadManager {
                             switch intent.operation {
                             case .activeEncoding: executeActiveEncodingCleanupIntent(intent)
                             case .embyConvert: executeEmbyConvertCleanupIntent(intent)
+                            case .plexOptimize: break // Runs only through the cleanup runner (P2).
                             }
                         }
                         lastError[key.ratingKey] = nil
@@ -1071,6 +1072,7 @@ public final class DownloadManager {
             switch intent.operation {
             case .activeEncoding: executeActiveEncodingCleanupIntent(intent)
             case .embyConvert: executeEmbyConvertCleanupIntent(intent)
+            case .plexOptimize: break // Runs only through the cleanup runner (P2).
             }
         }
     }
@@ -1121,7 +1123,8 @@ public final class DownloadManager {
     nonisolated static func makeActiveEncodingCleanupIntent(
         attemptKey: DownloadAttemptKey,
         metadata: OfflineMetadata,
-        playSessionID: String
+        playSessionID: String,
+        provenance: DurableDownloadCleanupIntent.Provenance? = nil
     ) -> DurableDownloadCleanupIntent? {
         let backend = metadata.resolvedBackendKind(ratingKey: attemptKey.ratingKey)
         guard backend == .jellyfin || backend == .emby,
@@ -1135,8 +1138,33 @@ public final class DownloadManager {
             attemptKey: attemptKey,
             backend: backend,
             server: server,
-            operation: .activeEncoding(playSessionID: playSessionID)
+            operation: .activeEncoding(playSessionID: playSessionID),
+            provenance: provenance
         )
+    }
+
+    /// Plex optimize cleanup is server-scoped: the persisted machine identifier, or the persisted
+    /// base URL for rows written before it, and no user. Never falls back to the live session.
+    nonisolated static func makePlexOptimizeCleanupIntent(
+        attemptKey: DownloadAttemptKey,
+        metadata: OfflineMetadata,
+        create: DurableDownloadCleanupIntent.PlexCreateEvidence,
+        provenance: DurableDownloadCleanupIntent.Provenance? = nil
+    ) -> DurableDownloadCleanupIntent? {
+        guard metadata.resolvedBackendKind(ratingKey: attemptKey.ratingKey) == .plex,
+              let queueTitle = metadata.optimizeQueueTitle, !queueTitle.isEmpty,
+              let baseURLString = metadata.backendBaseURLString,
+              let baseURL = URL(string: baseURLString),
+              let server = DurableDownloadCleanupIntent.ServerIdentity(
+                baseURL: baseURL, serverID: metadata.backendServerID, userID: nil
+              ) else { return nil }
+        return DurableDownloadCleanupIntent(
+            attemptKey: attemptKey,
+            backend: .plex,
+            server: server,
+            operation: .plexOptimize(queueTitle: queueTitle),
+            provenance: provenance,
+            plexCreate: create)
     }
 
     private func persistEmbyConvertCleanupIntent(
@@ -1154,7 +1182,8 @@ public final class DownloadManager {
 
     nonisolated static func makeEmbyConvertCleanupIntent(
         attemptKey: DownloadAttemptKey,
-        metadata: OfflineMetadata
+        metadata: OfflineMetadata,
+        provenance: DurableDownloadCleanupIntent.Provenance? = nil
     ) -> DurableDownloadCleanupIntent? {
         guard metadata.resolvedBackendKind(ratingKey: attemptKey.ratingKey) == .emby,
               let baseURLString = metadata.backendBaseURLString,
@@ -1179,7 +1208,8 @@ public final class DownloadManager {
             return nil
         }
         return DurableDownloadCleanupIntent(
-            attemptKey: attemptKey, backend: .emby, server: server, operation: operation)
+            attemptKey: attemptKey, backend: .emby, server: server, operation: operation,
+            provenance: provenance)
     }
 
     nonisolated private static func hasEmbyConvertCleanupAuthority(
@@ -3830,6 +3860,7 @@ public final class DownloadManager {
                 switch intent.operation {
                 case .activeEncoding: executeActiveEncodingCleanupIntent(intent)
                 case .embyConvert: executeEmbyConvertCleanupIntent(intent)
+                case .plexOptimize: break // Runs only through the cleanup runner (P2).
                 }
             }
             // Preserve the server-cleanup-identity leak disclosure across a successful deletion —
@@ -4384,6 +4415,7 @@ public final class DownloadManager {
             switch intent.operation {
             case .activeEncoding: executeActiveEncodingCleanupIntent(intent)
             case .embyConvert: executeEmbyConvertCleanupIntent(intent)
+            case .plexOptimize: break // Runs only through the cleanup runner (P2).
             }
         }
         keepaliveCoordinator.reconcile(records: recoveryEligibleFresh)
