@@ -58,7 +58,8 @@ enum DebugStatsFixture {
     }
 
     static func apply(_ scenario: Scenario, to d: PlaybackDiagnostics) {
-        d.isFixtureFrozen = true
+        d.isFixtureFrozen = false
+        defer { d.isFixtureFrozen = true }
         let dolbyVision = VideoHDRMetadata.classify(
             colorTransfer: "smpte2084", colorPrimaries: "bt2020", colorSpace: "bt2020nc",
             colorRange: "tv", bitDepth: 10,

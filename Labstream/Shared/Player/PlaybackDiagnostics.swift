@@ -68,6 +68,9 @@ final class PlaybackDiagnostics {
     private(set) var displayCurrentEDR: Double?
 
     func applyHDRDisplayEligibility(_ eligible: Bool) {
+        #if DEBUG
+        guard !isFixtureFrozen else { return }
+        #endif
         runtimeEligibleForHDR = eligible
     }
 
@@ -199,7 +202,8 @@ final class PlaybackDiagnostics {
 
     #if DEBUG
     /// UI-test fixtures seed synthetic Stats scenarios (#331); freezing keeps the 1 s sampler
-    /// from overwriting them with the local fixture clip's numbers.
+    /// and the asynchronous HDR/display probes from overwriting them with the local fixture
+    /// clip's facts.
     var isFixtureFrozen = false
     #endif
 
@@ -340,6 +344,9 @@ final class PlaybackDiagnostics {
     /// On a Jellyfin/Emby "transcode" session, a runtime codec matching the source proves
     /// the server is remuxing (video copy) — upgrade the Mode/Decision rows accordingly.
     func applyRuntimeHDRProbe(_ result: PlaybackHDRProbeResult) {
+        #if DEBUG
+        guard !isFixtureFrozen else { return }
+        #endif
         // A suspended asset probe must not overwrite a newer live display sample.
         if runtimeEligibleForHDR == nil {
             runtimeEligibleForHDR = result.eligibleForHDRPlayback
