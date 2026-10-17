@@ -385,240 +385,250 @@ Acceptance is a phase's pins and inventory rows staying green.
 
 ## P2 detailed plan — cleanup foundation
 
-*Revision 2 (2026-10-17). Revised after the GPT-6.1-Sol "before" co-review, whose verdict was
-"rework", with ten findings, all of which are incorporated.*
+*Revision 3 (2026-10-17).*
+- *Two "before" co-review rounds by GPT-6.1-Sol: round 1 (rework, 10 findings) and round 2
+  (rework, 7 findings). All findings are incorporated.*
+- *Scope was narrowed on the reviewer's advice:*
+  - *physical deletion of the tombstone engine moves to P6;*
+  - *quarantine recovery is limited to the Plex compatibility case.*
 
-Today seven kinds of server cleanup exist, and only three are journaled:
+Today seven kinds of server cleanup exist. Only three are journaled:
 
 | Cleanup | Record today |
 |---|---|
 | Jellyfin/Emby `activeEncoding` | journaled |
 | Emby Convert `knownJob` | journaled |
 | Emby Convert `ambiguousCreate` | journaled |
-| Emby 24-hour crash-window expiry | separate tombstone file |
+| Emby 24-hour expiry | separate tombstone file |
 | Plex optimize removal on delete (B28) | none (fire-and-forget) |
 | The two `cancelEmbyConvertJob` sites (B50) | none (fire-and-forget) |
 | The superseded-negotiation encoder stop | none (fire-and-forget) |
 
-A fourth unjournaled path, missed in revision 1, is the Plex `cleanStaleOptimizeJobs` DELETE
-loop. P2 gives every server cancel one durable journal, one set of eligibility rules and one
-runner.
+The Plex `cleanStaleOptimizeJobs` DELETE loop is a fourth unjournaled path.
 
-**Invariant:** no step clears or replaces the last durable authority for a server resource until
+**Invariant.** No step clears or replaces the last durable authority for a server resource until
 its successor authority has committed.
+
+**Documented residual windows**, where the invariant does not fully hold:
+
+- **Emby stale-create cancel and superseded encoder stops.** When their `ensure` fails, they fall
+  back to a best-effort, unrecorded cancel. These windows exist today. A process death in them
+  leaks the resource, and a diagnostic records each occurrence.
+- **Plex GET → DELETE race.** A render that completes between the GET and the DELETE is deleted
+  by the queue-item DELETE. PMS has no conditional cancel. This is an explicit exception to D2,
+  and the UI note says the cancel happens "where possible".
 
 ### P2.1 Durability semantics (B18)
 
 - **Committer.** Both journals write through `DownloadIndexFileCommitter`: an exclusive temp
   file, full fsync, rename, and directory fsync.
-- **What "committed" means.** A write is committed only when the full sequence succeeds.
-  - If the write throws after the rename (for example, the directory sync fails), the journal
-    retries the directory sync, or recommits the same bytes, before it returns `.committed`.
-  - Re-reading the canonical bytes proves only that the write is visible. That is reported as
-    `.ambiguous`, which callers treat as a failure, never as durable.
-  - `ensure` that finds an existing entry also confirms that the directory is synced before it
-    returns it.
+- **What "committed" means.** A write is `.committed` only when the full sequence succeeds.
+  - If the write throws after the rename, the journal retries the directory sync, or recommits
+    the same bytes.
+  - If that still fails, the result is `.ambiguous`, which callers treat as a failure.
+  - Re-reading the file is never treated as proof that the write is durable.
+  - `ensure` that finds an existing entry also confirms the directory sync.
 - **Protection and backup exclusion** are applied to:
-  - the authority directory, both when it is created and when it already exists;
+  - the authority directory, whether it is new or already exists;
   - every journal write;
-  - quarantine files.
+  - quarantine and evidence files.
 - **Protected data unavailable.** A read refused because of data protection is `unreadable`,
   never `empty`.
-- **Temp sweeping.** `cleanupAbandonedTemps` also sweeps the authority directory.
-- **Locking.** The journal keeps its own lock and stays independent of the index lock (st-41).
-- **Full volume.** Today a delete on a full volume fails safely. The pin asserts that it fails
-  safely; it does not assert that space is reclaimed.
+- **Temps.** `cleanupAbandonedTemps` also sweeps the authority directory.
+- **Locking.** The journal has its own lock and stays independent of the index (st-41).
+- **Full volume.** The pin asserts that a delete on a full volume fails safely. It does not
+  assert that space is reclaimed.
 
-### P2.2 Backend identity and schema
+### P2.2 Schema, identity and store disposition
 
-`Operation` gains `plexOptimize(queueTitle:)`. Validating `ServerIdentity` becomes
-backend-specific.
+- **New operation:** `Operation.plexOptimize(queueTitle:, create:)`. `create` records the create
+  evidence:
+  - `.confirmed` when the PUT returned success, or the item has been seen in the queue;
+  - `.unresolved` when the PUT's outcome is unknown.
+  - The create request is a **PUT**.
+- **Provenance.** Every intent gains a `provenance`:
+  - `.rowDeletion`: written by delete.
+  - `.terminalRelease`: written by the launch sweep for a handle held by a terminal row.
+  - `.abandonment(originAttempt)`: stale-create, a duplicate job, a superseded encoder, expiry, or
+    seed removal.
+  - **Legacy entries** (no provenance) are classified once at load:
+    - committed-absent row → `.rowDeletion`;
+    - present terminal row → `.terminalRelease`;
+    - anything else → retained, and re-checked on each pass.
+- **Identity.**
+  - **Plex** is server-scoped. Identity is the persisted `backendServerID`, falling back to the
+    normalized URL on legacy rows; there is no user ID.
+    - Binding to the account was rejected: `matchesPersistedServer` also gates resume, so an
+      account binding would break resume after a Plex Home switch.
+    - The cleanup matcher is separate from the resume policy.
+  - **Jellyfin/Emby** compare users with `MediaBrowserUserIdentity.sameUser`.
+  - The currently selected server is never substituted for a missing persisted identity.
+- **Store disposition API.** `store.cleanupDisposition(for: attemptKey)` returns one of:
+  - `.present(row)`;
+  - `.retiring`, which covers a pending deletion, a removal whose terminal commit is still in
+    flight, and a failed removal;
+  - `.committedAbsent`, which requires `startupRecoveryState == .ready` and no in-flight
+    row-deletion intent.
+  - An in-memory removal, as at `DownloadStore.swift:5122`, is reported as `.retiring` until the
+    terminal revision commits.
+- **Downgrade (Plex only).**
+  - Before the runner starts, any `download-cleanup-intents-quarantine-*` file is scanned for
+    elements whose `operationType == plexOptimize`. Only those are re-imported.
+  - Each one is `ensure`d by ID. Elements that conflict or still don't decode stay in the file.
+  - The file is then renamed to `…-imported-*`, which is the import receipt.
+  - The runner starts only after this barrier.
+  - **Why this cannot resurrect work.** Plex intents in a quarantine file existed at downgrade
+    time, and the older build could not execute them. A crash before the rename re-imports by
+    ID, which is idempotent.
 
-- **Plex.**
-  - Identity is the persisted `backendServerID` (the machine `clientIdentifier`). Rows written
-    before it existed fall back to the normalized base URL.
-  - The user ID is absent: Plex sessions carry none today.
-  - **Account scope (decided).** Plex intents are server-scoped, with no account binding:
-    - optimize queue items belong to the server, not the account;
-    - the queue title is specific to the row;
-    - the P2.3 ownership recheck protects other rows' items.
-  - Binding to `plexAccountProfile.stableUserID` was rejected. `matchesPersistedServer` also gates
-    resume, so the binding would block resume after a Plex Home profile switch.
-  - A DELETE refused for the current token (401/403) keeps the intent.
-  - The currently selected server is never substituted for missing persisted authority.
-- **Jellyfin/Emby.** Unchanged, except that user comparison moves to
-  `MediaBrowserUserIdentity.sameUser`, matching `matchesPersistedServer`'s GUID normalization.
-- **Downgrade.**
-  - An older build quarantines unknown elements and rewrites the canonical file without them.
-  - An upgraded build therefore re-imports intents from `download-cleanup-intents-quarantine-*`
-    files. Only elements that now decode and pass validation come back, deduplicated by ID; the
-    quarantine file is retired after a commit.
-  - A pin covers new → old → new.
+### P2.3 Eligibility and ownership, evaluated by the runner per pass
 
-### P2.3 Executor eligibility and the ownership recheck
+**Eligibility by provenance:**
 
-- **Eligibility.** An intent's presence alone never authorizes a cancel. An intent is eligible
-  only when one of these holds:
-  - **Deleted row.** The intent's attempt row is gone (`resolveRowDeletion == .removed`), or no
-    row with that `attemptKey` exists.
-  - **Pending deletion.** The row is deletion-pending and its deletion has resolved. While the
-    deletion is still pending or has failed, the intent waits.
-  - **Abandonment.** The intent is an explicit abandonment record (P2.4) whose originating attempt
-    no longer owns the resource.
-  - A live, resumable row that still references the resource keeps it. The exclusion matches the
-    exact attempt key and the same resource.
-- **Ownership recheck before DELETE**, for every operation, including known-job:
-  - The executor collects the resources referenced by all live rows on the same backend, server
-    and user: job IDs, PlaySessionIds and queue titles.
-  - It refuses the DELETE when another row owns the resource.
-  - The intent is retained, never retired, so that a later abandonment of that row can still run.
-- **Explicit outcomes, Plex.** The queue response decodes to one of:
-  - `.malformed`: the intent is retained;
-  - `.absent(validated)`: the list decoded, and no item matched;
-  - `.completed`: retired, and the render stays on the server (D2);
-  - `.cancellable(id)`: requires a unique title match and a known non-terminal state. Unknown
-    state is treated as uncertain and retained.
-  - **Absent after an ambiguous create.** If the create POST timed out or its response was lost,
-    an absence does not retire the intent until a grace period passes (proposed: 2 polls and 10
-    minutes) or a later GET still shows the item absent.
-  - **Known limitation:** the GET → DELETE completion race. PMS has no conditional cancel. A
-    render that completes in between is deleted by queue-item DELETE; the item was already
-    abandoned, so the loss is acceptable.
-- **Explicit outcomes, Emby and Jellyfin.** The existing 2xx/404/410 handling stays.
+- `.rowDeletion` runs only on `.committedAbsent`.
+- `.terminalRelease` runs while the row is present and terminal, unless the operation-specific
+  protection holds. A failed Convert row with `shouldKeepEmbyConvertAuthorityForRetry` is
+  protected (B44); its intent is retained and re-checked.
+- `.abandonment(origin)` runs whenever the ownership recheck passes. The originating attempt does
+  not count as an owner.
 
-### P2.4 Producers: journal first, never release authority before commit
+**Ownership recheck, immediately before DELETE.** The runner collects every resource claimed by a
+live row on the same backend, server and user, excluding the intent's own origin:
+
+- job IDs;
+- PlaySessionIds;
+- queue titles;
+- **live Emby recovery identities**: baseline, fingerprint and time window. Any job that
+  `EmbyConvertRecoveryPolicy` would match for a live row counts as claimed (B49).
+
+Ambiguous Convert cleanup and Convert crash-window recovery are serialized on one per-server
+`EmbyConvertJobCoordinator`, so recovery adoption and cancellation cannot interleave.
+
+**Plex outcomes.** The queue decodes to one of:
+
+- `.malformed`: retain.
+- `.absent`: retire only when `create == .confirmed`.
+  - An `.unresolved` create is retained for 24 h and then retired, with a diagnostic.
+  - The bound is justified because every Labstream item carries the marker title. The stale sweep
+    in P2.4 deletes any marker item that appears late and that no live row protects.
+- `.completed`: retire; the render stays on the server (D2).
+- `.cancellable(id)`: requires a unique title match and a known non-terminal state. An unknown
+  state is retained.
+
+### P2.4 Producers
 
 - **Delete.** The flow is unchanged:
   1. `prepareForDestructiveDeletion`;
   2. the deletion barrier;
-  3. `.removed`;
-  4. execute.
-  - Plex joins the candidates. The fire-and-forget `Task` at `DownloadManager.swift:3789` goes
-    away.
+  3. execution through the runner.
+  - The Plex candidate joins the other intents, and the fire-and-forget `Task` goes away.
   - Paused prep rows are included (D2).
-- **Plex abandoned seed removal.** `ensure` runs first, and the row is removed only after it
-  commits. If `ensure` fails, the row is kept.
-- **Emby stale-create cancel (B50, `+EmbyConvert.swift:458`).**
-  - The row was deleted or replaced while the POST was in flight, so the job has no row
-    authority.
-  - `ensure` an abandonment intent keyed to the attempt that created the job, then execute it.
-  - If `ensure` fails, a best-effort DELETE is sent and a `not_durable` diagnostic recorded.
-    Today's behaviour is that same best-effort cancel without the diagnostic.
-- **Emby duplicate-job cancel on reuse (B50, `:621`).**
-  - The row abandons its own still-converting job and switches to a reused existing version.
-  - `ensure` an abandonment intent for that job before releasing it.
-  - If `ensure` fails, the job stays referenced and is not cancelled, so the row keeps its
-    current authority. A duplicate render is preferred over an unrecorded leak.
-- **Superseded-negotiation encoder stop** (six sites).
-  - The intent is built from the captured `BackendSession` and the originating attempt key, not
-    from a surviving row.
-  - If `ensure` fails, the call keeps today's fire-and-forget stop and records a `not_durable`
-    diagnostic. This window existed before P2.
+- **Plex seed removal.** `ensure` runs first, and the row is kept if it fails.
+- **Emby stale-create (`+EmbyConvert.swift:458`).** `ensure` an `.abandonment` intent, then
+  trigger the runner. If `ensure` fails, a best-effort DELETE is sent (a residual window).
+- **Emby duplicate job (`:621`).**
+  - `ensure` an `.abandonment` intent first.
+  - If it fails, the **whole reuse handoff is skipped**: the row keeps its job and continues
+    polling it.
+- **Superseded encoder stops.** These use the captured `BackendSession` and the originating
+  attempt. If `ensure` fails, they fall back to best-effort (a residual window).
 - **Emby 24-hour expiry.**
-  - `ensure` an `ambiguousCreate` intent first.
-  - Only after it commits does the row clear its recovery identity and fail.
-  - If `ensure` fails, the row stays `.preparing` with its identity intact and retries on the
-    next pass. There is no in-memory fallback.
-- **`cleanStaleOptimizeJobs`.**
-  - It routes its discoveries through `ensure(plexOptimize)` and the runner.
-  - The live-title protection is kept and becomes part of the ownership recheck.
+  - `ensure` an `ambiguousCreate` `.abandonment` intent, and clear the identity and fail the row
+    only after it commits.
+  - If it fails, the row stays `.preparing` and retries on the next pass.
+  - P2 stops writing tombstones.
+- **`cleanStaleOptimizeJobs`.** Each discovery is `ensure`d as a `.abandonment` `plexOptimize`
+  intent with `create: .confirmed`; the item was seen. The runner executes it. Live-title
+  protection is part of the ownership recheck.
 
-### P2.5 Tombstone retirement, with a replay barrier
+### P2.5 Tombstone migration (the engine is deleted in P6)
 
-- **Migration key.** Tombstones carry no attempt ID. Each one maps to an intent with:
-  - `id` set to the tombstone's UUID, kept stable;
-  - the attempt key `(ratingKey, legacy-tombstone-<uuid>)`.
-  - It never borrows the current row's attempt or a fresh UUID.
-- **Barrier.** Migration runs before the runner is enabled at launch:
-  1. `ensure` each tombstone's intent;
-  2. remove migrated tombstones;
-  3. fsync.
-  - The runner stays disabled until migration either completes or fails with tombstones kept.
-    The legacy engine's replay is not used in the meantime.
-- **Evidence preservation.**
-  - An unreadable legacy file is kept, with a diagnostic.
-  - A tombstone that cannot be converted is moved to an evidence file next to it. It is never
-    dropped.
-- **Parity.** The tombstone tests port to the intent path before the engine is deleted. They cover
-  the full `cleanupAction` matrix: retain, discard, and the unique-job cancel beyond 24 hours.
-- **Deleted:**
-  - `deferredEmbyCleanupTombstones`;
-  - `embyCleanupTombstonesInFlight`;
-  - `recoverAndCancelEmbyConvertTombstone`;
-  - the tombstone preamble;
-  - the store wrappers;
-  - `DownloadDeletePolicy.embyConvertCancelDecision`, which is dead code.
+- **Migration key.** Each tombstone becomes an intent with:
+  - its UUID kept as the intent ID;
+  - the attempt key `(ratingKey, legacy-tombstone-<uuid>)`;
+  - provenance `.abandonment`.
+- **Migration receipt.** The runner skips any intent whose ID is still present in the tombstone
+  file, so retained tombstones cannot recreate intents that have already drained. Unrelated
+  intents stay runnable.
+- **Preserved, not dropped:**
+  - an unreadable legacy file is kept;
+  - tombstones that cannot be converted are moved to an evidence file.
+- **Parity.** The tombstone tests are ported to cover the full `cleanupAction` matrix. The
+  legacy executor and preamble are removed from the call graph; the types and the reader stay
+  until P6.
 
 ### P2.6 Runner
 
-- `CleanupIntentRunner` is an actor off the main actor. It owns journal I/O.
-- **Triggers** are launch-ready, `backend_ready`, a backend switch and a session change. They
-  are coalesced into a single pending pass.
-  - `refreshRecords` does **not** trigger a replay. It only schedules a pass when a
-    retry-backoff deadline has passed.
-- **Scheduling limits:**
+- `CleanupIntentRunner` is an actor that owns journal I/O, off the main actor.
+- **Triggers.** It coalesces these into one pass:
+  - launch-ready, after the P2.2 quarantine barrier and P2.5 migration;
+  - `backend_ready`, a backend switch, and a session change;
+  - foreground;
+  - producer kicks.
+- **Self-scheduling.** It schedules its own timer for the earliest backoff deadline, so it
+  makes progress without row refreshes.
+  - `refreshRecords` never triggers it.
+- **Limits:**
   - concurrency of 2;
-  - per-intent exponential backoff from 30 s up to 30 min;
+  - per-intent backoff from 30 s to 30 min;
   - backoff reset when the auth generation changes;
-  - single flight per intent ID (emby-38).
-- **Session mismatch** leaves the intent journaled and puts it in backoff.
-- **Cleanup-only backends.** `ContentView` hydrates sessions for backends that have journaled
-  intents, not only for backends with active rows.
-- **Fallback capsule.** The in-memory `deferredCleanupIntents` remains only as the fallback for
-  the deletion-pending capsule (st-26).
+  - single flight per ID (emby-38).
+- **Session mismatch** puts the intent into backoff.
+- **Session hydration.** `ContentView` hydrates sessions for backends that have intents.
+- **Fallback capsule.** `deferredCleanupIntents` remains only as the capsule fallback (st-26).
 
-### P2.7 Launch sweep and B49
+### P2.7 Launch sweep, logout and UI
 
-- `CleanupObligationPolicy` (PMSKit) decides which terminal rows journal at launch:
+- **`CleanupObligationPolicy` (PMSKit)** decides which terminal rows produce `.terminalRelease`
+  intents:
   - Jellyfin/Emby play sessions;
-  - Convert jobs, unless `shouldKeepEmbyConvertAuthorityForRetry`;
+  - Convert jobs, except protected failed ones;
   - Plex never.
-- **B49 eligibility** also covers existing journal entries. The ownership recheck in P2.3 keeps
-  a known or ambiguous intent from touching a job that a failed-but-resumable row, or
-  crash-window recovery, still references.
-- Pins cover both startup orderings: reattach first, and `ContentView` first.
-
-### P2.8 Logout and UI
-
-- **Logout** keeps pausing without journaling. Signing out is not a deletion.
-- **D2 UI note.** The delete confirmation for a Plex or Emby prep row says that:
-  - a job still in prep is cancelled;
+- **Logout** does not journal.
+- **D2 UI note.** The delete confirmation for a prep row says that:
+  - a job still in prep is cancelled where possible;
   - completed server versions stay.
 
-### Commit order (each commit adds its pins first)
+### Commit order (each commit adds its pins first and builds on its own)
 
-1. **Durability:** P2.1, with pins for:
-   - a real directory-sync failure;
-   - a rename followed by a throw;
+1. **Durability (P2.1).** Pins:
+   - a real directory-sync failure, and a rename followed by a throw;
    - a protection-unavailable read;
    - protection and exclusion on an existing directory and on quarantine files;
    - delete on a full volume failing safely.
-2. **Identity, schema and eligibility:** P2.2 and P2.3, with pins for:
+2. **Schema, identity and disposition (P2.2).** Pins:
    - Plex identity, including legacy rows;
-   - new → old → new re-import;
-   - eligibility while a delete is pending, has failed, or was interrupted by a restart between
-     the journal commit and submission;
-   - an ownership recheck that refuses an adopted job;
-   - Plex outcomes: malformed, a duplicate title, a missing state, completed, and a delayed POST.
-3. **Runner and tombstone migration:** P2.5 and P2.6, with pins for:
-   - coalescing and backoff;
+   - `cleanupDisposition` during an in-flight removal, a failed removal, a pending deletion, and
+     before startup is ready;
+   - legacy provenance classification;
+   - quarantine re-import: a completed known entry next to an unknown Plex entry, mixed
+     unsupported elements, and a crash before the rename.
+3. **Runner, eligibility, ownership and migration (P2.3, P2.5, P2.6, the P2.7 policy).** The
+   legacy tombstone executor still compiles. Pins:
+   - eligibility by provenance;
+   - ownership recheck, including a recovery-identity claim under a different attempt key and a
+     migrated synthetic attempt;
+   - Emby coordinator serialization;
+   - Plex outcomes, including a 24-hour unresolved create;
+   - backoff and the self-scheduled timer without refreshes;
    - single flight;
    - both startup orderings;
-   - partial migration;
-   - removal failure;
-   - an unconvertible tombstone;
+   - migration: partial, a removal failure, and the receipt;
    - parity.
-4. **Producers and UI:** P2.4, P2.7 and P2.8, with pins for:
-   - journal failure followed by process death, for each producer;
-   - the duplicate-job case and the stale-create case;
-   - superseded stops whose row is gone.
+4. **Producers and UI (P2.4, P2.7 UI).** Pins:
+   - for each producer, journal failure followed by process death;
+   - the duplicate-job skip;
+   - the stale-create fallback;
+   - a superseded stop whose row is gone;
+   - expiry ordering;
+   - stale-sweep routing.
 
 ### Out of P2
 
-- Facets and the v5 migration (P3). The external journal survives a destructive root reset, but
-  row-only authority does not, so P3's migration must journal it.
+- Facets and the v5 migration (P3). The journal survives a root reset, but row-only authority
+  does not, so P3's migration must journal it.
 - Prep-poller registration (P4).
-- Dropping the legacy reader (P6).
+- Physical deletion of the tombstone engine (P6).
 
 ## Open gates (never claimed by this work)
 
