@@ -163,6 +163,54 @@ struct BackgroundDownloadStartupAdmissionTests {
         }
     }
 
+    /// B54 containment: the second consecutive truncation parks a forward-only row `.unverified`
+    /// and keeps its bytes. The kept body must be published at the row's stable path through the
+    /// validated-promotion path, exactly as a probe-miss `.unverified` is, not left in staging.
+    @Test func truncatedSecondStrikeParkPublishesBodyAtStablePath() async throws {
+        try await withTemporaryDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let session = BackgroundDownloadSession(
+                store: store, protocolClasses: [],
+                playbackValidator: { _, _ in
+                    BackgroundDownloadSession.PlaybackValidation(
+                        played: true, reason: "played", durationMs: 60_000, detail: nil)
+                })
+            defer { session.invalidateInjectedSessionForTesting() }
+            #expect(await activate(session) == .activated(cancelledTaskCount: 0))
+            session.onFinalizerRequest = { [weak session] request in
+                Task { await session?.executeFinalizerRequest(request) }
+            }
+
+            let attemptID = try #require(DownloadAttemptID(rawValue: "truncated-park-a"))
+            let key = DownloadAttemptKey(ratingKey: "jellyfin:truncated-park", attemptID: attemptID)
+            let stable = store.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
+            let record = DownloadRecord(
+                ratingKey: key.ratingKey, attemptID: attemptID, title: "Truncated",
+                localURL: stable, status: .downloading,
+                metadata: OfflineMetadata(
+                    ratingKey: key.ratingKey, title: "Truncated", type: "movie",
+                    duration: 3_600_000,
+                    backendKind: .jellyfin,
+                    resumeMode: .liveForwardOnly))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: attemptID) == .committed(key))
+            let working = try #require(store.attemptWorkingFileURL(for: key))
+            let body = Data(repeating: 0x5A, count: 4_096)
+            try body.write(to: working)
+            // The first strike already happened in this process.
+            session.seedTruncationFailureCountForTesting(1, ratingKey: key.ratingKey)
+
+            #expect(session.finalizeCompletedStaticRangeFile(
+                ratingKey: key.ratingKey, validationLabel: "test"))
+            for _ in 0..<500 where store.record(for: key)?.status != .unverified {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+
+            #expect(store.record(for: key)?.status == .unverified)
+            #expect((try? Data(contentsOf: stable)) == body)
+            #expect(!FileManager.default.fileExists(atPath: working.path))
+        }
+    }
+
     @Test func rangeErrorCompletionAfterDeletionReservationCannotMutateOrPurge() async throws {
         try await withTemporaryDirectory { directory in
             let gate = HeldRangeFailureGate()
