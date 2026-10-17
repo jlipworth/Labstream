@@ -1872,7 +1872,7 @@ public final class DownloadManager {
     }
 
     /// P3a: change an exact attempt's lifecycle through the reducer and wait for the revision to
-    /// commit, mirroring `setAttemptStatus`'s blocking contract. Returns false when the owner is
+    /// commit, with the same blocking contract the legacy status write had. Returns false when the owner is
     /// stale, the reducer rejects the event in the row's current lifecycle, or the snapshot did not
     /// commit; callers must not create dependent work or change manager trackers in that case.
     @discardableResult
@@ -1880,20 +1880,6 @@ public final class DownloadManager {
         _ event: DownloadLifecycleEvent,
         for key: DownloadAttemptKey,
         context: String
-    ) -> Bool {
-        applyLifecycleEvent(event, for: key, context: context, plannedLegacyStatus: nil)
-    }
-
-    /// `plannedLegacyStatus` covers one reducer gap. A season retry row (a failed attempt the
-    /// planner flagged for admission) that was loaded from a pre-P3a index derives `planned`, and
-    /// admission does not move it to `admitted` (see `admitSeasonPlannerRowsOnce`). The reducer
-    /// has no planned → serverPrep/transferring retry and no `backendUnavailable` from planned,
-    /// although the legacy status write reached those states from the same `.failed` row.
-    func applyLifecycleEvent(
-        _ event: DownloadLifecycleEvent,
-        for key: DownloadAttemptKey,
-        context: String,
-        plannedLegacyStatus: DownloadStatus?
     ) -> Bool {
         switch store.submitLifecycleEvent(event, for: key) {
         case .staleOrMissing:
@@ -1904,11 +1890,6 @@ public final class DownloadManager {
             return false
         case .rejected(let rejection):
             let lifecycle = store.lifecycleState(for: key)?.lifecycle
-            if rejection == .illegal, lifecycle == .planned, let plannedLegacyStatus {
-                // P3a-TODO: remove once the reducer can retry/park a planned season retry row
-                // (needs a PMSKit reducer change: planned → serverPrep/transferring/paused).
-                return setAttemptStatus(plannedLegacyStatus, for: key, context: context)
-            }
             recordDownloadDiagnostic("downloads.lifecycle_event_rejected", fields: [
                 "download_id": .identifier(key.ratingKey),
                 "context": .label(context),
@@ -1982,30 +1963,6 @@ public final class DownloadManager {
         String(String(describing: event).prefix { $0 != "(" })
     }
 
-    func setAttemptStatus(
-        _ status: DownloadStatus,
-        for key: DownloadAttemptKey,
-        context: String
-    ) -> Bool {
-        switch store.setStatus(for: key, status) {
-        case .applied, .noChange:
-            return true
-        case .staleOrMissing:
-            recordDownloadDiagnostic("downloads.status_owner_stale", fields: [
-                "download_id": .identifier(key.ratingKey),
-                "context": .label(context),
-            ])
-            return false
-        case .persistenceFailed(let failure):
-            recordDownloadDiagnostic("downloads.status_persist_failed", fields: [
-                "download_id": .identifier(key.ratingKey),
-                "context": .label(context),
-                "failure": .label(Self.startupPersistenceFailureLabel(failure)),
-            ])
-            return false
-        }
-    }
-
     private func removeAttempt(_ key: DownloadAttemptKey, context: String) async -> Bool {
         switch await store.resolveRowDeletion(store.submitRemove(for: key)) {
         case .removed:
@@ -2066,21 +2023,16 @@ public final class DownloadManager {
                 preserveActiveIntent: preserveActiveIntent
             ) {
             case .queuedActiveIntent:
-                // P3a-TODO: no reducer event keeps (or restores) an admitted active intent while
-                // the backend is unavailable. This row can be paused, failed, admitted or
-                // transferring here; `backendUnavailable` would park it visibly paused,
-                // `transferRebuilding` would show it downloading (and rejects failed), and
-                // `retry` rejects admitted/transferring. Needs a PMSKit event
-                // ("awaiting session, keep intent") before this legacy write can go.
-                guard setAttemptStatus(.queued, for: key, context: "defer_resume") else { return }
+                // Keep (or restore) the visibly queued intent while the backend session returns.
+                guard applyLifecycleEvent(
+                    .requeued, for: key, context: "defer_resume") else { return }
                 lastError[ratingKey] = checkpointBytes > 0
                     ? .interruptedResumable
                     : .transferFailed(
                         "Download will restart when the \(backend.displayName) session is ready.")
             case .pausedAtCheckpoint:
                 guard applyLifecycleEvent(
-                    .backendUnavailable(.awaitingSession), for: key, context: "defer_resume",
-                    plannedLegacyStatus: .paused) else { return }
+                    .backendUnavailable(.awaitingSession), for: key, context: "defer_resume") else { return }
                 lastError[ratingKey] = .interruptedResumable
             case .failedNoCheckpoint:
                 // Nothing to resume from: the missing session fails the attempt as an auth
@@ -2402,8 +2354,7 @@ public final class DownloadManager {
             hasEmbyConvertRecoveryIdentity: record.metadata?.hasEmbyConvertRecoveryIdentity == true
         ) {
             guard applyLifecycleEvent(
-                .retry(.convertResume), for: retryAttemptKey, context: "retry_emby_convert",
-                plannedLegacyStatus: .preparing) else {
+                .retry(.convertResume), for: retryAttemptKey, context: "retry_emby_convert") else {
                 retryState.removeRetrying(ratingKey)
                 return
             }
@@ -2438,8 +2389,7 @@ public final class DownloadManager {
                 return
             }
             guard applyLifecycleEvent(
-                .retry(.resumeBlob), for: retryAttemptKey, context: "resume_blob",
-                plannedLegacyStatus: .downloading) else {
+                .retry(.resumeBlob), for: retryAttemptKey, context: "resume_blob") else {
                 retryState.removeRetrying(ratingKey)
                 return
             }
@@ -2725,11 +2675,10 @@ public final class DownloadManager {
         clearServerPrepPoller(ratingKey: record.ratingKey, reason: "paused_resume")
         retryState.removeRetrying(record.ratingKey)
         clearRetryHandoff(ratingKey: record.ratingKey)
-        // P3a-TODO: the matrix maps this to `retry(prepReattach)` (→ serverPrep, shown
-        // `.preparing`), but Plex prep is persisted as `.queued` today and the prep scanner
-        // (`DownloadRetryPolicy.isPlexServerPrepResumeCandidate`, PMSKit) only reattaches `.queued`
-        // rows, so the event would strand the row. Convert together with that predicate.
-        guard setAttemptStatus(.queued, for: key, context: "plex_prep_resume") else { return }
+        // Plex prep is persisted queued (admitted) while the server renders; the prep scanner
+        // reattaches queued rows.
+        guard applyLifecycleEvent(
+            .retry(.prepReattach), for: key, context: "plex_prep_resume") else { return }
         optimizeState[record.ratingKey] = DownloadOptimizeStateLabel.queued
         refreshRecords()
         resumePendingServerPrepDownloads(allowWhileQueuePaused: true)
@@ -3025,8 +2974,7 @@ public final class DownloadManager {
                 // A prior bounded/list attempt may have parked this row failed while preserving
                 // ownership evidence. Relaunch/retry re-enters recovery, never a blind new POST.
                 guard applyLifecycleEvent(
-                    .prepReattached, for: key, context: "emby_convert_recover",
-                    plannedLegacyStatus: .preparing) else { continue }
+                    .prepReattached, for: key, context: "emby_convert_recover") else { continue }
                 activeJobs.insert(ratingKey)
                 inFlightAttempts.acquire(key)
                 let attemptID = beginEmbyConvertAttempt(for: key)

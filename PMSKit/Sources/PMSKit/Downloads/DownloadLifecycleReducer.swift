@@ -73,6 +73,9 @@ public enum DownloadLifecycleEvent: Sendable, Equatable {
     case pause(DownloadPauseCause)
     case retry(DownloadRetryMode)
     case retryRejected(DownloadFailureReason)
+    /// Keep or restore a visibly queued (admitted) intent: a deferred resume that waits for its
+    /// backend session, or a Plex prep row resuming (Plex prep is persisted queued).
+    case requeued
     case admissionGranted
     case prepReattached
     case prepHandoff
@@ -184,12 +187,21 @@ public enum DownloadLifecycleReducer {
             return pause(cause)
 
         case .retry(let mode):
+            // A planned season row retries like a failed one (its admission runs through Retry).
+            let parked = lifecycle == .paused || lifecycle == .failed || lifecycle == .planned
             switch mode {
-            case .convertResume, .prepReattach:
-                guard lifecycle == .paused || lifecycle == .failed else { return illegal }
+            case .convertResume:
+                guard parked else { return illegal }
+                next.history.admissionIntent = nil
                 return to(.serverPrep)
+            case .prepReattach:
+                // Plex prep is persisted queued (admitted) while the server renders.
+                guard parked else { return illegal }
+                next.history.admissionIntent = nil
+                return to(.admitted)
             case .resumeBlob:
-                guard lifecycle == .paused || lifecycle == .failed else { return illegal }
+                guard parked else { return illegal }
+                next.history.admissionIntent = nil
                 return to(.transferring)
             case .staticCheckpoint, .freshAttempt:
                 guard lifecycle == .paused || lifecycle == .failed || lifecycle == .planned
@@ -202,6 +214,12 @@ public enum DownloadLifecycleReducer {
         case .retryRejected(let reason):
             return fail(reason)
 
+        case .requeued:
+            guard !lifecycle.isTerminal || lifecycle == .failed, lifecycle != .finalizing else {
+                return illegal
+            }
+            return to(.admitted)
+
         case .admissionGranted:
             guard lifecycle == .planned else { return illegal }
             next.history.admissionIntent = nil
@@ -209,7 +227,7 @@ public enum DownloadLifecycleReducer {
 
         case .prepReattached:
             guard lifecycle == .serverPrep || lifecycle == .paused || lifecycle == .failed
-                    || lifecycle == .admitted else { return illegal }
+                    || lifecycle == .admitted || lifecycle == .planned else { return illegal }
             return to(.serverPrep)
 
         case .prepHandoff:
@@ -263,7 +281,8 @@ public enum DownloadLifecycleReducer {
             return fail(reason)
 
         case .backendUnavailable(let cause):
-            guard active.contains(lifecycle) || lifecycle == .paused || lifecycle == .failed else {
+            guard active.contains(lifecycle) || lifecycle == .paused || lifecycle == .failed
+                    || lifecycle == .planned else {
                 return illegal
             }
             return pause(cause)
