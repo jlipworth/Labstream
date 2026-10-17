@@ -332,6 +332,37 @@ struct DownloadLifecycleStoreTests {
         }
     }
 
+    @Test("A condemned body that could not be moved still never seeds a Retry")
+    func condemnationFenceHoldsWithoutTheRename() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            var metadata = profiled("1080p")
+            metadata.resumeMode = .staticByteRange
+            let key = try seed("plex:strike", status: .downloading, metadata: metadata, in: store)
+            let body = try #require(store.attemptWorkingFileURL(for: key))
+            try Data(repeating: 4, count: 8_192).write(to: body)
+            _ = store.submitLifecycleEvent(.bodyAtWorking, for: key,
+                                           facts: DownloadRowFacts(route: .staticRange))
+            let source = try #require(store.truncationSourceKey(for: key))
+            _ = store.submitLifecycleEvent(
+                .finalizeOutcome(id: "t#body-8192", outcome: .truncated, source: source), for: key)
+            // No rename happened (as if it failed); a later failure overwrites the reason.
+            _ = store.submitLifecycleEvent(.retryRejected(.sourceMissing), for: key,
+                                           facts: DownloadRowFacts(route: .staticRange))
+            #expect(FileManager.default.fileExists(atPath: body.path))
+            #expect(store.lifecycleFacts(for: key).checkpoint == .none)
+
+            let retry = DownloadAttemptKey(ratingKey: key.ratingKey,
+                                           attemptID: DownloadAttemptID(uuid: UUID()))
+            #expect(store.createAttemptOwnedRecord(
+                record(retry, metadata: metadata), attemptID: retry.attemptID,
+                replacing: key.attemptID) == .committed(retry))
+            #expect(store.record(for: retry)?.bytes == 0)
+            let retryBody = try #require(store.attemptWorkingFileURL(for: retry))
+            #expect(!FileManager.default.fileExists(atPath: retryBody.path))
+        }
+    }
+
     @Test("A committed truncation verdict deletes exactly the condemned body")
     func committedTruncationDeletesTheCondemnedBody() async throws {
         try await withAsyncDirectory { directory in
@@ -411,11 +442,13 @@ struct DownloadLifecycleStoreTests {
             #expect(store.truncationStrikes(for: key) == 1)
             #expect(store.lifecycleState(for: key)?.lifecycle == .failed)
 
-            _ = store.submitLifecycleEvent(.bodyAtWorking, for: key,
-                                           facts: DownloadRowFacts(route: .staticRange))
+            // The condemned body can never re-enter finalization to be counted again.
+            #expect(store.submitLifecycleEvent(.bodyAtWorking, for: key,
+                                               facts: DownloadRowFacts(route: .staticRange))
+                == .rejected(.illegal))
             #expect(store.submitLifecycleEvent(
                 .finalizeOutcome(id: id, outcome: .truncated, source: source), for: key)
-                == .rejected(.replayed))
+                == .rejected(.illegal))
             #expect(store.truncationStrikes(for: key) == 1)
         }
     }

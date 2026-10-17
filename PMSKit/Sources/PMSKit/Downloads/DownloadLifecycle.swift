@@ -184,20 +184,29 @@ public struct DownloadAttemptHistory: Codable, Sendable, Equatable {
     public var storagePark: DownloadStoragePark?
     public var pauseCause: DownloadPauseCause?
     public var admissionIntent: DownloadAdmissionIntent?
+    /// Finalization condemned this attempt's working body (a failing truncation verdict), in the
+    /// same revision as the verdict. Nothing clears it within the attempt: the body is never a
+    /// checkpoint, a recovery source or a Retry clone again, even while it waits for removal.
+    /// A replacement attempt does not inherit it (its body is new). Absent means false.
+    public var bodyCondemned: Bool?
 
     public init(truncation: DownloadTruncationHistory? = nil,
                 unverifiedReason: DownloadUnverifiedReason? = nil,
                 lastFailure: DownloadFailureReason? = nil,
                 storagePark: DownloadStoragePark? = nil,
                 pauseCause: DownloadPauseCause? = nil,
-                admissionIntent: DownloadAdmissionIntent? = nil) {
+                admissionIntent: DownloadAdmissionIntent? = nil,
+                bodyCondemned: Bool? = nil) {
         self.truncation = truncation
         self.unverifiedReason = unverifiedReason
         self.lastFailure = lastFailure
         self.storagePark = storagePark
         self.pauseCause = pauseCause
         self.admissionIntent = admissionIntent
+        self.bodyCondemned = bodyCondemned
     }
+
+    public var isBodyCondemned: Bool { bodyCondemned == true }
 
     public static let empty = DownloadAttemptHistory()
 

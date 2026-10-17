@@ -278,6 +278,7 @@ public enum DownloadLifecycleReducer {
 
         case .transferFailed(let reason):
             guard !lifecycle.isTerminal || lifecycle == .failed else { return illegal }
+            if reason == .truncated { next.history.bodyCondemned = true }
             return fail(reason)
 
         case .backendUnavailable(let cause):
@@ -293,6 +294,8 @@ public enum DownloadLifecycleReducer {
             guard lifecycle == .transferring || lifecycle == .admitted
                     || lifecycle == .finalizing || lifecycle == .paused
                     || lifecycle == .failed else { return illegal }
+            // A condemned body never re-enters finalization (recovery must not re-count it).
+            if next.history.isBodyCondemned { return illegal }
             // Re-entering a body that is already finalizing (relaunch recovery) keeps its pending
             // verdict: a committed repeated-truncation reason must survive to the promotion.
             if lifecycle == .finalizing {
@@ -320,6 +323,7 @@ public enum DownloadLifecycleReducer {
                 if (next.history.truncation?.strikes ?? 0) >= maxTruncationStrikes {
                     return finalizingPublish(&next, reason: .truncatedRepeated)
                 }
+                next.history.bodyCondemned = true
                 return fail(.truncated, [.deleteWorkingBody])
             }
 

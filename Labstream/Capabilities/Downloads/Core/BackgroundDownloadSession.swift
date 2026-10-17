@@ -5695,9 +5695,24 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let verdictThroughReducer = publishesWorkingFile
             && store.lifecycleState(for: attemptKey)?.lifecycle == .finalizing
         var truncationVerdictCommitted = false
-        // The failing truncation verdict's own persistence ticket: the condemned body is deleted
-        // only once that revision commits (never on admission alone).
-        var truncationVerdictTicket: DownloadStore.PersistenceTicket?
+        // A failing truncation verdict persists `bodyCondemned` in its own revision. The body is
+        // renamed off its working path as soon as that verdict applies in memory, before any wait
+        // for persistence, so neither a failed nor a wedged commit leaves it there; the renamed
+        // file is deleted once the verdict's ticket commits (or after a bounded wait).
+        func condemnBody(afterCommitOf ticket: DownloadStore.PersistenceTicket?) {
+            guard store.lifecycleState(for: attemptKey)?.history.isBodyCondemned == true,
+                  let condemned = store.condemnWorkingBody(at: destination, for: attemptKey)
+            else { return }
+            // Deletion is scheduled now, so a failed verdict wait below cannot orphan the file.
+            let store = self.store
+            Task.detached(priority: .utility) {
+                if await !store.deleteCondemnedBody(at: condemned, afterCommitOf: ticket) {
+                    AppDiagnostics.record(.downloads, "downloads.truncated_verdict_unproven", fields: [
+                        "download_id": .identifier(attemptKey.ratingKey),
+                    ])
+                }
+            }
+        }
         let truncationFailures: Int
         switch outcome {
         case .truncated where verdictThroughReducer:
@@ -5711,10 +5726,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             case .accepted(let change, let ticket):
                 // `.noChange` is a replay: this body's outcome committed before a relaunch.
                 guard change == .applied else { break }
+                condemnBody(afterCommitOf: ticket)
                 guard acceptedAttemptSubmission(
                     verdict, key: attemptKey, phase: "finalize_truncated_verdict") else { return }
                 truncationVerdictCommitted = true
-                truncationVerdictTicket = ticket
             }
             truncationFailures = store.truncationStrikes(for: attemptKey)
         case .truncated:
@@ -5833,28 +5848,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     for: attemptKey, outcome: Self.finalizeOutcome(outcome),
                     status: finalizationResult.status, outcomeID: outcomeID,
                     publishesWorkingFile: publishesWorkingFile, phase: "finalize_verdict")
+                if case .accepted(.applied, let ticket) = verdict {
+                    condemnBody(afterCommitOf: ticket)
+                }
                 guard acceptedAttemptSubmission(
                     verdict, key: attemptKey, phase: "finalize_truncated_status") else { return }
-                if case .accepted(.applied, let ticket) = verdict { truncationVerdictTicket = ticket }
-            }
-            if finalizationResult.shouldDeleteFile,
-               !Task.isCancelled,
-               stillOwnsAttempt(attemptKey, phase: "finalize_truncated_delete") {
-                // The condemned body leaves its working path at once, so nothing can treat it as
-                // a checkpoint again, and is deleted once the verdict commits (bounded; a lost
-                // commit can cost this one strike, never a second count of the same bytes).
-                if let condemned = store.condemnWorkingBody(at: destination, for: attemptKey) {
-                    let store = self.store
-                    let ticket = truncationVerdictTicket
-                    Task.detached(priority: .utility) {
-                        if await !store.deleteCondemnedBody(at: condemned, afterCommitOf: ticket) {
-                            AppDiagnostics.record(
-                                .downloads, "downloads.truncated_verdict_unproven", fields: [
-                                    "download_id": .identifier(attemptKey.ratingKey),
-                                ])
-                        }
-                    }
-                }
             }
             guard !Task.isCancelled,
                   stillOwnsAttempt(attemptKey, phase: "finalize_truncated_publish") else { return }
