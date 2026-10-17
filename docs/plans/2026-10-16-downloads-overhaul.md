@@ -628,6 +628,33 @@ Acceptance is a phase's pins and inventory rows staying green.
     That test is unchanged from `main`, the overhaul does not touch the coordinator, and the test
     bounds its wait by 1,000 `Task.yield()` calls. Two immediate reruns of the lane passed, so it
     is recorded as a pre-existing timing flake.
+- **2026-10-17 — P3b implemented** on `downloads/p3b-v5`, stacked on P3a. The plan reached
+  revision 10 after eight before-review rounds (approved).
+  - **Maintainer decision on D1:** keep partials. Complete, unverified and paused static-range
+    rows survive the upgrade.
+  - **Codec.** v4 and v5 both load. Each snapshot carries its version, so v4 stays v4 until the
+    stamp. A fresh or reset index is v5.
+  - **Delete fixes** (pre-existing bugs found by the review):
+    - exact-attempt halt, including untracked OS tasks;
+    - immediate release of prep pollers and keepalive;
+    - a handoff result returned to the caller;
+    - an optimize create that re-checks admission right before the server call;
+    - a post-deletion progress clear that never touches a replacement.
+  - **Work admission.** `attemptAdmitsWork` (no barrier, no capsule) gates the session's start,
+    resume, finalize and revalidate entries; retry continuation; season admission; and optimize
+    polling. Start chains use the phase-aware check.
+  - **Upgrade pass.** It runs between activation and `.ready`. The candidate set is fixed when
+    the pass starts and a candidate is rescued only by completion. Each candidate goes through
+    Delete; the pass records a notice union, stamps v5, then publishes `.ready`.
+  - **Deviation:** the notice persists in UserDefaults rather than in the authority directory.
+    It is a UX record whose idempotence comes from attempt-ID sets.
+  - **Open:**
+    - a session-level test for `haltForDeletion` against real OS tasks;
+    - tests for a deletion racing a suspended start, prep or optimize continuation (the guards
+      are in place);
+    - the paused-queue checkpoint-ordering test;
+    - the P5 item for a paused-static body finishing before reattach;
+    - live and physical acceptance.
 
 ## P2 detailed plan — cleanup foundation
 
