@@ -29,6 +29,7 @@ struct BackgroundDownloadRangeOwnershipTests {
 
             #expect(await observed.waitForCount(1) == [true])
             session.cancel(ratingKey: key.ratingKey)
+            await waitForSessionWorkToDrain(session, ratingKey: key.ratingKey)
         }
     }
 
@@ -43,10 +44,14 @@ struct BackgroundDownloadRangeOwnershipTests {
             try startTrain(session, key: key, bytes: Self.singleSegmentBytes)
             let first = try #require(await requests.waitForCount(1).first)
 
-            first.fail(NSError(domain: NSURLErrorDomain, code: NSURLErrorNetworkConnectionLost))
+            // An app-side cancel (-999 without a system reason) is a terminal disposition: it
+            // exercises the same tracking handoff without scheduling a delayed retry that could
+            // outlive the test's session.
+            first.fail(NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled))
 
             #expect(await observed.waitForCount(1) == [true])
             session.cancel(ratingKey: key.ratingKey)
+            await waitForSessionWorkToDrain(session, ratingKey: key.ratingKey)
         }
     }
 
@@ -112,6 +117,15 @@ struct BackgroundDownloadRangeOwnershipTests {
     }
 
     // MARK: - Fixtures
+
+    /// Queued appends and retries must not outlive the test's URLSession.
+    private func waitForSessionWorkToDrain(
+        _ session: BackgroundDownloadSession, ratingKey: String
+    ) async {
+        for _ in 0..<300 where session.ownsInProgressStaticRangeWork(ratingKey: ratingKey) {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
 
     private func withRangeSession(
         _ body: (BackgroundDownloadSession, DownloadStore, HeldRangeRequests) async throws -> Void
