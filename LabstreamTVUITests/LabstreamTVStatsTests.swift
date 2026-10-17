@@ -70,11 +70,4 @@ final class LabstreamTVStatsTests: XCTestCase {
         let focused = expectation(for: NSPredicate(format: "hasFocus == true"), evaluatedWith: element)
         return XCTWaiter().wait(for: [focused], timeout: timeout) == .completed
     }
-
-    private func attachScreen(named name: String, app: XCUIApplication) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
-        attachment.name = name
-        attachment.lifetime = .keepAlways
-        add(attachment)
-    }
 }
