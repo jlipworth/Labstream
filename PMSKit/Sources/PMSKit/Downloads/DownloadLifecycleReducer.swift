@@ -394,26 +394,46 @@ public enum DownloadLifecycleReducer {
             return facts.body == .published ? .applied(next, []) : set(.failed, failure: .internalError)
         case .failed:
             return .applied(next, [])
-        case .admitted, .serverPrep, .transferring, .paused:
-            if facts.route == .plexPrep, !facts.liveTask, state.lifecycle != .paused {
-                return set(.serverPrep, [.resetBytesToZero])
+        case .serverPrep:
+            // Today's table: a preparing (Emby Convert) row is unchanged on relaunch; recovery
+            // decides from its persisted job identity.
+            return .applied(next, [])
+        case .admitted, .transferring, .paused:
+            let lifecycle = state.lifecycle
+            // A forward-only body exists only once its transfer finished (B10).
+            if facts.route == .forwardOnly, !facts.liveTask, facts.body == .workingComplete,
+               lifecycle != .paused {
+                return set(.finalizing, [.requestFinalization])
             }
-            if facts.liveTask, facts.route != .plexPrep {
-                return set(.transferring)
+            // Plex prep rows are queued (admitted) while the server renders; without a task they
+            // go back to queued with their bytes reset.
+            if facts.route == .plexPrep, !facts.liveTask, lifecycle != .paused {
+                return set(.admitted, [.resetBytesToZero])
             }
-            if case .embyConvert(let hasJob) = facts.route, hasJob,
-               state.lifecycle == .serverPrep || state.lifecycle == .paused {
-                return set(state.lifecycle == .paused ? .paused : .serverPrep,
-                           pauseCause: .deferredResume)
+            if facts.liveTask {
+                if facts.route == .staticRange { return set(.transferring) }
+                // Other live tasks: unchanged, except a paused row a live task proves active.
+                return lifecycle == .paused ? set(.transferring) : .applied(next, [])
             }
-            if facts.route == .plexPrep, state.lifecycle == .paused {
+            if case .embyConvert(let hasJob) = facts.route, hasJob, lifecycle == .paused {
                 return set(.paused, pauseCause: next.history.pauseCause ?? .deferredResume)
             }
-            // Today's table: a durable static partial or any URLSession resume blob stays paused.
-            if facts.checkpoint == .resumeBlob
-                || (facts.hasResumableCheckpoint && facts.route == .staticRange) {
-                return set(.paused, [.resetBytesToDurableCheckpoint],
-                           pauseCause: next.history.pauseCause ?? .deferredResume)
+            if facts.route == .plexPrep, lifecycle == .paused {
+                return set(.paused, pauseCause: next.history.pauseCause ?? .deferredResume)
+            }
+            if facts.route == .staticRange {
+                if case .durablePartial(let bytes) = facts.checkpoint, bytes > 0 {
+                    return set(.paused, [.resetBytesToDurableCheckpoint],
+                               pauseCause: next.history.pauseCause ?? .deferredResume)
+                }
+                // A paused static row is restartable from its (possibly empty) checkpoint.
+                if lifecycle == .paused {
+                    return set(.paused, [.resetBytesToDurableCheckpoint])
+                }
+            }
+            // A URLSession resume blob keeps a paused row resumable on any route.
+            if lifecycle == .paused, facts.checkpoint == .resumeBlob {
+                return set(.paused)
             }
             return set(.failed, [.deleteWorkingBody, .clearResumeBlob], failure: .network)
         }
