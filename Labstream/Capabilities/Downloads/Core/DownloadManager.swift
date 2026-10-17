@@ -295,6 +295,7 @@ public final class DownloadManager {
     private var retryState = DownloadRetryStateTracker()
     @ObservationIgnored private var refreshRecordsTask: Task<Void, Never>?
     private var serverPrepResumeRetryTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingEncoderCleanupReleases: [DownloadAttemptKey: Set<String>] = [:]
     @ObservationIgnored private var serverPrepPollerTasks: [DownloadAttemptKey: Task<Void, Never>] = [:]
     /// Server-prep attempt identities for Plex optimize and Emby convert. Keeps protected Plex
     /// queue titles, Plex poller ownership, and Emby convert attempt UUIDs in one IO-free model.
@@ -1352,22 +1353,51 @@ public final class DownloadManager {
         }
     }
 
-    /// Return the existing exact operation when already durable; otherwise append one new intent.
-    /// The server identity comes from persisted row authority, never from whichever lane happens
-    /// to be selected when cleanup runs.
-    private func persistActiveEncodingCleanupIntent(
-        attemptKey: DownloadAttemptKey,
-        metadata: OfflineMetadata,
-        playSessionID: String,
-        provenance: DurableDownloadCleanupIntent.Provenance
-    ) -> DurableDownloadCleanupIntent? {
-        guard let candidate = Self.makeActiveEncodingCleanupIntent(
-            attemptKey: attemptKey, metadata: metadata, playSessionID: playSessionID,
-            provenance: provenance
-        ) else { return nil }
-        switch cleanupIntentJournal.ensure(candidate) {
-        case .committed(let durable): return durable
-        case .conflictingID, .failed: return nil
+    /// Capture cleanup authority before sign-out clears credentials. Journal I/O runs on a P6
+    /// submission worker; only its durable result permits clearing the row's encoder reference.
+    private func releaseEncoderAfterDurableCleanup(
+        attemptKey: DownloadAttemptKey, metadata: OfflineMetadata?,
+        playSessionID: String, backend: DownloadBackendKind
+    ) {
+        guard let metadata,
+              let candidate = Self.makeActiveEncodingCleanupIntent(
+                attemptKey: attemptKey, metadata: metadata, playSessionID: playSessionID,
+                provenance: .abandonment(originAttempt: attemptKey)),
+              pendingEncoderCleanupReleases[attemptKey, default: []].insert(playSessionID).inserted else { return }
+        let deadline = DownloadStoreDeadline.after(30)
+        let submission = DownloadStoreWork { [cleanupIntentJournal] in cleanupIntentJournal.ensure(candidate) }
+        enqueueManagerOperation(ratingKey: attemptKey.ratingKey) { [self, store] in
+            defer {
+                pendingEncoderCleanupReleases[attemptKey]?.remove(playSessionID)
+                if pendingEncoderCleanupReleases[attemptKey]?.isEmpty == true {
+                    pendingEncoderCleanupReleases.removeValue(forKey: attemptKey)
+                }
+            }
+            let result = await submission.resolve(deadline: deadline, timedOut: {
+                .failed(.init(stage: .commit, errorType: "timeout"))
+            })
+            guard case .committed = result else {
+                recordDownloadDiagnostic("downloads.encoder_teardown_skip", fields: [
+                    "download_id": .identifier(attemptKey.ratingKey),
+                    "backend": .label(backend.rawValue),
+                    "reason": .label("cleanup_intent_not_durable"),
+                ])
+                return
+            }
+            switch backend {
+            case .emby:
+                if embyPlaySessionByAttempt[attemptKey] == playSessionID {
+                    embyPlaySessionByAttempt.removeValue(forKey: attemptKey)
+                }
+            case .jellyfin:
+                if jellyfinPlaySessionByAttempt[attemptKey] == playSessionID {
+                    jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
+                }
+            case .plex: break
+            }
+            _ = await store.resolve(store.submitClearPlaySessionID(
+                for: attemptKey, expectedPlaySessionID: playSessionID), deadline: deadline)
+            cleanupRunner?.kick(reason: "encoder_released")
         }
     }
 
@@ -5010,27 +5040,8 @@ public final class DownloadManager {
             embyPlaySessionByAttempt.removeValue(forKey: attemptKey)
             break
         case .stop(let playSessionId):
-            guard let metadata = releaseMetadata,
-                  persistActiveEncodingCleanupIntent(
-                    attemptKey: attemptKey,
-                    metadata: metadata,
-                    playSessionID: playSessionId,
-                    provenance: .abandonment(originAttempt: attemptKey)
-                  ) != nil else {
-                recordDownloadDiagnostic("downloads.emby_encoder_teardown_skip", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "reason": .label("cleanup_intent_not_durable"),
-                ])
-                break
-            }
-            embyPlaySessionByAttempt.removeValue(forKey: attemptKey)
-            // The journal now holds the stop; hand authority over by clearing the row's own
-            // reference. If this clear fails or is interrupted, the runner completes it after the
-            // stop once the row is no longer actively transferring.
-            enqueueManagerOperation(ratingKey: attemptKey.ratingKey) { [weak self, store] in
-                _ = await store.clearPlaySessionIDAsync(for: attemptKey, expectedPlaySessionID: playSessionId)
-                self?.cleanupRunner?.kick(reason: "encoder_released")
-            }
+            releaseEncoderAfterDurableCleanup(attemptKey: attemptKey, metadata: releaseMetadata,
+                playSessionID: playSessionId, backend: .emby)
         case .skip(let reason):
             recordDownloadDiagnostic("downloads.emby_encoder_teardown_skip", fields: [
                 "download_id": .identifier(ratingKey),
@@ -5055,27 +5066,8 @@ public final class DownloadManager {
             jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
             break
         case .stop(let playSessionId):
-            guard let metadata = releaseMetadata,
-                  persistActiveEncodingCleanupIntent(
-                    attemptKey: attemptKey,
-                    metadata: metadata,
-                    playSessionID: playSessionId,
-                    provenance: .abandonment(originAttempt: attemptKey)
-                  ) != nil else {
-                recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown_skip", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "reason": .label("cleanup_intent_not_durable"),
-                ])
-                break
-            }
-            jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
-            // The journal now holds the stop; hand authority over by clearing the row's own
-            // reference. If this clear fails or is interrupted, the runner completes it after the
-            // stop once the row is no longer actively transferring.
-            enqueueManagerOperation(ratingKey: attemptKey.ratingKey) { [weak self, store] in
-                _ = await store.clearPlaySessionIDAsync(for: attemptKey, expectedPlaySessionID: playSessionId)
-                self?.cleanupRunner?.kick(reason: "encoder_released")
-            }
+            releaseEncoderAfterDurableCleanup(attemptKey: attemptKey, metadata: releaseMetadata,
+                playSessionID: playSessionId, backend: .jellyfin)
         case .skip(let reason):
             recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown_skip", fields: [
                 "download_id": .identifier(ratingKey),
