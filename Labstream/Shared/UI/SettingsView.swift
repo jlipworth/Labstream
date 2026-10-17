@@ -632,7 +632,7 @@ struct SettingsView: View {
         } header: {
             Text("Downloads")
         } footer: {
-            Text("Download quality is the default for new downloads; Original still appears only when feasible. Cellular downloads are off by default where cellular data is available, and the setting applies to new transfers only. The storage limit is checked before enqueue/start and won’t delete existing downloads automatically. Prioritizing quick downloads only affects Plex server-side optimize jobs: when permitted, Labstream moves the new conversion behind the currently active one. Jellyfin and Emby keep their normal order.")
+            Text("Download quality is the default for new downloads; Original still appears only when feasible. Cellular downloads are off by default where cellular data is available; while off, downloads also avoid Low Data Mode and expensive networks such as a personal hotspot. The setting applies to new transfers only. The storage limit is checked before enqueue/start and won’t delete existing downloads automatically. Prioritizing quick downloads only affects Plex server-side optimize jobs: when permitted, Labstream moves the new conversion behind the currently active one. Jellyfin and Emby keep their normal order.")
         }
         .confirmationDialog("Remove completed downloads?", isPresented: $confirmingRemoveCompletedDownloads, titleVisibility: .visible) {
             Button("Remove Completed", role: .destructive) {

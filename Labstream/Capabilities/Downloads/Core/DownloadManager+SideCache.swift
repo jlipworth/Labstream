@@ -285,9 +285,9 @@ extension DownloadManager {
     /// `requestApplyingCellularPolicy` (replicated here; that helper is private to
     /// `BackgroundDownloadSession`). Control-plane requests (keepalive/poll/teardown) stay exempt.
     nonisolated static func sideAssetRequest(applyingCellularPolicy request: URLRequest) -> URLRequest {
-        var policyRequest = request
-        policyRequest.allowsCellularAccess = PlaybackPreferences.allowsCellularDownloads()
-        return policyRequest
+        // D5: the cellular toggle also governs Low Data Mode and expensive networks.
+        DownloadNetworkAccessPolicy.applying(
+            allowsCostlyNetworks: PlaybackPreferences.allowsCellularDownloads(), to: request)
     }
 
     /// Download + cache the item's poster locally so the offline library shows artwork
