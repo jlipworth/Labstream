@@ -23,9 +23,10 @@ When a plan is complete or superseded:
 
 ## Active plans
 
-- [Downloads manager overhaul](2026-10-16-downloads-overhaul.md) — edge-case inventory,
-  bug list and phased design. P1 and P2 are in review; P3a (lifecycle, history and reducer) is
-  in progress.
+- [Downloads manager overhaul](2026-10-16-downloads-overhaul.md) — P1–P7 implementation outcomes,
+  compact acceptance inventory and deferred work. P7 review integration, the final 1.8.0 source
+  commit and live/device/TestFlight gates remain open; defect dispositions live in the linked
+  immutable evidence audit.
 - [Licensed demo screenshots and review notes](2026-09-15-store-demo-capture.md) —
   provenance and capture contract recorded; final images, credits, age suitability and
   exact-candidate reviewer journeys remain open.

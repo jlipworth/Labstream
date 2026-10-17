@@ -372,7 +372,17 @@ Each intent records why it exists:
 The runner executes nothing while a row's deletion is staged, in flight, or failed. Just before
 each server call it re-checks ownership: another row's PlaySessionId, Convert job, queue title,
 or a job that row's crash-window recovery would adopt keeps the resource. Convert cleanup and
-Convert crash-window recovery are serialized per server.
+Convert crash-window recovery are serialized per server. Claims are scoped to persisted server
+and MediaBrowser user, never the currently visible browse lane. After each awaited inspection,
+claims and eligibility are reread immediately before cancellation. An originating Convert/Plex
+attempt still claims a resource while its persisted reference remains; a failed abandonment write
+cannot take its job. For a nonresumable encoder, the origin claims only while its transfer is active,
+allowing interrupted release to replay safely.
+
+The runner coalesces producer/recovery/session triggers, executes at most two intents at once and
+schedules its own earliest retry. Per-intent backoff ranges from 30 seconds to 30 minutes, with
+a two-minute local eligibility recheck for waiting work. Legacy import/quarantine barriers run
+before every pass; unreadable authority is never an empty queue.
 
 Plex queue responses are classified explicitly:
 
@@ -424,7 +434,7 @@ Sign-out parks rows immediately and captures exact encoder-cleanup authority bef
 are revoked. Encoder-release journal work uses a P6 worker submission and bounded asynchronous
 resolution. Only a durable journal result permits compare-clearing that exact play-session handle;
 failure or expiry retains its row/transient authority, and an old completion cannot erase a newer
-handle.
+handle. Recovery must replay retained exact releases after journal failure or timeout.
 
 Offline offers embedded subtitles and downloaded text sidecars together with one Off choice.
 Opening the menu does not parse sidecars. Selecting embedded, sidecar or Off revokes the other
@@ -583,6 +593,9 @@ Storage uses one rule for every gate (`DownloadStorageAdmissionPolicy`, P5):
   "extras-only" number. The download sheet says the size is unknown and that the download is not
   counted toward the limit; the season sheet asks for confirmation. Jellyfin and Emby items now
   carry their source size, so originals are rarely unknown.
+- **Cap limitation.** Starts that pass checks concurrently before publishing their sizes are not
+  protected by a new atomic reservation transaction. Admission caps bound concurrency, but the
+  limit can temporarily overshoot; later checks and reactive ENOSPC remain backstops.
 - **Free space** follows the file's physical timeline. The transfer still needs the network bytes
   not yet on disk, plus the largest body it will append (that copy briefly exists twice), plus
   the duration/chapter-based side-asset estimate less bytes already cached (floored at zero),

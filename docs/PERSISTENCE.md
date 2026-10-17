@@ -5,12 +5,18 @@ Labstream uses separate storage layers for secrets, preferences, and offline med
 ```mermaid
 flowchart TD
   accTitle: Persistence boundaries
-  accDescr: Credentials and client identity live in Keychain, preferences in UserDefaults, and offline media including durable held range bodies plus bounded diagnostic artifacts in Application Support.
+  accDescr: Keychain owns credentials, UserDefaults owns preferences, and Application Support separates the versioned offline index and media from independent cleanup authority and bounded diagnostics. Server obligations survive row deletion and media-root reset.
   Keychain[Keychain] --> Sessions[Credentials, client identity, backend session selection]
   Defaults[UserDefaults] --> Prefs[Settings and lightweight state]
   Support[Application Support] --> Downloads[Offline files, index, resume blobs, held segments, side assets]
+  Support --> Authority[Independent cleanup journal and upgrade notice]
   Support --> Diagnostics[Bounded opt-in diagnostic files]
 ```
+
+The versioned media root and independent authority directory have different lifetimes. Deleting a
+row or resetting an old media schema cannot erase its server-cleanup obligation. File effects and
+revisioned index outcomes are ordered through the async store/artifact contract described below;
+a timed-out waiter cannot release physical file ownership.
 
 ## Keychain
 
@@ -132,7 +138,8 @@ A schema newer than the binary (after a downgrade) is also kept and fails closed
 authoritative `lifecycle` and attempt `history` fields (added in v4), and the derived
 `status` is still written. An older binary that drops the new fields leaves rows whose lifecycle
 is re-derived from status on the next load; attempt history, including truncation strikes, reasons
-and the condemnation fence, can be lost that way. A binary too old to admit v5 must preserve it as unsupported rather than rewrite it.
+and the condemnation fence, can be lost that way. Older builds carrying the newer-schema guard
+preserve v5 as opaque; pre-guard downgrades do not gain that protection.
 Active rows carry a typed
 `DownloadAttemptID`; asynchronous tasks, artifact reservations, and cleanup compare the
 full rating-key/attempt key so stale work cannot mutate a retry or re-download of the same
