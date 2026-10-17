@@ -179,7 +179,7 @@ struct DownloadSchemaUpgradeTests {
         }
     }
 
-    @Test("Upgrade candidates: keep finished and paused static; skip promotions and deletions")
+    @Test("Upgrade candidates: keep finished and paused static; skip rows already being deleted")
     func upgradeCandidateMatrix() throws {
         try withDirectory { directory in
             let store = DownloadStore(baseDirectory: directory)
