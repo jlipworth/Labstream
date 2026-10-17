@@ -738,7 +738,7 @@ private struct SearchTrackRow: View {
             Spacer(minLength: DS.Space.md)
 
             if let duration = track.duration {
-                Text(formatSongDuration(milliseconds: duration))
+                Text(formatTrackDuration(milliseconds: duration))
                     .font(.subheadline.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
@@ -762,15 +762,4 @@ private struct SearchTrackRow: View {
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
     }
-}
-
-/// Format a song duration as `m:ss`, or `h:mm:ss` at an hour or more.
-private func formatSongDuration(milliseconds: Int) -> String {
-    let total = milliseconds / 1000
-    let hours = total / 3600
-    let minutes = (total % 3600) / 60
-    let seconds = total % 60
-    return hours > 0
-        ? String(format: "%d:%02d:%02d", hours, minutes, seconds)
-        : String(format: "%d:%02d", minutes, seconds)
 }
