@@ -1031,7 +1031,17 @@ public final class DownloadManager {
                     cleanupAuthorityDurable = false
                 }
             }
-            if Self.hasEmbyConvertCleanupAuthority(metadata) {
+            // B44/B49: a failed row whose Retry resumes its Convert job (poll-health or 401/403
+            // failure) or crash-window recovery keeps that authority. Cleaning it up here would
+            // DELETE the live job, or race recovery for it. Same inputs as the retry gate.
+            let retryKeepsConvertAuthority = DownloadRetryPreparationPolicy
+                .shouldKeepEmbyConvertAuthorityForRetry(
+                    status: record.status,
+                    resumeMode: metadata.resolvedResumeMode(ratingKey: record.ratingKey),
+                    isEmbyRecord: DownloadRecordIdentity.isEmbyRecordKey(record.ratingKey),
+                    hasEmbyConvertJobID: metadata.embyConvertJobID != nil,
+                    hasEmbyConvertRecoveryIdentity: metadata.hasEmbyConvertRecoveryIdentity)
+            if !retryKeepsConvertAuthority, Self.hasEmbyConvertCleanupAuthority(metadata) {
                 if let intent = persistEmbyConvertCleanupIntent(
                     attemptKey: key, metadata: metadata
                 ) {
