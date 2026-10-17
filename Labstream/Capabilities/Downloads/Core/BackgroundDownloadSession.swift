@@ -5179,6 +5179,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         guard acceptedAttemptSubmission(
             resolveLifecycleSubmission(store.submitProgress(for: key, bytes: bytes, progress: 1.0)),
             key: key, phase: "publish_finalizing") else { return false }
+        // P3a/B10: the body is complete at the attempt working path; persist `finalizing` so a
+        // relaunch before validation re-finalizes it instead of deleting it. A row that is
+        // already finalizing (recovery or revalidation) is left as is.
+        _ = store.submitLifecycleEvent(
+            .bodyAtWorking, for: key, facts: DownloadRowFacts(route: .staticRange,
+                                                              body: .workingComplete))
         onChange?()
         return true
     }
