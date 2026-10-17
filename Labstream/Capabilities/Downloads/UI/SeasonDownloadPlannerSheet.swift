@@ -26,7 +26,15 @@ struct SeasonDownloadPlannerSheet: View {
     @State private var planningTask: Task<Void, Never>?
     @State private var commitTask: Task<Void, Never>?
 
-    private var backend: DownloadBackendKind { appModel.activeBackend }
+    /// B70: captured once at presentation (like `DownloadOptionsSheet`'s explicit backend). The
+    /// browse UI stays mounted through a backend switch, so reading the live `activeBackend` could
+    /// mint rows for this season's items under another backend's identity.
+    @State private var backend: DownloadBackendKind
+
+    init(season: MediaItem, backend: DownloadBackendKind) {
+        self.season = season
+        _backend = State(initialValue: backend)
+    }
     private var watchedSummary: SeasonDownloadSelectionSummary {
         SeasonDownloadSelectionPolicy.select(
             states: episodes.map { SeasonEpisodeWatchedState(viewCount: $0.viewCount, backend: backend) },

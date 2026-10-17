@@ -17,5 +17,18 @@ struct SeasonDownloadPlannerSheetTests {
         #expect(SeasonDownloadPlannerSheet.planningProgressText(done: 0, total: 0)
                 == "Planning each episode…")
     }
+
+    /// B70: the sheet captures its backend once at presentation, like DownloadOptionsSheet, so a
+    /// backend switch while it is mounted cannot mint rows under the new backend's identity.
+    @Test func sheetCapturesBackendAtPresentation() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let sheet = try String(contentsOf: root.appendingPathComponent(
+            "Labstream/Capabilities/Downloads/UI/SeasonDownloadPlannerSheet.swift"), encoding: .utf8)
+        #expect(!sheet.contains("appModel.activeBackend"))
+        #expect(sheet.contains("init(season: MediaItem, backend: DownloadBackendKind)"))
+        let browser = try String(contentsOf: root.appendingPathComponent(
+            "Labstream/Shared/UI/ContainerBrowserView.swift"), encoding: .utf8)
+        #expect(browser.contains("SeasonDownloadPlannerSheet(season: container, backend:"))
+    }
 }
 #endif
