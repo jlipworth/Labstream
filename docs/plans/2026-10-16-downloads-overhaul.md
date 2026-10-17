@@ -383,6 +383,21 @@ Acceptance is a phase's pins and inventory rows staying green.
   - **Deferred to P7:** the B70 test is still a source-text check. A behavioural test for a
     mounted sheet needs view-inspection infrastructure.
 
+- **2026-10-17 — P2 implemented** on `downloads/p2-cleanup`, stacked on P1, in four commits that
+  follow the reviewed order. Changes:
+  - durable journal commits (B18);
+  - Plex identity, provenance and the store disposition API;
+  - one cleanup runner, with tombstone migration and the expiry cutover;
+  - every remaining cancel journaled first (B28, B50, superseded encoders, the stale sweep),
+    plus the D2 delete note.
+  - Deviations from revision 3.1:
+    - The foreground trigger was dropped. The runner's own timer resumes as soon as the app
+      does, and the scene-phase plumbing lives outside the downloads module.
+    - Executor coverage below the runner is policy-level: claims, eligibility and the Plex
+      outcomes. No hermetic test drives the network executors end to end.
+    - Plex states counted as cancellable are an explicit list. Any other state is retained.
+  - A P1 test race was found and fixed (B00 pin outliving its URLSession) and carried to #371.
+
 ## P2 detailed plan — cleanup foundation
 
 *Revision 3.1 (2026-10-17). The round-3 co-review approved it with three changes, applied here:

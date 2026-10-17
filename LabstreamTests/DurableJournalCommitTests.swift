@@ -1,3 +1,4 @@
+#if !os(tvOS)
 import Foundation
 import PMSKit
 import Synchronization
@@ -167,3 +168,4 @@ struct DurableJournalCommitTests {
 }
 
 private struct InjectedJournalFailure: Error {}
+#endif

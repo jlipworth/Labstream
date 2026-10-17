@@ -1,3 +1,4 @@
+#if !os(tvOS)
 import Foundation
 import PMSKit
 import Testing
@@ -242,3 +243,4 @@ private final class LockedJournal: @unchecked Sendable {
         return body(&state)
     }
 }
+#endif

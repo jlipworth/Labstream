@@ -240,9 +240,48 @@ User-facing expectations worth setting (the "downloads disclaimer"):
 | `DownloadStore` | Schema-v4 index state, exact-attempt mutation admission, and transactional artifact state. |
 | `DownloadArtifactLifecycleCoordinator` and file-effect seams | Order attempt-scoped resume/checkpoint/promotion/deletion work with its terminal persistence outcome. |
 | `DownloadWorkRegistry` | Attempt-scoped side-cache and encoder-task ownership. |
-| `DownloadCleanupIntentJournal` | Independent durable, credential-free Jellyfin/Emby server-cleanup authority. |
-| `EmbyConvertCleanupJournal` | Compatibility Emby Convert tombstone persistence under a queue-private lock. |
+| `DownloadCleanupIntentJournal` | Independent durable, credential-free server-cleanup authority for all three backends: Jellyfin/Emby encoders, Emby Convert jobs and Plex optimize queue items. |
+| `DownloadCleanupIntentRunner` | The only executor of journaled cleanup: eligibility, ownership recheck, bounded concurrency and per-intent backoff with its own wake-up. |
+| `EmbyConvertCleanupJournal` | Legacy Emby Convert tombstones, read only to migrate them into the cleanup journal at launch. |
 | PMSKit download policies | Pure route, retry, row-display, and recovery decisions, including the segment-train planner and assembler. |
+
+## Server cleanup
+
+Every server resource a download stops needing is recorded in the cleanup journal before
+anything cancels it. That covers a Jellyfin/Emby encoder (`activeEncoding`), an Emby Convert
+job (`knownJob`, or `ambiguousCreate` when the create response was lost) and a Plex optimize
+queue item (`plexOptimize`). The journal lives in an authority directory outside the versioned
+media root. Each write uses the index's commit protocol: temp file, full fsync, rename and
+directory sync. A write whose final sync fails is reported as a failure, never proven by
+re-reading the file. The directory and every file are excluded from backup and data-protected.
+
+Each intent records why it exists:
+
+| Provenance | Written by | Runs when |
+| --- | --- | --- |
+| Row deletion | Delete, before the row is removed | the row's removal has committed |
+| Terminal release | Launch/backend-switch sweep for a terminal row's handles | the row is terminal and not protecting the job for Retry, or the row is gone |
+| Abandonment | Superseded negotiations, stale creates, duplicate jobs, the 24-hour Convert expiry, abandoned Plex seeds, stale optimize-job sweeps | whenever the ownership recheck passes |
+
+The runner executes nothing while a row's deletion is staged, in flight, or failed. Just before
+each server call it re-checks ownership: another row's PlaySessionId, Convert job, queue title,
+or a job that row's crash-window recovery would adopt keeps the resource. Convert cleanup and
+Convert crash-window recovery are serialized per server.
+
+Plex queue responses are classified explicitly:
+
+- a completed render is kept (deleting the queue item would delete the version);
+- a malformed list, a duplicate title or an unknown state keeps the intent;
+- an absent item retires the intent only once the create PUT is known to have landed.
+
+An unresolved create is retried, slowly after a day, and retired with a diagnostic after a week.
+One race is accepted: a render that completes between the queue read and the DELETE is
+deleted, because PMS has no conditional cancel. The delete confirmation therefore says
+in-progress preparation is cancelled "where possible".
+
+Two fallbacks remain unrecorded. If a superseded-encoder stop or an Emby stale-create cancel
+cannot be journaled, it falls back to the earlier best-effort call and records a diagnostic.
+Sign-out never journals cleanup: it pauses rows instead.
 
 ## Offline metadata
 
@@ -285,8 +324,9 @@ transport, recovery work, persistence barriers, or background-completion durabil
   counting iOS purgeable space, matching the Settings storage gauge — and, if the volume still
   cannot hold the remaining bytes plus headroom, parks the row as a pending resume instead of
   retrying. A user-initiated Retry always dispatches regardless of this gate;
-- replays required server cleanup from the independent journal when the matching backend
-  session is available;
+- migrates legacy Emby tombstones and pre-upgrade quarantined Plex intents into the cleanup
+  journal, then runs required server cleanup through the cleanup runner (see
+  [Server cleanup](#server-cleanup));
 - inventories and repairs missing posters, subtitles, chapters, Plex/Emby BIF, and Jellyfin
   trick-play playlists/tiles for completed rows without re-downloading playable media. Work runs
   off-main, validates image/BIF/text payloads before promotion, and batches metadata publication.
