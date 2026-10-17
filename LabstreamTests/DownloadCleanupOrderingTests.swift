@@ -131,7 +131,7 @@ struct DownloadCleanupOrderingTests {
 
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
-            session.haltForPendingDeletion(ratingKey: key.ratingKey)
+            session.haltForPendingDeletion(attemptKey: key)
 
             #expect(store.metadata(for: key.ratingKey)?.heldRangeSegments == [manifest])
             #expect(FileManager.default.fileExists(atPath: heldURL.path))

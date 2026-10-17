@@ -11,8 +11,6 @@ import Testing
 struct ManagerSchemaUpgradeTests {
     @Test("A v4 library keeps finished and paused-static rows, removes the rest, and stamps v5")
     func upgradeKeepsPartialsAndRemovesInFlightRows() async throws {
-        DownloadUpgradeNotice.clear()
-        defer { DownloadUpgradeNotice.clear() }
         let directory = try makeDirectory("upgrade")
         defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
 
@@ -57,23 +55,24 @@ struct ManagerSchemaUpgradeTests {
         // A v5 relaunch runs no pass and keeps the notice until it is dismissed.
         let reloaded = DownloadStore(baseDirectory: directory)
         #expect(!reloaded.requiresSchemaUpgrade)
-        #expect(DownloadUpgradeNotice.load()?.retiredCount == 3)
+        let authority = store.durableCleanupAuthorityDirectory
+        #expect(DownloadUpgradeNotice.load(from: authority)?.retiredCount == 3)
         manager.dismissUpgradeNotice()
         #expect(manager.upgradeNotice == nil)
-        #expect(DownloadUpgradeNotice.load() == nil)
+        #expect(DownloadUpgradeNotice.load(from: authority) == nil)
     }
 
     @Test("A repeated pass counts each removal once")
-    func noticeUnionIsIdempotent() {
-        DownloadUpgradeNotice.clear()
-        defer { DownloadUpgradeNotice.clear() }
+    func noticeUnionIsIdempotent() throws {
+        let directory = try makeDirectory("notice")
+        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
         var notice = DownloadUpgradeNotice()
         notice.retiredAttemptIDs.formUnion(["a", "b"])
-        notice.save()
-        var again = DownloadUpgradeNotice.load() ?? DownloadUpgradeNotice()
+        #expect(notice.save(to: directory))
+        var again = DownloadUpgradeNotice.load(from: directory) ?? DownloadUpgradeNotice()
         again.retiredAttemptIDs.formUnion(["b"])
-        again.save()
-        #expect(DownloadUpgradeNotice.load()?.retiredCount == 2)
+        #expect(again.save(to: directory))
+        #expect(DownloadUpgradeNotice.load(from: directory)?.retiredCount == 2)
     }
 
     // MARK: - Fixtures

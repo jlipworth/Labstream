@@ -2521,8 +2521,9 @@ final class DownloadStore: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// P3b: true while the index on disk was loaded as v4 and has not been stamped v5 in this
-    /// process. The manager runs the upgrade pass exactly when this holds.
+    /// P3b: true while the index was loaded as v4 and has not been stamped v5 in this process.
+    /// Until the stamp commits, the v4 file holds the latest committed v4 state (possibly with
+    /// some removals already barriered or done); a relaunch reclassifies what remains. The manager runs the upgrade pass exactly when this holds.
     var requiresSchemaUpgrade: Bool {
         lock.withLock { loadedSchemaVersion < DownloadIndexCoding.currentSchemaVersion
             && indexSchemaVersion < DownloadIndexCoding.currentSchemaVersion }
@@ -2556,8 +2557,8 @@ final class DownloadStore: @unchecked Sendable {
 
     /// P3b stamp: every snapshot enqueued from now on is v5. Unverified rows without a recorded
     /// reason get `migratedUnknown` in the same snapshot. Not awaited by the caller: a failed
-    /// commit stays dirty for the ordinary writer, and a crash leaves the v4 index, whose rows are
-    /// exactly the pre-upgrade rows, so the next launch repeats the upgrade.
+    /// commit stays dirty for the ordinary writer, and a crash leaves the latest committed v4
+    /// state (no row created after the upgrade), so the next launch reclassifies what remains.
     @discardableResult
     func stampSchemaV5() -> PersistenceTicket {
         lock.lock(); defer { lock.unlock() }
@@ -3129,6 +3130,8 @@ final class DownloadStore: @unchecked Sendable {
                   return row.attemptID == key.attemptID
                       && row.status == .failed
                       && row.metadata != nil
+                      // P3b: a row being deleted (barrier or capsule) is never re-planned.
+                      && attemptAdmitsWorkLocked(key)
               }) else {
             lock.unlock()
             return .staleInput

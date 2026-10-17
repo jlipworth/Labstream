@@ -815,9 +815,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 let key = mappedKey.flatMap { ratingKey in attemptID.map {
                     DownloadAttemptKey(ratingKey: ratingKey, attemptID: $0)
                 } }
+                // A row being deleted (barrier or capsule) keeps no OS task (P3b).
                 return !BackgroundDownloadTaskIdentity.markerVersion(
                     taskDescription: task.taskDescription).isCurrent
-                    || key.map(self.store.ownsAttempt) != true
+                    || key.map(self.store.attemptAdmitsWork) != true
             }
             if !purgeTasks.isEmpty {
                 let ids = Set(purgeTasks.map(\.taskIdentifier))
@@ -974,7 +975,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             hasCurrentMarker: BackgroundDownloadTaskIdentity.markerVersion(
                 taskDescription: task.taskDescription).isCurrent,
             taskKey: key,
-            ownsAttempt: key.map(store.ownsAttempt) ?? false,
+            // A row being deleted (barrier or capsule) admits no transfer callback (P3b).
+            ownsAttempt: key.map(store.attemptAdmitsWork) ?? false,
             isDormantAfterFailedActivation: state == .dormant && failedAfterConstruction
         )
     }
@@ -2935,8 +2937,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Stop attempt A after destructive deletion was durably deferred. The row and every local
     /// artifact remain recovery authority until its cleanup operations reach the journal, so this
     /// halt differs from ordinary Cancel only by retaining persisted held manifests and bodies.
-    func haltForPendingDeletion(ratingKey: String) {
-        halt(ratingKey: ratingKey, preserveHeldRangeSegments: true)
+    func haltForPendingDeletion(attemptKey: DownloadAttemptKey) {
+        // Exact key, and marked OS tasks too: before reattach a capsule's surviving daemon tasks
+        // are untracked (P3b). Held manifests and bodies stay with the capsule.
+        halt(attemptKey: attemptKey, preserveHeldRangeSegments: true, cancelMarkedTasks: true)
     }
 
     private func halt(ratingKey: String, preserveHeldRangeSegments: Bool) {
@@ -3006,14 +3010,20 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
         // #169: opaque and range tasks both live on `urlSession` now — cancel by id on one session.
         let all = ids.union(rangeIds)
-        let attemptID = attemptKey.attemptID
         urlSession.getAllTasks { tasks in
             for task in tasks where all.contains(task.taskIdentifier)
-                || (cancelMarkedTasks && BackgroundDownloadTaskIdentity.attemptIdentity(
-                    taskDescription: task.taskDescription) == attemptID) {
+                || (cancelMarkedTasks && Self.taskCarries(attemptKey, task)) {
                 task.cancel()
             }
         }
+    }
+
+    /// Whether an OS task's marker names exactly this attempt: both the attempt ID and the rating
+    /// key (legacy attempt IDs are arbitrary strings and need not be unique across keys).
+    static func taskCarries(_ key: DownloadAttemptKey, _ task: URLSessionTask) -> Bool {
+        BackgroundDownloadTaskIdentity.attemptIdentity(taskDescription: task.taskDescription)
+            == key.attemptID
+            && ratingKey(for: task, knownKeys: [key.ratingKey]) == key.ratingKey
     }
 
     // MARK: URLSessionDownloadDelegate

@@ -22,21 +22,34 @@ public struct DownloadUpgradeNotice: Codable, Equatable, Sendable {
         return text
     }
 
-    static let defaultsKey = "downloads.schemaUpgradeNotice"
+    static let fileName = "schema-upgrade-notice.json"
 
-    static func load(_ defaults: UserDefaults = .standard) -> DownloadUpgradeNotice? {
-        guard let data = defaults.data(forKey: defaultsKey),
+    /// Lives in the download authority directory beside the cleanup journal, written before the
+    /// v5 stamp is enqueued: atomic replace, file fsync, directory fsync.
+    static func load(from directory: URL) -> DownloadUpgradeNotice? {
+        guard let data = try? Data(contentsOf: directory.appendingPathComponent(fileName)),
               let notice = try? JSONDecoder().decode(DownloadUpgradeNotice.self, from: data),
               notice.retiredCount > 0 else { return nil }
         return notice
     }
 
-    func save(_ defaults: UserDefaults = .standard) {
-        guard let data = try? JSONEncoder().encode(self) else { return }
-        defaults.set(data, forKey: Self.defaultsKey)
+    @discardableResult
+    func save(to directory: URL) -> Bool {
+        let url = directory.appendingPathComponent(Self.fileName)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            try encoder.encode(self).write(to: url, options: .atomic)
+            try DownloadPromotionFilesystem.live.fullSyncSource(url)
+            try DownloadPromotionFilesystem.live.syncParentDirectory(url)
+            return true
+        } catch {
+            return false
+        }
     }
 
-    static func clear(_ defaults: UserDefaults = .standard) {
-        defaults.removeObject(forKey: defaultsKey)
+    static func clear(from directory: URL) {
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent(fileName))
     }
 }
