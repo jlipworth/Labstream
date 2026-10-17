@@ -82,7 +82,7 @@ parentheses is the App Store build number (`CFBundleVersion`). A new marketing v
 build 1; each replacement upload for the same platform and marketing version must use a higher
 build number. The repository's
 [`bump-version` skill](https://github.com/jlipworth/Labstream/blob/main/.claude/skills/bump-version/SKILL.md)
-owns the per-platform bump, PMSKit fallback, tagging, and verification procedure.
+owns the per-platform bump, tagging, and verification procedure.
 
 ## Current release audit and deferred scope
 
@@ -137,7 +137,7 @@ bounded-cleanup work, required-reason uptime declaration, and current disclosure
 screenshot guidance. Build 2 adds the Search-stack reset for ⌘F and new macOS toolbar
 queries over a pushed result ([#334](https://github.com/jlipworth/Labstream/issues/334));
 the iPad/visionOS ⌘F entry point ([#335](https://github.com/jlipworth/Labstream/issues/335))
-remains open. PMSKit's fallback version matches all four app targets.
+remains open.
 
 The release owner explicitly deferred these issues for this candidate on 2026-09-29:
 
