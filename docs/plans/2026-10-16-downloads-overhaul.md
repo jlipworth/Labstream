@@ -479,8 +479,10 @@ Acceptance is a phase's pins and inventory rows staying green.
     - The attempt working path (`.attempt-stage-v1-<digest>.stage`) is attempt-unique and named
       by the row, so it serves as the capture path, and steps 1 and 3 collapse into one rename.
     - The parent directory is fsynced after the rename.
-    - `bodyAtWorking` is persisted and must be accepted before validation starts; a stale owner
-      stops.
+    - `bodyAtWorking` must be accepted, and in the foreground committed, before validation
+      starts; a stale owner stops. While a background completion handler is pending, acceptance
+      is admission-only, as for every other session write, and the completion gate owns the
+      bounded outcome.
     - Not built: a separate capture file and the pins for a crash at each step.
   - **Reconcile deletions** now run only after the demotion commits. A failed index write keeps
     the bytes with the row. They are still not journaled artifact intents; that is P3b, with the
@@ -493,6 +495,22 @@ Acceptance is a phase's pins and inventory rows staying green.
     - the B02, B62/B63 and re-encode pins listed above;
     - B16 protected-data and concurrent-recovery coverage;
     - B21 with a real indeterminate candidate commit.
+- **2026-10-17 — P3a after-review, round 2: not ready, 4 findings (all P2).** All four were valid.
+  Round-1 responses 1 and 2 were confirmed.
+  - **Truncation deletion without commit proof.** The working body is deleted only once the
+    `finalizeOutcome` verdict has committed, using the same acceptance check as every other
+    finalize write.
+  - **Reconcile deletion race.** Moving deletion after the commit opened a window in which
+    in-flight Range I/O could move the attempt on. Each deletion now records its owner and the
+    condemned lifecycle. After the commit it runs under the store lock, only while the row is
+    still that exact owner in that lifecycle with no artifact head.
+  - **Relaunch replay erased `truncatedRepeated`.** `bodyAtWorking` on a row that is already
+    finalizing keeps its history. A reducer pin covers re-entry, replay rejection and the
+    promotion keeping the reason.
+  - **Delete could stash strikes.** Only Retry's `submitRemoveForRetry` stashes them. Clearing
+    the stash is fenced by attempt.
+  - **Still open:** a deterministic pin for the reconcile race, and the session-level
+    crash/replay pin.
 
 ## P2 detailed plan — cleanup foundation
 
