@@ -202,6 +202,25 @@ struct EmbyConvertJobTests {
             fingerprintUserID: nil))
     }
 
+    // B52: BackendSession.matchesPersistedServer treats a reformatted GUID as the same user, so the
+    // convert recovery/cleanup ownership check must agree. A raw compare logged emby_user_mismatch
+    // and skipped recovery forever after a re-login that only changed GUID formatting.
+    @Test("recovery user ownership uses the same GUID-normalized equality as the session")
+    func publicUserOwnershipNormalizesGUIDFormatting() {
+        let dashed = "4C1A2B3C-0000-4000-8000-00000000ABCD"
+        let dashless = "4c1a2b3c00004000800000000000abcd"
+        #expect(EmbyConvertRecoveryPolicy.publicUserMatches(
+            currentSessionUserID: dashless, persistedBackendUserID: dashed,
+            fingerprintUserID: dashed.lowercased()))
+        #expect(MediaBrowserUserIdentity.sameUser(dashless, dashed))
+        #expect(!EmbyConvertRecoveryPolicy.publicUserMatches(
+            currentSessionUserID: "4c1a2b3c00004000800000000000abce", persistedBackendUserID: dashed,
+            fingerprintUserID: dashed))
+        #expect(!EmbyConvertRecoveryPolicy.publicUserMatches(
+            currentSessionUserID: "  ", persistedBackendUserID: dashed,
+            fingerprintUserID: dashed))
+    }
+
     @Test("cleanup queue preserves multiple attempt UUIDs for the same rating key")
     func cleanupTombstoneIDsAppendWithoutReplacement() {
         let first = UUID()
