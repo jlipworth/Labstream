@@ -243,11 +243,24 @@ User-facing expectations worth setting (the "downloads disclaimer"):
   handoff cannot run while the app is suspended; Emby Convert job identity is persisted so polling
   can resume after relaunch. Once either route hands off to a static file, the byte transfer can use
   the static recovery path.
-- A Plex optimize reuses an existing render only when it is a server-optimized part (under
+- Fresh and resumed Plex optimize jobs inspect metadata before creating work. They reuse an
+  existing render only when it is a server-optimized part (under
   Plex's "Plex Versions" path) that matches the requested tier: resolution as a bounding box
   within ±16 px and container bitrate within ×1.10 of the video cap plus 768 kbps, and
   original-quality requests must land at the source height. `OptimizedVersionMatch` owns this
   rule, so a 1080p/8 Mbps retry never silently reuses an older 720p render.
+- Plex queue inspection distinguishes a present item, proven absence, and unavailable inspection.
+  Only proven absence plus a successful metadata inspection can create a job. Immediately before
+  dispatch, the row durably records a 3-minute visibility grace. Relaunch preserves that timestamp:
+  absence during the grace keeps inspecting without another create; proven absence after it fails
+  server preparation if no matching version is visible. An HTTP 400 duplicate rechecks adoption;
+  other create errors fail promptly. The separate 120-second completion/indexing grace, 24-hour
+  prep deadline and authentication failure budget remain in force. Static handoff uses the live
+  server lane on which the rendered Part was observed.
+- Fresh Plex and Emby preparation starts return after registering their poller tasks. Delete
+  cancels those tasks. Emby reuse and completed conversions share one handoff that detaches its
+  own poller before releasing prep bookkeeping, then starts the existing-version static lane.
+  Pause All leaves Emby Convert polling active and parks the static handoff.
 - Jellyfin optimized/compatible-remux downloads, and Emby compatible-remux
   downloads, can be live-forward encoder streams. They may continue as
   system-owned transfers while the OS allows it, but they are not durable
