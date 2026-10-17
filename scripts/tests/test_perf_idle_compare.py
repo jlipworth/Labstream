@@ -1,22 +1,17 @@
 import hashlib
-import importlib.util
 import json
 import pathlib
 import shutil
 import statistics
-import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
+from _script_loader import load_script
 
 
 SCRIPT = pathlib.Path(__file__).parents[1] / "perf-idle-compare.py"
-SPEC = importlib.util.spec_from_file_location("perf_idle_compare", SCRIPT)
-assert SPEC and SPEC.loader
-idle = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = idle
-SPEC.loader.exec_module(idle)
+idle = load_script("perf_idle_compare", SCRIPT)
 
 
 class IdleCompareTests(unittest.TestCase):

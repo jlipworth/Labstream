@@ -1,4 +1,3 @@
-import importlib.util
 import io
 import json
 from pathlib import Path
@@ -8,10 +7,10 @@ import tempfile
 import unittest
 from unittest import mock
 
+from _script_loader import load_script
+
 SCRIPT = Path(__file__).resolve().parents[1] / "agent-playback-run.py"
-spec = importlib.util.spec_from_file_location("agent_playback_run", SCRIPT)
-runner = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(runner)
+runner = load_script("agent_playback_run", SCRIPT)
 
 
 SUITE_URL = "test://com.apple.xcode/Labstream/LabstreamMacTests/PlaybackAgentEvidenceTests"

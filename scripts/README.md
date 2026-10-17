@@ -78,7 +78,6 @@ media details out of commits and public issues.
   container; it writes only gitignored listing, cache, inventory, representative, and summary
   artifacts. See the
   [private media corpus workflow](../docs/MEDIA-CORPUS-TESTING.md).
-- `loc.sh` — informational per-module source line counts.
 - `perf-log-summary.py` — converts privacy-safe performance signposts into summaries/Markdown and
   produces strict, raw-artifact-bound comparison summaries.
 - `perf_evidence_schema.py` — shared closed schema/parser for privacy-safe performance spans,
