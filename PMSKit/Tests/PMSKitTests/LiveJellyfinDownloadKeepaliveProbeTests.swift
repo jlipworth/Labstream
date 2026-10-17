@@ -134,6 +134,18 @@ struct LiveJellyfinDownloadKeepaliveProbeTests {
             return statuses
         } : nil
 
+        // Throwing exits (cancelled sleeps) must still stop the pinger, the transfer and the encoder.
+        var cleanedUp = false
+        func cleanUp() async -> [Int] {
+            guard !cleanedUp else { return [] }
+            cleanedUp = true
+            pinger?.cancel()
+            let statuses = await pinger?.value ?? []
+            task.cancel()
+            await teardown(config: config, token: token, identity: identity, playSessionId: playSessionId)
+            return statuses
+        }
+        do {
         task.resume()
         let warmTarget = 16 * 1_048_576
         let warmDeadline = Date().addingTimeInterval(180)
@@ -144,9 +156,9 @@ struct LiveJellyfinDownloadKeepaliveProbeTests {
         let status = reader.statusCode ?? -1
         log("arm=\(arm.rawValue) http=\(status) warm_bytes=\(warmBytes)")
         guard reader.completion == nil, warmBytes > 0 else {
-            pinger?.cancel()
-            await teardown(config: config, token: token, identity: identity, playSessionId: decision.playSessionId)
-            return "not_started(http=\(status), completion=\(reader.completionLabel))"
+            let label = reader.completionLabel
+            _ = await cleanUp()
+            return "not_started(http=\(status), completion=\(label))"
         }
 
         task.suspend()
@@ -159,20 +171,25 @@ struct LiveJellyfinDownloadKeepaliveProbeTests {
               reader.bytes - bytesAtResume < 8 * 1_048_576 {
             try await Task.sleep(for: .seconds(1))
         }
+        // Classify from a snapshot taken before our own cancel/teardown, which would otherwise
+        // surface as a `cancelled` completion and be misread as the server killing the transcode.
         let resumedBytes = reader.bytes - bytesAtResume
-        pinger?.cancel()
-        let pingStatuses = await pinger?.value ?? []
-        task.cancel()
-        await teardown(config: config, token: token, identity: identity, playSessionId: decision.playSessionId)
+        let serverEnded = reader.completion != nil
+        let completionBeforeCancel = reader.completionLabel
+        let pingStatuses = await cleanUp()
         try await Task.sleep(for: .seconds(10))
 
         let pingSummary = arm == .pingOnly
             ? " pings=\(pingStatuses.count) ping_non2xx=\(pingStatuses.filter { !(200..<300).contains($0) }.count)"
             : ""
-        log("arm=\(arm.rawValue) resumed_bytes=\(resumedBytes) completion_before_cancel=\(reader.completionLabel)\(pingSummary)")
+        log("arm=\(arm.rawValue) resumed_bytes=\(resumedBytes) completion_before_cancel=\(completionBeforeCancel)\(pingSummary)")
         if resumedBytes >= 8 * 1_048_576 { return "survived" }
-        if reader.completion != nil { return "killed(\(reader.completionLabel), resumed_bytes=\(resumedBytes))" }
+        if serverEnded { return "killed(\(completionBeforeCancel), resumed_bytes=\(resumedBytes))" }
         return "stalled(resumed_bytes=\(resumedBytes))"
+        } catch {
+            _ = await cleanUp()
+            throw error
+        }
     }
 
     private static func teardown(config: Config, token: String, identity: JellyfinClientIdentity,
