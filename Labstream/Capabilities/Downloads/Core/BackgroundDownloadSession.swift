@@ -5507,7 +5507,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         guard let truncationFailures else { return }
         let finalizationResult = BackgroundFinalizationResultPolicy.result(
             for: outcome,
-            consecutiveTruncationFailures: truncationFailures)
+            consecutiveTruncationFailures: truncationFailures,
+            revalidatingPublishedFile: !publishesWorkingFile)
         let finalizationDurationMs = max(0, Int(Date().timeIntervalSince(finalizeStarted) * 1000))
         guard !Task.isCancelled else { return }
         switch outcome {
