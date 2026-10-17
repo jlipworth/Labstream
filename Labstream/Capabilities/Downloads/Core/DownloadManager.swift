@@ -148,7 +148,7 @@ enum DownloadOptimizeStateLabel {
 ///   3. fetch that part over a **background** `URLSession` into Application Support,
 ///   4. record it in `DownloadStore` (ratingKey -> local file, size, progress).
 ///
-/// Offline playback reuses the custom player via `CustomPlayerView(localFile:item:)`.
+/// Offline playback presents one admitted launch through the shared custom player.
 ///
 /// The optimize trigger is the highest-uncertainty area in the whole app — see
 /// `triggerOptimize(...)`. It is isolated behind that single method so the live
@@ -275,7 +275,6 @@ public final class DownloadManager {
     let offlineAvailabilityCache = OfflinePlayableAvailabilityCache()
     @ObservationIgnored var offlinePresentationGeneration: UInt64 = 0
     @ObservationIgnored var offlinePlaybackSinks: [DownloadAttemptKey: BoundOfflinePlaybackEventSink] = [:]
-    @ObservationIgnored var compatibilityPlaybackSinks: [String: BoundOfflinePlaybackEventSink] = [:]
     @ObservationIgnored var offlineFileExists: @Sendable (URL) -> Bool = {
         FileManager.default.fileExists(atPath: $0.path)
     }
@@ -4372,20 +4371,6 @@ public final class DownloadManager {
         return fields
     }
 
-
-    /// Compatibility for existing callers. New presentations capture an exact sink at launch.
-    func updateLocalPlaybackPosition(ratingKey: String, positionMs: Int, durationMs: Int?) {
-        guard let record = store.record(for: ratingKey), let attemptID = record.attemptID else { return }
-        let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
-        let sink: BoundOfflinePlaybackEventSink
-        if let current = compatibilityPlaybackSinks[ratingKey], current.attemptKey == key {
-            sink = current
-        } else {
-            sink = makeOfflinePlaybackSink(for: key)
-            compatibilityPlaybackSinks[ratingKey] = sink
-        }
-        sink.progress(positionMs: positionMs, durationMs: durationMs)
-    }
 
     /// Heal rows that historical bugs finalized past the byte-completeness guard: a static
     /// byte-for-byte row whose durable file is smaller than the source's EXACT size can never be a

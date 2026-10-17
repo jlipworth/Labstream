@@ -174,7 +174,12 @@ final class PlaybackController {
     private var offlineSubtitleCuesByTrackID: [Int: [OfflineTextSubtitleCue]] = [:]
     private var selectedOfflineSubtitleTrackID: Int?
     private var offlineSubtitleSelectionAuthority = OfflineSubtitleSelectionAuthority()
-    private let offlineSubtitleCueLoader: OfflineSubtitleCueLoader
+    private var offlineSubtitleCueLoader: OfflineSubtitleCueLoader
+    #if DEBUG
+    func setOfflineSubtitleCueLoaderForP7Testing(_ loader: @escaping OfflineSubtitleCueLoader) {
+        offlineSubtitleCueLoader = loader
+    }
+    #endif
     /// Most recent structured Plex decision. Replaced on every stream rebuild so subtitle rows
     /// and Stats for Nerds describe the same active lane (#248).
     private var lastPlexDecision: DecisionResponse?

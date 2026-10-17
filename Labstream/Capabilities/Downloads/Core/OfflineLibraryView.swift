@@ -2,7 +2,7 @@ import SwiftUI
 import PMSKit
 
 /// Lists offline downloads with live progress + delete, and plays a completed
-/// file through the custom player (`CustomPlayerView(localFile:item:)`).
+/// file through the shared admitted-launch custom player.
 ///
 /// Surfaces the offline-transfer reality (research/10): background transfers may be
 /// deferred while the app is backgrounded or the device is locked/asleep, then resume
@@ -50,13 +50,8 @@ public struct OfflineLibraryView: View {
     }
     #endif
 
-    private static func defaultLaunchFactory(_ manager: DownloadManager) -> any OfflinePlaybackLaunchFactory {
-        // P7.6 integration: replace this conditional with `return manager.offlinePlaybackLaunchFactory`.
-        #if DEBUG
-        return P7UnintegratedLibraryLaunchFactory()
-        #else
-        return manager.offlinePlaybackLaunchFactory
-        #endif
+    static func defaultLaunchFactory(_ manager: DownloadManager) -> any OfflinePlaybackLaunchFactory {
+        manager.offlinePlaybackLaunchFactory
     }
 
     public var body: some View {
@@ -226,76 +221,10 @@ public struct OfflineLibraryView: View {
     /// All production library inputs and event authority come from the injected launch factory.
     static func makeOfflinePlayer(launch: OfflinePlaybackLaunch,
                                   onClose: @escaping () -> Void) -> CustomPlayerView {
-        let events = OfflineLibraryPlayerEvents(launch: launch)
-        let preview: (any TrickPlayThumbnailProviding)?
-        switch launch.preview {
-        case .plexBIF(let url): preview = LocalBIFTrickPlayThumbnailProvider(bifURL: url)
-        case .jellyfinTiles(let url):
-            preview = url.flatMap { LocalJellyfinTrickPlayThumbnailProvider(playlistURL: $0) }
-        case .embyBIF(let url):
-            let providers = ([LocalBIFTrickPlayThumbnailProvider(bifURL: url),
-                LocalEmbyChapterTrickPlayThumbnailProvider(chapters: launch.chapters,
-                    imageURLsByChapterIndex: launch.chapterImageURLs)] as [(any TrickPlayThumbnailProviding)?]).compactMap { $0 }
-            preview = HierarchicalTrickPlayThumbnailProvider(providers)
-        }
-        // P7.6 integration: pass `launch.events` through the lead's player event-sink parameter;
-        // remove the progress/close adapter below when that parameter owns terminal delivery.
-        // The launch already admitted this exact local poster. Use its attempt and presentation
-        // generation as a credential-free cache identity; no server/source reconstruction occurs.
-        let artwork = launch.posterURL.flatMap { url in
-            OfflineArtworkSource(OfflineArtworkPresentation(fileURL: url, backend: launch.backend,
-                owner: .init(attemptID: launch.attemptKey.attemptID.rawValue,
-                    source: .init(backendKind: launch.backend, backendBaseURLString: nil,
-                        backendServerID: nil, mediaSourceID: nil, mediaIndex: nil, partIndex: nil,
-                        sourcePartID: nil, downloadLane: nil, serverPreparedVersion: false)),
-                generation: launch.presentationRequest.generation))
-        }
-        return CustomPlayerView(localFile: launch.fileURL, item: launch.item,
-            trickPlayProvider: preview,
-            offlineArtworkSource: artwork,
-            offlineTextSubtitles: launch.textSubtitles,
-            offlineChapterImageURLs: launch.chapterImageURLs,
-            onLocalPlaybackProgress: { position, duration in events.progress(position, duration) },
-            onClose: { events.close(); onClose() })
-    }
-
-    #if DEBUG
-    // P7.6 integration: lead-owned P7.1 tests still call these legacy fixture adapters. Remove
-    // them when those tests use the injected launch; production presentation never calls them.
-    /// Production construction seam shared by the row presentation and headless contract pins.
-    static func makeOfflinePlayer(record: DownloadRecord, manager: DownloadManager,
-                                  trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
-                                  onClose: @escaping () -> Void) -> CustomPlayerView {
-        CustomPlayerView(localFile: record.localURL,
-                         item: Self.offlineItem(from: record),
-                         trickPlayProvider: trickPlayProvider,
-                         offlineArtworkSource: OfflineArtworkSource(fileURL: record.posterURL,
-                                                                    metadata: record.metadata,
-                                                                    ratingKey: record.ratingKey),
-                         offlineTextSubtitles: record.metadata?.offlineTextSubtitles ?? [],
-                         offlineChapterImageURLs: record.chapterImageURLs,
-                         onLocalPlaybackProgress: { positionMs, durationMs in
-                             manager.updateLocalPlaybackPosition(ratingKey: record.ratingKey,
-                                                                 positionMs: positionMs,
-                                                                 durationMs: durationMs)
-                         },
+        CustomPlayerView(offlineLaunch: launch,
+                         trickPlayProvider: launch.makeTrickPlayProvider(),
                          onClose: onClose)
     }
-
-    /// Executes the mobile presentation continuation with an injectable orientation boundary.
-    @MainActor
-    static func presentOfflineRecord(_ record: DownloadRecord,
-                                     orientation: () async -> Void,
-                                     present: (DownloadRecord) -> Void) async {
-        await orientation()
-        present(record)
-    }
-
-    static func offlineItem(from record: DownloadRecord) -> MediaItem {
-        record.metadata?.makeMediaItem()
-            ?? MediaItem(ratingKey: record.ratingKey, title: record.title, type: "movie")
-    }
-    #endif
 
     #if os(macOS)
     private func syncMacPlayerPresentation() {
@@ -869,36 +798,3 @@ final class OfflineLibraryPlaybackPresentation {
         return result
     }
 }
-
-@MainActor
-private final class OfflineLibraryPlayerEvents {
-    let sink: any OfflinePlaybackEventSink
-    private var finalSample: OfflinePlaybackProgressSample
-    init(launch: OfflinePlaybackLaunch) {
-        sink = launch.events
-        finalSample = .init(positionMs: launch.item.viewOffset ?? 0, durationMs: launch.item.duration)
-    }
-    func progress(_ position: Int, _ duration: Int?) {
-        finalSample = .init(positionMs: position, durationMs: duration)
-        sink.progress(positionMs: position, durationMs: duration)
-    }
-    func close() { sink.close(finalSample: finalSample) }
-}
-
-#if DEBUG
-/// Temporary test-build default only. The independent lane has no concrete factory at its base.
-/// P7.6 integration: remove with the one-line default accessor swap above.
-@MainActor
-private final class P7UnintegratedLibraryLaunchFactory: OfflinePlaybackLaunchFactory {
-    private var generation: UInt64 = 0
-    func beginPresentationRequest() -> OfflinePlaybackPresentationRequest {
-        generation += 1
-        return .init(generation: generation)
-    }
-    func makeLaunch(for identity: OfflineDownloadRowActionIdentity,
-                    request: OfflinePlaybackPresentationRequest, resumeRewindSeconds: Int) async
-        -> Result<OfflinePlaybackLaunch, OfflinePlaybackLaunchRejection> {
-        .failure(.supersededPresentation)
-    }
-}
-#endif

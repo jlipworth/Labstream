@@ -23,6 +23,24 @@ struct P7OfflineAvailabilityTests {
         await f.finish()
     }
 
+    @Test func detailButtonRenderingDoesNotStatTheStore() async throws {
+        let filesystem = P7DetailCountingFileManager()
+        let f = try await P7PlaybackFixture(status: .complete, fileManager: filesystem)
+        let before = filesystem.stats.value
+        for _ in 0..<20 {
+            #expect(DetailView.offlinePlaybackIdentity(ratingKey: f.record.ratingKey, manager: f.manager) == f.identity)
+        }
+        #expect(filesystem.stats.value == before)
+        // The displayed hint is not admission: disappearance still fails closed on the real path.
+        try FileManager.default.removeItem(at: f.record.localURL)
+        #expect(DetailView.offlinePlaybackIdentity(ratingKey: f.record.ratingKey, manager: f.manager) == f.identity)
+        var presented = false
+        await DetailView.presentLocalRequest(f.identity, manager: f.manager,
+            request: f.manager.beginPresentationRequest(), orientation: {}, present: { _ in presented = true })
+        #expect(!presented)
+        await f.finish()
+    }
+
     @Test func delayedPositiveScanCannotReviveDeletedCandidate() async throws {
         let f = try await P7PlaybackFixture(status: .complete)
         let cache = OfflinePlayableAvailabilityCache()
@@ -99,6 +117,13 @@ struct P7OfflineAvailabilityTests {
         try JSONSerialization.data(withJSONObject: ["schemaVersion": 99, "rows": []])
             .write(to: opaque.directory.appendingPathComponent("index.json"))
         #expect(!OfflineLaunchAvailability.hasPlayableDownload(records: opaque.store().records))
+    }
+}
+private final class P7DetailCountingFileManager: FileManager, @unchecked Sendable {
+    let stats = TestLockedBox(0)
+    override func fileExists(atPath path: String) -> Bool {
+        stats.withValue { $0 += 1 }
+        return super.fileExists(atPath: path)
     }
 }
 #endif

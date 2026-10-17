@@ -66,17 +66,24 @@ struct P7OfflineSubtitleTests {
         #expect(controller.offlineSubtitleOverlay.text == nil)
     }
 
-    @Test func embeddedSelectionInvalidatesPendingSidecarParse() async throws {
+    @Test(arguments: [false, true])
+    func embeddedSelectionInvalidatesPendingSidecarParse(fromDetail: Bool) async throws {
         let restore = preservePreferences()
         defer { restore() }
         let entered = P6Acknowledgement<Bool>()
         let release = P6Acknowledgement<Bool>()
         let (asset, group) = try await asset()
-        let controller = controller(asset: asset, loader: { _ in
+        let f = try await P7PlaybackFixture(status: .complete)
+        _ = await f.store.updateMetadataAsync(for: f.key) {
+            $0.offlineTextSubtitles = [.init(id: 1, displayName: "Fixture sidecar", relativePath: "fixture.srt")]
+        }
+        let controller = try await (fromDetail ? f.detailController() : f.libraryController())
+        controller.player.replaceCurrentItem(with: AVPlayerItem(asset: asset))
+        controller.setOfflineSubtitleCueLoaderForP7Testing { _ in
             entered.signal(true)
             _ = await release.wait()
             return [.init(startMs: 0, endMs: 1_000, text: "Fixture")]
-        })
+        }
         defer { controller.stop(); release.signal(true) }
         let menu = try #require(try await controller.loadSubtitleTracks())
         let sidecar = try #require(menu.tracks.first { $0.id == .offlineSidecar(1) })
@@ -89,6 +96,8 @@ struct P7OfflineSubtitleTests {
         let after = try #require(try await controller.loadSubtitleTracks())
         #expect(after.selectedID == .avFoundation(0))
         #expect(controller.offlineSubtitleOverlay.text == nil)
+        controller.stop()
+        await f.finish()
     }
 
     private func preservePreferences() -> () -> Void {
