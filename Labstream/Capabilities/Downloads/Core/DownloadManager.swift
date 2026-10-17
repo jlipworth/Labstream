@@ -848,15 +848,21 @@ public final class DownloadManager {
 
     /// Union the pass's confirmed handoffs into the persisted notice (idempotent across a
     /// repeated pass after a crash).
-    private func recordUpgradeNotice(retired: [String], cleanupGaps: [String]) {
-        guard !retired.isEmpty else { return }
+    /// Returns whether the notice (or the absence of anything to record) is durable.
+    private func recordUpgradeNotice(retired: [String], cleanupGaps: [String]) -> Bool {
+        let directory = store.durableCleanupAuthorityDirectory
         var notice = upgradeNotice ?? DownloadUpgradeNotice()
         notice.retiredAttemptIDs.formUnion(retired)
         notice.cleanupGapAttemptIDs.formUnion(cleanupGaps)
-        if !notice.save(to: store.durableCleanupAuthorityDirectory) {
+        if notice.retiredCount > 0 { upgradeNotice = notice }
+        guard notice.retiredCount > 0 else { return true }
+        guard notice.save(to: directory) else {
+            notice.saveFallback()
             recordDownloadDiagnostic("downloads.upgrade_notice_save_failed")
+            return false
         }
-        upgradeNotice = notice
+        DownloadUpgradeNotice.clearFallback()
+        return true
     }
 
     public func dismissUpgradeNotice() {
@@ -889,15 +895,26 @@ public final class DownloadManager {
                 deleteCleanupGapObserved = false
                 switch delete(record: record) {
                 case .barriered, .capsule:
-                    retired.append(key.attemptID.rawValue)
-                    if deleteCleanupGapObserved { cleanupGaps.append(key.attemptID.rawValue) }
+                    // Full key: legacy attempt IDs need not be unique across items.
+                    let entry = DownloadUpgradeNotice.entry(for: key)
+                    retired.append(entry)
+                    if deleteCleanupGapObserved { cleanupGaps.append(entry) }
                 case .persistenceFailed, .stale:
                     break
                 }
             }
             await Task.yield()
         }
-        recordUpgradeNotice(retired: retired, cleanupGaps: cleanupGaps)
+        // The stamp ends the upgrade for good, so it waits for a durable notice: a failed save
+        // keeps the index v4 (the next launch repeats the pass) and parks the entries in a
+        // fallback that the next load merges.
+        guard recordUpgradeNotice(retired: retired, cleanupGaps: cleanupGaps) else {
+            recordDownloadDiagnostic("downloads.schema_upgrade_deferred", fields: [
+                "reason": .label("notice_not_durable"),
+                "retired": .int(retired.count),
+            ])
+            return
+        }
         store.stampSchemaV5()
         recordDownloadDiagnostic("downloads.schema_upgraded", fields: [
             "candidates": .int(candidates.count),

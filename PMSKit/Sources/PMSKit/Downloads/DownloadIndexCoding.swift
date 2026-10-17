@@ -19,8 +19,8 @@ public enum DownloadIndexCoding {
     public static let currentSchemaVersion = 5
 
     /// Versions this binary loads as current (P3b). v4 and v5 share the row and envelope shape;
-    /// a v4 index keeps being written as v4 until the store's upgrade stamps it v5, so an
-    /// interrupted upgrade always finds the pre-upgrade rows.
+    /// a v4 index keeps being written as v4 until the store's upgrade stamps it v5, so a v4 file
+    /// never contains a row created after the upgrade.
     public static let admissibleSchemaVersions: ClosedRange<Int> = 4...5
 
     /// A mutation-free startup classification. The app must run this before constructing any

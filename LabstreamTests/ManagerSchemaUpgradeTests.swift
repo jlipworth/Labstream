@@ -75,6 +75,33 @@ struct ManagerSchemaUpgradeTests {
         #expect(DownloadUpgradeNotice.load(from: directory)?.retiredCount == 2)
     }
 
+    @Test("A failed durable notice save is carried to the next load; shared legacy IDs count twice")
+    func noticeSurvivesFailedSaveAndCountsFullKeys() throws {
+        let directory = try makeDirectory("notice-fail")
+        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+        let defaults = try #require(UserDefaults(suiteName: "notice-\(UUID().uuidString)"))
+        let shared = DownloadAttemptID(rawValue: "legacy-shared")!
+        var notice = DownloadUpgradeNotice()
+        notice.retiredAttemptIDs = [
+            DownloadUpgradeNotice.entry(for: DownloadAttemptKey(ratingKey: "plex:a", attemptID: shared)),
+            DownloadUpgradeNotice.entry(for: DownloadAttemptKey(ratingKey: "plex:b", attemptID: shared)),
+        ]
+        #expect(notice.retiredCount == 2)
+
+        // An authority "directory" that is a file makes the durable save fail.
+        let blocked = directory.appendingPathComponent("not-a-directory")
+        try Data([1]).write(to: blocked)
+        #expect(!notice.save(to: blocked))
+        notice.saveFallback(defaults)
+        #expect(DownloadUpgradeNotice.load(from: directory, fallback: defaults)?.retiredCount == 2)
+
+        // The next durable save absorbs the fallback.
+        let merged = try #require(DownloadUpgradeNotice.load(from: directory, fallback: defaults))
+        #expect(merged.save(to: directory))
+        DownloadUpgradeNotice.clearFallback(defaults)
+        #expect(DownloadUpgradeNotice.load(from: directory, fallback: defaults)?.retiredCount == 2)
+    }
+
     // MARK: - Fixtures
 
     private func seed(_ ratingKey: String, status: DownloadStatus, mode: DownloadResumeMode,
