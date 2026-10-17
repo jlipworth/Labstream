@@ -693,6 +693,253 @@ Ambiguous Convert cleanup and Convert crash-window recovery are serialized on on
 - Prep-poller registration (P4).
 - Physical deletion of the tombstone engine (P6).
 
+## P3 detailed plan — lifecycle, history, reducer and v5 migration
+
+*Revision 1 (2026-10-17). Written from a code map of the v4 schema and every status write. To be
+co-reviewed by GPT-6.1-Sol before implementation.*
+
+### What the code map changed about the design
+
+- **History is not persisted at all today.** Truncation strikes live in memory, keyed by
+  ratingKey. The unverified reason appears only in diagnostics. A storage-full park lives in
+  in-memory `lastError`. Finalizing is inferred from `.downloading` with progress ≥ 1.
+- **`.failed` is overloaded.** A season-planned row that has not started is stored as `.failed`
+  with `seasonPlannerPendingAdmission`.
+- **Progress silently changes status.** `submitProgress` moves `queued`, `paused` and `failed` to
+  `downloading`. About 11 session call sites rely on this, and it is how a paused row can be
+  re-promoted (B09's race).
+- **There are about 75 production status writes** across `DownloadManager*`,
+  `BackgroundDownloadSession` and the store.
+- **Reconcile deletes files under the store lock.** It is still the relaunch authority.
+- **Any v4 index is `.unsupported` to a v5 binary today.** The store would then take the
+  destructive reset path.
+
+### Design decision: facets are logical in P3; the physical split is P6
+
+Revision 2 of the overall plan proposed separately persisted facets. The map shows that a
+physical rewrite of `Row` and `OfflineMetadata` at the same time as the reducer would put
+identity, artifact and obligation data at risk for no behavioural gain.
+
+P3 therefore does the following:
+
+- **Adds two persisted fields to `Row`:**
+  - `lifecycle: DownloadLifecycle`;
+  - `history: DownloadAttemptHistory`.
+- **Groups the existing fields behind typed facet views,** computed and read-only: `identity`,
+  `artifacts` and `obligations`. Callers read these views, never the raw `OfflineMetadata` fields
+  they cover.
+- **Derives `status: DownloadStatus` from lifecycle.** It is still encoded for diagnostics and
+  external readers, but it is no longer authority.
+- **Leaves the physical split into separate stored structs to P6.** By then every write goes
+  through the reducer and the views.
+
+### P3.1 Types (PMSKit)
+
+`DownloadLifecycle` has these cases, none carrying a payload:
+
+| Case | Meaning |
+|---|---|
+| `planned` | Created but not admitted. Season planner rows, and later every new row (P4). |
+| `admitted` | Admission granted; the transfer has not started yet. |
+| `serverPrep` | A Plex optimize or Emby Convert job is in progress. |
+| `transferring` | URLSession work is live or being rebuilt. |
+| `finalizing` | A body is complete and validation or promotion is pending. Persisted (B10). |
+| `complete` | |
+| `unverified` | |
+| `paused` | |
+| `failed` | |
+
+`DownloadAttemptHistory` holds:
+
+- `truncationStrikes: Int`;
+- `unverifiedReason: UnverifiedReason?`, with values `probeMiss(String)`, `truncatedRepeated`,
+  `backgroundProbeDeferred` and `migratedUnknown`;
+- `lastFailure: DownloadFailureReason?`, a bounded enum: storage, auth, network, server,
+  validation, source missing, cancelled by system, internal;
+- `parkedForStorage: Bool`;
+- `pauseCause: PauseCause?`, with values `user`, `queuePaused`, `systemInterrupted`,
+  `awaitingSession`, `storage` and `migration`.
+
+History belongs to one attempt. A retry mints a new attempt, except where the existing retry
+paths keep the attempt (blob resume). Those carry history forward deliberately.
+
+`DownloadStatus` is derived as follows:
+
+| Lifecycle | Status |
+|---|---|
+| `planned` | `queued` |
+| `admitted` | `queued` |
+| `serverPrep` | `preparing` |
+| `transferring` | `downloading` |
+| `finalizing` | `downloading` |
+| `complete` | `complete` |
+| `unverified` | `unverified` |
+| `paused` | `paused` |
+| `failed` | `failed` |
+
+`planned` maps to `queued` rather than `failed`. The season planner's "not started" rows become
+visibly queued; their caption comes from the admission marker.
+
+### P3.2 Reducer (PMSKit, pure)
+
+The reducer's signature is
+`DownloadLifecycleReducer.reduce(_ state: State, _ event: Event) -> Transition`.
+
+- **`State`** is `lifecycle`, `history` and a few facet facts the rules need: lane, whether a
+  server obligation exists, whether a durable checkpoint exists, whether a body is complete.
+- **`Event`** covers:
+  - user: `pause`, `resume`, `retry` (with blob or without), `delete`;
+  - admission: `granted`;
+  - server prep: `prepStarted`, `prepProgress`, `prepReady`, `prepFailed(reason)`;
+  - transfer: `transferStarted`, `transferProgress`, `transferRebuilding`,
+    `transferInterrupted(systemCancel | storage | network | auth)`, `transferFailed(reason)`,
+    `bodyComplete`;
+  - finalize: `finalizeOutcome(complete | unverified(reason) | truncated | incomplete | empty)`;
+  - `promotionCommitted(terminal)`;
+  - `relaunchObserved(observation)` and `foregroundObserved(observation)`;
+  - `backendUnavailable` / `backendAvailable`;
+  - `storageMeasured(fits:)`;
+  - `localPlaybackProgressed`;
+  - `sizeAuditFailed`;
+  - `stallDetected`.
+- **`Transition`** is either `.rejected(.illegal | .stale)` or `.applied(State, [Effect])`.
+  - Effects are descriptive, for example `deleteBody(.working | .published)`, `requestFinalization`,
+    `scheduleResume` or `clearResumeBlob`. Existing code executes them.
+  - P3 does not move effect execution. The reducer decides the transition, and existing call sites
+    keep doing the I/O they already do, now chosen by the effect list.
+- **Key rules** (each one a reducer test):
+  1. `transferProgress` is legal only from `admitted` or `transferring`. From `paused`, `failed`
+     or `finalizing` it is rejected; there is no implicit promotion any more (B09).
+  2. `finalizeOutcome(.truncated)` increments `truncationStrikes`. Below the budget the row fails
+     and the body is deleted. At the budget it becomes `unverified(truncatedRepeated)` with the
+     body kept.
+     - A revalidation of a published body never deletes it (this is the P1 B54 containment, now
+       persisted).
+     - The strikes survive a relaunch.
+  3. `relaunchObserved` reproduces `DownloadStatus.reconciledStatus` and the store's reconcile
+     table as reducer rules, adding:
+     - `finalizing` with a complete body present → `requestFinalization` (B10); the body is never
+       deleted.
+     - The resulting file deletions are effects, executed outside the lock (st-41), where today
+       they run inside it.
+  4. `pause` records a `pauseCause`.
+     - A system interruption parks the row with `systemInterrupted` (B09, now persisted).
+     - `resume` from `paused(storage)` re-measures through `storageMeasured`. Storage parks persist
+       across relaunch, where today they live in `lastError`.
+  5. `delete` is always legal. Its effect is the existing P2 delete path.
+  6. Terminal states accept only these events:
+     - `delete`;
+     - `retry`, which mints a new attempt;
+     - `localPlaybackProgressed` (unverified → complete);
+     - `sizeAuditFailed` (complete/unverified → failed);
+     - `relaunchObserved` with the file missing.
+
+### P3.3 Store API
+
+- `store.apply(_ event:, for key:) -> ApplyResult` takes the attempt fence, runs the reducer under
+  the store lock, persists the new lifecycle and history together with any field updates the
+  call site supplies, and returns the effects.
+- `submitStatus` and `setStatus` are removed by the end of P3.
+- `submitProgress` updates bytes and progress only. A status change is an explicit
+  `transferProgress` event.
+- `executeValidatedPromotion` applies `promotionCommitted(terminal)` in its terminal snapshot.
+  The intent's `terminalStatus` maps to the lifecycle.
+
+### P3.4 Conversion order
+
+The ~75 call sites are converted in commits grouped by file. The build stays green after each one.
+Until a call site is converted it goes through a temporary `apply(.legacy(status))` shim. The shim
+logs `downloads.lifecycle_legacy_write`, and a CI-hygiene check fails if any shim use remains by
+the last commit.
+
+1. `BackgroundDownloadSession`: transfer, pause and finalize events.
+2. `DownloadManager`: retry, pause, resume, refresh, startup and size audit.
+3. The extensions: Plex, Jellyfin, Emby, EmbyConvert, PlexOptimize and SeasonPlanner.
+4. Reconcile becomes `relaunchObserved`/`foregroundObserved` events, with deletions as effects.
+
+### P3.5 v5 schema and migration
+
+- **Detection.** `DownloadIndexCoding.currentSchemaVersion = 5`.
+  - A new probe case, `.migratable(fromVersion: 4)`, is classified before `.unsupported`.
+  - Versions 1–3 and anything over 5 stay `.unsupported`. Over 5 means newer than this binary;
+    see the downgrade guard.
+- **Migration** follows the restartable steps in the overall plan:
+  1. close admission;
+  2. drain transport;
+  3. take the inventory, resolving pending promotions and deletions under the v4 rules;
+  4. journal obligations;
+  5. commit v5;
+  6. reclaim.
+
+  Steps 1–2 reuse the existing unsupported-reset drain. The steps are made durable by a
+  `migration-progress.json` file in the authority directory, written with the P2 committer.
+- **Step 4 (obligations).** Rows dropped by the migration (in flight, paused, failed or planned)
+  journal their obligations as abandonment intents, and their reference is released when the row
+  is dropped, so P2's runner executes them. Kept rows (`complete`, `unverified`) keep their
+  handles. The launch sweep journals those as terminal releases, as it does today.
+- **Step 5 (commit).**
+  - `complete` → lifecycle `complete`, empty history.
+  - `unverified` → lifecycle `unverified` with `unverifiedReason = migratedUnknown`. A B54 park
+    still in staging, with its body present, is published in this step, as the overall plan
+    requires. Bytes are never discarded.
+  - Every other row is dropped (D1).
+  - The v5 index is written by one committer write.
+- **Step 6 (reclaim).** Unreferenced staging bodies, partials, held bodies and resume blobs are
+  deleted, with a directory sync.
+- **Failure.** Before step 5 commits, v4 stays authoritative and the store is blocked with
+  `.migrationFailed(step, reason)`. The next launch resumes from the recorded step. An
+  unparseable v4 index takes today's destructive reset.
+- **Read-only offline load while blocked.** If migration or admission is blocked, the store still
+  exposes `complete`/`unverified` rows as read-only for offline playback. No mutations are
+  allowed; the session stays dormant.
+
+### P3.6 Downgrade guard (ships separately, before P3)
+
+A v4 binary that opens a v5 index sees `.unsupported(5)` and resets.
+
+The guard is a small PR off `main` that adds `.newerThanBinary(version)`. That case blocks
+downloads with a "newer app version" message and never resets or quarantines. It has to ship in
+a v4 build before any v5 build reaches users. The app is pre-release, so this is low-risk, but
+it is cheap and removes the hazard.
+
+### P3.7 Pins written first (before behaviour changes)
+
+1. **Staging → finalizing → relaunch.**
+   - A complete forward-only body with the app killed before validation: today the body is
+     deleted; after P3 it is re-validated (B10). The pin records today's behaviour as a known
+     failure and flips in commit 5.
+   - The B54 park survives relaunch and revalidation (the P1 containment).
+2. **Pause during delayed rebuild or auth callback, then resume** (B02 class).
+3. **Failed Convert, launch sweep, Retry** (B44/B49; the P1 and P2 pins already exist).
+4. **Season commit followed by each resume entry point:** manual, Resume All, launch,
+   backend-ready and the prep scanner (B62/B63).
+5. **Migration interrupted at each step,** then relaunched.
+6. **Protected data unavailable at launch,** then unlocked: read-only rows, no reset.
+7. **Progress cannot promote a paused or failed row** (B09; currently allowed).
+
+### P3.8 Commits
+
+1. **Pins.** The tests from P3.7; known-failing ones are marked `withKnownIssue`.
+2. **PMSKit lifecycle, history, derivation and reducer,** with exhaustive transition tests.
+3. **Store:**
+   - v5 fields;
+   - the `apply` API and `.legacy` shim;
+   - the `migratable` probe and restartable migration;
+   - read-only blocked load;
+   - encode and decode tests;
+   - migration crash-point tests.
+4. **Session call sites,** converted to events.
+5. **Manager and extension call sites, plus reconcile as events.** Removes `submitStatus`/`setStatus`
+   and the shim, and adds the hygiene check.
+6. **Docs:** DOWNLOADS-OFFLINE, PERSISTENCE, the testing checklist and the plan journal.
+
+### Out of P3
+
+- The admission coordinator (P4) will drive `planned → admitted`.
+- Storage policy unification (P5).
+- The physical facet split and moving file I/O off the store lock beyond reconcile (P6).
+- UI (P7).
+
 ## Open gates (never claimed by this work)
 
 - Live Plex, Jellyfin and Emby acceptance for every shared-behaviour phase.
