@@ -4857,6 +4857,68 @@ final class DownloadStore: @unchecked Sendable {
         case staleOrMissing
     }
 
+    /// P3a facts for the exact attempt, derived from the row. Session-owned facts (a live task)
+    /// come from the caller; everything else is read here under the lock.
+    func lifecycleFacts(for key: DownloadAttemptKey, liveTask: Bool = false) -> DownloadRowFacts {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else {
+            return DownloadRowFacts(route: .staticRange)
+        }
+        return lifecycleFactsLocked(row: row, key: key, liveTask: liveTask)
+    }
+
+    private func lifecycleFactsLocked(row: Row, key: DownloadAttemptKey, liveTask: Bool)
+        -> DownloadRowFacts {
+        let metadata = row.metadata
+        let resumeMode = metadata?.resolvedResumeMode(ratingKey: row.ratingKey)
+        let backend = metadata?.resolvedBackendKind(ratingKey: row.ratingKey)
+            ?? DownloadBackendKind(ratingKeyPrefix: row.ratingKey)
+        let route: DownloadRowFacts.Route
+        switch (resumeMode, backend) {
+        case (.serverPrepThenStatic?, .emby):
+            route = .embyConvert(hasJobOrIdentity: metadata?.embyConvertJobID != nil
+                                 || metadata?.hasEmbyConvertCrashWindowIdentity == true)
+        case (.serverPrepThenStatic?, _): route = .plexPrep
+        case (.liveForwardOnly?, _): route = .forwardOnly
+        default: route = .staticRange
+        }
+        let workingBytes = workingRelativePath(for: row, key: key)
+            .flatMap { fileSize(at: baseDirectory.appendingPathComponent($0)) } ?? 0
+        let resumeRelative = metadata?.resumeDataRelativePath
+        let checkpoint: DownloadRowFacts.Checkpoint
+        if resumeRelative?.isEmpty == false {
+            checkpoint = .resumeBlob
+        } else if route == .staticRange, workingBytes > 0 {
+            checkpoint = .durablePartial(bytes: workingBytes)
+        } else {
+            checkpoint = .none
+        }
+        let body: DownloadRowFacts.Body
+        if row.lifecycle.isTerminal || row.status == .complete || row.status == .unverified {
+            body = fileManager.fileExists(
+                atPath: baseDirectory.appendingPathComponent(row.relativePath).path)
+                ? .published : .none
+        } else if row.lifecycle == .finalizing, workingBytes > 0 {
+            body = .workingComplete
+        } else {
+            body = .none
+        }
+        return DownloadRowFacts(
+            route: route, checkpoint: checkpoint, body: body,
+            pendingArtifactHead: !row.pendingArtifactIntents.isEmpty,
+            deletionPending: row.deletionPending, liveTask: liveTask)
+    }
+
+    /// Convenience for call sites whose event does not depend on session-owned facts.
+    @discardableResult
+    func submitLifecycleEvent(
+        _ event: DownloadLifecycleEvent,
+        for key: DownloadAttemptKey,
+        liveTask: Bool = false
+    ) -> LifecycleEventSubmission {
+        submitLifecycleEvent(event, for: key, facts: lifecycleFacts(for: key, liveTask: liveTask))
+    }
+
     /// The P3a way to change an exact attempt's lifecycle: run the pure reducer under the store
     /// lock, persist the new lifecycle and history in one revision, and return the committed
     /// effects for the caller to execute. A rejected event changes nothing.
