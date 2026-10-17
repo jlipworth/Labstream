@@ -255,16 +255,6 @@ public struct TranscodeRequest: Sendable, Equatable {
         buildURL(path: "/video/:/transcode/universal/start.m3u8", queryItems: directPlayQueryItems())
     }
 
-    /// The direct-play start URL as a control-plane request. This is useful as a lightweight
-    /// startability preflight: PMS can return `Direct play OK` from `/decision` and still reject
-    /// the actual `directPlay=1` `start.m3u8` with HTTP 400. Fetching the tiny playlist before
-    /// handing the URL to AVPlayer lets the app fall back intentionally instead of discovering
-    /// the rejection through an opaque player load failure.
-    public func directPlayStartM3U8Request() -> PlexRequest {
-        PlexRequest(url: directPlayStartM3U8URL(), method: "GET",
-                    headers: PlexHeaders.media(identity: identity, token: token))
-    }
-
     /// `sharedQueryItems()` with the two direct-play deltas applied: `directPlay` 0→1 and the
     /// `X-Plex-Client-Profile-Extra` swapped for the direct-play-capable profile. Everything
     /// else (path/protocol/session/token/cap/indices/profile name `Generic`/subtitles/offset/

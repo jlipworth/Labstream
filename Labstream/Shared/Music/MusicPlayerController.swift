@@ -37,6 +37,9 @@ final class MusicPlayerController {
     /// Queue repeat behavior. `one` replays the current track; `all` wraps the queue.
     enum RepeatMode: CaseIterable {
         case off, all, one
+
+        /// SF Symbol for the repeat control in this mode.
+        var symbolName: String { self == .one ? "repeat.1" : "repeat" }
     }
 
     // MARK: - Observable state

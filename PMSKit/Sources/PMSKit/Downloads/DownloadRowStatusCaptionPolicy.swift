@@ -185,6 +185,18 @@ public enum DownloadRowStatusCaptionPolicy {
         }
     }
 
+    /// Compact in-sheet label for an existing row that is durably `.queued` but owns no live slot or
+    /// transfer, such as a season row waiting for admission behind another download (#362). Such a
+    /// row must read as waiting, matching the offline list, never as an active transfer phase
+    /// ("Downloading optimized…") with a spinner. Returns `nil` when the row is genuinely active, so
+    /// the caller keeps `compactActiveCaption` and its progress UI.
+    public static func compactWaitingCaption(status: DownloadStatus,
+                                             isActive: Bool,
+                                             resumeMode: DownloadResumeMode?) -> String? {
+        guard status == .queued, !isActive else { return nil }
+        return resumeMode == .serverPrepThenStatic ? "Preparing on server…" : "Queued…"
+    }
+
     public static func caption(_ context: Context) -> String {
         switch phase(context) {
         case .failed(let isRetrying):

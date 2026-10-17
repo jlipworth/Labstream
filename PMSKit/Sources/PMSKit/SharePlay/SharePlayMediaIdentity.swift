@@ -284,7 +284,6 @@ public enum SharePlayResolutionFailure: Sendable, Equatable, Hashable {
     case unsupportedIdentity
     case missingTimeline
     case notFound
-    case ambiguousCandidateCount(Int)
     case timelineMismatch
 }
 
@@ -376,10 +375,6 @@ extension MediaItem {
     public var sharePlayMediaIdentity: SharePlayMediaIdentity? {
         SharePlayMediaIdentity(mediaItem: self)
     }
-
-    public var sharePlayActivityPayload: SharePlayMediaActivityPayload? {
-        SharePlayMediaActivityPayload(mediaItem: self)
-    }
 }
 
 public enum SharePlayParticipantReadiness: String, Codable, Sendable {
@@ -412,12 +407,10 @@ public enum SharePlayReadinessRoster {
 public struct SharePlayReadinessSummary: Sendable, Equatable {
     public let readyCount: Int
     public let resolvingCount: Int
-    public let unableCount: Int
 
     public init(statuses: [SharePlayParticipantReadiness]) {
         readyCount = statuses.filter { $0 == .ready || $0 == .started }.count
         resolvingCount = statuses.filter { $0 == .resolving }.count
-        unableCount = statuses.filter { $0 == .unable }.count
     }
 
     public func canStart(acknowledgingUnresolved: Bool) -> Bool {

@@ -367,8 +367,7 @@ the documented foreground substitute.
 - `PMSKit/Sources/PMSKit/Music/` contains Plex music request builders and pure queue
   mutation behavior.
 
-Plex music currently reports timeline/scrobble state. Jellyfin/Emby music playback works,
-but MediaBrowser music progress reporting is not yet implemented.
+Backend progress/scrobble support for music is described in [Music architecture](MUSIC-DESIGN.md#playback-and-queue).
 
 ## SharePlay / Watch Together (visionOS)
 

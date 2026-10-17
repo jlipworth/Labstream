@@ -11,7 +11,7 @@ public struct BackendScopedMediaID: Sendable, Hashable, Codable {
     /// persisted in Spotlight entries or saved Shortcuts. Keep accepting that legacy
     /// alias, but generate a neutral Labstream prefix going forward.
     public static let currentPrefix = "ls1"
-    public static let legacyPrefixes: Set<String> = ["vp1"]
+    private static let legacyPrefixes: Set<String> = ["vp1"]
 
     public let backend: MediaBackendChoice
     public let serverNamespace: String?

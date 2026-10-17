@@ -209,8 +209,8 @@ extension Array where Element == MediaItem {
     /// one member, so the detail screen can present a version chooser; single-member groups
     /// keep `versions == nil` and behave exactly as before.
     ///
-    /// O(n): a single pass keying on a stable identity. `MovieVersionCollapser` ingests pages
-    /// incrementally and re-runs this over its append-only accumulator.
+    /// O(n): a single pass keying on a stable identity. This is the batch reference algorithm
+    /// that `MovieVersionCollapser`'s incremental ingest must match (used as the test oracle).
     public func collapsingMovieVersions() -> [MediaItem] {
         var indexByKey: [String: Int] = [:]
         var groups: [[MediaItem]] = []
@@ -228,86 +228,5 @@ extension Array where Element == MediaItem {
             // Representative = first seen; attach the full ordered group as selectable versions.
             return group[0].with(versions: group)
         }
-    }
-}
-
-/// Resolves the correct LEAF `MediaItem` (the one with a `Media`/`Part`) to play or
-/// download, given an item and — for containers — a way to fetch its children.
-///
-/// This is the regression guard for the HTTP 400 bug: the resolver NEVER returns a
-/// `show` or `season` as the playback/download target. It walks show → first season →
-/// first episode (or season → first episode) using the supplied children loader.
-public enum EpisodeResolver {
-    /// Resolution failures, surfaced so the UI can show a sensible message instead of
-    /// silently handing PMS a bad ratingKey.
-    public enum ResolveError: Error, Sendable, Equatable {
-        /// A container (show/season) had no episodes to resolve to.
-        case noEpisodes
-        /// The resolved candidate was still a container (should never happen; guards the
-        /// invariant that we never play/download a show/season).
-        case notALeaf
-    }
-
-    /// Synchronously resolve a leaf when one is already in hand: a movie/episode resolves
-    /// to itself; a container returns `nil` (the caller must fetch children and use
-    /// ``resolveLeaf(from:loadChildren:)``).
-    public static func leafIfAvailable(_ item: MediaItem) -> MediaItem? {
-        item.isPlayableLeaf ? item : nil
-    }
-
-    /// Resolve the leaf episode to play/download for `item`.
-    ///
-    /// - For a `movie`/`episode`: returns the item itself.
-    /// - For a `season`: loads its children (episodes) and returns the first episode.
-    /// - For a `show`: loads its children (seasons), then the first season's children
-    ///   (episodes), and returns the first episode.
-    ///
-    /// `loadChildren` is an async closure mapping a container ratingKey → its child
-    /// `MediaItem`s (typically `/library/metadata/{ratingKey}/children`). Injecting it
-    /// keeps this resolver pure and unit-testable with no network.
-    public static func resolveLeaf(
-        from item: MediaItem,
-        loadChildren: (String) async throws -> [MediaItem]
-    ) async throws -> MediaItem {
-        // Already a leaf → done. This is the movie / direct-episode fast path and the
-        // guarantee that a leaf is never re-walked.
-        if item.isPlayableLeaf { return item }
-
-        switch item.kind {
-        case .season:
-            let episodes = try await loadChildren(item.ratingKey)
-            guard let first = firstLeaf(in: episodes) else { throw ResolveError.noEpisodes }
-            return first
-
-        case .show:
-            let seasons = try await loadChildren(item.ratingKey)
-            for season in seasons {
-                // A season's children are its episodes; return the first leaf found.
-                let episodes = try await loadChildren(season.ratingKey)
-                if let first = firstLeaf(in: episodes) { return first }
-            }
-            throw ResolveError.noEpisodes
-
-        default:
-            // Music containers (artist/album/playlist) land here BY DESIGN: this
-            // resolver walks the VIDEO hierarchy only. Music drill-down goes through
-            // the music views (ChildrenRequest / allLeaves), never this resolver.
-            throw ResolveError.notALeaf
-        }
-    }
-
-    /// First playable leaf in a children list, preferring the lowest episode `index`
-    /// when present so "play the show" starts at the earliest episode rather than
-    /// whatever order PMS happened to return.
-    private static func firstLeaf(in items: [MediaItem]) -> MediaItem? {
-        let leaves = items.filter { $0.isPlayableLeaf }
-        guard !leaves.isEmpty else { return nil }
-        // Stable sort by (parentIndex, index) when known; items without indices keep
-        // their server order at the end.
-        return leaves.sorted { lhs, rhs in
-            let l = (lhs.parentIndex ?? Int.max, lhs.index ?? Int.max)
-            let r = (rhs.parentIndex ?? Int.max, rhs.index ?? Int.max)
-            return l < r
-        }.first
     }
 }

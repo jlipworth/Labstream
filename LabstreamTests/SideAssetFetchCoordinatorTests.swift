@@ -256,8 +256,8 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
 
     func testTransportAdmissionChargesOnlyTheOperationThatActuallyStarts() async throws {
         let gate = TestGate()
-        let admissions = SideAssetCounter()
-        let operations = SideAssetCounter()
+        let admissions = TestCounter()
+        let operations = TestCounter()
         let coordinator = SideAssetFetchCoordinator(clock: AdvancingSideAssetClock().dependency)
         let request = URLRequest(url: URL(string: "https://assets.example/poster")!)
         let first = Task {
@@ -301,9 +301,9 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
 
     func testSuccessfulSuspendedAdmissionFundsSurvivorWhenFundingWaiterCancels() async throws {
         let admissionGate = TestGate()
-        let firstAdmissions = SideAssetCounter()
-        let secondAdmissions = SideAssetCounter()
-        let operations = SideAssetCounter()
+        let firstAdmissions = TestCounter()
+        let secondAdmissions = TestCounter()
+        let operations = TestCounter()
         let coordinator = SideAssetFetchCoordinator(clock: AdvancingSideAssetClock().dependency)
         let origin = SideAssetOrigin(rawValue: "origin")
         let request = SideAssetRequestKey(rawValue: "shared-admission")
@@ -355,9 +355,9 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
 
     func testWaiterJoiningCancelledEmptyRunningJobIsReadmittedAndSucceeds() async throws {
         let cancelledOperationGate = TestGate()
-        let firstAdmissions = SideAssetCounter()
-        let survivorAdmissions = SideAssetCounter()
-        let operationCalls = SideAssetCounter()
+        let firstAdmissions = TestCounter()
+        let survivorAdmissions = TestCounter()
+        let operationCalls = TestCounter()
         let coordinator = SideAssetFetchCoordinator(clock: AdvancingSideAssetClock().dependency)
         let origin = SideAssetOrigin(rawValue: "origin")
         let request = SideAssetRequestKey(rawValue: "cancelled-running-job")
@@ -421,8 +421,8 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
         }
         await waitUntil { await coordinator.activeCountForTesting(origin: origin) == 1 }
 
-        let staleAdmissions = SideAssetCounter()
-        let survivorAdmissions = SideAssetCounter()
+        let staleAdmissions = TestCounter()
+        let survivorAdmissions = TestCounter()
         let request = SideAssetRequestKey(rawValue: "coalesced")
         let first = Task {
             try await coordinator.fetch(
@@ -477,9 +477,9 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
         }
         await waitUntil { await coordinator.activeCountForTesting(origin: origin) == 1 }
 
-        let rejectedCharges = SideAssetCounter()
-        let acceptedCharges = SideAssetCounter()
-        let operations = SideAssetCounter()
+        let rejectedCharges = TestCounter()
+        let acceptedCharges = TestCounter()
+        let operations = TestCounter()
         let request = SideAssetRequestKey(rawValue: "handoff")
         let rejected = Task {
             try await coordinator.fetch(
@@ -532,7 +532,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
         for iteration in 0..<100 {
             let clock = AdvancingSideAssetClock()
             let gate = TestGate()
-            let calls = SideAssetCounter()
+            let calls = TestCounter()
             let coordinator = SideAssetFetchCoordinator(clock: clock.dependency)
             let task = Task {
                 try await coordinator.fetch(
@@ -566,7 +566,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
     func testWaiterJobIndexTracksCoalescedCancellationAndCompletion() async throws {
         let clock = AdvancingSideAssetClock()
         let gate = TestGate()
-        let calls = SideAssetCounter()
+        let calls = TestCounter()
         let coordinator = SideAssetFetchCoordinator(clock: clock.dependency)
         let origin = SideAssetOrigin(rawValue: "origin")
         let request = SideAssetRequestKey(rawValue: "shared-index")
@@ -613,7 +613,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try Data([4, 2]).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
-        let calls = SideAssetCounter()
+        let calls = TestCounter()
         let coordinator = SideAssetFetchCoordinator(clock: AdvancingSideAssetClock().dependency)
         let data = try await coordinator.fetch(
             origin: .init(rawValue: "origin"),
@@ -631,7 +631,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
 
     func testParkPreventsStartUntilResumeAndCancelRemovesQueuedOwnerWork() async throws {
         let clock = AdvancingSideAssetClock()
-        let calls = SideAssetCounter()
+        let calls = TestCounter()
         let coordinator = SideAssetFetchCoordinator(clock: clock.dependency)
         let owner = SideAssetOwner(rawValue: "owner")
         let origin = SideAssetOrigin(rawValue: "origin")
@@ -677,7 +677,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
     func testParkedCoalescedOwnerDoesNotBlockActiveOwnerOrCancelSharedRequest() async throws {
         let clock = AdvancingSideAssetClock()
         let gate = TestGate()
-        let calls = SideAssetCounter()
+        let calls = TestCounter()
         let coordinator = SideAssetFetchCoordinator(clock: clock.dependency)
         let parked = SideAssetOwner(rawValue: "parked")
         let active = SideAssetOwner(rawValue: "active")
@@ -787,11 +787,6 @@ private actor SideAssetStartRecorder {
     }
 
     func end() { active -= 1 }
-}
-
-private actor SideAssetCounter {
-    private(set) var value = 0
-    func increment() { value += 1 }
 }
 
 private final class SideAssetCancellationURLProtocol: URLProtocol, @unchecked Sendable {

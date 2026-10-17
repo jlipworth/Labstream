@@ -1,7 +1,6 @@
 import base64
 import contextlib
 import datetime as dt
-import importlib.util
 import io
 import json
 import os
@@ -10,16 +9,13 @@ import plistlib
 import shutil
 import stat
 import subprocess
-import sys
 import tempfile
 import unittest
 from unittest import mock
+from _script_loader import load_script
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-spec = importlib.util.spec_from_file_location("testflight_release", ROOT / "scripts/testflight-release.py")
-tf = importlib.util.module_from_spec(spec)
-sys.modules["testflight_release"] = tf
-spec.loader.exec_module(tf)
+tf = load_script("testflight_release", ROOT / "scripts/testflight-release.py")
 
 FAKE_KEY_ID = "KEYID12345"
 FAKE_ISSUER = "00000000-1111-2222-3333-444444444444"

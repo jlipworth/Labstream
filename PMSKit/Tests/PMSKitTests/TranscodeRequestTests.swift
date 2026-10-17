@@ -309,19 +309,6 @@ func nonZeroMediaAndPartIndicesTravelIndependently(mediaIndex: Int, partIndex: I
     #expect(start.filter { $0.name == "X-Plex-Client-Profile-Extra" }.count == 1)
 }
 
-@Test func directPlayStartRequestCanPreflightActualPlaylist() {
-    let req = TranscodeRequest(server: server, token: "tok", identity: id,
-                               metadataKey: "/library/metadata/101",
-                               maxVideoBitrateKbps: 8000, sessionID: "S",
-                               mediaIndex: 0, partIndex: 0)
-    let preflight = req.directPlayStartM3U8Request()
-    #expect(preflight.url.path == req.directPlayStartM3U8URL().path)
-    #expect(Set(queryItems(preflight.url)) == Set(queryItems(req.directPlayStartM3U8URL())))
-    #expect(preflight.method == "GET")
-    #expect(preflight.headers["Accept"]?.contains("application/json") == true)
-    #expect(queryItems(preflight.url).first { $0.name == "directPlay" }?.value == "1")
-}
-
 // MARK: - Regression guards (production path must stay byte-identical)
 
 @Test func productionStartURLStillDirectPlayZeroAndUnchangedProfile() {

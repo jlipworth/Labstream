@@ -183,7 +183,7 @@ Labstream/
   [App Store screenshots](docs/APP-STORE-SCREENSHOTS.md), [compile performance](docs/COMPILE-PERFORMANCE.md),
   and [manual validation checklist](TESTING-CHECKLIST.md)
 
-Public pages at the top of `docs/` describe the current app. Internal documents use explicit unpublished lanes: active implementation plans and acceptance journals in `docs/plans/`, unresolved investigations in `docs/research/`, immutable audit/profiling observations in `docs/evidence/`, and completed or superseded context in `docs/archive/`. The repository-root `TESTING-CHECKLIST.md` is the deliberate operational exception and remains the current manual validation matrix.
+Public pages at the top of `docs/` describe the current app. Internal plan/research/evidence/archive lanes are described in [Documentation information architecture](docs/CONTRIBUTING.md#documentation-information-architecture). The repository-root `TESTING-CHECKLIST.md` is the deliberate operational exception and remains the current manual validation matrix.
 
 ## Contributing
 
@@ -193,12 +193,6 @@ Start with [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md). In short:
 - put reusable request, model, and policy decisions in `PMSKit`, keeping its few effectful networking/storage utilities narrow and injectable;
 - keep SwiftUI, `AVPlayer` ownership, target lifecycle, background-session delegation, Keychain, and app persistence in the app target;
 - never commit tokens, server URLs, private IPs, media titles, local signing files, or diagnostic artifacts.
-
-For a quick module size readout, run:
-
-```sh
-scripts/loc.sh
-```
 
 ## Privacy and bug reports
 

@@ -46,7 +46,9 @@ struct SeasonPlannerIntegrationTests {
         let result = await manager.commitSeasonPlan(.init(newPlans: plans, retryAttempts: []))
         #expect(result.succeeded)
         #expect(result.added == ids.count)
-        try #require(await waitUntil { gate.heldID != nil })
+        // Every admitted row refreshes concurrently (#362): both static episodes fit the
+        // two-row static lane, so both metadata requests are in flight at once.
+        try #require(await waitUntil { gate.heldIDs.count == ids.count })
         let first = try #require(gate.heldID)
         let original = try #require(store.record(for: first)?.attemptID)
         let deleted: String?
@@ -78,12 +80,18 @@ struct SeasonPlannerIntegrationTests {
             #expect(manager.pause(row))
             #expect(store.record(for: first)?.status == .paused)
         }
-        gate.releaseMetadata(failing: change == .deleteCurrentError)
-        try #require(await waitUntil { manager.seasonPlannerAdmissionTask == nil })
+        gate.releaseMetadata(id: first, failing: change == .deleteCurrentError)
+        if change == .deleteLater, let deleted {
+            // The deleted row's refresh was already in flight; its late response must be revoked.
+            gate.releaseMetadata(id: deleted, failing: false)
+        }
+        try #require(await waitUntil {
+            manager.seasonPlannerAdmissionTask == nil && manager.seasonPlannerAdmittingKeys.isEmpty
+        })
         if change == .unchanged || change == .deleteLater {
             try #require(await waitUntil { gate.transferPaths.count == 1 })
             #expect(store.record(for: first)?.attemptID != original)
-            #expect(gate.metadataIDs == [first])
+            #expect(Set(gate.metadataIDs) == Set(ids))
             #expect(gate.transferPaths == ["/library/parts/\(first)/file.mp4"])
         } else {
             #expect(gate.transferPaths.isEmpty)
@@ -104,6 +112,76 @@ struct SeasonPlannerIntegrationTests {
         try #require(await waitUntil { store.records.isEmpty })
     }
 
+    /// #362: a long-running admitted start (an Emby Convert or Plex optimize chain does not return
+    /// until the server job finishes) must not hold back other admitted rows, and in-flight starts
+    /// must still count against lane caps across repeated admission passes.
+    @Test func seasonAdmissionStartsRowsConcurrentlyWithinLaneCaps() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("season-concurrency-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let host = "\(UUID().uuidString.lowercased()).season.test.invalid"
+        let gate = SeasonMetadataGate()
+        SeasonMetadataProtocol.register(host: host, gate: gate)
+        defer { SeasonMetadataProtocol.unregister(host: host) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [SeasonMetadataProtocol.self]
+        let transport = URLSession(configuration: configuration)
+        defer { transport.invalidateAndCancel() }
+        let identity = PlatformClientIdentity.make(clientIdentifier: "season-concurrency")
+        let model = AppModel(identity: identity, token: "fixture-token",
+                             client: PlexClient(session: transport, identity: identity))
+        model.serverToken = "fixture-token"
+        model.serverBaseURL = URL(string: "https://\(host)")
+        let store = DownloadStore(baseDirectory: directory)
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [SeasonMetadataProtocol.self])
+        let manager = DownloadManager(appModel: model, store: store, session: session,
+                                      registerForBackgroundEvents: false)
+        defer {
+            manager.seasonPlannerAdmissionTask?.cancel()
+            session.invalidateInjectedSessionForTesting()
+        }
+        try #require(await waitUntil { manager.startupRecoveryState == .ready })
+        let ids = ["episode-1", "episode-2", "episode-3"]
+        let plans = try ids.map { id in
+            SeasonEpisodeDownloadPlan(
+                item: try JSONDecoder().decode(MediaItem.self, from: SeasonMetadataGate.itemData(id)),
+                backend: .plex, choice: .existingVersion, mediaIndex: 0, partIndex: 0,
+                audioStreamIndex: nil, mediaSourceIDOverride: nil, estimatedBytes: 100, shouldStart: true)
+        }
+        let result = await manager.commitSeasonPlan(.init(newPlans: plans, retryAttempts: []))
+        #expect(result.succeeded)
+        #expect(result.added == ids.count)
+
+        // The static lane admits two rows at once; their starts run concurrently.
+        try #require(await waitUntil { gate.heldIDs.count == 2 })
+        let held = gate.heldIDs
+        let stuck = held[0]
+        let moving = held[1]
+        // Outlast at least one more 2-second admission pass: in-flight starts occupy the lane, so
+        // the third row is not admitted while both starts are still running.
+        try await Task.sleep(for: .milliseconds(2_500))
+        #expect(gate.metadataIDs.count == 2)
+
+        // A start that never returns (standing in for a server-prep chain) does not block the
+        // other admitted row from reaching its transfer.
+        gate.releaseMetadata(id: moving, failing: false)
+        try #require(await waitUntil { gate.transferPaths == ["/library/parts/\(moving)/file.mp4"] })
+        #expect(gate.heldIDs == [stuck])
+        #expect(manager.seasonPlannerAdmittingKeys == [stuck])
+        // Both static slots remain occupied (one transferring, one still starting).
+        #expect(gate.metadataIDs.count == 2)
+
+        gate.releaseMetadata(id: stuck, failing: false)
+        try #require(await waitUntil { gate.transferPaths.count == 2 })
+        try #require(await waitUntil { manager.seasonPlannerAdmittingKeys.isEmpty })
+        #expect(gate.unexpectedPaths.isEmpty)
+        for row in store.records { manager.delete(ratingKey: row.ratingKey) }
+        try #require(await waitUntil { store.records.isEmpty })
+        // Release any metadata request admitted during teardown so no URLProtocol stays pending.
+        while gate.heldID != nil { gate.releaseMetadata(failing: true) }
+    }
+
     private func waitUntil(_ condition: () -> Bool) async -> Bool {
         let deadline = Date().addingTimeInterval(10)
         while !condition(), Date() < deadline {
@@ -113,15 +191,18 @@ struct SeasonPlannerIntegrationTests {
     }
 }
 
-/// Holds an actual Plex metadata response at URLSession's transport boundary. Transfer
-/// requests are observed but kept pending, so tests never need network or media decoding.
+/// Holds actual Plex metadata responses at URLSession's transport boundary, one per episode, so
+/// concurrent admissions can be observed and released independently. Transfer requests are
+/// observed but kept pending, so tests never need network or media decoding.
 private final class SeasonMetadataGate: @unchecked Sendable {
     private let lock = NSLock()
-    private var held: SeasonMetadataProtocol?
+    private var held: [(id: String, request: SeasonMetadataProtocol)] = []
     private var metadata: [String] = []
     private var transfers: [String] = []
     private var unexpected: [String] = []
-    var heldID: String? { lock.withLock { held?.request.url?.lastPathComponent } }
+    /// The first still-held metadata request, in arrival order.
+    var heldID: String? { lock.withLock { held.first?.id } }
+    var heldIDs: [String] { lock.withLock { held.map(\.id) } }
     var metadataIDs: [String] { lock.withLock { metadata } }
     var transferPaths: [String] { lock.withLock { transfers } }
     var unexpectedPaths: [String] { lock.withLock { unexpected } }
@@ -130,8 +211,9 @@ private final class SeasonMetadataGate: @unchecked Sendable {
         let path = request.request.url!.path
         lock.withLock {
             if path.hasPrefix("/library/metadata/") {
-                metadata.append(request.request.url!.lastPathComponent)
-                held = request
+                let id = request.request.url!.lastPathComponent
+                metadata.append(id)
+                held.append((id, request))
             } else if path.hasPrefix("/library/parts/") {
                 transfers.append(path)
             } else {
@@ -139,8 +221,18 @@ private final class SeasonMetadataGate: @unchecked Sendable {
             }
         }
     }
-    func releaseMetadata(failing: Bool) {
-        let request = lock.withLock { let value = held; held = nil; return value }
+    /// Release one held metadata request (the oldest when `id` is nil).
+    func releaseMetadata(id: String? = nil, failing: Bool) {
+        let request: SeasonMetadataProtocol? = lock.withLock {
+            let index: Int?
+            if let id {
+                index = held.firstIndex { $0.id == id }
+            } else {
+                index = held.isEmpty ? nil : 0
+            }
+            guard let index else { return nil }
+            return held.remove(at: index).request
+        }
         guard let request, let url = request.request.url else { return }
         if failing {
             request.client?.urlProtocol(request, didFailWithError: URLError(.cannotParseResponse))

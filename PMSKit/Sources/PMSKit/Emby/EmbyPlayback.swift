@@ -46,7 +46,7 @@ public struct EmbyMediaSourceInfo: Decodable, Sendable, Equatable {
     /// byte-for-byte static download). Absent on older servers → treated as a local file.
     public let mediaProtocol: String?
     /// Total byte size of the original source file. `Part.size` is always nil on Emby
-    /// (see `EmbyItemMediaSourceDto`), so this is the only storage-preflight / expected-bytes
+    /// (see `MediaBrowserItemMediaSourceDto`), so this is the only storage-preflight / expected-bytes
     /// signal for a downloadable original. Absent on some sources.
     public let size: Int?
     /// Why the server chose to transcode (e.g. `ContainerNotSupported`). Decoded as raw

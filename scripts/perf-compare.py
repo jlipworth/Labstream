@@ -117,10 +117,6 @@ def _parse_datetime(value: str) -> datetime:
     return parsed
 
 
-def _sha256(path: pathlib.Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _canonical_sha256(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -509,7 +505,7 @@ def freeze_control(samples: list[Sample], *, selector: dict[str, Any], sample_po
         "artifact_role": "control", "sample_kind": sample.kind,
         "sample_index": sample.index, "run_id": sample.manifest["run"]["id"],
         "launch_nonce": sample.capture_binding["launch_nonce"],
-        "sha256": _sha256(sample.path),
+        "sha256": contract.sha256_file(sample.path),
     } for sample in sorted(samples, key=lambda item: (kind_order[item.kind], item.index))]
     return {
         "schema_version": 1,
@@ -533,7 +529,7 @@ def freeze_control(samples: list[Sample], *, selector: dict[str, Any], sample_po
 
 def load_frozen(path: pathlib.Path, expected_sha256: str) -> dict[str, Any]:
     try:
-        actual_sha256 = _sha256(path)
+        actual_sha256 = contract.sha256_file(path)
         artifact = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as error:
         raise CompareError("frozen MDE artifact is unreadable") from error
@@ -793,7 +789,7 @@ def compare(control: list[Sample], candidate: list[Sample], *, selector: dict[st
                            evidence_manifests=[{
                                "run_id": sample.manifest["run"]["id"], "sample_kind": sample.kind,
                                "sample_index": sample.index, "launch_nonce": sample.capture_binding["launch_nonce"],
-                               "sha256": _sha256(sample.path),
+                               "sha256": contract.sha256_file(sample.path),
                            } for sample in sorted(control, key=lambda item: (item.kind, item.index))])
     candidate_summary.update(commit=candidate[0].manifest["product"]["commit"],
                              product_sha256=candidate[0].manifest["product"]["sha256"],
@@ -801,7 +797,7 @@ def compare(control: list[Sample], candidate: list[Sample], *, selector: dict[st
                              evidence_manifests=[{
                                  "run_id": sample.manifest["run"]["id"], "sample_kind": sample.kind,
                                  "sample_index": sample.index, "launch_nonce": sample.capture_binding["launch_nonce"],
-                                 "sha256": _sha256(sample.path),
+                                 "sha256": contract.sha256_file(sample.path),
                              } for sample in sorted(candidate, key=lambda item: (item.kind, item.index))])
     return {
         "schema_version": 1, "tool": {"name": TOOL_NAME, "version": TOOL_VERSION},
@@ -926,7 +922,7 @@ def main(argv: list[str] | None = None) -> int:
             artifact = freeze_control(control, selector=selector, sample_policy=args.sample_policy)
             args.out.parent.mkdir(parents=True, exist_ok=True)
             args.out.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n")
-            print(f"perf-compare: frozen_mde_sha256={_sha256(args.out)}")
+            print(f"perf-compare: frozen_mde_sha256={contract.sha256_file(args.out)}")
             return 0
         candidate = [load_sample(path, "candidate") for path in args.candidate_manifest]
         protected |= _protected_evidence_paths(candidate)

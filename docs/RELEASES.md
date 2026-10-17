@@ -33,18 +33,27 @@ to **VALID**, are in beta testing, and are in the internal TestFlight group. The
 builds only: every 1.7.2 platform version still has build 2 selected, and selecting 1490 instead
 needs separate approval. The Mac upload first failed because the `.pkg` export lacked the
 installer signing identity; after that fix landed it was retried from the same archive.
-The latest recorded processed distribution is the **1.7.2 (build 1490)** archive set at
-`4c8de88c`; the selected review candidate remains the **1.7.2 (build 2)** set at `ce97958f`, and
+On 2026-10-16 a second `ship` run built clean **1.7.2 (build 1501)** archives for all four
+targets from `4b65b353`, after the offline launch gate (#355), the iOS player chrome fix (#356),
+and the corrected App Review notes (#359) merged. All four uploads processed to **VALID**, are
+in beta testing, and are in the internal TestFlight group. They are TestFlight builds only and
+are not selected for the platform versions.
+A third `ship` run the same day built clean **1.7.2 (build 1503)** archives for all four targets
+from `b63d1757`, after the Emby/Plex season-download admission fix (#363) merged. All four
+processed to **VALID**, are in the internal TestFlight group, and were selected for their 1.7.2
+platform versions with `select-build --yes`, replacing build 2. Nothing was submitted for review.
+The latest recorded processed distribution and the selected review candidate are both the
+**1.7.2 (build 1503)** archive set at `b63d1757` (the earlier candidate was build 2 at `ce97958f`), and
 the previous release was the **1.6.1 (build 2)** set at `abd1ddcac351`. Keep the source version
 and the processed binary version separate when reporting release status. Later `auto` builds
-and any hand-bumped `CURRENT_PROJECT_VERSION` for 1.7.2 must exceed 1490.
+and any hand-bumped `CURRENT_PROJECT_VERSION` for 1.7.2 must exceed 1503.
 
 | Product | Current source | Latest recorded processed distribution |
 | --- | --- | --- |
-| Apple Vision Pro (`Labstream`) | 1.7.2 (build 2) | **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` is also processed and in the internal group, not selected. Physical TestFlight acceptance and review access remain pending. |
-| iPhone and iPad (`LabstreamMobile`) | 1.7.2 (build 2) | **1.7.2 (build 2):** the repository records a clean `ce97958f` universal iOS archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` is also processed and in the internal group, not selected. Physical iPhone and iPad acceptance remain pending. |
-| Apple TV (`LabstreamTV`) | 1.7.2 (build 2) | **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` is also processed and in the internal group, not selected. Physical Apple TV acceptance remains pending. |
-| Mac (`LabstreamMac`) | 1.7.2 (build 2) | **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` is also processed and in the internal group, not selected. A 1.7.2 TestFlight install on a Mac is not recorded; the earlier 1.6.1 (build 2) build was installed from TestFlight and passed launch and receipt/signature checks. Deeper sandbox and live-host acceptance remain pending. |
+| Apple Vision Pro (`Labstream`) | 1.7.2 (build 2) | **1.7.2 (build 1503):** a clean `b63d1757` archive is processed, selected for the platform version, and in the internal TestFlight group. **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, previously selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` and **1.7.2 (build 1501)** from `4b65b353` are also processed and in the internal group, not selected. Physical TestFlight acceptance and review access remain pending. |
+| iPhone and iPad (`LabstreamMobile`) | 1.7.2 (build 2) | **1.7.2 (build 1503):** a clean `b63d1757` archive is processed, selected for the platform version, and in the internal TestFlight group. **1.7.2 (build 2):** the repository records a clean `ce97958f` universal iOS archive uploaded and processed, previously selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` and **1.7.2 (build 1501)** from `4b65b353` are also processed and in the internal group, not selected. Physical iPhone and iPad acceptance remain pending. |
+| Apple TV (`LabstreamTV`) | 1.7.2 (build 2) | **1.7.2 (build 1503):** a clean `b63d1757` archive is processed, selected for the platform version, and in the internal TestFlight group. **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, previously selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` and **1.7.2 (build 1501)** from `4b65b353` are also processed and in the internal group, not selected. Physical Apple TV acceptance remains pending. |
+| Mac (`LabstreamMac`) | 1.7.2 (build 2) | **1.7.2 (build 1503):** a clean `b63d1757` archive is processed, selected for the platform version, and in the internal TestFlight group. **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, previously selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` and **1.7.2 (build 1501)** from `4b65b353` are also processed and in the internal group, not selected. A 1.7.2 TestFlight install on a Mac is not recorded; the earlier 1.6.1 (build 2) build was installed from TestFlight and passed launch and receipt/signature checks. Deeper sandbox and live-host acceptance remain pending. |
 
 The 1.7.1 source milestone includes bounded DV/HDR delivery investigation and probe
 validation. The P7 HDR10-base candidate remains default-off and DEBUG-only on macOS;
@@ -77,7 +86,7 @@ parentheses is the App Store build number (`CFBundleVersion`). A new marketing v
 build 1; each replacement upload for the same platform and marketing version must use a higher
 build number. The repository's
 [`bump-version` skill](https://github.com/jlipworth/Labstream/blob/main/.claude/skills/bump-version/SKILL.md)
-owns the per-platform bump, PMSKit fallback, tagging, and verification procedure.
+owns the per-platform bump, tagging, and verification procedure.
 
 ## Current release audit and deferred scope
 
@@ -105,21 +114,11 @@ is not evidence that the retention/storage uncertainties above were resolved.
 [#326](https://github.com/jlipworth/Labstream/issues/326) stayed open until the exact signed
 build 2 archive reports were checked on 2026-10-14.
 
-Local integration validation passed 1,712 PMSKit Swift Testing cases plus 121 XCTest
-cases, 731 iPhone-hosted cases, 418 tvOS-hosted cases, semantic iPhone/iPad/TV fixtures,
-and a passive visionOS fixture. The isolated Mac fixture passed home/detail navigation;
-the single-worker full Mac suite passed 747 cases and a focused 20-case integration set
-passed three repetitions. Earlier default-parallel runs exposed season-metadata,
-artwork-admission and authorization-fixture deadline failures. The follow-up below removed
-unnecessary filesystem diagnostics and isolated fixture scheduling/storage assumptions;
-a fresh default-parallel Mac run and an independent repeat each passed all 747 tests across
-five repetitions. Earlier failing evidence is retained; the passing single-worker result was
-not used as a substitute for parallel validation. No new physical-device or source-matched
-live-backend acceptance is implied by this integration.
-
 [#259](https://github.com/jlipworth/Labstream/issues/259), disconnected cold-launch access to
-completed downloads, is **deferred by user decision**. Keep the issue open; deferral is not
-hardware acceptance. Do not advertise reliable offline cold launch as verified.
+completed downloads, was **deferred by user decision** for the 1.7.2 (build 2) candidate. The
+typed session-restore offline launch gate (PR #355) is now on `main` for the next candidate, but
+physical-device acceptance is open: keep the issue open and do not advertise reliable offline
+cold launch as verified.
 
 The [licensed-media capture plan](https://github.com/jlipworth/Labstream/blob/main/docs/plans/2026-09-15-store-demo-capture.md)
 retains final screenshots, storefront attribution, age suitability and clean-install reviewer
@@ -132,7 +131,7 @@ bounded-cleanup work, required-reason uptime declaration, and current disclosure
 screenshot guidance. Build 2 adds the Search-stack reset for ⌘F and new macOS toolbar
 queries over a pushed result ([#334](https://github.com/jlipworth/Labstream/issues/334));
 the iPad/visionOS ⌘F entry point ([#335](https://github.com/jlipworth/Labstream/issues/335))
-remains open. PMSKit's fallback version matches all four app targets.
+remains open.
 
 The release owner explicitly deferred these issues for this candidate on 2026-09-29:
 
@@ -141,11 +140,13 @@ The release owner explicitly deferred these issues for this candidate on 2026-09
 - [#322](https://github.com/jlipworth/Labstream/issues/322): Emby P8 deep-seek
   investigation and remaining controlled validation;
 - [#258](https://github.com/jlipworth/Labstream/issues/258): iOS player-chrome
-  size/position changes and clipping.
+  size/position changes and clipping. The stable safe-area envelope (PR #356) is now on `main`
+  for the next candidate; physical iPhone confirmation remains open (see
+  [MOBILE-IOS.md](MOBILE-IOS.md)).
 
 These are accepted deferrals, not fixes or passing acceptance results. Keep the issues
-open and preserve their evidence. The previous #259 offline-cold-launch deferral also
-remains in effect. [#331](https://github.com/jlipworth/Labstream/issues/331), Stats
+open and preserve their evidence. The #259 offline-cold-launch deferral above applies to this
+candidate too. [#331](https://github.com/jlipworth/Labstream/issues/331), Stats
 readability redesign, is low-priority follow-up and not a release blocker.
 
 Candidate preparation does not close the physical-device, privacy/disclosure,
@@ -154,36 +155,13 @@ TestFlight upload and App Review submission require separate authorization.
 
 ### Local correction validation
 
-The parallel-stress follow-up separates cheap download counters from filesystem diagnostics.
-Health collection is now gated before work by logging enablement and its existing reporting
-cadence, and temporary-file bytes are collected only for an eligible active snapshot. Reattach
-also skips diagnostic-only enumeration when logging is off; cleanup/recovery authority is
-unchanged. Eligible enabled diagnostics still inspect the filesystem synchronously. Tests that
-only assert counters omit that inspection, startup fixtures own their parent directory and its
-sibling cleanup authority, and controlled home-rail completions wait for their corresponding
-publication before asserting a particular intermediate order. No production timeout, test
-assertion, or parallel-execution setting is relaxed by these corrections. The updated hermetic
-PMSKit run passed 1,713 Swift Testing cases plus 121 XCTest cases.
-
-The continuation adds acknowledged Emby stop-before-reopen ordering and preserves failed
-cleanup authority for explicit Retry, together with relative-seek target handling and opt-in
-bounded HLS startup diagnostics. It does not prove server worker exit. See the
-[ordering investigation](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/audits/2026-10-04-emby-reopen-session-overlap.md)
-for evidence limits.
-
-After test-only event synchronization and manual-clock fixes, a clean-build default-parallel
-Mac suite passed all three repetitions: 737 distinct tests (781 parameterized cases per
-repetition). Earlier failing runs remain in local evidence rather than being discarded.
-Hermetic PMSKit, repository hygiene, iPhone/tvOS hosted tests, iPhone/iPad/tvOS semantic
-fixtures, and the passive visionOS fixture also passed in the continuation. Simulator
-evidence used installed beta runtimes with stable Xcode and does not certify stable-runtime
-or physical acceptance.
-
-Per-backend Mac visual smokes and a user-reported in-place iPhone Emby smoke are partial
-acceptance only. Exact source-matched cross-backend parity, audible output, subtitles,
-next-episode behavior, broader source coverage, physical iPad/Vision Pro/Apple TV and
-TestFlight acceptance remain open. No physical Apple TV was available.
-
+Hermetic PMSKit, repository hygiene, iPhone/tvOS hosted tests, the Mac suite under default
+parallelism, iPhone/iPad/tvOS semantic fixtures and the passive visionOS fixture passed for the
+candidate on installed beta simulator runtimes. The Emby stop-before-reopen ordering work does not
+prove server worker exit; see the
+[ordering investigation](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/audits/2026-10-04-emby-reopen-session-overlap.md).
+Exact source-matched cross-backend parity, audible output, subtitles, next-episode behavior,
+broader source coverage, physical iPad/Vision Pro/Apple TV and TestFlight acceptance remain open.
 
 ## Coordinated publication sequence
 
@@ -301,6 +279,12 @@ and App Store Connect state before relying on them for a new submission.
 - [x] Clean **1.7.2 (build 1490)** archives from `4c8de88c` were built, validated, uploaded, and
       processed for all four platforms on 2026-10-15 through `scripts/testflight-release.py`, and
       added to the internal TestFlight group. They are not selected for the platform versions.
+- [x] Clean **1.7.2 (build 1501)** archives from `4b65b353` were built, validated, uploaded, and
+      processed for all four platforms on 2026-10-16 through `scripts/testflight-release.py ship`,
+      and added to the internal TestFlight group. They are not selected for the platform versions.
+- [x] Clean **1.7.2 (build 1503)** archives from `b63d1757` were built, validated, uploaded, and
+      processed for all four platforms on 2026-10-16, added to the internal TestFlight group, and
+      selected for each 1.7.2 platform version.
 - [ ] A physical Vision Pro TestFlight smoke covers first launch, sign-in, browse, playback,
       seeking, subtitles, audio, Cinema, background/foreground, and diagnostics. Simulator smoke
       is useful but does not replace this gate.

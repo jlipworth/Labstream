@@ -32,12 +32,6 @@
       "reason": "Hermetic app redaction and routing tests intentionally contain synthetic private-address fixtures."
     },
     {
-      "surface": "tracked",
-      "location": "docs/archive/research/09-transcode-api-deep-dive.md",
-      "category": "likely_raw_token",
-      "reason": "Archived protocol examples use the literal synthetic value YOURTOKEN and contain no usable credential."
-    },
-    {
       "surface": "commit_message",
       "location": "b1e7971c057",
       "category": "likely_raw_token",

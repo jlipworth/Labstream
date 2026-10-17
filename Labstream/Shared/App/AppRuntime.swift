@@ -89,7 +89,7 @@ struct AppRuntime {
                 downloadManager?.noteAppSceneRecovery(reason)
             },
             flushBestEffortState: {
-                AppDiagnostics.flush(durability: .bestEffort)
+                AppDiagnostics.flush()
             }
         )
         // The activity reporter retains the coordinator through this closure for the runtime's

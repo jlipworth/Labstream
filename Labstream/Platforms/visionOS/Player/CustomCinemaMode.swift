@@ -117,7 +117,6 @@ struct CustomCinemaGeometry: Equatable, Sendable {
         self.init(aspectRatio: aspect ?? 16.0 / 9.0)
     }
 
-    var screenHeightMeters: Float { screenWidthMeters / aspectRatio }
     var screenPosition: SIMD3<Float> { SIMD3<Float>(0, verticalOffsetMeters, -screenDistanceMeters) }
 
     func applying(_ adjustment: CustomCinemaScreenAdjustment) -> CustomCinemaGeometry {
@@ -130,19 +129,13 @@ struct CustomCinemaGeometry: Equatable, Sendable {
             pitchRadians: value.pitchRadians
         )
     }
-
-    var debugSummary: String {
-        String(format: "aspect %.2f · width %.1fm · distance %.1fm · vertical %.2fm · pitch %.0f°",
-               aspectRatio, screenWidthMeters, screenDistanceMeters, verticalOffsetMeters,
-               pitchRadians * 180 / .pi)
-    }
 }
 
 /// Shared identifiers and active-session state for the custom-player Cinema scaffold.
 ///
 /// Cinema Mode reuses the real SwiftUI player chrome (`CustomPlayerChrome`) hosted as a
 /// `RealityView` attachment over the video surface, so the immersive transport is at visual parity
-/// with the windowed player instead of the old hand-drawn RealityKit button rail.
+/// with the windowed player.
 ///
 /// Apple's own `AVPlayerViewController` cinema environment is only reachable through AVKit, which
 /// this app deliberately removed — so Cinema Mode stays an app-owned visionOS scene that leans on
