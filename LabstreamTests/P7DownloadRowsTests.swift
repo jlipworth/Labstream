@@ -51,7 +51,7 @@ struct P7DownloadRowsTests {
                 return String(project[range])
             }
         #expect(versions.count == 12)
-        withKnownIssue("P7 red pin: 15") { #expect(versions.allSatisfy { $0 == "1.8.0" }) }
+        #expect(versions.allSatisfy { $0 == "1.8.0" })
     }
 
     @Test(arguments: [5_000, 30_000, 599_000])
