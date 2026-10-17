@@ -39,5 +39,47 @@ struct P6SessionPathLeaseTests {
         }
         store.releasePathLease(successor)
     }
+    @Test("Whole replacement and resource restart defer while a real Retry copy owns the path", arguments: [false, true])
+    func retryExcludesWorkingMutation(replaceWhole: Bool) async throws {
+        let fixture = try P6Fixture()
+        let initial = fixture.store()
+        let key = try fixture.seed(initial)
+        let working = try fixture.working(initial, key)
+        #expect(initial.resetStaticRangeProgressToDurableCheckpoint(for: key, expectedBytes: 10) == .applied(bytes: 3))
+        let hold = P6Hold()
+        let live = DownloadStaticCheckpointFilesystem.live
+        let store = fixture.store(checkpoint: .init(exists: live.exists, size: live.size,
+            durableCopy: { source, destination, temporary in
+                hold.hit()
+                try live.durableCopy(source, destination, temporary)
+            }))
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [],
+            playbackValidator: { _, _ in .init(played: true, reason: "fixture", durationMs: nil, detail: nil) })
+        defer { hold.release.signal(); session.invalidateInjectedSessionForTesting() }
+        let retryDone = DispatchSemaphore(value: 0)
+        let successor = fixture.record("retry")
+        hold.arm()
+        Thread.detachNewThread {
+            _ = store.createAttemptOwnedRecord(successor, attemptID: successor.attemptID!, replacing: key.attemptID)
+            retryDone.signal()
+        }
+        try #require(await p6Signal(hold.entered))
+        let stash = fixture.directory.appendingPathComponent("replacement.part")
+        try Data([7, 7, 7, 7]).write(to: stash)
+        let submitted = DispatchSemaphore(value: 0)
+        session.mutateWorkingPathForP6Testing(key, stash: replaceWhole ? stash : nil) { submitted.signal() }
+        try #require(await p6Signal(submitted))
+        #expect((try? Data(contentsOf: working)) == Data([1, 2, 3]))
+        if replaceWhole {
+            #expect((try? Data(contentsOf: stash)) == Data([7, 7, 7, 7]))
+            #expect(session.claimedRangeBodiesForTesting().contains(stash.standardizedFileURL))
+        }
+        hold.release.signal()
+        try #require(await p6Signal(retryDone))
+        let nextKey = DownloadAttemptKey(ratingKey: key.ratingKey, attemptID: successor.attemptID!)
+        let nextWorking = try #require(store.attemptWorkingFileURL(for: nextKey))
+        #expect(try Data(contentsOf: nextWorking) == Data([1, 2, 3]))
+    }
+
 }
 #endif

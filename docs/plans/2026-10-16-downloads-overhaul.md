@@ -356,6 +356,18 @@ Acceptance is a phase's pins and inventory rows staying green.
 
 ## Progress journal
 
+- **2026-10-17 — P6 round-1 session rework** on `downloads/p6-rework-session` fixes findings
+  2, 3, 5 and 6a. Every session checkpoint caller submits and resolves against a deadline;
+  continuations return to the range queue and recheck attempt, train, halt and manual generation.
+  Working-path creation, replacement, restart, opaque publication, fixup and cleanup share the
+  store lease protocol; deferred publication preserves its stash and claim. Opaque Resume
+  establishes a fresh fenced generation before task creation. Registry-release tests acknowledge
+  callbacks with bounded independent cleanup. Red restoration checks cover delegate/MainActor
+  heartbeats, expiry and late-halt rejection, actual replacement/unlink during a held Retry copy,
+  and opaque network admission. Injecting delayed callback delivery makes the old 100-yield
+  registry tests fail; callback acknowledgements pass the same experiment. No additive
+  store-contract method or store/manager edit was needed.
+
 - **2026-10-17 — P6.4 delegate lane implemented** on `downloads/p6-wake-lane`. Pins 06–09 and
   the session half of Amendment 3 are green: the registry retains startup generations and receipt
   deadlines (including a no-registration fallback); every production hold captures an idempotent
