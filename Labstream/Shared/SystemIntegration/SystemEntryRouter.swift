@@ -168,6 +168,11 @@ final class SystemEntryRouter {
     #if !os(tvOS)
     /// Cinema exit from an offline download (#87): return to the Offline tab and focus the
     /// download. No server fetch, no Home tab.
+    func acknowledgeOfflineReturn(_ route: OfflineReturn) {
+        guard offlinePending?.id == route.id else { return }
+        offlinePending = nil
+    }
+
     func openOffline(ratingKey: String) {
         offlinePending = OfflineReturn(ratingKey: ratingKey)
     }

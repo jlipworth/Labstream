@@ -582,6 +582,17 @@ struct BackgroundDownloadStartupAdmissionTests {
             #expect(try Data(contentsOf: partialURL) == legacyBytes)
             #expect(try Data(contentsOf: directory.appendingPathComponent("index.json")) == originalIndex)
 
+            // Observe directory mutations before activation so even a fast reclamation is retained.
+            let cleanupEvents = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            let parentFD = open(directory.deletingLastPathComponent().path, O_EVTONLY)
+            try #require(parentFD >= 0)
+            let cleanupSource = DispatchSource.makeFileSystemObjectSource(fileDescriptor: parentFD,
+                eventMask: .write, queue: DispatchQueue(label: "test.unsupported-root-cleanup"))
+            cleanupSource.setEventHandler { cleanupEvents.continuation.yield(()) }
+            cleanupSource.setCancelHandler { close(parentFD); cleanupEvents.continuation.finish() }
+            cleanupSource.activate()
+            defer { cleanupSource.cancel() }
+
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
             let activation = await UnsupportedResetActivationWaiter().wait(session: session)
@@ -598,12 +609,11 @@ struct BackgroundDownloadStartupAdmissionTests {
 
             let quarantinedRoot = directory.deletingLastPathComponent().appendingPathComponent(
                 ".\(directory.lastPathComponent)-unsupported-reset-pending")
-            // The complete hosted matrix schedules hundreds of Swift Testing cases concurrently.
-            // Keep cleanup verification bounded without treating scheduler contention as failure.
-            let cleanupDeadline = ContinuousClock.now.advanced(by: .seconds(10))
-            while FileManager.default.fileExists(atPath: quarantinedRoot.path),
-                  ContinuousClock.now < cleanupDeadline {
-                try await Task.sleep(for: .milliseconds(10))
+            // Utility-queue reclamation can wait behind unrelated resets under parallel tests.
+            // Await its filesystem acknowledgement instead of assigning the scheduler a deadline.
+            var cleanupIterator = cleanupEvents.stream.makeAsyncIterator()
+            while FileManager.default.fileExists(atPath: quarantinedRoot.path) {
+                _ = await cleanupIterator.next()
             }
             #expect(!FileManager.default.fileExists(atPath: quarantinedRoot.path))
 

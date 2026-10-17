@@ -157,7 +157,7 @@ final class RootNavigationCoordinator {
 
   #if !os(tvOS)
     func consumeOfflineReturn(_ route: SystemEntryRouter.OfflineReturn) {
-      SystemEntryRouter.shared.offlinePending = nil
+      SystemEntryRouter.shared.acknowledgeOfflineReturn(route)
       offlineReturnRatingKey = route.ratingKey
       selection = .offline
     }

@@ -6,6 +6,7 @@ import SwiftUI
 struct OfflineLaunchView: View {
     let runtime: AppRuntime
 
+    @State private var offlineFocus = OfflineReturnFocus()
     @State private var reconnecting = false
     @State private var showingSignIn = false
     @State private var showingSettings = false
@@ -39,6 +40,8 @@ struct OfflineLaunchView: View {
                 .environment(\.artworkPipeline, runtime.artworkPipeline)
                 .environment(\.artworkShimmerClock, runtime.artworkShimmerClock)
             }
+            .task { consumeOfflineReturn() }
+            .onChange(of: SystemEntryRouter.shared.offlinePending) { _, _ in consumeOfflineReturn() }
             .accessibilityIdentifier("labstream.offline-launch.root")
     }
 
@@ -65,7 +68,7 @@ struct OfflineLaunchView: View {
     private var offlineNavigation: some View {
         NavigationStack {
             #if os(visionOS)
-            OfflineLibraryView(manager: downloadManager, focusedRatingKey: Self.offlineFocusBinding(router: SystemEntryRouter.shared))
+            OfflineLibraryView(manager: downloadManager, focusedRatingKey: $offlineFocus.ratingKey)
                 .toolbar { launchToolbar }
             #else
             OfflineLibraryView(manager: downloadManager)
@@ -79,7 +82,13 @@ struct OfflineLaunchView: View {
 
     /// Restricted surface's current focus adapter, callable on the host without immersive UI.
     static func offlineFocusBinding(router: SystemEntryRouter) -> Binding<String?> {
-        .constant(nil)
+        let focus = OfflineReturnFocus()
+        focus.consume(router: router)
+        return Binding(get: { focus.ratingKey }, set: { focus.ratingKey = $0 })
+    }
+
+    private func consumeOfflineReturn() {
+        offlineFocus.consume(router: SystemEntryRouter.shared)
     }
 
     private var offlineStatusBanner: some View {
@@ -127,6 +136,17 @@ struct OfflineLaunchView: View {
             _ = await authManager.restoreSession()
             reconnecting = false
         }
+    }
+}
+/// Real restricted-surface state, independent of browse metadata and immersive APIs.
+@Observable @MainActor
+final class OfflineReturnFocus {
+    var ratingKey: String?
+
+    func consume(router: SystemEntryRouter) {
+        guard let route = router.offlinePending else { return }
+        ratingKey = route.ratingKey
+        router.acknowledgeOfflineReturn(route)
     }
 }
 #endif
