@@ -4872,7 +4872,6 @@ public final class DownloadManager {
             // to us. `recordServerQueueProbe` below reads `/status/sessions/background`, whose
             // per-job `ratingKey` is the safer progress source under concurrency.
             await pollOptimizeActivity(ratingKey: ratingKey, mediaTitle: mediaTitle,
-                                       allowSoleFallback: false,
                                        server: server, token: token, identity: identity)
             // Disambiguation probe: distinguish "completed-item clutter" (inert) from a genuinely
             // stalled or idle-paused server conversion queue. Privacy-safe COUNTS + short state
@@ -5072,7 +5071,6 @@ public final class DownloadManager {
     /// never logged. We emit a single redaction-safe shape probe per poll (structural facts
     /// + numeric progress only) so the real PMS shape can be confirmed from logs.
     private func pollOptimizeActivity(ratingKey: String, mediaTitle: String,
-                                      allowSoleFallback: Bool,
                                       server: URL, token: String,
                                       identity: ClientIdentity) async {
         let req = ActivitiesRequest.list(server: server, token: token, identity: identity)
@@ -5085,8 +5083,7 @@ public final class DownloadManager {
         // progress — never a title/subtitle VALUE. The "types" string is a list of dotted
         // activity types (e.g. "media.optimize,library.update.section"), which are
         // server-vocabulary identifiers, not media titles, and pass through unredacted.
-        let shape = activities.probeShape(ratingKey: ratingKey, title: mediaTitle,
-                                          allowSoleFallback: allowSoleFallback)
+        let shape = activities.probeShape(ratingKey: ratingKey, title: mediaTitle)
         var probeFields: [String: DiagnosticFieldValue] = [
             "download_id": .identifier(ratingKey),
             "activity_count": .int(Int(shape["activity_count"] ?? "0") ?? 0),
@@ -5111,8 +5108,7 @@ public final class DownloadManager {
         recordDownloadDiagnostic("downloads.optimize_activity_probe", fields: probeFields)
 
         guard let activity = activities.optimizeActivity(ratingKey: ratingKey,
-                                                         title: mediaTitle,
-                                                         allowSoleFallback: allowSoleFallback) else {
+                                                         title: mediaTitle) else {
             return
         }
 
@@ -5252,21 +5248,14 @@ public final class DownloadManager {
             fields["bg_job_count"] = .int(jobs.jobs.count)
             let matchingJob = jobs.job(ratingKey: ratingKey)
             let matchingTitleJob = jobs.uniqueJob(title: mediaTitle)
-            let attributedJob: BackgroundTranscodeJobs.Job? = matchingJob
-                // PMS shapes that omit per-job ratingKey may still carry a title/subtitle. Use it
-                // only when it uniquely identifies this media among running background jobs; the
-                // title value stays in memory and is never logged.
-                ?? matchingTitleJob
-                // If Plex's conversion queue says THIS item is the active conversion, then a single
-                // background transcode job is attributable even while another backend (e.g. Emby) is
-                // also active in Labstream. This is the live Devil Wears Prada shape: the background
-                // job has progress/speed but no per-job ratingKey.
-                ?? ((jobs.jobs.count == 1 && thisIsActiveConversion) ? jobs.jobs.first : nil)
-                // Legacy fallback for older PMS shapes without per-job ratingKey/title/queue active
-                // attribution: if there is exactly one background job and exactly one active
-                // Labstream download, it is unambiguous. Never use first-job fallback when PMS
-                // reports multiple jobs.
-                ?? ((jobs.jobs.count == 1 && activeJobs.count == 1) ? jobs.jobs.first : nil)
+            // B39: ratingKey, then a unique exact title (kept in memory, never logged), then the
+            // single job only when the conversion queue marks THIS item active (a live shape
+            // where the background job has progress/speed but no per-job ratingKey). There is
+            // no "one job and one active Labstream download" fallback: that lone job can be
+            // another client's transcode while this row is still queued (b40168c5 rejected the
+            // same reasoning for /activities).
+            let attributedJob = jobs.attributedJob(ratingKey: ratingKey, title: mediaTitle,
+                                                   isActiveConversion: thisIsActiveConversion)
             let isActiveConversion = attributedJob != nil
             if matchingJob != nil { fields["bg_rk_match"] = .bool(true) }
             if matchingTitleJob != nil { fields["bg_name_match"] = .bool(true) }
