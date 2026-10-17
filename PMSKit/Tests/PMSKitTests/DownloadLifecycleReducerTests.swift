@@ -259,6 +259,67 @@ struct DownloadLifecycleReducerTests {
                 == .rejected(.illegal))
     }
 
+    /// P4 (B63): Resume All queues parked rows for a lane instead of starting them all. A waiting
+    /// retry keeps its paused or failed lifecycle so the retry routes from its own facts.
+    @Test func admissionRequestedQueuesARowForALane() {
+        for parked in [DownloadLifecycle.paused, .failed] {
+            let next = R.reduce(state(parked), .admissionRequested(.retryRequested),
+                                facts: staticFacts).state
+            #expect(next?.lifecycle == parked)
+            #expect(next?.history.admissionIntent == .retryRequested)
+            let first = R.reduce(state(parked), .admissionRequested(.seasonPlanned),
+                                 facts: staticFacts).state
+            #expect(first?.lifecycle == .planned)
+            #expect(first?.history.admissionIntent == .seasonPlanned)
+        }
+        #expect(R.reduce(state(.planned), .admissionRequested(.retryRequested),
+                         facts: staticFacts).state?.lifecycle == .planned)
+        for live in [DownloadLifecycle.admitted, .serverPrep, .transferring, .finalizing,
+                     .complete, .unverified] {
+            #expect(R.reduce(state(live), .admissionRequested(.retryRequested),
+                             facts: staticFacts) == .rejected(.illegal))
+        }
+    }
+
+    @Test func aUserPauseOrWithdrawalClearsAWaitingRetry() {
+        let waiting = state(.paused, DownloadAttemptHistory(pauseCause: .queuePaused,
+                                                            admissionIntent: .retryRequested))
+        #expect(R.reduce(waiting, .pause(.user), facts: staticFacts).state?.history
+            .admissionIntent == nil)
+        #expect(R.reduce(waiting, .pause(.queuePaused), facts: staticFacts).state?.history
+            .admissionIntent == .retryRequested)
+        let withdrawn = R.reduce(waiting, .admissionWithdrawn, facts: staticFacts).state
+        #expect(withdrawn?.lifecycle == .paused)
+        #expect(withdrawn?.history.admissionIntent == nil)
+        #expect(R.reduce(state(.planned), .admissionWithdrawn, facts: staticFacts)
+            == .rejected(.illegal))
+    }
+
+    /// P4 (B66, B67): a start that never became active waits again with its intent; it never
+    /// rewrites live work, a user pause or a finished row.
+    @Test func admissionDeferredReturnsAnUnprovenStartToPlanned() {
+        for unproven in [DownloadLifecycle.admitted, .serverPrep, .failed, .planned] {
+            let next = R.reduce(state(unproven), .admissionDeferred(.seasonPlanned),
+                                facts: staticFacts).state
+            #expect(next?.lifecycle == .planned)
+            #expect(next?.history.admissionIntent == .seasonPlanned)
+            #expect(next?.history.lastFailure == nil)
+        }
+        for other in [DownloadLifecycle.paused, .transferring, .finalizing,
+                      .complete, .unverified] {
+            #expect(R.reduce(state(other), .admissionDeferred(.seasonPlanned),
+                             facts: staticFacts) == .rejected(.illegal))
+        }
+    }
+
+    /// P4 (B65): a pause keeps the waiting intent, so Resume re-requests the same admission.
+    @Test func pauseKeepsTheAdmissionIntent() {
+        let planned = state(.planned, DownloadAttemptHistory(admissionIntent: .seasonPlanned))
+        let paused = R.reduce(planned, .pause(.user), facts: staticFacts).state
+        #expect(paused?.lifecycle == .paused)
+        #expect(paused?.history.admissionIntent == .seasonPlanned)
+    }
+
     @Test func prepHandoffKeepsTheAttemptAndAdmitsTheStaticTransfer() {
         #expect(R.reduce(state(.serverPrep), .prepHandoff, facts: staticFacts).state?.lifecycle
                 == .admitted)

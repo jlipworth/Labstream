@@ -1036,31 +1036,16 @@ struct DownloadOptionsSheet: View {
         let downloadPartIndex = resolvedSelection.partIndex
         // Exhaustive over the backend so a new lane is a compile error here, not a silent
         // fall-through into the Plex download path (which fails quietly on nil Plex creds).
-        switch sheetBackend {
-        case .plex:
-            Task { await downloadManager.download(item, choice: choice,
-                                                  mediaIndex: downloadMediaIndex, partIndex: downloadPartIndex,
-                                                  audioStreamIndex: audioStreamIndex) }
-        case .jellyfin:
-            Task { await downloadManager.downloadJellyfin(item, choice: choice,
-                                                          mediaIndex: downloadMediaIndex,
-                                                          partIndex: downloadPartIndex,
-                                                          audioStreamIndex: audioStreamIndex) }
-        case .emby:
-            // #126: an existing-version pick addresses a specific converted MediaSource by id; pass
-            // it as the override so the lane downloads THAT copy byte-for-byte (no new conversion).
-            if let mediaSourceId = resolvedSelection.mediaSourceIDOverride {
-                Task { await downloadManager.downloadEmby(item, choice: choice,
-                                                          mediaIndex: downloadMediaIndex,
-                                                          partIndex: downloadPartIndex,
-                                                          audioStreamIndex: audioStreamIndex,
-                                                          mediaSourceIDOverride: mediaSourceId) }
-            } else {
-                Task { await downloadManager.downloadEmby(item, choice: choice,
-                                                          mediaIndex: downloadMediaIndex,
-                                                          partIndex: downloadPartIndex,
-                                                          audioStreamIndex: audioStreamIndex) }
-            }
+        // P4: a tap goes through admission. It starts at once when a lane has room; otherwise it
+        // waits as a durable planned row. #126: an Emby existing-version pick passes its
+        // MediaSource id so the lane downloads THAT copy byte-for-byte.
+        Task {
+            await downloadManager.requestDownload(
+                item, backend: sheetBackend, choice: choice,
+                mediaIndex: downloadMediaIndex, partIndex: downloadPartIndex,
+                audioStreamIndex: audioStreamIndex,
+                mediaSourceIDOverride: sheetBackend == .emby
+                    ? resolvedSelection.mediaSourceIDOverride : nil)
         }
         dismiss()
     }
