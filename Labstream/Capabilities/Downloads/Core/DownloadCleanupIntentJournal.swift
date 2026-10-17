@@ -8,7 +8,22 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
     struct Persistence: Sendable {
         let read: @Sendable (URL) throws -> Data?
         let encode: @Sendable ([DurableDownloadCleanupIntent]) throws -> Data
-        let atomicWrite: @Sendable (Data, URL) throws -> Void
+        /// Full durable replace (B18): temp write, full fsync, rename, directory fsync.
+        let commit: @Sendable (Data, URL) throws -> Void
+        /// Makes an already-visible rename durable before an existing value is relied on.
+        let syncDirectory: @Sendable (URL) throws -> Void
+
+        init(
+            read: @escaping @Sendable (URL) throws -> Data?,
+            encode: @escaping @Sendable ([DurableDownloadCleanupIntent]) throws -> Data,
+            commit: @escaping @Sendable (Data, URL) throws -> Void,
+            syncDirectory: @escaping @Sendable (URL) throws -> Void = DurableJournalCommit.liveSyncDirectory
+        ) {
+            self.read = read
+            self.encode = encode
+            self.commit = commit
+            self.syncDirectory = syncDirectory
+        }
 
         static let live = Self(
             read: { url in
@@ -24,7 +39,7 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
                 }
             },
             encode: { try JSONEncoder().encode($0) },
-            atomicWrite: { data, url in try data.write(to: url, options: .atomic) }
+            commit: DurableJournalCommit.liveCommit
         )
     }
 
@@ -68,6 +83,10 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
         self.quarantineDirectory = directory
         self.persistence = persistence
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // B18: the authority directory is protected and excluded from backup whether it is new or
+        // was created by an older build; each committed file gets the same attributes.
+        try? CredentialArtifactStorage.applyProtectionAndBackupExclusion(
+            to: directory, protection: CredentialArtifactStorage.authArtifactProtection)
     }
 
     func load() -> LoadResult {
@@ -92,7 +111,7 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
                 && $0.server == proposed.server
                 && $0.operation == proposed.operation
         }) {
-            return .committed(existing)
+            return existingCommittedLocked(existing)
         }
         return appendLocked(proposed, to: &values)
     }
@@ -116,7 +135,7 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
         to values: inout [DurableDownloadCleanupIntent]
     ) -> AddResult {
         if let existing = values.first(where: { $0.id == intent.id }) {
-            return existing == intent ? .committed(intent) : .conflictingID(existing)
+            return existing == intent ? existingCommittedLocked(intent) : .conflictingID(existing)
         }
         values.append(intent)
         let data: Data
@@ -125,24 +144,21 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
         } catch {
             return .failed(Self.failure(.encode, error))
         }
-        do {
-            try persistence.atomicWrite(data, fileURL)
-        } catch {
-            // Atomic replacement may have succeeded before throwing. Only the exact full value is
-            // proof that this add committed; UUID presence alone could be a conflicting authority.
-            switch readLocked() {
-            case .loaded(let durable) where durable.contains(intent):
-                return .committed(intent)
-            case .loaded(let durable):
-                if let conflict = durable.first(where: { $0.id == intent.id }) {
-                    return .conflictingID(conflict)
-                }
-            case .failed:
-                break
-            }
+        if let error = DurableJournalCommit.commit(data, to: fileURL, using: persistence.commit) {
             return .failed(Self.failure(.commit, error))
         }
         return .committed(intent)
+    }
+
+    /// A value already present may be the visible-but-unsynced result of an earlier ambiguous
+    /// commit. Sync its directory entry before reporting it as durable authority.
+    private func existingCommittedLocked(_ existing: DurableDownloadCleanupIntent) -> AddResult {
+        do {
+            try persistence.syncDirectory(fileURL)
+        } catch {
+            return .failed(Self.failure(.commit, error))
+        }
+        return .committed(existing)
     }
 
     /// Remove only the exact cleanup operation that completed. Matching UUID alone is insufficient:
@@ -175,17 +191,7 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
             lock.unlock()
             return .failed(Self.failure(.encode, error))
         }
-        do {
-            try persistence.atomicWrite(data, fileURL)
-        } catch {
-            // Absence of the exact triple after a thrown replace proves this removal committed.
-            if case .loaded(let durable) = readLocked(),
-               !durable.contains(where: {
-                   $0.matchesForClear(id: id, attemptKey: attemptKey, operation: operation)
-               }) {
-                lock.unlock()
-                return .committed(removed: true)
-            }
+        if let error = DurableJournalCommit.commit(data, to: fileURL, using: persistence.commit) {
             lock.unlock()
             return .failed(Self.failure(.commit, error))
         }
@@ -252,9 +258,7 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
 
         let quarantineURL = quarantineDirectory.appendingPathComponent(
             "download-cleanup-intents-quarantine-\(UUID().uuidString).json")
-        do {
-            try persistence.atomicWrite(data, quarantineURL)
-        } catch {
+        if let error = DurableJournalCommit.commit(data, to: quarantineURL, using: persistence.commit) {
             return .failed(Self.failure(.commit, error))
         }
         let repairedData: Data
@@ -263,17 +267,8 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
         } catch {
             return .failed(Self.failure(.encode, error))
         }
-        do {
-            try persistence.atomicWrite(repairedData, fileURL)
-        } catch {
-            // The canonical replace may have won before throwing. Exact recovered equality proves
-            // repair committed, just as add/remove prove their postconditions after ambiguity.
-            if let durableData = try? persistence.read(fileURL),
-               let durable = try? JSONDecoder().decode(
-                    [DurableDownloadCleanupIntent].self, from: durableData),
-               durable == recovered {
-                return .loaded(recovered)
-            }
+        if let error = DurableJournalCommit.commit(
+            repairedData, to: fileURL, using: persistence.commit) {
             return .failed(Self.failure(.commit, error))
         }
         return .loaded(recovered)
