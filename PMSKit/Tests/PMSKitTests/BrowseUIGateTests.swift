@@ -42,6 +42,18 @@ struct BrowseUIGateTests {
                                    canOpenOffline: true) == .offline)
     }
 
+    @Test("browse readiness wins over a stale Offline admission")
+    func browseReadyRejectsOffline() {
+        // #259: a successful sign-in/restore does not rewrite a stale transient outcome; the gate
+        // must still mount browse once the lane is live.
+        #expect(BrowseUIGate.state(isBrowseReady: true, isRestoring: false,
+                                   isSwitchingBackend: false, hasEverBeenBrowseReady: false,
+                                   canOpenOffline: true) == .browse)
+        #expect(BrowseUIGate.state(isBrowseReady: false, isRestoring: false,
+                                   isSwitchingBackend: true, hasEverBeenBrowseReady: true,
+                                   canOpenOffline: true) == .browse)
+    }
+
     @Test("a genuinely signed-out user sees login")
     func signedOutShowsLogin() {
         #expect(BrowseUIGate.state(isBrowseReady: false, isRestoring: false,

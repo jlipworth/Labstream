@@ -331,7 +331,8 @@ upstream connection rotation used by `PlaybackController`.
   local playback launch. Its snapshot is lightweight and actions re-resolve exact attempt identity.
 - `Labstream/Shared/UI/OfflineLaunchView.swift` owns the restricted cold-launch surface when a
   saved-session restore is temporarily unavailable and an existing local file belongs to a
-  complete or unverified row. PMSKit's `OfflineLaunchAvailability` decides admission; this path
+  complete or unverified row. PMSKit's `OfflineLaunchAvailability` decides admission from the
+  typed `SessionRestoreOutcome` (`PMSKit/Sources/PMSKit/Auth/SessionRestoreOutcome.swift`); this path
   permits local library/playback, reconnect/sign-in, and Settings rather than authenticated
   browsing, and is absent from tvOS. Invalid or missing credentials continue to Login.
 - `PMSKit/Sources/PMSKit/Downloads/DownloadStorageSnapshot.swift` owns provenance-aware

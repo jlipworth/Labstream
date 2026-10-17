@@ -220,12 +220,15 @@ struct ContentView: View {
         }
     }
 
+    /// #259: only a preserved credential after a transient restore failure, with at least one
+    /// completed local media file, opens the restricted Offline surface.
     private var canOpenOffline: Bool {
         #if os(tvOS)
         false
         #else
-        authManager.sessionRestoreOutcome == .temporarilyUnavailable
-            && downloadManager.hasPlayableOfflineContent
+        OfflineLaunchAvailability.admitsOfflineLaunch(
+            restoreOutcome: authManager.sessionRestoreOutcome,
+            hasPlayableDownload: downloadManager.hasPlayableOfflineContent)
         #endif
     }
 }

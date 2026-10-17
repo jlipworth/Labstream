@@ -23,18 +23,6 @@ enum SessionRestorePerformanceOutcome: Equatable {
     var restoredField: Int { self == .usable ? 1 : 0 }
 }
 
-enum SessionRestoreOutcome: Equatable {
-    case notAttempted
-    case restored
-    case temporarilyUnavailable
-    case requiresSignIn
-
-    static func resolve(reportedRestored: Bool, hasUsableSession: Bool) -> Self {
-        if hasUsableSession { return .restored }
-        return reportedRestored ? .temporarilyUnavailable : .requiresSignIn
-    }
-}
-
 /// Drives the Plex PIN-OAuth login flow and persists the result.
 ///
 /// Flow:
@@ -70,7 +58,9 @@ final class AuthManager {
     }
 
     private(set) var state: State = .idle
-    private(set) var sessionRestoreOutcome: SessionRestoreOutcome = .notAttempted
+    /// Typed result of the most recent selected-session restore (#259); `nil` until the first
+    /// restore completes. Explicit sign-out resets it to `.missingCredential`.
+    private(set) var sessionRestoreOutcome: SessionRestoreOutcome?
 
     private let appModel: AppModel
     private let keychain: KeychainStore
@@ -181,6 +171,9 @@ final class AuthManager {
             _ = await restoreSession()
         case .requireLogin:
             clearRuntimeState(for: backend)
+            // The newly selected backend has no saved credential; a prior transient outcome
+            // must not keep the Offline launch surface admitted for it.
+            sessionRestoreOutcome = .missingCredential
             appModel.isSwitchingBackend = false
             state = .idle
         }
@@ -198,36 +191,37 @@ final class AuthManager {
                                                             backend: selected.performanceLabel)
         appModel.activeBackend = selected
 
-        let selectedRestored: Bool
+        let helperOutcome: SessionRestoreOutcome?
         switch selected {
         case .plex:
-            selectedRestored = await restorePlexSession(updateState: true, attemptID: attemptID)
+            helperOutcome = await restorePlexSession(updateState: true, attemptID: attemptID)
         case .jellyfin:
-            selectedRestored = await restoreJellyfinSession(validateReachability: true,
-                                                             updateState: true,
-                                                             attemptID: attemptID)
+            helperOutcome = await restoreJellyfinSession(validateReachability: true,
+                                                          updateState: true,
+                                                          attemptID: attemptID)
         case .emby:
-            selectedRestored = await restoreEmbySession(validateReachability: true,
-                                                        updateState: true,
-                                                        attemptID: attemptID)
+            helperOutcome = await restoreEmbySession(validateReachability: true,
+                                                     updateState: true,
+                                                     attemptID: attemptID)
         }
 
-        guard isCurrentAuthAttempt(attemptID) else {
+        guard isCurrentAuthAttempt(attemptID), let helperOutcome else {
             restoreSpan.end(result: Task.isCancelled ? "cancelled" : "superseded",
                             fields: ["restored": 0])
             return false
         }
         finishAuthAttempt(attemptID)
+        let hasUsableSession = appModel.backendSession(for: selected) != nil
+        let selectedRestored = helperOutcome.retainsSavedCredential
         let performanceOutcome = SessionRestorePerformanceOutcome.resolve(
             reportedRestored: selectedRestored,
-            hasUsableSession: appModel.backendSession(for: selected) != nil
+            hasUsableSession: hasUsableSession
         )
-        sessionRestoreOutcome = SessionRestoreOutcome.resolve(
-            reportedRestored: selectedRestored,
-            hasUsableSession: appModel.backendSession(for: selected) != nil
-        )
+        sessionRestoreOutcome = helperOutcome.reconciled(hasUsableSession: hasUsableSession)
         restoreSpan.end(result: performanceOutcome.result,
                         fields: ["restored": performanceOutcome.restoredField])
+        // Boolean contract for existing callers: the selected session is live or its saved
+        // credential was preserved for retry.
         return selectedRestored
     }
 
@@ -283,26 +277,28 @@ final class AuthManager {
         if appModel.backendSession(for: backend) != nil { return true }
         let attemptID = beginAuthAttempt(.downloadSessionHydration(backend))
         defer { cleanupCancelledAuthAttempt(attemptID) }
-        let restored: Bool
+        let outcome: SessionRestoreOutcome?
         switch backend {
         case .plex:
-            restored = await restorePlexSession(updateState: false, attemptID: attemptID)
+            outcome = await restorePlexSession(updateState: false, attemptID: attemptID)
         case .jellyfin:
-            restored = await restoreJellyfinSession(validateReachability: false,
-                                                     updateState: false,
-                                                     attemptID: attemptID)
+            outcome = await restoreJellyfinSession(validateReachability: false,
+                                                    updateState: false,
+                                                    attemptID: attemptID)
         case .emby:
-            restored = await restoreEmbySession(validateReachability: false,
-                                                updateState: false,
-                                                attemptID: attemptID)
+            outcome = await restoreEmbySession(validateReachability: false,
+                                               updateState: false,
+                                               attemptID: attemptID)
         }
         guard isCurrentAuthAttempt(attemptID) else { return false }
         finishAuthAttempt(attemptID)
-        return restored && appModel.backendSession(for: backend) != nil
+        return outcome?.retainsSavedCredential == true && appModel.backendSession(for: backend) != nil
     }
     #endif
 
-    private func restorePlexSession(updateState: Bool = true, attemptID: AuthAttemptID) async -> Bool {
+    /// Returns `nil` when the attempt was superseded or cancelled; the caller discards it.
+    private func restorePlexSession(updateState: Bool = true,
+                                    attemptID: AuthAttemptID) async -> SessionRestoreOutcome? {
         let restoreFields: [String: DiagnosticFieldValue] = [
             "update_state": .bool(updateState)
         ]
@@ -312,7 +308,7 @@ final class AuthManager {
             // surviving Plex task must be parked before it can keep streaming a retired request.
             onBackendWillSignOut?(.plex)
             recordAuthDiagnostic("auth.plex.restore.missing_token", fields: restoreFields)
-            return false
+            return .missingCredential
         }
         // A saved account token is a valid authenticated milestone even before a PMS connection
         // is resolved. Publish it before suspension so discovery failure reaches the signed-in
@@ -322,7 +318,7 @@ final class AuthManager {
         recordAuthDiagnostic("auth.plex.restore.start", fields: restoreFields)
         do {
             let discovery = try await loadPlexSessionDiscovery(token: saved, attemptID: attemptID)
-            guard isCurrentAuthAttempt(attemptID) else { return false }
+            guard isCurrentAuthAttempt(attemptID) else { return nil }
             // The account token is already durable. A transient inability to update the preferred
             // server must not invalidate an otherwise healthy restored session.
             if !keychain.saveSelectedPlexServerID(discovery.selectedServer.clientIdentifier) {
@@ -333,64 +329,81 @@ final class AuthManager {
             if updateState { state = .authenticated }
             schedulePlexProfileRefreshIfNeeded(discovery)
             recordAuthDiagnostic("auth.plex.restore.success", fields: restoreFields)
-            return true
-        } catch PlexError.unauthorized {
-            guard isCurrentAuthAttempt(attemptID) else { return false }
+            return .restored
+        } catch {
+            guard isCurrentAuthAttempt(attemptID) else { return nil }
+            let outcome = Self.plexRestoreFailureOutcome(for: error)
+            guard outcome == .invalidCredential else {
+                var fields = restoreFields
+                fields.merge(authErrorFields(error)) { _, new in new }
+                recordAuthDiagnostic("auth.plex.restore.discovery_failed", fields: fields)
+                if updateState { state = .failed("Signed in, but server discovery failed.") }
+                return outcome
+            }
             // Only wipe the Plex lane when it is the ACTIVE, user-facing backend. On the inactive
             // hydration path (a JF/Emby session warming Plex for cross-backend downloads), a transient
             // discovery 401 must NOT silently sign the user out of Plex — leave the saved token in
             // place and let the lane stay unhydrated until they switch back, where `updateState: true`
-            // handles a genuine sign-out with the proper UI teardown.
+            // handles a genuine sign-out with the proper UI teardown. Either way the outcome is
+            // `.invalidCredential`: a 401 never classifies as transient.
             recordAuthDiagnostic("auth.plex.restore.unauthorized", fields: restoreFields)
-            guard updateState else { return false }
+            guard updateState else { return outcome }
             SpotlightIndexer.deleteAll()
             appModel.isSwitchingBackend = false
             onBackendWillSignOut?(.plex)
             signOutPlex()
             state = .idle
-            return false
-        } catch {
-            guard isCurrentAuthAttempt(attemptID) else { return false }
-            var fields = restoreFields
-            fields.merge(authErrorFields(error)) { _, new in new }
-            recordAuthDiagnostic("auth.plex.restore.discovery_failed", fields: fields)
-            if updateState { state = .failed("Signed in, but server discovery failed.") }
-            return true
+            return outcome
         }
     }
 
+    /// Classification of a Plex restore/discovery failure (#259), shared by the selected and
+    /// inactive-hydration paths: 401 is a rejected credential; 403 is an unconfirmed credential;
+    /// everything else (transport, discovery, 429, 5xx, decoding) is temporarily unavailable.
+    static func plexRestoreFailureOutcome(for error: Error) -> SessionRestoreOutcome {
+        switch error {
+        case PlexError.unauthorized:
+            return .invalidCredential
+        case PlexError.http(let status):
+            return .preservedFailure(httpStatus: status)
+        default:
+            return .preservedFailure(httpStatus: nil)
+        }
+    }
+
+    /// Returns `nil` when the attempt was superseded or cancelled; the caller discards it.
     private func restoreJellyfinSession(validateReachability: Bool = true,
                                         updateState: Bool = true,
-                                        attemptID: AuthAttemptID) async -> Bool {
+                                        attemptID: AuthAttemptID) async -> SessionRestoreOutcome? {
         guard let snapshot = readJellyfinSessionSnapshot() else {
             // The durable Jellyfin credential has already been removed (for example, a
             // sign-out immediately before process termination). Do not let a reattached
             // background request continue with the old header.
             onBackendWillSignOut?(.jellyfin)
-            return false
+            return .missingCredential
         }
         guard validateReachability else {
             applyJellyfinSessionSnapshot(snapshot)
-            return true
+            return .restored
         }
         do {
             try await validateJellyfinSession(server: snapshot.server,
                                               token: snapshot.token,
                                               expectedUserID: snapshot.userID)
-            guard isCurrentAuthAttempt(attemptID) else { return false }
+            guard isCurrentAuthAttempt(attemptID) else { return nil }
             applyJellyfinSessionSnapshot(snapshot)
             if updateState { state = .authenticated }
-            return true
+            return .restored
         } catch JellyfinAuthError.unauthorized {
-            guard isCurrentAuthAttempt(attemptID) else { return false }
+            guard isCurrentAuthAttempt(attemptID) else { return nil }
             NSLog("[#93] restoreJellyfinSession wiping creds: probe returned unauthorized (updateState=%@)",
                   updateState ? "true" : "false")
             onBackendWillSignOut?(.jellyfin)
             signOutJellyfin()
             if updateState { state = .idle }
-            return false
+            return .invalidCredential
         } catch JellyfinAuthError.identityMismatch {
-            guard isCurrentAuthAttempt(attemptID) else { return false }
+            guard isCurrentAuthAttempt(attemptID) else { return nil }
             // Ambiguous, not a proven-bad credential: the probe succeeded (2xx) but reported a
             // different user id. Preserve the keychain snapshot for a later retry (a true 401 is the
             // only wipe trigger), but clear the runtime lane so browse/download paths don't act on a
@@ -400,16 +413,18 @@ final class AuthManager {
                   updateState ? "true" : "false")
             clearRuntimeState(for: .jellyfin)
             if updateState { state = .failed("Signed in, but the Jellyfin session could not be confirmed.") }
-            return true
+            return .unconfirmedCredential
         } catch {
-            guard isCurrentAuthAttempt(attemptID) else { return false }
+            guard isCurrentAuthAttempt(attemptID) else { return nil }
             // Preserve the keychain snapshot for a later retry, but do not leave the runtime lane
             // looking browse-ready when the live probe did not prove the session. Otherwise
             // ContentView/download/browse paths can act on a half-restored Jellyfin lane while the
             // user is trying to re-authenticate on a flaky network.
             clearRuntimeState(for: .jellyfin)
             if updateState { state = .failed("Signed in, but the Jellyfin server could not be reached.") }
-            return true
+            var status: Int?
+            if case JellyfinAuthError.http(let code) = error { status = code }
+            return .preservedFailure(httpStatus: status)
         }
     }
 
@@ -461,9 +476,10 @@ final class AuthManager {
 
 
 
+    /// Returns `nil` when the attempt was superseded or cancelled; the caller discards it.
     private func restoreEmbySession(validateReachability: Bool = true,
                                     updateState: Bool = true,
-                                    attemptID: AuthAttemptID) async -> Bool {
+                                    attemptID: AuthAttemptID) async -> SessionRestoreOutcome? {
         let restoreFields: [String: DiagnosticFieldValue] = [
             "validate_reachability": .bool(validateReachability),
             "update_state": .bool(updateState)
@@ -473,12 +489,12 @@ final class AuthManager {
             // process while secure storage records that the account is signed out.
             onBackendWillSignOut?(.emby)
             recordAuthDiagnostic("auth.emby.restore.missing_snapshot", fields: restoreFields)
-            return false
+            return .missingCredential
         }
         guard validateReachability else {
             applyEmbySessionSnapshot(snapshot)
             recordAuthDiagnostic("auth.emby.restore.snapshot_loaded", fields: restoreFields)
-            return true
+            return .restored
         }
         recordAuthDiagnostic("auth.emby.restore.start", fields: restoreFields)
         do {
@@ -495,7 +511,7 @@ final class AuthManager {
                     throw EmbyAuthError.http(http.statusCode)
                 }
             }
-            guard isCurrentAuthAttempt(attemptID) else { return false }
+            guard isCurrentAuthAttempt(attemptID) else { return nil }
             let user = try JSONDecoder().decode(EmbyAuthenticatedUser.self, from: data)
             // GUID-format-insensitive compare for parity with Jellyfin restore. The Emby probe is
             // /Users/{id}, which echoes the requested id, so a mismatch here is not expected.
@@ -505,31 +521,33 @@ final class AuthManager {
             applyEmbySessionSnapshot(snapshot)
             if updateState { state = .authenticated }
             recordAuthDiagnostic("auth.emby.restore.success", fields: restoreFields)
-            return true
+            return .restored
         } catch EmbyAuthError.unauthorized {
-            guard isCurrentAuthAttempt(attemptID) else { return false }
+            guard isCurrentAuthAttempt(attemptID) else { return nil }
             // Invalid/expired creds — drop the saved session and require re-login.
             onBackendWillSignOut?(.emby)
             signOutEmby()
             if updateState { state = .idle }
             recordAuthDiagnostic("auth.emby.restore.unauthorized", fields: restoreFields)
-            return false
+            return .invalidCredential
         } catch {
-            guard isCurrentAuthAttempt(attemptID) else { return false }
+            guard isCurrentAuthAttempt(attemptID) else { return nil }
             // Unreachable host (or other transient error) — keep the saved session so a
             // later launch with connectivity restores cleanly, but clear the runtime lane so
             // `isBrowseReady`/`backendSession(for:)` do not expose an unproven Emby session.
             clearRuntimeState(for: .emby)
             if updateState { state = .failed("Signed in, but the Emby server could not be reached.") }
             var fields = restoreFields
+            var httpStatus: Int?
             if case EmbyAuthError.http(let status) = error {
+                httpStatus = status
                 fields["status"] = .int(status)
                 recordAuthDiagnostic("auth.emby.restore.http", fields: fields)
             } else {
                 fields.merge(authErrorFields(error)) { _, new in new }
                 recordAuthDiagnostic("auth.emby.restore.transport", fields: fields)
             }
-            return true
+            return .preservedFailure(httpStatus: httpStatus)
         }
     }
 
@@ -653,6 +671,14 @@ final class AuthManager {
         }
     }
 
+    /// Username/password sign-in answered HTTP 403: the server refused this account rather
+    /// than the password (for example a disabled or locked-out user, or one not allowed remote
+    /// access). A 401 keeps the "invalid username or password" message.
+    static func forbiddenSignInMessage(backendName: String) -> String {
+        "This \(backendName) account isn’t allowed to sign in. Ask the server owner to check that "
+            + "it’s enabled and allows remote access."
+    }
+
     func loginToJellyfin(server: URL, username: String, password: String) async {
         cancelPendingLogin()
         guard keychain.saveSelectedBackend(.jellyfin) else {
@@ -673,8 +699,13 @@ final class AuthManager {
                 switch http.statusCode {
                 case 200..<300:
                     break
-                case 401, 403:
+                case 401:
                     throw JellyfinAuthError.unauthorized
+                case 403:
+                    // The server refused this account (disabled or locked out, remote access not
+                    // allowed, outside its access schedule) rather than the password. As in
+                    // session restore, only a 401 means the credentials were rejected.
+                    throw JellyfinAuthError.forbidden
                 default:
                     throw JellyfinAuthError.http(http.statusCode)
                 }
@@ -688,6 +719,10 @@ final class AuthManager {
             guard isCurrentAuthAttempt(attemptID) else { return }
             finishAuthAttempt(attemptID)
             state = .failed("Invalid Jellyfin username or password.")
+        } catch JellyfinAuthError.forbidden {
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
+            state = .failed(Self.forbiddenSignInMessage(backendName: "Jellyfin"))
         } catch JellyfinAuthError.http(let status) {
             guard isCurrentAuthAttempt(attemptID) else { return }
             finishAuthAttempt(attemptID)
@@ -891,8 +926,11 @@ final class AuthManager {
                 switch http.statusCode {
                 case 200..<300:
                     break
-                case 401, 403:
+                case 401:
                     throw EmbyAuthError.unauthorized
+                case 403:
+                    // Same split as Jellyfin: a refused account is not a wrong password.
+                    throw EmbyAuthError.forbidden
                 default:
                     throw EmbyAuthError.http(http.statusCode)
                 }
@@ -908,6 +946,11 @@ final class AuthManager {
             finishAuthAttempt(attemptID)
             recordAuthDiagnostic("auth.emby.login.unauthorized")
             state = .failed("Invalid Emby username or password.")
+        } catch EmbyAuthError.forbidden {
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
+            recordAuthDiagnostic("auth.emby.login.forbidden")
+            state = .failed(Self.forbiddenSignInMessage(backendName: "Emby"))
         } catch EmbyAuthError.http(let status) {
             guard isCurrentAuthAttempt(attemptID) else { return }
             finishAuthAttempt(attemptID)
@@ -1474,7 +1517,7 @@ final class AuthManager {
             signOutEmby()
         }
         state = .idle
-        sessionRestoreOutcome = .requiresSignIn
+        sessionRestoreOutcome = .missingCredential
     }
 
     /// Coordinated local sign-out for every backend. Remote revocation remains best effort and
@@ -1511,7 +1554,7 @@ final class AuthManager {
         }
         appModel.activeBackend = .plex
         state = .idle
-        sessionRestoreOutcome = .requiresSignIn
+        sessionRestoreOutcome = .missingCredential
 
         // Shared system integration is intentionally updated once after the coordinated clear.
         SpotlightIndexer.deleteAll()
@@ -1680,6 +1723,8 @@ struct PlexSessionDiscovery {
 
 private enum JellyfinAuthError: Error {
     case unauthorized
+    /// Username/password sign-in refused with HTTP 403 (account not allowed), not a bad password.
+    case forbidden
     /// A 2xx identity probe returned a different (normalized) user id than the saved session.
     /// Ambiguous, not a revoked credential — restore preserves the keychain snapshot.
     case identityMismatch
@@ -1691,6 +1736,8 @@ private enum JellyfinAuthError: Error {
 
 enum EmbyAuthError: Error {
     case unauthorized
+    /// Username/password sign-in refused with HTTP 403 (account not allowed), not a bad password.
+    case forbidden
     case http(Int)
     case missingCredentials
     case secureStorageFailed
