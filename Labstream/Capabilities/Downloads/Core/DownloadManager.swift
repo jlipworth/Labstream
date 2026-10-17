@@ -918,6 +918,7 @@ public final class DownloadManager {
                 // revalidation, server-prep polling, or static auto-resume scans can run.
                 self.migrateAndRetryActiveEncodingCleanupOnLaunch()
                 self.finalizeCompletedStaticRangeDownloads(reason: "launch_recovered")
+                self.refinalizeInterruptedForwardOnlyBodies()
                 self.revalidateUnverifiedDownloads(reason: "launch_recovered")
                 if !self.isQueuePaused {
                     self.resumePendingServerPrepDownloads()
@@ -2154,6 +2155,22 @@ public final class DownloadManager {
         for record in store.records {
             guard record.status != .complete, record.status != .unverified else { continue }
             _ = finalizeCompletedStaticRangeIfNeeded(record: record, reason: reason)
+        }
+    }
+
+    /// P3a/B10: a forward-only row whose finished body survived a relaunch before validation is
+    /// kept `finalizing` by reconcile; validate it now instead of re-transcoding from zero.
+    private func refinalizeInterruptedForwardOnlyBodies() {
+        for record in store.records {
+            guard let key = attemptKey(for: record),
+                  record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .liveForwardOnly,
+                  store.lifecycleState(for: key)?.lifecycle == .finalizing,
+                  !store.isDeletionPending(for: key) else { continue }
+            recordDownloadDiagnostic("downloads.forward_only_refinalize", fields: [
+                "download_id": .identifier(record.ratingKey),
+            ])
+            _ = session.finalizeCompletedStaticRangeFile(
+                ratingKey: record.ratingKey, validationLabel: "forward_only_recovered")
         }
     }
 

@@ -5086,6 +5086,22 @@ final class DownloadStore: @unchecked Sendable {
             let hasLiveStaticRangeTask = hasLiveTask
                 && resumeMode == .staticByteRange
                 && (row.status == .paused || row.status == .queued || row.status == .downloading)
+            // P3a/B10: a forward-only body reaches the attempt working path only once its whole
+            // transfer finished (opaque tasks write to the system temp until then), and a
+            // persisted `finalizing` row has a complete body by definition. Without a live task,
+            // keep the row finalizing with its body for re-finalization, never fail and delete it.
+            let hasCompleteBodyAwaitingFinalization = !hasLiveTask && fileExists && partialBytes > 0
+                && (row.lifecycle == .finalizing
+                    || (resumeMode == .liveForwardOnly
+                        && (row.status == .queued || row.status == .downloading)))
+            if hasCompleteBodyAwaitingFinalization {
+                if row.lifecycle != .finalizing {
+                    row.lifecycle = .finalizing
+                    rows[key] = row
+                    changed = true
+                }
+                continue
+            }
             let newStatus: DownloadStatus
             if isPlexServerPrepOptimizedJob {
                 newStatus = .queued

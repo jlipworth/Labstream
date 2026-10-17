@@ -158,6 +158,53 @@ struct DownloadLifecycleStoreTests {
         }
     }
 
+    @Test("Relaunch keeps a finished forward-only body for re-finalization (B10)")
+    func relaunchKeepsFinishedForwardOnlyBody() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            var metadata = OfflineMetadata(ratingKey: "jellyfin:done", title: "Done", type: "movie")
+            metadata.resumeMode = .liveForwardOnly
+            let finished = try seed("jellyfin:done", status: .downloading, metadata: metadata,
+                                    in: store)
+            let body = try #require(store.attemptWorkingFileURL(for: finished))
+            try Data(repeating: 7, count: 4_096).write(to: body)
+
+            var lostMetadata = metadata
+            lostMetadata.ratingKey = "jellyfin:lost"
+            let lost = try seed("jellyfin:lost", status: .downloading, metadata: lostMetadata,
+                                in: store)
+
+            store.reconcile(liveRatingKeys: [],
+                            snapshotRatingKeys: [finished.ratingKey, lost.ratingKey])
+
+            #expect(store.lifecycleState(for: finished)?.lifecycle == .finalizing)
+            #expect(store.record(for: finished)?.status == .downloading)
+            #expect(FileManager.default.fileExists(atPath: body.path), "the body is never deleted")
+            // Without a body nothing finished: unchanged from today, the row fails.
+            #expect(store.record(for: lost)?.status == .failed)
+        }
+    }
+
+    @Test("A persisted finalizing static row survives relaunch with its body")
+    func relaunchKeepsFinalizingStaticRow() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            var metadata = OfflineMetadata(ratingKey: "plex:final", title: "Final", type: "movie")
+            metadata.resumeMode = .staticByteRange
+            let key = try seed("plex:final", status: .downloading, metadata: metadata, in: store)
+            let body = try #require(store.attemptWorkingFileURL(for: key))
+            try Data(repeating: 9, count: 2_048).write(to: body)
+            _ = store.submitLifecycleEvent(.bodyAtWorking, for: key,
+                                           facts: DownloadRowFacts(route: .staticRange))
+            #expect(store.lifecycleState(for: key)?.lifecycle == .finalizing)
+
+            store.reconcile(liveRatingKeys: [], snapshotRatingKeys: [key.ratingKey])
+
+            #expect(store.lifecycleState(for: key)?.lifecycle == .finalizing)
+            #expect(FileManager.default.fileExists(atPath: body.path))
+        }
+    }
+
     private func profiled(_ profile: String) -> OfflineMetadata {
         var metadata = OfflineMetadata(ratingKey: "plex:strike", title: "Item", type: "movie")
         metadata.requestedProfileLabel = profile
