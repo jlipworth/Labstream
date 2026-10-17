@@ -4985,7 +4985,7 @@ public final class DownloadManager {
             .mediaContainer.metadata.first
     }
 
-    private static func currentMediaItemRequest(ratingKey: String, server: URL, token: String,
+    static func currentMediaItemRequest(ratingKey: String, server: URL, token: String,
                                                 identity: ClientIdentity) -> PlexRequest {
         PlexRequest(url: server.appendingPathComponent("/library/metadata/\(ratingKey)"),
                     method: "GET",

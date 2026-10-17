@@ -16,11 +16,14 @@ extension DownloadManager {
     /// Clean-restart retries pass through the normal backend download entry points, which already
     /// enqueue side assets. Resume-data retries do not: they restart URLSession directly and return.
     /// All cache functions are missing-file aware and attempt fenced, so this is safe for a partial
-    /// first pass and does not redownload assets that already reached durable storage. Completed-row
-    /// scans are limited to rows with a known missing poster/chapter file; unsupported optional
-    /// assets must not turn every foreground activation into server traffic. A per-launch budget
-    /// (`completedRowSideAssetRetryBudget`) stops re-arming an exact (attempt, source, kind) whose
-    /// asset the server can never produce, so a permanently-404'd ref does not re-issue forever.
+    /// first pass and does not redownload assets that already reached durable storage. Completed
+    /// rows are scanned by `DownloadSideAssetRepairInventory`, which also offers payloads only the
+    /// server can enumerate (Plex BIF and text subtitles, MediaBrowser previews and subtitles), so a
+    /// row can need a source-metadata refresh on every foreground edge. Every request, including
+    /// that refresh, goes through `SideAssetFetchCoordinator` pacing. A per-launch budget
+    /// (`completedRowSideAssetRetryBudget`) stops re-arming an exact (attempt, source, kind,
+    /// resource) whose asset the server can never produce; the source-metadata refresh shares one
+    /// budget per (attempt, source) across discovery kinds.
     func rehydrateMissingOptionalSideAssetsForCompletedRows(reason: String) {
         guard !isQueuePaused else { return }
         for record in store.records where record.isComplete {
@@ -139,16 +142,21 @@ extension DownloadManager {
                 downloadWorkRegistry.startIfAbsent(
                     for: attemptKey, kind: .sideCache(.sourceMetadataRefresh)
                 ) { [weak self] in
+                // B25: the refresh is paced by the side-asset coordinator like every other
+                // optional request, and its budget is charged only at transport admission.
                 guard let self,
                       !Task.isCancelled,
                       self.store.sideAssetSourceIdentity(for: attemptKey)
                         == metadata.sideAssetSourceIdentity,
-                      self.chargeOptionalSideAssetDispatch(
+                      let data = try? await self.fetchOptionalSideAsset(
+                        Self.currentMediaItemRequest(
+                            ratingKey: metadata.ratingKey, server: server, token: token,
+                            identity: self.appModel.identity).urlRequest(),
                         for: attemptKey, source: metadata.sideAssetSourceIdentity,
-                        kind: discoveryKind, resource: "source-metadata"),
-                      let currentItem = await self.fetchCurrentMediaItem(
-                        ratingKey: metadata.ratingKey, server: server, token: token,
-                        identity: self.appModel.identity),
+                        kind: discoveryKind,
+                        resource: DownloadSideAssetRetryIdentity.sourceMetadataResource),
+                      let currentItem = (try? JSONDecoder().decode(
+                        MetadataResponse.self, from: data))?.mediaContainer.metadata.first,
                       !Task.isCancelled,
                       let currentRecord = self.store.record(for: attemptKey),
                       currentRecord.status != .failed,
@@ -200,7 +208,8 @@ extension DownloadManager {
                         guard let self else { throw CancellationError() }
                         return try await self.fetchOptionalSideAsset(
                             request, for: attemptKey, source: metadata.sideAssetSourceIdentity,
-                            kind: .textSubtitles, resource: "source-metadata")
+                            kind: .textSubtitles,
+                            resource: DownloadSideAssetRetryIdentity.sourceMetadataResource)
                     })
                 downloadWorkRegistry.startIfAbsent(
                     for: attemptKey, kind: .sideCache(.sourceMetadataRefresh)
@@ -247,7 +256,8 @@ extension DownloadManager {
                         guard let self else { throw CancellationError() }
                         return try await self.fetchOptionalSideAsset(
                             request, for: attemptKey, source: metadata.sideAssetSourceIdentity,
-                            kind: .textSubtitles, resource: "source-metadata")
+                            kind: .textSubtitles,
+                            resource: DownloadSideAssetRetryIdentity.sourceMetadataResource)
                     })
                 downloadWorkRegistry.startIfAbsent(
                     for: attemptKey, kind: .sideCache(.sourceMetadataRefresh)

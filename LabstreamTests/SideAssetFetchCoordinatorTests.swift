@@ -870,6 +870,82 @@ final class DownloadSideAssetRetryBudgetTests: XCTestCase {
         otherSource.mediaSourceID = "replacement-source"
         XCTAssertTrue(budget.canDispatch(identity(source: otherSource), maximum: 1))
     }
+
+    /// B25: Plex BIF and text-subtitle repair both start with the same source-metadata fetch.
+    /// One (attempt, source) gets one source-metadata budget, not one per discovery kind.
+    func testSourceMetadataDiscoverySharesOneBudgetAcrossKinds() {
+        var budget = DownloadSideAssetRetryBudget()
+        let bif = identity(kind: .plexBIF, resource: "source-metadata")
+        let subtitles = identity(kind: .textSubtitles, resource: "source-metadata")
+        XCTAssertTrue(budget.chargeDispatch(bif, maximum: 2))
+        XCTAssertTrue(budget.chargeDispatch(subtitles, maximum: 2))
+        XCTAssertFalse(budget.canDispatch(bif, maximum: 2))
+        XCTAssertFalse(budget.canDispatch(subtitles, maximum: 2))
+        // Payload resources keep their own kind-scoped budgets.
+        XCTAssertTrue(budget.canDispatch(identity(kind: .plexBIF), maximum: 2))
+        XCTAssertTrue(budget.canDispatch(
+            identity(attempt: "attempt-b", kind: .textSubtitles, resource: "source-metadata"),
+            maximum: 2))
+    }
+}
+
+/// B25: completed Plex rows refresh `/library/metadata` before BIF and subtitle repair. That
+/// refresh must go through the side-asset coordinator's per-origin pacing, so a foreground edge
+/// over many completed rows cannot burst one unpaced request per row.
+@MainActor
+final class DownloadSideAssetPlexRepairPacingTests: XCTestCase {
+    func testCompletedPlexRowMetadataRefreshIsAdmittedByTheCoordinator() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "side-asset-plex-repair-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = DownloadStore(baseDirectory: directory)
+        let serverURL = "https://plex.example.invalid:32400"
+        var owners: Set<String> = []
+        for ratingKey in ["101", "102"] {
+            let attemptID = DownloadAttemptID.generated()
+            let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+            let record = DownloadRecord(
+                ratingKey: ratingKey, attemptID: attemptID, title: "Item",
+                localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
+                bytes: 1, progress: 1, status: .complete,
+                metadata: OfflineMetadata(
+                    ratingKey: ratingKey, title: "Item", type: "movie",
+                    backendKind: .plex, backendBaseURLString: serverURL))
+            XCTAssertEqual(store.createAttemptOwnedRecord(record, attemptID: attemptID),
+                           .committed(key))
+            owners.insert(DownloadManager.sideAssetOwner(for: key).rawValue)
+        }
+        let model = AppModel(identity: PlatformClientIdentity.make(
+            clientIdentifier: "side-asset-plex-repair"), activeBackend: .plex)
+        model.serverBaseURL = URL(string: serverURL)!
+        model.serverToken = "token"
+        let coordinator = SideAssetFetchCoordinator(policy: SideAssetRequestPolicy(
+            maximumRequestStartsPerSecond: 1_000, maximumConcurrentRequests: 4))
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+        defer { session.invalidateInjectedSessionForTesting() }
+        let manager = DownloadManager(
+            appModel: model, store: store, session: session,
+            cleanupIntentJournal: DownloadCleanupIntentJournal(directory: directory),
+            sideAssetFetchCoordinator: coordinator,
+            registerForBackgroundEvents: false)
+        for _ in 0..<100 where manager.startupRecoveryState != .ready {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(manager.startupRecoveryState, .ready)
+        XCTAssertFalse(manager.isQueuePaused)
+
+        manager.rehydrateMissingOptionalSideAssetsForCompletedRows(reason: "test")
+
+        var admitted: Set<String> = []
+        for _ in 0..<100 {
+            admitted = Set(await coordinator.recordedAdmissionsForTesting().map(\.owner.rawValue))
+            if admitted == owners { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(admitted, owners)
+    }
 }
 
 final class DownloadSideAssetServiceTests: XCTestCase {
