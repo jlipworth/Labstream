@@ -239,9 +239,11 @@ public enum DownloadLifecycleReducer {
             return to(.planned)
 
         case .admissionDeferred(let intent):
-            // Only a start that never became active defers; live work, a user pause and finished
-            // rows are never rewritten by a deferral.
-            guard lifecycle == .admitted || lifecycle == .failed || lifecycle == .planned else {
+            // An unproven start (or orphaned active residue) waits again. A user pause, finalizing
+            // and finished rows are never rewritten; the manager also checks the generation and
+            // deletion state first. Server job and checkpoint metadata are untouched.
+            guard lifecycle == .admitted || lifecycle == .serverPrep || lifecycle == .failed
+                    || lifecycle == .planned else {
                 return illegal
             }
             next.history.admissionIntent = intent

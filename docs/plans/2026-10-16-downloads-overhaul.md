@@ -724,6 +724,14 @@ Acceptance is a phase's pins and inventory rows staying green.
     - 25 pins;
     - activation in a single commit.
   - **Shape:** P4 ships as one PR, per the maintainer's pace decision.
+- **2026-10-17 — P4 plan co-review, round 2: approve with changes.**
+  - **Resolved:** R1.3, 9, 10, 11, 12, 13, 17 and 18.
+  - **Partially resolved, amended in revision 3:** supervision until start completion, retry
+    routing from facts, durable waiting seeds, the reducer sources, orphan normalization, atomic
+    lane switches and the pump wake, exemption threading, the Emby scanner set, the Emby handoff's
+    task-map removal, the persisted dispatch grace, and the extra pins.
+  - **No further plan round.** Implementation starts on revision 3, per the maintainer's pace
+    decision.
 
 ## P2 detailed plan — cleanup foundation
 
@@ -1561,7 +1569,7 @@ build ships.
 
 ## P4 detailed plan — admission coordinator and server-prep runners
 
-**Status:** revision 2 (2026-10-17), after the first co-review. That review returned **rework**,
+**Status:** revision 3 (2026-10-17): revision 2 plus the round-2 amendments below. Revision 2 was written after the first co-review. That review returned **rework**,
 with 3 blockers and 13 majors; the findings and responses are in the progress journal.
 
 **Shape:** P4 ships as **one PR**. The maintainer wants to reach P7 quickly, and the two halves share
@@ -1865,6 +1873,93 @@ every commit builds and passes.
 4. **Emby:** registered chain, handoff operation, injectable HTTP.
 5. **Planner B69 and the waiting captions.**
 6. **Docs.**
+
+### Revision 3 amendments (co-review round 2: approve with changes)
+
+These amendments override the sections above where they differ.
+
+1. **Supervision until start completion** (round 2, items 2, 20).
+   - Every grant has a generation, and the coordinator **supervises** it until the start's async
+     work returns its typed `StartOutcome`.
+   - Each row is counted once: as observed occupancy while it is active, otherwise through its
+     supervised reservation.
+   - Pause, delete, and a newer generation invalidate the generation.
+   - `retry(record:)` and the `download*` entry points return an outcome that reflects their
+     nested async work, so the start Task awaits it. The coordinator itself still never awaits a
+     start.
+   - The stalled-stream restart goes through admission as an automatic request.
+2. **Retry routing from facts** (item 1).
+   - The retry mode is chosen from lifecycle, route and retained facts, and `planned` counts like
+     `paused`. Retained facts mean a checkpoint, a resume blob, an Emby job id, or a Plex queue
+     title before handoff.
+   - `DownloadRetryPreparationPolicy` accepts a `planned` Plex prep row for reattachment.
+   - A paused forward-only Jellyfin or Emby row gets an explicit fresh-restart transition before its
+     async continuation guard.
+3. **Two waiting kinds, both durable** (items 5, 22).
+   - **First starts** use intent `seasonPlanned`, which now means "a first start from a planned
+     seed": season rows and taps that are over capacity. A waiting tap persists the same seed shape
+     a season row uses, and both start through `startPlannedRecord`. That function is
+     `startSeasonPlannedRecord` generalized, so it keeps the refresh and the exact source
+     validation. The static container comes from that validation, never from a placeholder.
+   - **Parked rows** use intent `retryRequested`: Resume All, and a row Resume or Retry delayed by
+     capacity. They start through `retry(record:)`.
+   - Every waiting request is a committed `planned` row. The coordinator's request list is rebuilt
+     from planned rows at launch, and after a relaunch every origin is automatic.
+   - A request is enqueued only after its `planned` transition commits. A failed or indeterminate
+     commit is not enqueued and is reported.
+   - Season rollback undoes only the transaction's own unchanged mutations, including lifecycle and
+     history. A concurrent pause or delete wins.
+4. **Reducer** (items 6, 23).
+   - `admissionDeferred` is legal from `admitted`, `serverPrep`, `failed` and `planned`. From
+     `planned` it is idempotent.
+   - It is never applied to a paused, deleting, finalizing, terminal or superseded row; the manager
+     checks the generation and deletion state first.
+   - Server job and checkpoint metadata are untouched, so a later retry still resumes the job.
+   - A repeated `admissionRequested` on a `planned` row only updates the intent.
+5. **Orphan normalization** (items 4, 19).
+   - Before admission opens at startup, and whenever a supervised start or a registered poller
+     ends, the manager classifies every active-looking row:
+     - a live session task, an attached poller, or a supervised start → occupying;
+     - otherwise → `admissionDeferred` with its route intent.
+   - Job and cleanup authority is kept.
+   - Unavailable sessions defer with backoff instead of staying active forever.
+6. **Lane changes** (items 7, 21).
+   - `coordinator.switchLane(ratingKey, generation, to:)` is atomic. It excludes the row's own
+     contribution, checks the generation, and installs the new lane before the create yields.
+   - The pump also wakes whenever the occupancy vector changes, including the Plex prep → static
+     handoff.
+7. **Exemption reaches existing gates** (item 8). The row exemption is honoured by:
+   - `ServerPrepRefreshPolicy` parking and the prep scanner;
+   - static recovery;
+   - the Emby handoff park.
+
+   Convert polling continues during Pause All.
+8. **Scanner set** (item 24).
+   - The scanner reattaches admitted Plex prep, `serverPrep` Emby Convert, and the failed
+     crash-window Emby recovery. It excludes `planned` rows.
+   - Lanes come from the metadata table, and the handoff stamps are kept.
+9. **Emby handoff** (item 3). The Emby poller end compare-removes its own
+   `serverPrepPollerTasks` entry before any release, so `releaseInFlight` cannot cancel the running
+   handoff.
+10. **Plex create grace** (items 14, 25).
+    - The dispatch time is persisted **before** the POST.
+    - While that dispatch's grace is open, absence means "keep inspecting": no POST, and no
+      timestamp reset.
+    - After the grace, an `inspectedAbsent` queue item plus a successful metadata inspection with
+      no adoptable version fails the dispatch.
+    - A legacy row without dispatch evidence keeps today's recreate rule, stamping the dispatch
+      first.
+11. **More pins** (item 16):
+    - active → unavailable completion;
+    - orphan occupancy at relaunch;
+    - the lane-change wake;
+    - a planned Plex prep row reattaches;
+    - Resume of a paused forward-only row;
+    - waiting-seed relaunch and the container of a non-MP4 Jellyfin original;
+    - an admission persistence failure;
+    - a relaunch inside the create grace.
+12. **Final gate** (item 17). The final commit is the combined regression gate: the full matrix
+    plus every pin. Intermediate commits build, but they claim no behaviour beyond their own pins.
 
 ### Out of P4
 
@@ -2215,8 +2310,8 @@ This is every edge case the history shows the module has had to handle. *Status*
 | emby-21 | Crash-window identity older than 24 h expires: handed to cleanup and the row released | Recovery past the adoption deadline could only fail, so the row looped .preparing→.failed on every Retry with delete as the only escape. | partially-handled | yes | no | P4 |
 | emby-22 | A row deleted or paused while POST /Sync/Jobs is in flight is not resurrected | Re-upserting the row after a user delete resurrects a cancelled download. | partially-handled | yes | no | P4 |
 | emby-23 | Status polling: healthy renders are unbounded; a consecutive run of unreachable/5xx/undecodable responses is bounded (60 × 5 s) | EMBY-F13: a persistently unreachable server left the row in 'Preparing on server…' forever. | handled | yes | no | P4 |
-| emby-24 | Terminal poll HTTP: 404/410 clears the job id (fresh retry); 401/403 KEEPS it so re-login plus Retry resumes the live job | A dead job must not be re-polled forever, but an auth blip must not discard hours of server-side render. | dropped-accidental | yes | yes | P4 |
-| emby-25 | Retrying a .failed row that still owns a Sync job id resumes POLLING rather than POSTing again | The poll-health budget parks a row as failed after about 5 min offline while the job keeps rendering. A fresh POST orphaned it as a duplicate. | dropped-accidental | yes | no | P4 |
+| emby-24 | Terminal poll HTTP: 404/410 clears the job id (fresh retry); 401/403 KEEPS it so re-login plus Retry resumes the live job | A dead job must not be re-polled forever, but an auth blip must not discard hours of server-side render. | handled (restored before P4: `isTerminalEmbyConvertPollStatus`, clear only on 404/410) | yes | yes | P4 |
+| emby-25 | Retrying a .failed row that still owns a Sync job id resumes POLLING rather than POSTing again | The poll-health budget parks a row as failed after about 5 min offline while the job keeps rendering. A fresh POST orphaned it as a duplicate. | handled (restored before P4: `DownloadRetryPreparationPolicy` resumes polling for a failed row that owns a job id) | yes | no | P4 |
 | emby-26 | Progress pinned at 0 while Converting shows indeterminate 'Preparing on server…', never '0%' or an ETA | Emby reports Progress 0 until completion, then jumps to 100. | handled | yes | no | P4 |
 | emby-27 | Job status decoding is forward-compatible: unknown strings are non-terminal | An unexpected server string must never crash polling. | partially-handled | yes | no | P4 |
 | emby-28 | Server-side Failed/Cancelled fails the row and clears the job id so Retry creates a fresh job | A failed row that kept a terminal job id re-polled and re-failed forever. | handled | yes | no | P4 |
