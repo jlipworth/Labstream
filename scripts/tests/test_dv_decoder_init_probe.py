@@ -9,7 +9,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
-@unittest.skipUnless(platform.system() == "Darwin" and shutil.which("swiftc"),
+@unittest.skipUnless(platform.system() == "Darwin" and shutil.which("xcrun"),
                      "requires native Apple media frameworks")
 class DVDecoderInitProbeTests(unittest.TestCase):
     @classmethod
@@ -17,7 +17,7 @@ class DVDecoderInitProbeTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.temp.cleanup)
         cls.binary = pathlib.Path(cls.temp.name) / "dv-init-probe"
-        subprocess.run(["swiftc", "-parse-as-library",
+        subprocess.run(["xcrun", "swiftc", "-parse-as-library",
                         str(ROOT / "scripts/dv-decoder-init-probe.swift"),
                         "-o", str(cls.binary)], check=True, capture_output=True, timeout=120)
 
