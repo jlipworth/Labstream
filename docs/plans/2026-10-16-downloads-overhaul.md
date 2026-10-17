@@ -1158,52 +1158,71 @@ migration therefore means:
 - journaling dropped rows' obligations;
 - bumping the version.
 
-### P3b revision 3 (2026-10-17, after P3a)
+### P3b revision 4 (2026-10-17): upgrade in place through ordinary operations
 
-P3a shipped authoritative lifecycle and history inside v4. This revision updates the protocol below
-for what P3a established and deferred. Where it conflicts with the earlier text, it wins.
+The before-review of revision 3 asked for rework (10 findings). Most of them came from running a
+bespoke transaction beside the store: a receipt spanning several replacements, a drain that
+resets or activates, v4 recovery inside the migration, and reclaim lists that outlive their rows.
+Revision 4 removes the bespoke transaction. Where it conflicts with P3b.1, P3b.2 or revision 3,
+it wins.
 
-- **Admission.** A clean v4 index (it decodes with unique keys and no malformed rows) probes as
-  `.migratable(from: 4)`, and admission reports `.requiresMigration(from: 4)`. Anything else that
-  is v4 stays blocked as unreadable or malformed, as today.
-- **Drain.** The manager reuses the existing destructive-reset drain: the background session must
-  reach an empty task-list fixed point before the store migrates. No new drain primitive is
-  needed. While migration is incomplete, admission stays closed, so no session, manager or
-  cleanup-runner writer exists.
-- **Settle pending work.** Before migrating, the store runs the existing v4 artifact recovery to
-  completion: queued intents, pending validated promotions, and deletion-pending capsules. Each
-  canonical index write it makes is journaled in the receipt as `(beforeDigest, afterDigest)`.
-  Anything still unresolved blocks the migration fail-closed (`.migrationBlocked`) with the bytes
-  untouched.
-- **D1.**
-  - **Kept rows:** `complete` and `unverified`. An unverified row keeps its P3a reason, or gets
-    `migratedUnknown` if it has none.
-  - **Dropped rows:** every other lifecycle (planned, admitted, serverPrep, transferring,
-    finalizing, paused, failed).
-  - **Server obligations** of dropped rows are journaled as abandonments through the existing P2
-    producers: Plex optimize item, Emby Convert job, active encoder. The runner treats their
-    `rowState` as `.unknown` until the v5 commit is proven and loaded (R2-7).
-- **Commit.**
-  1. Write the candidate to a sibling file.
-  2. Persist its digest in the receipt.
-  3. Rename it over `index.json` and fsync the directory.
-  4. Prove the commit by digest.
-
-  Recovery precedence is unchanged (P3b.2).
-- **Reclaim.** After the commit, this deletes:
-  - files referenced only by dropped rows (working bodies, resume blobs, held segments, side
-    assets no kept row references);
-  - unreferenced attempt staging, which includes P3a's renamed condemned bodies.
-
-  A reclaim failure never blocks the commit or cleanup. The receipt step resumes on the next
-  launch.
-- **P3a deferrals answered here:**
-  - Retired condemned bodies are reclaimed by the migration sweep, and by P6 afterwards.
-  - Reconcile deletions as journaled artifact intents: proposed to stay deferred to P6 (physical
-    facet split), not added to P3b. A new intent case is safe only once v5 makes the index
-    unreadable to older binaries, and P3b should stay a pure transaction.
-- **Downgrade.** The P1 guard (#371) classifies v5 as unreadable and keeps it. Release ordering
-  is unchanged: a build containing the guard must ship before any v5 build.
+1. **v4 stays a current shape.**
+   - The codec decodes envelopes with version 4 or 5; the row shape is identical.
+   - The store records which version it loaded (`indexSchemaVersion`) and encodes every
+     snapshot with that version, captured with the snapshot at enqueue time. A v4 index is
+     therefore never published as v5 by accident.
+   - Probe: 4 or 5 is `.current`; 1–3 is `.unsupported` (reset); anything newer is unreadable
+     (the P1 guard). The existing malformed, duplicate and unreadable rules are unchanged.
+   - Every v4 recovery path (artifact intents, promotions, held deletions, capsules) runs at
+     startup exactly as today. That covers findings 3 and 6.
+2. **The upgrade is a manager startup phase.** If the store loaded v4, startup passes through
+   `StartupRecoveryState.upgradingSchema` before `.ready`.
+   - The background session activates normally. Its existing purge cancels any OS task whose
+     attempt the store does not own, and ownership is exact-attempt, so a dropped row's late
+     callbacks are rejected.
+   - No migration-specific drain exists (finding 2).
+   - While upgrading, admission stays closed: no new download, Retry, Resume or season
+     admission. No new row can enter the pre-upgrade set.
+3. **D1 through Delete.**
+   - Every row whose lifecycle is neither complete nor unverified is removed through the
+     ordinary user Delete path, `delete(record:)`.
+   - That path journals the row's server obligations with P2's `rowDeletion` provenance before
+     any local deletion. It retains a deletion-pending capsule if the journal is unavailable,
+     and deletes the files through the existing row-deletion artifact intents.
+   - An obligation it cannot represent (a legacy row with no persisted server identity) gets
+     the same disclosure a user Delete gives. Retaining an undeletable row would not repair it.
+   - This covers findings 7, 8 and 9. Reclaim is the existing artifact queue. Orphaned staging,
+     including P3a's renamed condemned bodies, falls to the ordinary startup sweep on the next
+     launch, because v4 probes `.current`.
+4. **Stamp v5.**
+   - Once no pre-upgrade row remains in a non-terminal, non-deletion-pending state,
+     `store.commitSchemaUpgrade()` does two things under the lock:
+     - sets `migratedUnknown` on unverified rows that have no reason;
+     - switches `indexSchemaVersion` to 5 and enqueues one ordinary index commit through the
+       existing committer (full fsync, rename, directory fsync).
+   - The rows are identical apart from that history fill, so there is no candidate, receipt or
+     digest protocol.
+   - A deletion-pending capsule may remain, because it is a valid v5 structure.
+   - Startup becomes `.ready` only after the stamp commits.
+5. **Crash anywhere** before the stamp commits leaves v4 on disk. The next launch repeats the
+   phase idempotently: rows already deleted are gone, and capsules are recovered by the normal
+   paths. A crash after the commit leaves v5. A failed stamp commit leaves the snapshot dirty;
+   startup stays `.upgradingSchema` with Retry Recovery, as for a blocked index. That covers
+   findings 1, 4 and 5.
+6. **Tests** (finding 10, written first):
+   - every lifecycle is kept or dropped as D1 says;
+   - kept bodies, metadata, history and existing unverified reasons are preserved, and
+     `migratedUnknown` is set only when the reason is absent;
+   - a pre-P3a v4 index upgrades directly;
+   - encoding keeps v4 until the stamp, with a delayed write that crosses the stamp boundary;
+   - a crash before the stamp, and after it, each recover;
+   - a dropped row with each obligation kind is journaled before its removal, including when
+     the journal fails (capsule kept, then a later stamp);
+   - admission is closed while upgrading, and a dropped row's late callback is rejected;
+   - v5 loads as current; 1–3 reset; 6 is unreadable;
+   - malformed, duplicate or invalid-owner v4 stays blocked.
+7. **Out of scope.** New artifact-intent cases (reconcile deletion intents, retired condemned
+   bodies) stay in P6. The downgrade-guard release ordering is unchanged.
 
 ### P3b.1 Probe
 
