@@ -1624,13 +1624,13 @@ public final class DownloadManager {
             // A freshly seeded URLSession task can still be `.queued` until first progress. Route
             // queued rows through the session too, but park no-live static gaps immediately.
             guard let key = attemptKey(for: record),
-                  setAttemptStatus(.paused, for: key, context: "user_pause") else { return }
+                  applyLifecycleEvent(.pause(.user), for: key, context: "user_pause") else { return }
             session.pause(ratingKey: ratingKey)
         case .cancelTaskOnly:
             session.pause(ratingKey: ratingKey)
         case .parkPreparing:
             guard let key = attemptKey(for: record),
-                  setAttemptStatus(.paused, for: key, context: "user_pause") else { return }
+                  applyLifecycleEvent(.pause(.user), for: key, context: "user_pause") else { return }
         }
         clearOptimizeProgress(ratingKey: ratingKey)
         setOptionalSideAssetHydrationParked(true, for: releaseKey)
@@ -1663,6 +1663,12 @@ public final class DownloadManager {
             ])
             pause(ratingKey: record.ratingKey)
         }
+    }
+
+    /// Flip only the in-memory queue gate, without pausing rows or touching the shared defaults
+    /// other tests read at manager init.
+    func setQueuePausedForTesting(_ paused: Bool) {
+        isQueuePaused = paused
     }
 
     /// Pause all non-terminal work and persist the queue gate across relaunch.
@@ -1865,6 +1871,117 @@ public final class DownloadManager {
         })
     }
 
+    /// P3a: change an exact attempt's lifecycle through the reducer and wait for the revision to
+    /// commit, mirroring `setAttemptStatus`'s blocking contract. Returns false when the owner is
+    /// stale, the reducer rejects the event in the row's current lifecycle, or the snapshot did not
+    /// commit; callers must not create dependent work or change manager trackers in that case.
+    @discardableResult
+    func applyLifecycleEvent(
+        _ event: DownloadLifecycleEvent,
+        for key: DownloadAttemptKey,
+        context: String
+    ) -> Bool {
+        applyLifecycleEvent(event, for: key, context: context, plannedLegacyStatus: nil)
+    }
+
+    /// `plannedLegacyStatus` covers one reducer gap. A season retry row (a failed attempt the
+    /// planner flagged for admission) that was loaded from a pre-P3a index derives `planned`, and
+    /// admission does not move it to `admitted` (see `admitSeasonPlannerRowsOnce`). The reducer
+    /// has no planned → serverPrep/transferring retry and no `backendUnavailable` from planned,
+    /// although the legacy status write reached those states from the same `.failed` row.
+    func applyLifecycleEvent(
+        _ event: DownloadLifecycleEvent,
+        for key: DownloadAttemptKey,
+        context: String,
+        plannedLegacyStatus: DownloadStatus?
+    ) -> Bool {
+        switch store.submitLifecycleEvent(event, for: key) {
+        case .staleOrMissing:
+            recordDownloadDiagnostic("downloads.status_owner_stale", fields: [
+                "download_id": .identifier(key.ratingKey),
+                "context": .label(context),
+            ])
+            return false
+        case .rejected(let rejection):
+            let lifecycle = store.lifecycleState(for: key)?.lifecycle
+            if rejection == .illegal, lifecycle == .planned, let plannedLegacyStatus {
+                // P3a-TODO: remove once the reducer can retry/park a planned season retry row
+                // (needs a PMSKit reducer change: planned → serverPrep/transferring/paused).
+                return setAttemptStatus(plannedLegacyStatus, for: key, context: context)
+            }
+            recordDownloadDiagnostic("downloads.lifecycle_event_rejected", fields: [
+                "download_id": .identifier(key.ratingKey),
+                "context": .label(context),
+                "event": .label(Self.lifecycleEventLabel(event)),
+                "lifecycle": .label(lifecycle?.rawValue ?? "missing"),
+                "rejection": .label(rejection == .illegal ? "illegal" : "replayed"),
+            ])
+            return false
+        case .accepted(let effects, let ticket):
+            // Manager events never produce durable effects; reject silently dropping one.
+            assert(effects.isEmpty, "manager lifecycle event produced effects: \(effects)")
+            switch store.resolveSynchronously(.accepted(change: .applied, ticket: ticket)) {
+            case .applied, .noChange:
+                return true
+            case .staleOrMissing:
+                recordDownloadDiagnostic("downloads.status_owner_stale", fields: [
+                    "download_id": .identifier(key.ratingKey),
+                    "context": .label(context),
+                ])
+                return false
+            case .persistenceFailed(let failure):
+                recordDownloadDiagnostic("downloads.status_persist_failed", fields: [
+                    "download_id": .identifier(key.ratingKey),
+                    "context": .label(context),
+                    "failure": .label(Self.startupPersistenceFailureLabel(failure)),
+                ])
+                return false
+            }
+        }
+    }
+
+    /// A server-prep failure. `prepFailed` covers the prep lifecycles; an attempt that already
+    /// handed off to its transfer (or is still planned) fails the same way as a transfer, which
+    /// is what the legacy `.failed` write did in those states.
+    @discardableResult
+    func applyServerPrepFailure(
+        _ reason: DownloadFailureReason,
+        for key: DownloadAttemptKey,
+        context: String
+    ) -> Bool {
+        let event: DownloadLifecycleEvent
+        switch store.lifecycleState(for: key)?.lifecycle {
+        case .transferring?, .finalizing?, .planned?: event = .transferFailed(reason)
+        default: event = .prepFailed(reason)
+        }
+        return applyLifecycleEvent(event, for: key, context: context)
+    }
+
+    /// The global queue gate parks this attempt (`pause(queuePaused)`). The reducer's `pause` is
+    /// for live work; a failed row the gate parks (legacy wrote `.paused` over it) takes the
+    /// `backendUnavailable` path, which accepts failed and records the same cause.
+    @discardableResult
+    func applyQueuePause(for key: DownloadAttemptKey, context: String) -> Bool {
+        let event: DownloadLifecycleEvent = store.lifecycleState(for: key)?.lifecycle == .failed
+            ? .backendUnavailable(.queuePaused) : .pause(.queuePaused)
+        return applyLifecycleEvent(event, for: key, context: context)
+    }
+
+    /// Bounded failure category for a manager-visible error (never its free-form text).
+    static func lifecycleFailureReason(for error: DownloadError) -> DownloadFailureReason {
+        switch error {
+        case .notAuthenticated: return .auth
+        case .optimizeFailed, .optimizeTimedOut, .noOptimizedPart: return .server
+        case .storageFull, .storageLimitExceeded: return .storage
+        case .transferFailed, .interruptedResumable: return .network
+        case .invalidDownload: return .validation
+        }
+    }
+
+    private static func lifecycleEventLabel(_ event: DownloadLifecycleEvent) -> String {
+        String(String(describing: event).prefix { $0 != "(" })
+    }
+
     func setAttemptStatus(
         _ status: DownloadStatus,
         for key: DownloadAttemptKey,
@@ -1949,16 +2066,27 @@ public final class DownloadManager {
                 preserveActiveIntent: preserveActiveIntent
             ) {
             case .queuedActiveIntent:
+                // P3a-TODO: no reducer event keeps (or restores) an admitted active intent while
+                // the backend is unavailable. This row can be paused, failed, admitted or
+                // transferring here; `backendUnavailable` would park it visibly paused,
+                // `transferRebuilding` would show it downloading (and rejects failed), and
+                // `retry` rejects admitted/transferring. Needs a PMSKit event
+                // ("awaiting session, keep intent") before this legacy write can go.
                 guard setAttemptStatus(.queued, for: key, context: "defer_resume") else { return }
                 lastError[ratingKey] = checkpointBytes > 0
                     ? .interruptedResumable
                     : .transferFailed(
                         "Download will restart when the \(backend.displayName) session is ready.")
             case .pausedAtCheckpoint:
-                guard setAttemptStatus(.paused, for: key, context: "defer_resume") else { return }
+                guard applyLifecycleEvent(
+                    .backendUnavailable(.awaitingSession), for: key, context: "defer_resume",
+                    plannedLegacyStatus: .paused) else { return }
                 lastError[ratingKey] = .interruptedResumable
             case .failedNoCheckpoint:
-                guard setAttemptStatus(.failed, for: key, context: "defer_resume") else { return }
+                // Nothing to resume from: the missing session fails the attempt as an auth
+                // failure (retry restarts from zero once the session returns).
+                guard applyLifecycleEvent(
+                    .transferFailed(.auth), for: key, context: "defer_resume") else { return }
                 lastError[ratingKey] = .transferFailed(
                     "No completed checkpoint was saved before the interruption; retry will restart this download from 0%.")
             }
@@ -2051,8 +2179,7 @@ public final class DownloadManager {
                 [weak self] checkpointBytes in
                 guard let self, let checkpointBytes else { return }
                 if checkpointBytes > 0 {
-                    guard setAttemptStatus(
-                        .paused, for: key, context: "queue_paused") else { return }
+                    guard applyQueuePause(for: key, context: "queue_paused") else { return }
                     lastError[ratingKey] = .interruptedResumable
                 }
                 staticRangeRecovery.removePendingResume(ratingKey)
@@ -2274,8 +2401,9 @@ public final class DownloadManager {
             hasEmbyConvertJobID: record.metadata?.embyConvertJobID != nil,
             hasEmbyConvertRecoveryIdentity: record.metadata?.hasEmbyConvertRecoveryIdentity == true
         ) {
-            guard setAttemptStatus(
-                .preparing, for: retryAttemptKey, context: "retry_emby_convert") else {
+            guard applyLifecycleEvent(
+                .retry(.convertResume), for: retryAttemptKey, context: "retry_emby_convert",
+                plannedLegacyStatus: .preparing) else {
                 retryState.removeRetrying(ratingKey)
                 return
             }
@@ -2309,8 +2437,9 @@ public final class DownloadManager {
                 retryState.removeRetrying(ratingKey)
                 return
             }
-            guard setAttemptStatus(
-                .downloading, for: retryAttemptKey, context: "resume_blob") else {
+            guard applyLifecycleEvent(
+                .retry(.resumeBlob), for: retryAttemptKey, context: "resume_blob",
+                plannedLegacyStatus: .downloading) else {
                 retryState.removeRetrying(ratingKey)
                 return
             }
@@ -2346,8 +2475,9 @@ public final class DownloadManager {
             }
             // The blob was refused/stale — fall through to a clean restart below (for range rows
             // the durable partial remains the checkpoint; only the blob's temp is lost).
-            guard setAttemptStatus(
-                .failed, for: retryAttemptKey, context: "resume_blob_refused") else {
+            guard applyLifecycleEvent(
+                .transferFailed(.validation), for: retryAttemptKey,
+                context: "resume_blob_refused") else {
                 retryState.removeRetrying(ratingKey)
                 return
             }
@@ -2375,8 +2505,10 @@ public final class DownloadManager {
             // against the same destination file. Keep the visible row as queued while letting the
             // backend entry point intentionally replace this persisted active intent, instead of
             // briefly showing user-visible `.failed` as a retry trampoline.
-            guard setAttemptStatus(
-                .queued, for: retryAttemptKey, context: "retry_static") else {
+            let staticMode: DownloadRetryMode = store.durableStaticRangeCheckpointSize(
+                for: retryAttemptKey).map { $0 > 0 } == true ? .staticCheckpoint : .freshAttempt
+            guard applyLifecycleEvent(
+                .retry(staticMode), for: retryAttemptKey, context: "retry_static") else {
                 retryState.removeRetrying(ratingKey)
                 return
             }
@@ -2412,8 +2544,9 @@ public final class DownloadManager {
                 }
                 self.clearRetryHandoff(ratingKey: ratingKey)
                 self.lastError[ratingKey] = .notAuthenticated
-                guard self.setAttemptStatus(
-                    .failed, for: retryAttemptKey, context: "retry_auth") else { return }
+                guard self.applyLifecycleEvent(
+                    .retryRejected(.auth), for: retryAttemptKey,
+                    context: "retry_auth") else { return }
                 self.refreshRecords()
                 return
             }
@@ -2455,8 +2588,9 @@ public final class DownloadManager {
                         "The saved server version is no longer available. Choose another version and retry.")
                     self.clearStaticRangePendingResume(ratingKey: ratingKey)
                     self.releaseInFlight(for: retryAttemptKey)
-                    guard self.setAttemptStatus(
-                        .failed, for: retryAttemptKey, context: "retry_part_missing") else { return }
+                    guard self.applyLifecycleEvent(
+                        .retryRejected(.sourceMissing), for: retryAttemptKey,
+                        context: "retry_part_missing") else { return }
                     self.refreshRecords()
                     return
                 }
@@ -2591,6 +2725,10 @@ public final class DownloadManager {
         clearServerPrepPoller(ratingKey: record.ratingKey, reason: "paused_resume")
         retryState.removeRetrying(record.ratingKey)
         clearRetryHandoff(ratingKey: record.ratingKey)
+        // P3a-TODO: the matrix maps this to `retry(prepReattach)` (→ serverPrep, shown
+        // `.preparing`), but Plex prep is persisted as `.queued` today and the prep scanner
+        // (`DownloadRetryPolicy.isPlexServerPrepResumeCandidate`, PMSKit) only reattaches `.queued`
+        // rows, so the event would strand the row. Convert together with that predicate.
         guard setAttemptStatus(.queued, for: key, context: "plex_prep_resume") else { return }
         optimizeState[record.ratingKey] = DownloadOptimizeStateLabel.queued
         refreshRecords()
@@ -2608,7 +2746,8 @@ public final class DownloadManager {
             guard let self else { return }
             guard let backendSession = self.appModel.backendSession(for: .plex) else {
                 self.lastError[record.ratingKey] = .notAuthenticated
-                _ = self.setAttemptStatus(.paused, for: key, context: "plex_optimize_auth")
+                _ = self.applyLifecycleEvent(
+                    .backendUnavailable(.awaitingSession), for: key, context: "plex_optimize_auth")
                 self.refreshRecords()
                 return
             }
@@ -2620,7 +2759,8 @@ public final class DownloadManager {
                 ])
                 self.lastError[record.ratingKey] = .transferFailed(
                     "Waiting for the original Plex server session.")
-                _ = self.setAttemptStatus(.paused, for: key, context: "plex_optimize_server")
+                _ = self.applyLifecycleEvent(
+                    .backendUnavailable(.awaitingSession), for: key, context: "plex_optimize_server")
                 self.refreshRecords()
                 return
             }
@@ -2664,7 +2804,8 @@ public final class DownloadManager {
                 }
                 self.clearRetryHandoff(ratingKey: record.ratingKey)
                 self.lastError[record.ratingKey] = .notAuthenticated
-                _ = self.setAttemptStatus(.failed, for: key, context: "jellyfin_retry_auth")
+                _ = self.applyLifecycleEvent(
+                    .retryRejected(.auth), for: key, context: "jellyfin_retry_auth")
                 self.refreshRecords()
                 return
             }
@@ -2686,7 +2827,8 @@ public final class DownloadManager {
                 self.retryState.removeRetrying(record.ratingKey)
                 self.lastError[record.ratingKey] = .transferFailed(
                     "Waiting for the original Jellyfin server session.")
-                _ = self.setAttemptStatus(.failed, for: key, context: "jellyfin_retry_server")
+                _ = self.applyLifecycleEvent(
+                    .retryRejected(.server), for: key, context: "jellyfin_retry_server")
                 self.refreshRecords()
                 return
             }
@@ -2731,7 +2873,8 @@ public final class DownloadManager {
                 }
                 self.clearRetryHandoff(ratingKey: record.ratingKey)
                 self.lastError[record.ratingKey] = .notAuthenticated
-                _ = self.setAttemptStatus(.failed, for: key, context: "emby_retry_auth")
+                _ = self.applyLifecycleEvent(
+                    .retryRejected(.auth), for: key, context: "emby_retry_auth")
                 self.refreshRecords()
                 return
             }
@@ -2752,7 +2895,8 @@ public final class DownloadManager {
                 self.retryState.removeRetrying(record.ratingKey)
                 self.lastError[record.ratingKey] = .transferFailed(
                     "Waiting for the original Emby server session.")
-                _ = self.setAttemptStatus(.failed, for: key, context: "emby_retry_server")
+                _ = self.applyLifecycleEvent(
+                    .retryRejected(.server), for: key, context: "emby_retry_server")
                 self.refreshRecords()
                 return
             }
@@ -2880,8 +3024,9 @@ public final class DownloadManager {
                 }
                 // A prior bounded/list attempt may have parked this row failed while preserving
                 // ownership evidence. Relaunch/retry re-enters recovery, never a blind new POST.
-                guard setAttemptStatus(
-                    .preparing, for: key, context: "emby_convert_recover") else { continue }
+                guard applyLifecycleEvent(
+                    .prepReattached, for: key, context: "emby_convert_recover",
+                    plannedLegacyStatus: .preparing) else { continue }
                 activeJobs.insert(ratingKey)
                 inFlightAttempts.acquire(key)
                 let attemptID = beginEmbyConvertAttempt(for: key)
@@ -2914,7 +3059,7 @@ public final class DownloadManager {
                     guard clearEmbyConvertRecoveryIfExact(
                         for: key, expected: metadata) else { continue }
                 }
-                _ = setAttemptStatus(.failed, for: key, context: "emby_convert_identity")
+                _ = applyServerPrepFailure(.internalError, for: key, context: "emby_convert_identity")
                 clearOptimizeProgress(ratingKey: record.ratingKey)
                 releaseInFlight(for: key)
             case .expireRecovery:
@@ -2946,7 +3091,7 @@ public final class DownloadManager {
                     for: key, expected: metadata) else { continue }
                 lastError[record.ratingKey] = .transferFailed(
                     "Server conversion could not be recovered; retry to create a new conversion.")
-                _ = setAttemptStatus(.failed, for: key, context: "emby_convert_expired")
+                _ = applyServerPrepFailure(.server, for: key, context: "emby_convert_expired")
                 clearOptimizeProgress(ratingKey: record.ratingKey)
                 releaseInFlight(for: key)
             }
@@ -3201,7 +3346,7 @@ public final class DownloadManager {
             case .failed:
                 lastError[ratingKey] = .transferFailed(
                     "The download could not be saved safely. Check storage and try again.")
-                _ = setAttemptStatus(.failed, for: key, context: "plex_deadline_publish")
+                _ = applyServerPrepFailure(.internalError, for: key, context: "plex_deadline_publish")
                 if store.ownsAttempt(key) { releaseInFlight(for: key) }
                 refreshRecords()
                 return
@@ -3367,7 +3512,8 @@ public final class DownloadManager {
                 "error": .error(error),
             ])
             lastError[ratingKey] = error
-            _ = setAttemptStatus(.failed, for: key, context: "plex_poller_error")
+            _ = applyServerPrepFailure(
+                Self.lifecycleFailureReason(for: error), for: key, context: "plex_poller_error")
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(for: key)
             refreshRecords()
@@ -3393,7 +3539,7 @@ public final class DownloadManager {
             ])
             lastError[ratingKey] = .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            _ = setAttemptStatus(.failed, for: key, context: "plex_poller_error")
+            _ = applyServerPrepFailure(.network, for: key, context: "plex_poller_error")
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(for: key)
             refreshRecords()
@@ -3483,7 +3629,7 @@ public final class DownloadManager {
     func markStartAbortedBeforeTransfer(ratingKey: String) {
         if let record = store.record(for: ratingKey), record.status.isActiveWork,
            let key = attemptKey(for: record) {
-            _ = setAttemptStatus(.failed, for: key, context: "start_aborted")
+            _ = applyLifecycleEvent(.transferFailed(.aborted), for: key, context: "start_aborted")
         }
         clearStaticRangePendingResume(ratingKey: ratingKey)
     }
@@ -3746,13 +3892,15 @@ public final class DownloadManager {
             try startBackgroundTransfer(plan, start: start)
         } catch let error as DownloadError {
             lastError[plan.ratingKey] = error
-            _ = setAttemptStatus(.failed, for: plan.attemptKey, context: "transfer_start")
+            _ = applyLifecycleEvent(.transferFailed(Self.lifecycleFailureReason(for: error)),
+                                    for: plan.attemptKey, context: "transfer_start")
             if plan.releaseInFlightOnFailure { releaseInFlight(for: plan.attemptKey) }
             refreshRecords()
         } catch {
             lastError[plan.ratingKey] = .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            _ = setAttemptStatus(.failed, for: plan.attemptKey, context: "transfer_start")
+            _ = applyLifecycleEvent(.transferFailed(.internalError),
+                                    for: plan.attemptKey, context: "transfer_start")
             if plan.releaseInFlightOnFailure { releaseInFlight(for: plan.attemptKey) }
             refreshRecords()
         }
@@ -3840,7 +3988,7 @@ public final class DownloadManager {
                 for: record, expectedBytes: expected, context: "size_audit"
             ) { [weak self] checkpointBytes in
                 guard let self, checkpointBytes != nil,
-                      setAttemptStatus(.failed, for: key, context: "size_audit") else { return }
+                      applyLifecycleEvent(.sizeAuditFailed, for: key, context: "size_audit") else { return }
                 lastError[record.ratingKey] = .transferFailed(
                     "Download is incomplete (\(durable / 1_000_000) of \(expected / 1_000_000) MB). Retry to continue.")
                 refreshRecords()
@@ -3976,8 +4124,8 @@ public final class DownloadManager {
                         [weak self] checkpointBytes in
                         guard let self, let checkpointBytes else { return }
                         if checkpointBytes > 0 {
-                            guard setAttemptStatus(
-                                .paused, for: key, context: "stale_queue_pause") else { return }
+                            guard applyQueuePause(
+                                for: key, context: "stale_queue_pause") else { return }
                             lastError[record.ratingKey] = .interruptedResumable
                         } else if store.record(for: key) == nil {
                             return
@@ -4058,7 +4206,7 @@ public final class DownloadManager {
             for ratingKey in serverPrepRefreshPlan.parkWhileQueuePausedKeys {
                 if let record = fresh.first(where: { $0.ratingKey == ratingKey }),
                    record.status != .paused, let key = attemptKey(for: record) {
-                    _ = setAttemptStatus(.paused, for: key, context: "queue_pause_prep")
+                    _ = applyQueuePause(for: key, context: "queue_pause_prep")
                 }
             }
             if !serverPrepRefreshPlan.parkWhileQueuePausedKeys.isEmpty { fresh = store.records }
@@ -4265,7 +4413,8 @@ public final class DownloadManager {
         clearRetryHandoff(ratingKey: ratingKey)
         lastError[ratingKey] = .transferFailed(
             "Network stalled; restarting this forward-only stream from the beginning.")
-        guard setAttemptStatus(.failed, for: key, context: "stream_stall") else { return }
+        // B61: only a transferring row stalls; a finalizing body is never failed for a stall.
+        guard applyLifecycleEvent(.stallDetected, for: key, context: "stream_stall") else { return }
         releaseInFlight(for: key)
         // `releaseInFlight` wipes the stall tracker entry, including the attempt count
         // `detectRestarts` just incremented — without re-seeding it the 2-restart cap never binds

@@ -203,6 +203,20 @@ extension DownloadManager {
             }) {
             case .applied, .noChange:
                 if record.status == .failed {
+                    // P3a-TODO: the matrix maps admission to `admissionGranted` (planned →
+                    // admitted), but that is deliberately not submitted for these rows yet:
+                    // - In process they are failed attempts the planner flagged for retry; their
+                    //   lifecycle is `failed`, and only a pre-P3a index load derives `planned`.
+                    // - `admitted` shows `.queued` before the retry chain re-acquires a task.
+                    //   The admitting key is released right below, so the queued, task-less row
+                    //   becomes visible to the Plex prep scanner (`.queued` + no poller) and the
+                    //   stale-queued detectors while Retry is still preflighting; legacy kept it
+                    //   `.failed` through that window.
+                    // - A retry row that kept a resume blob or a Convert job would then be
+                    //   refused: the reducer has no admitted → transferring/serverPrep retry.
+                    // Admission becomes `admissionGranted` once P4's coordinator owns the slot
+                    // for the whole retry chain. Until then a planned row stays `planned` (shown
+                    // `.failed`) until Retry replaces or fails it.
                     retry(ratingKey: record.ratingKey, allowReplacingExistingActiveRow: true)
                     seasonPlannerAdmittingKeys.remove(record.ratingKey)
                 } else {
@@ -251,8 +265,8 @@ extension DownloadManager {
         } catch {
             guard seasonAdmissionStillCurrent(record) else { return }
             if let attemptID = record.attemptID {
-                _ = setAttemptStatus(
-                    .failed,
+                _ = applyLifecycleEvent(
+                    .transferFailed(.server),
                     for: DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID),
                     context: "season_plan_refresh")
             }
@@ -284,8 +298,8 @@ extension DownloadManager {
             }
             guard let exact = matches.first else {
                 if let attemptID = record.attemptID {
-                    _ = setAttemptStatus(
-                        .failed,
+                    _ = applyLifecycleEvent(
+                        .transferFailed(.sourceMissing),
                         for: DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID),
                         context: "season_plan_source_missing")
                 }
