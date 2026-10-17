@@ -34,6 +34,15 @@ public enum DownloadStorageAdmissionPolicy {
         return remainingNetwork + peak + sideAssets + headroomBytes
     }
 
+    /// Physical admission shared by transfer preflights and checkpoint handoffs. Reservations
+    /// charge other in-progress copies; the caller's requirement already includes headroom.
+    /// An unavailable measurement preserves the existing fail-open behavior.
+    public static func hasPhysicalSpace(requiredBytes: Int64, availableBytes: Int64?,
+                                        reservedBytes: Int64 = 0) -> Bool {
+        guard let availableBytes else { return true }
+        return availableBytes >= requiredBytes && availableBytes - requiredBytes >= max(0, reservedBytes)
+    }
+
     /// What one row contributes to the storage cap.
     public struct CapRow: Sendable, Equatable {
         public let id: String

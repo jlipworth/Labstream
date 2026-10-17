@@ -42,6 +42,8 @@ struct P7CheckpointHandoffStorageTests {
         let result = store.sweepUnreferencedAttemptStaging(additionalReferencedRelativePaths: [explicit])
         #expect(result.removedRelativePaths == [residue])
         #expect(!fixture.exists(residue))
+        #expect(store.checkpointStorageDiagnostics.sweepReclaimedCount == 1)
+        #expect(store.checkpointStorageDiagnostics.sweepReclaimedBytes == 2)
         for name in [checkpoint.lastPathComponent, pending, leased, born, replaced, explicit, malformed] {
             #expect(fixture.exists(name))
         }
@@ -73,6 +75,8 @@ struct P7CheckpointHandoffStorageTests {
         let result = store.createAttemptOwnedRecord(successor, attemptID: successor.attemptID!, replacing: owner.attemptID)
         #expect(result != .committed(DownloadAttemptKey(ratingKey: owner.ratingKey, attemptID: successor.attemptID!)))
         #expect(spy.calls == 0)
+        #expect(store.checkpointStorageDiagnostics.spaceRefusalCount == 1)
+        #expect(store.checkpointStorageDiagnostics.copyBeginCount == 0)
         #expect(store.record(for: owner)?.attemptID == owner.attemptID)
         #expect(store.lifecycleState(for: owner)?.history.lastFailure == .storage)
         #expect(DownloadStaticCheckpointFilesystem.live.size(source) == 1_000_000_000)
@@ -123,6 +127,9 @@ struct P7CheckpointHandoffStorageTests {
         let result = store.createAttemptOwnedRecord(secondSuccessor, attemptID: secondSuccessor.attemptID!, replacing: second.attemptID)
         #expect(result != .committed(DownloadAttemptKey(ratingKey: second.ratingKey, attemptID: secondSuccessor.attemptID!)))
         #expect(spy.calls == 1)
+        #expect(store.checkpointStorageDiagnostics.copyBeginBytes == 400_000_000)
+        #expect(store.checkpointStorageDiagnostics.copyEndBytes == 0)
+        #expect(store.checkpointStorageDiagnostics.spaceRefusalCount == 1)
         #expect(store.record(for: second)?.attemptID == second.attemptID)
         #expect(store.lifecycleState(for: second)?.history.lastFailure == .storage)
         #expect(DownloadStaticCheckpointFilesystem.live.size(secondSource) == 400_000_000)
@@ -133,6 +140,9 @@ struct P7CheckpointHandoffStorageTests {
         #expect(store.createAttemptOwnedRecord(secondSuccessor, attemptID: secondSuccessor.attemptID!, replacing: second.attemptID)
             == .committed(DownloadAttemptKey(ratingKey: second.ratingKey, attemptID: secondSuccessor.attemptID!)))
         #expect(spy.calls == 2)
+        #expect(store.checkpointStorageDiagnostics.copyBeginCount == 2)
+        #expect(store.checkpointStorageDiagnostics.copyEndCount == 2)
+        #expect(store.checkpointStorageDiagnostics.copyEndBytes == 800_000_000)
     }
 }
 

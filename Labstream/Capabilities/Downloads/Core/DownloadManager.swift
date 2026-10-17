@@ -1877,6 +1877,8 @@ public final class DownloadManager {
                 "backend": .label(backend),
                 "reason": .label("committed_owner_mismatch"),
             ])
+        case .rejectedOwnership(_, _, .storageRefused):
+            lastError[handle.ratingKey] = .storageFull
         case .rejectedOwnership(_, _, let reason):
             lastError[handle.ratingKey] = .transferFailed(
                 "Download ownership changed before the transfer could start."

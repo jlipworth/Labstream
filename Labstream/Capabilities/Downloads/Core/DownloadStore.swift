@@ -160,6 +160,7 @@ final class DownloadStore: @unchecked Sendable {
         case heldBodyDeletionPending
         case artifactLifecyclePending
         case checkpointHandoffFailed
+        case storageRefused
     }
 
     enum AttemptMutationResult: Sendable, Equatable {
@@ -739,6 +740,23 @@ final class DownloadStore: @unchecked Sendable {
     private let rootIndexPersistence: IndexPersistence
     private let artifactFilesystem: DownloadArtifactFilesystem
     private let storeFilesystem: DownloadStoreFilesystem
+    // Measurement and reservation are one critical section, outside the row lock. A second
+    // worker must not admit against a sample taken before another copy completed and released.
+    private let checkpointCapacityLock = NSLock()
+    private var reservedCheckpointCopyBytes: Int64 = 0 // guarded by checkpointCapacityLock
+    struct CheckpointStorageDiagnostics: Sendable, Equatable {
+        var copyBeginCount = 0
+        var copyBeginBytes = 0
+        var copyEndCount = 0
+        var copyEndBytes = 0
+        var sweepReclaimedCount = 0
+        var sweepReclaimedBytes = 0
+        var spaceRefusalCount = 0
+    }
+    private var checkpointStorageCounters = CheckpointStorageDiagnostics() // guarded by lock
+    var checkpointStorageDiagnostics: CheckpointStorageDiagnostics {
+        lock.withLock { checkpointStorageCounters }
+    }
     private let availableStorageBytes: @Sendable (URL) -> Int64?
     private let checkpointFilesystem: DownloadStaticCheckpointFilesystem
     private let promotionFilesystem: DownloadPromotionFilesystem
@@ -909,7 +927,10 @@ final class DownloadStore: @unchecked Sendable {
     ) -> Set<String> {
         Set(((probe == .missing || probe == .current)
              ? ((try? fileManager.contentsOfDirectory(atPath: dir.path)) ?? []) : [])
-            .filter(Self.isAttemptStagingRelativePath))
+            .filter { Self.isAttemptStagingRelativePath($0)
+                // Reuse the audit's strict digest/UUID grammar for hard-killed copy residue.
+                || ($0.hasPrefix("..attempt-stage-v1-")
+                    && OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename($0)) })
     }
 
     /// The admissible-startup tail: directories, authority migration, protection, temp sweeps,
@@ -1630,6 +1651,7 @@ final class DownloadStore: @unchecked Sendable {
         let candidates = unreferencedAttemptStagingURLs(additionalReferencedRelativePaths: additionalReferencedRelativePaths)
         var removed: [String] = []
         var failed: [String] = []
+        var reclaimedBytes = 0
         for url in candidates {
             let name = url.lastPathComponent
             guard let identity = condemnedFileIdentity(at: url) else { continue }
@@ -1647,7 +1669,12 @@ final class DownloadStore: @unchecked Sendable {
                 guard condemnedFileIdentity(at: url) == identity else { continue }
                 try storeFilesystem.removeItem(at: url, using: fileManager)
                 removed.append(name)
+                reclaimedBytes += Int(clamping: identity.size)
             } catch { failed.append(name) }
+        }
+        recordCheckpointStorageDiagnostic("downloads.checkpoint_sweep") {
+            $0.sweepReclaimedCount += removed.count
+            $0.sweepReclaimedBytes += reclaimedBytes
         }
         return .init(removedRelativePaths: removed.sorted(), failedRelativePaths: failed.sorted())
     }
@@ -3212,7 +3239,13 @@ final class DownloadStore: @unchecked Sendable {
     ) -> AttemptRecordCreateResult {
         let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
         var handoffLease: DownloadPathLease?
-        defer { if let handoffLease { releasePathLease(handoffLease) } }
+        var capacityReservation: Int64 = 0
+        defer {
+            if capacityReservation > 0 {
+                checkpointCapacityLock.withLock { reservedCheckpointCopyBytes -= capacityReservation }
+            }
+            if let handoffLease { releasePathLease(handoffLease) }
+        }
         lock.lock()
         let existing = rows[record.ratingKey]
         if let expectedGeneration, rowMutationGenerations[record.ratingKey, default: 0] != expectedGeneration {
@@ -3357,6 +3390,56 @@ final class DownloadStore: @unchecked Sendable {
             var copied = false
             do {
                 if let identity, identity.size > 0 {
+                    let copyBytes = Int(clamping: identity.size)
+                    // No network bytes here: the whole checkpoint is the duplication peak.
+                    let required = DownloadStorageAdmissionPolicy.requiredAdditionalFreeBytes(
+                        expectedBytes: nil, durableCheckpointBytes: nil,
+                        largestPendingAppendBytes: copyBytes)
+                    let admitted = checkpointCapacityLock.withLock {
+                        guard DownloadStorageAdmissionPolicy.hasPhysicalSpace(
+                            requiredBytes: required, availableBytes: availableStorageBytes(baseDirectory),
+                            reservedBytes: reservedCheckpointCopyBytes) else { return false }
+                        capacityReservation = Int64(copyBytes)
+                        reservedCheckpointCopyBytes += capacityReservation
+                        return true
+                    }
+                    guard admitted else {
+                        recordCheckpointStorageDiagnostic("downloads.checkpoint_handoff_space_refused") {
+                            $0.spaceRefusalCount += 1
+                        }
+                        // Preserve exact predecessor ownership, bytes and recovery authority. The
+                        // existing storage failure parks it; a stale worker cannot park a new row.
+                        lock.lock()
+                        guard rowMutationGenerations[record.ratingKey, default: 0] == capturedGeneration else {
+                            let actual = rows[record.ratingKey]?.attemptID.map {
+                                DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: $0)
+                            }
+                            lock.unlock()
+                            return .rejectedOwnership(expectedPreviousOwner: expectedKey,
+                                actualOwner: actual, reason: .ownerMismatch)
+                        }
+                        let facts = observeLifecycleFacts(row: previous, key: oldKey,
+                            liveTask: false, observeFiles: false)
+                        let parked = submitLifecycleEventLocked(.transferFailed(.storage), for: oldKey, facts: facts)
+                        if case .accepted(_, let ticket?) = parked {
+                            let outcome = waitForPersistence(through: ticket)
+                            guard outcome.result.committed(through: ticket) else {
+                                return .failed(oldKey, outcome.result)
+                            }
+                        }
+                        return .rejectedOwnership(expectedPreviousOwner: expectedKey,
+                            actualOwner: existingKey, reason: .storageRefused)
+                    }
+                    recordCheckpointStorageDiagnostic("downloads.checkpoint_copy_begin") {
+                        $0.copyBeginCount += 1
+                        $0.copyBeginBytes += copyBytes
+                    }
+                    defer {
+                        recordCheckpointStorageDiagnostic("downloads.checkpoint_copy_end") {
+                            $0.copyEndCount += 1
+                            if copied { $0.copyEndBytes += copyBytes }
+                        }
+                    }
                     storeFilesystem.before(.copy, oldWorkingURL)
                     guard condemnedFileIdentity(at: oldWorkingURL) == identity else { throw CocoaError(.fileReadUnknown) }
                     try checkpointFilesystem.durableCopy(oldWorkingURL, newWorkingURL,
@@ -3419,6 +3502,25 @@ final class DownloadStore: @unchecked Sendable {
         }
         retireUnreferencedSideAssets(retiredSideAssetPaths, confirmingCurrentOwner: key)
         return .committed(key)
+    }
+
+    /// Process-local aggregates only: no paths, row identities or file identifiers enter logs.
+    private func recordCheckpointStorageDiagnostic(
+        _ event: String, update: (inout CheckpointStorageDiagnostics) -> Void
+    ) {
+        let totals = lock.withLock {
+            update(&checkpointStorageCounters)
+            return checkpointStorageCounters
+        }
+        AppDiagnostics.record(.downloads, event, fields: [
+            "copy_begin_count": .int(totals.copyBeginCount),
+            "copy_begin_bytes": .int(totals.copyBeginBytes),
+            "copy_end_count": .int(totals.copyEndCount),
+            "copy_end_bytes": .int(totals.copyEndBytes),
+            "sweep_reclaimed_count": .int(totals.sweepReclaimedCount),
+            "sweep_reclaimed_bytes": .int(totals.sweepReclaimedBytes),
+            "space_refusal_count": .int(totals.spaceRefusalCount),
+        ])
     }
 
     /// Record the locally-cached poster path (relative to the base dir) on a row's
