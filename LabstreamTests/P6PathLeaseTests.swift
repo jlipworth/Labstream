@@ -7,6 +7,11 @@ import Testing
 /// Delegate lane: this file moves with session append; lead consumes the frozen lease API.
 @Suite("P6 delegate path exclusion pins", .serialized)
 struct P6PathLeaseTests {
+    /// Synchronous cleanup bridge; the test runs off MainActor and never leaves a held worker.
+    private func drainWorkers(_ workers: DispatchGroup) -> Bool {
+        workers.wait(timeout: .now() + 2) == .success
+    }
+
     @Test("P6 amendment 3: held append excludes Retry/reconcile through the actual syscall", arguments: [false, true])
     func appendExclusion(reconcile: Bool) async throws {
         let fixture = try P6Fixture()
@@ -18,10 +23,17 @@ struct P6PathLeaseTests {
         let hold = P6Hold()
         let session = BackgroundDownloadSession(store: store, protocolClasses: [],
             appendWillPerformIO: { _, _ in hold.hit() })
-        defer { hold.release.signal(); session.invalidateInjectedSessionForTesting() }
+        let workers = DispatchGroup()
+        defer {
+            hold.release.signal()
+            #expect(drainWorkers(workers))
+            session.invalidateInjectedSessionForTesting()
+        }
         let appendFinished = DispatchSemaphore(value: 0)
         hold.arm()
+        workers.enter()
         Thread.detachNewThread {
+            defer { workers.leave() }
             _ = try? session.appendFileForP6Testing(at: body, onto: working)
             appendFinished.signal()
         }
@@ -39,8 +51,16 @@ struct P6PathLeaseTests {
                                         deadline: .after(2)) == .applied)
         }
         let competitorFinished = DispatchSemaphore(value: 0)
+        let competitorAdmitted = DispatchSemaphore(value: 0)
+        store.pathLeaseAdmissionForP6Testing = { admittedKey, purpose in
+            if admittedKey == key && purpose == (reconcile ? .reconcile : .checkpointHandoff) {
+                competitorAdmitted.signal()
+            }
+        }
         let successor = fixture.record("b", status: .failed)
+        workers.enter()
         Thread.detachNewThread {
+            defer { workers.leave() }
             if reconcile {
                 store.reconcile(liveRatingKeys: [], snapshotRatingKeys: [key.ratingKey])
             } else {
@@ -48,12 +68,14 @@ struct P6PathLeaseTests {
             }
             competitorFinished.signal()
         }
-        let competedWhileAppendHeld = await p6Signal(competitorFinished, seconds: 0.3)
+        // Observe the actual lease-admission boundary before releasing the physical writer.
+        // A scheduler delay can no longer turn this overlap assertion into a sequential test.
+        try #require(await p6Signal(competitorAdmitted))
         #expect(FileManager.default.fileExists(atPath: working.path))
         if !reconcile { #expect(store.record(for: key.ratingKey)?.attemptID == key.attemptID) }
         hold.release.signal()
         try #require(await p6Signal(appendFinished))
-        if !competedWhileAppendHeld { try #require(await p6Signal(competitorFinished)) }
+        try #require(await p6Signal(competitorFinished))
         if !reconcile, store.record(for: key.ratingKey)?.attemptID == successor.attemptID {
             let successorKey = DownloadAttemptKey(ratingKey: successor.ratingKey, attemptID: successor.attemptID!)
             let copied = try #require(store.attemptWorkingFileURL(for: successorKey))

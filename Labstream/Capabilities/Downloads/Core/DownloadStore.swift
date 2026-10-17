@@ -21,6 +21,8 @@ final class DownloadStore: @unchecked Sendable {
     #if DEBUG
     /// Submission acknowledgement only; invoked under the row lock, so tests must not reenter.
     var persistenceDidSubmitForP6Testing: (@Sendable (PersistenceTicket) -> Void)?
+    /// Admission acknowledgement under the row lock; the hook must not reenter the store.
+    var pathLeaseAdmissionForP6Testing: (@Sendable (DownloadAttemptKey, DownloadPathLease.Purpose) -> Void)?
     #endif
     private static let unsupportedRootCleanupQueue = DispatchQueue(
         label: "org.labstream.Labstream.download-unsupported-root-cleanup", qos: .utility)
@@ -30,6 +32,9 @@ final class DownloadStore: @unchecked Sendable {
     func tryAcquirePathLease(for key: DownloadAttemptKey, relativePaths: Set<String>,
                              purpose: DownloadPathLease.Purpose) -> DownloadPathLeaseResult {
         lock.lock(); defer { lock.unlock() }
+        #if DEBUG
+        pathLeaseAdmissionForP6Testing?(key, purpose)
+        #endif
         guard !relativePaths.isEmpty, relativePaths.allSatisfy(Self.isSafeOneLevelRelativePath) else {
             return .invalidPath
         }
@@ -846,6 +851,8 @@ final class DownloadStore: @unchecked Sendable {
     /// broadcast outcome until every accepted waiter has consumed it.
     private var rowDeletionWaiterCounts: [RowDeletionTicketEpoch: Int] = [:]
 
+    private(set) var initialStartupSubmission: RecoverySubmission?
+
     /// - Parameter baseDirectory: where media files + the index live. Defaults to
     ///   `Application Support/Labstream/Downloads`, created if missing.
     init(baseDirectory: URL? = nil,
@@ -855,7 +862,8 @@ final class DownloadStore: @unchecked Sendable {
          artifactFilesystem: DownloadArtifactFilesystem = .live,
          checkpointFilesystem: DownloadStaticCheckpointFilesystem = .live,
          promotionFilesystem: DownloadPromotionFilesystem = .live,
-         storeFilesystem: DownloadStoreFilesystem = .live) {
+         storeFilesystem: DownloadStoreFilesystem = .live,
+         startupOnWorker: Bool = false) {
         self.storeFilesystem = storeFilesystem
         self.fileManager = fileManager
         self.artifactFilesystem = artifactFilesystem
@@ -902,10 +910,26 @@ final class DownloadStore: @unchecked Sendable {
         // Probe above is deliberately the first filesystem interaction that can affect admission.
         // Unsupported/unreadable roots remain byte-for-byte untouched until the session drain.
         guard startupProbe == .missing || startupProbe == .current else { return }
-        for path in startupStagingInventory {
-            if let identity = condemnedFileIdentity(at: dir.appendingPathComponent(path)) { startupStagingIdentities[path] = identity }
+        if startupOnWorker {
+            initialStartupSubmission = RecoverySubmission { [self] in
+                startupReprobeWorkerLock.lock()
+                defer { startupReprobeWorkerLock.unlock() }
+                captureStartupStagingIdentities()
+                completeAdmissibleStartup(probe: startupProbe, indexData: startupIndexData)
+                return startupIndexAdmission()
+            }
+        } else {
+            captureStartupStagingIdentities()
+            completeAdmissibleStartup(probe: startupProbe, indexData: startupIndexData)
         }
-        completeAdmissibleStartup(probe: startupProbe, indexData: startupIndexData)
+    }
+
+    private func captureStartupStagingIdentities() {
+        var identities: [String: CondemnedFileIdentity] = [:]
+        for path in startupStagingInventory {
+            identities[path] = condemnedFileIdentity(at: baseDirectory.appendingPathComponent(path))
+        }
+        lock.withLock { startupStagingIdentities = identities }
     }
 
     /// Classify the on-disk index without mutating anything (the first admission decision).
@@ -952,7 +976,7 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     /// The admissible-startup tail: directories, authority migration, protection, temp sweeps,
-    /// load, and artifact recovery. Runs from `init`, or from `reprobeBlockedIndex` once an index
+    /// load, and artifact recovery. Runs on the startup worker in production, or from `reprobeBlockedIndex` once an index
     /// that was unreadable at launch reads cleanly (B16).
     private func completeAdmissibleStartup(
         probe startupProbe: DownloadIndexCoding.StartupProbe, indexData startupIndexData: Data?
@@ -995,8 +1019,10 @@ final class DownloadStore: @unchecked Sendable {
         // B15: decode the exact bytes the probe classified. A second read could fail transiently
         // and admit an empty `.current` store whose next snapshot overwrites the real index.
         load(indexData: startupProbe == .current ? startupIndexData : nil)
-        startupArtifactCleanupIntentIDs = Set(
-            rows.values.flatMap { $0.pendingArtifactIntents.map(\.id) })
+        lock.withLock {
+            startupArtifactCleanupIntentIDs = Set(
+                rows.values.flatMap { $0.pendingArtifactIntents.map(\.id) })
+        }
         stageHeldBodyDeletionJobs()
         recoverPendingArtifactIntents()
         Self.scheduleUnsupportedRootReclamation(
