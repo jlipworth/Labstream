@@ -302,8 +302,15 @@ extension DownloadManager {
                 "backend": .label("Jellyfin"),
                 "error": .error(error),
             ])
-            lastError[ratingKey] = .transferFailed(
-                DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
+            if case JellyfinPlaybackError.preferredMediaSourceUnavailable = error {
+                // B59: the persisted version vanished from PlaybackInfo. Fail the row (retryable)
+                // instead of downloading a different edition under it.
+                lastError[ratingKey] = .transferFailed(
+                    "The requested server version is no longer available. Choose another version and retry.")
+            } else {
+                lastError[ratingKey] = .transferFailed(
+                    DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
+            }
             _ = store.setStatus(for: attemptKey, .failed)
             clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(for: attemptKey)
