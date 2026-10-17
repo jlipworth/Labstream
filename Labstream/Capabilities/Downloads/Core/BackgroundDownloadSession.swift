@@ -1188,7 +1188,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     ///
     /// - Publishing a working body (`publishesWorkingFile`) from `.finalizing`: `finalizeOutcome`.
     ///   A truncation reaches here only when its `finalizeOutcome` was a replay (counted before a
-    ///   relaunch) while the row stayed finalizing; it is written as `transferFailed(.validation)`.
+    ///   relaunch) while the row stayed finalizing; it is written as `transferFailed(.truncated)`.
     /// - Revalidating a published body from `.complete`/`.unverified`: `publishedBodyRevalidated`.
     /// - Otherwise a failing verdict on a non-terminal row is `transferFailed(.validation)`.
     private func finalizeVerdictEvent(
@@ -1200,7 +1200,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     ) -> DownloadLifecycleEvent? {
         let lifecycle = store.lifecycleState(for: key)?.lifecycle
         if publishesWorkingFile, lifecycle == .finalizing {
-            if case .truncated = outcome { return .transferFailed(.validation) }
+            if case .truncated = outcome { return .transferFailed(.truncated) }
             return .finalizeOutcome(
                 id: outcomeID, outcome: outcome,
                 source: DownloadSourceKey(server: nil, account: nil, backend: nil,
@@ -1210,6 +1210,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             return .publishedBodyRevalidated(id: outcomeID, outcome: outcome)
         }
         if status == .failed, let lifecycle, !lifecycle.isTerminal || lifecycle == .failed {
+            if case .truncated = outcome { return .transferFailed(.truncated) }
             return .transferFailed(.validation)
         }
         return nil
@@ -5694,9 +5695,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let verdictThroughReducer = publishesWorkingFile
             && store.lifecycleState(for: attemptKey)?.lifecycle == .finalizing
         var truncationVerdictCommitted = false
-        // Commit proof exists only for a verdict resolved without a pending background completion
-        // handler; under a handler acceptance is admission-only.
-        var truncationVerdictProven = false
+        // The failing truncation verdict's own persistence ticket: the condemned body is deleted
+        // only once that revision commits (never on admission alone).
+        var truncationVerdictTicket: DownloadStore.PersistenceTicket?
         let truncationFailures: Int
         switch outcome {
         case .truncated where verdictThroughReducer:
@@ -5707,17 +5708,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             switch verdict {
             case .staleOrMissing:
                 return
-            case .accepted(let change, _):
+            case .accepted(let change, let ticket):
                 // `.noChange` is a replay: this body's outcome committed before a relaunch.
                 guard change == .applied else { break }
-                // The body may be deleted only once the verdict that condemns it has committed
-                // (admission-only under a pending background completion, like every other
-                // finalize verdict; the completion gate then owns the bounded outcome).
-                let proven = !hasPendingBackgroundCompletionHandler()
                 guard acceptedAttemptSubmission(
                     verdict, key: attemptKey, phase: "finalize_truncated_verdict") else { return }
                 truncationVerdictCommitted = true
-                truncationVerdictProven = proven
+                truncationVerdictTicket = ticket
             }
             truncationFailures = store.truncationStrikes(for: attemptKey)
         case .truncated:
@@ -5832,26 +5829,30 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     for: attemptKey, status: .unverified,
                     phase: "finalize_truncated_park_promote") else { return }
             } else if !truncationVerdictCommitted {
-                truncationVerdictProven = !hasPendingBackgroundCompletionHandler()
-                guard acceptedAttemptSubmission(
-                    resolveLifecycleSubmission(submitFinalizeVerdictStatus(
+                let verdict = submitFinalizeVerdictStatus(
                     for: attemptKey, outcome: Self.finalizeOutcome(outcome),
                     status: finalizationResult.status, outcomeID: outcomeID,
-                    publishesWorkingFile: publishesWorkingFile, phase: "finalize_verdict")),
-                    key: attemptKey, phase: "finalize_truncated_status"
-                ) else { return }
+                    publishesWorkingFile: publishesWorkingFile, phase: "finalize_verdict")
+                guard acceptedAttemptSubmission(
+                    verdict, key: attemptKey, phase: "finalize_truncated_status") else { return }
+                if case .accepted(.applied, let ticket) = verdict { truncationVerdictTicket = ticket }
             }
-            if finalizationResult.shouldDeleteFile, !truncationVerdictProven {
-                // A verdict only admitted under a background completion handler may still fail to
-                // persist; keep the body the failed row still names. Its Retry or Delete
-                // reclaims it, and a relaunch re-finalizes it if the verdict was lost.
-                AppDiagnostics.record(.downloads, "downloads.truncated_body_kept_unproven", fields: [
-                    "download_id": .identifier(ratingKey),
-                ])
-            } else if finalizationResult.shouldDeleteFile,
+            if finalizationResult.shouldDeleteFile,
                !Task.isCancelled,
                stillOwnsAttempt(attemptKey, phase: "finalize_truncated_delete") {
-                try? fileManager.removeItem(at: destination)
+                // The deletion waits for the verdict's commit, whether or not a background
+                // completion handler made acceptance admission-only. Until then the body is
+                // condemned (`.truncated`), so a Retry never inherits it as a checkpoint.
+                let store = self.store
+                let ticket = truncationVerdictTicket
+                Task.detached(priority: .utility) {
+                    if await !store.deleteCondemnedWorkingBody(
+                        at: destination, for: attemptKey, afterCommitOf: ticket) {
+                        AppDiagnostics.record(.downloads, "downloads.truncated_body_kept", fields: [
+                            "download_id": .identifier(attemptKey.ratingKey),
+                        ])
+                    }
+                }
             }
             guard !Task.isCancelled,
                   stillOwnsAttempt(attemptKey, phase: "finalize_truncated_publish") else { return }

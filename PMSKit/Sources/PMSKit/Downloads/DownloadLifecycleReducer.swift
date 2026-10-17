@@ -320,7 +320,7 @@ public enum DownloadLifecycleReducer {
                 if (next.history.truncation?.strikes ?? 0) >= maxTruncationStrikes {
                     return finalizingPublish(&next, reason: .truncatedRepeated)
                 }
-                return fail(.validation, [.deleteWorkingBody])
+                return fail(.truncated, [.deleteWorkingBody])
             }
 
         case .publishedBodyRevalidated(_, let outcome):

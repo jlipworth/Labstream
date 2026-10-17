@@ -71,6 +71,9 @@ public enum DownloadFailureReason: String, Codable, Sendable {
     case network
     case server
     case validation
+    /// Finalization proved the body truncated. That body is condemned: a Retry never inherits it
+    /// as a checkpoint, even while its deletion waits for the verdict's commit.
+    case truncated
     case sourceMissing
     case cancelledBySystem
     case aborted
