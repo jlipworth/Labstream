@@ -77,6 +77,12 @@ public enum DownloadLifecycleEvent: Sendable, Equatable {
     /// backend session, or a Plex prep row resuming (Plex prep is persisted queued).
     case requeued
     case admissionGranted
+    /// P4: a parked row asks the admission coordinator for a lane again (Resume All). The row
+    /// waits as `planned` with this intent until a lane frees.
+    case admissionRequested(DownloadAdmissionIntent)
+    /// P4: a granted start ended before its work was proven (backend unavailable, no session).
+    /// The row waits again with its intent instead of failing (B66, B67).
+    case admissionDeferred(DownloadAdmissionIntent)
     case prepReattached
     case prepHandoff
     case prepFailed(DownloadFailureReason)
@@ -224,6 +230,22 @@ public enum DownloadLifecycleReducer {
             guard lifecycle == .planned else { return illegal }
             next.history.admissionIntent = nil
             return to(.admitted)
+
+        case .admissionRequested(let intent):
+            guard lifecycle == .paused || lifecycle == .failed || lifecycle == .planned else {
+                return illegal
+            }
+            next.history.admissionIntent = intent
+            return to(.planned)
+
+        case .admissionDeferred(let intent):
+            // Only a start that never became active defers; live work, a user pause and finished
+            // rows are never rewritten by a deferral.
+            guard lifecycle == .admitted || lifecycle == .failed || lifecycle == .planned else {
+                return illegal
+            }
+            next.history.admissionIntent = intent
+            return to(.planned)
 
         case .prepReattached:
             guard lifecycle == .serverPrep || lifecycle == .paused || lifecycle == .failed
