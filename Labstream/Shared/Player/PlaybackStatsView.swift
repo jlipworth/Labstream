@@ -25,6 +25,7 @@ struct PlaybackStatsView: View {
     /// "" shows the compact summary; otherwise the raw value of the expanded section.
     @AppStorage(PlaybackStatsView.sectionDefaultsKey) private var storedSection = ""
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.colorScheme) private var colorScheme
     @State private var copied = false
 
     nonisolated static let sectionDefaultsKey = "playback.stats.expandedSection"
@@ -43,7 +44,6 @@ struct PlaybackStatsView: View {
                 compact(summary)
             }
         }
-        .tint(summary.path.color)
         .animation(.smooth(duration: 0.2), value: storedSection)
     }
 
@@ -53,7 +53,7 @@ struct PlaybackStatsView: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
                 Circle()
-                    .fill(summary.path.color)
+                    .fill(pathColor(summary.path))
                     .frame(width: Metrics.dot, height: Metrics.dot)
                     .accessibilityHidden(true)
                 Text(summary.path.title)
@@ -121,9 +121,19 @@ struct PlaybackStatsView: View {
             ForEach([("Video", node.video), ("HDR", node.hdr), ("Audio", node.audio)], id: \.0) { label, spec in
                 VStack(alignment: .leading, spacing: 1) {
                     Text(label).statsLabel()
+                    // A converted value keeps primary text on a path-tinted chip, so the color
+                    // signal never costs text contrast on light glass.
                     Text(spec.value)
                         .statsValue()
-                        .foregroundStyle(spec.converted ? path.color : .primary)
+                        .padding(.horizontal, spec.converted ? 5 : 0)
+                        .padding(.vertical, spec.converted ? 1 : 0)
+                        .background {
+                            if spec.converted {
+                                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                    .fill(pathColor(path).opacity(0.28))
+                            }
+                        }
+                        .padding(.horizontal, spec.converted ? -5 : 0)
                 }
             }
         }
@@ -133,14 +143,15 @@ struct PlaybackStatsView: View {
     private func link(_ path: PlaybackStatsSummary.Path, vertical: Bool) -> some View {
         ZStack {
             Rectangle()
-                .fill(path.color)
+                .fill(pathColor(path))
                 .frame(width: vertical ? 2 : nil, height: vertical ? nil : 2)
+                .frame(maxWidth: vertical ? nil : .infinity, maxHeight: vertical ? .infinity : nil)
             Text(path.linkLabel)
                 .font(.caption2.weight(.bold))
-                .foregroundStyle(.black)
+                .foregroundStyle(colorScheme == .dark ? .black : .white)
                 .padding(.horizontal, 5)
                 .padding(.vertical, 2)
-                .background(path.color, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .background(pathColor(path), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .fixedSize()
         }
         .frame(width: vertical ? nil : Metrics.linkLength, height: vertical ? Metrics.linkLength : nil)
@@ -156,16 +167,20 @@ struct PlaybackStatsView: View {
                          summary.audioTrack, summary.subtitles], id: \.label) { tile($0) }
             }
         } else {
-            Grid(horizontalSpacing: Metrics.cellGap, verticalSpacing: Metrics.cellGap) {
-                GridRow {
+            // Health facts in thirds, then the two tracks in halves: track names are the
+            // longest values in the summary.
+            VStack(spacing: Metrics.cellGap) {
+                HStack(spacing: Metrics.cellGap) {
                     tile(summary.buffer)
                     tile(summary.bitrate)
                     tile(summary.connection)
                 }
-                GridRow {
-                    tile(summary.audioTrack).gridCellColumns(2)
+                .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: Metrics.cellGap) {
+                    tile(summary.audioTrack)
                     tile(summary.subtitles)
                 }
+                .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -180,12 +195,15 @@ struct PlaybackStatsView: View {
                 Text(tile.value).statsValue()
                 HStack(spacing: 3) {
                     if let symbol = tile.contextSymbol {
-                        Image(systemName: symbol).imageScale(.small)
+                        Image(systemName: symbol)
+                            .imageScale(.small)
+                            .foregroundStyle(tile.isProblem ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
                     }
                     Text(tile.context)
+                        .foregroundStyle(tile.isProblem ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                        .fontWeight(tile.isProblem ? .semibold : nil)
                 }
                 .statsLabel()
-                .foregroundStyle(tile.isProblem ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
             }
         }
         .statsCell()
@@ -277,6 +295,11 @@ struct PlaybackStatsView: View {
         .accessibilityElement(children: .combine)
     }
 
+    /// The path hue, deepened on light glass so converted values keep text contrast.
+    private func pathColor(_ path: PlaybackStatsSummary.Path) -> Color {
+        path.color(for: colorScheme)
+    }
+
     private func copy(_ text: String) {
         #if os(macOS)
         NSPasteboard.general.clearContents()
@@ -310,18 +333,23 @@ private enum Metrics {
     static let cellInnerGap: CGFloat = 6
     static let cellRadius: CGFloat = 12
     static let dot: CGFloat = 10
-    static let linkLength: CGFloat = 52
+    static let linkLength: CGFloat = 44
     static let wideColumn: CGFloat = 260
     static let rowLabelWidth: CGFloat = 104
     #endif
 }
 
 extension PlaybackStatsSummary.Path {
-    var color: Color {
-        switch self {
-        case .direct: .green
-        case .copy: .cyan
-        case .encode: .orange
+    /// One hue per path. Light appearance (e.g. iOS glass over a bright frame) uses deeper
+    /// shades of the same hues so small value text stays legible.
+    func color(for scheme: ColorScheme) -> Color {
+        switch (self, scheme) {
+        case (.direct, .dark): .green
+        case (.copy, .dark): .cyan
+        case (.encode, .dark): .orange
+        case (.direct, _): Color(red: 0.05, green: 0.45, blue: 0.18)
+        case (.copy, _): Color(red: 0.0, green: 0.40, blue: 0.58)
+        case (.encode, _): Color(red: 0.70, green: 0.30, blue: 0.0)
         }
     }
 }

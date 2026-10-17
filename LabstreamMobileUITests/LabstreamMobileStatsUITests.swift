@@ -18,11 +18,6 @@ final class LabstreamMobileStatsUITests: XCTestCase {
 
     @MainActor
     private func captureStats(scenario: String, largeText: Bool) throws {
-        // The iPhone player is landscape-only; match the device so screenshots aren't rotated.
-        if UIDevice.current.userInterfaceIdiom == .phone {
-            XCUIDevice.shared.orientation = .landscapeLeft
-        }
-        defer { XCUIDevice.shared.orientation = .portrait }
         let app = XCUIApplication()
         app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
         app.launchArguments = ["--ui-testing", "--ui-testing-fixture", "player",
@@ -68,7 +63,9 @@ final class LabstreamMobileStatsUITests: XCTestCase {
     }
 
     private func attach(_ app: XCUIApplication, _ name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        // Full-screen capture: `app.screenshot()` crops the landscape-only player out of the
+        // simulator's portrait buffer.
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)

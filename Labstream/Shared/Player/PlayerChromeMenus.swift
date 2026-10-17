@@ -84,7 +84,7 @@ enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
         case .chapters: CGSize(width: 1_460, height: 300)
         // Stats (#331) sizes for its compact summary — chain beside tiles — at TV type sizes.
         // The expanded view scrolls as focus moves between the section picker and its buttons.
-        case .stats: CGSize(width: 1_180, height: 640)
+        case .stats: CGSize(width: 1_180, height: 600)
         }
         #else
         switch self {
@@ -97,7 +97,7 @@ enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
         case .chapters: CGSize(width: 1_120, height: 228)
         // Wide enough for the compact Stats summary's two-column layout (#331); phones clamp
         // it to the available width and fall back to one column.
-        case .stats: CGSize(width: 620, height: 380)
+        case .stats: CGSize(width: 680, height: 380)
         }
         #endif
     }
