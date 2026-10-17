@@ -240,7 +240,8 @@ Asynchronous success and terminal-failure publication is fenced by the exact des
 instance, and owning playback/view generation rather than cancellation alone. Settings clears
 positive and negative memory state on that same app-lifetime pipeline and advances its epoch so
 pre-clear work cannot repopulate those caches. Process memory pressure drops only the decoded
-bitmaps; compressed bytes stay, so returning artwork re-decodes locally without a refetch.
+bitmaps; compressed bytes stay, so returning artwork whose bytes are still cached re-decodes
+locally without a refetch.
 Persisted offline
 `posterGeneration` changes on publish, replacement, and clear so a same-path, same-byte-count
 replacement cannot reuse stale pixels. One reference-counted app-lifetime shimmer clock serves all

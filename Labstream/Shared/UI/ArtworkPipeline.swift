@@ -428,7 +428,7 @@ final class ArtworkPipeline: Sendable {
 
     /// Memory-pressure response: drop decoded bitmaps (the dominant 128 MB budget) but keep the
     /// compressed bytes, so artwork that comes back on screen re-decodes locally instead of
-    /// refetching. Unlike `clear()` this is not a join boundary — in-flight results are still
+    /// refetching (as long as its bytes have not been evicted from the compressed cache). Unlike `clear()` this is not a join boundary — in-flight results are still
     /// valid pixels and may repopulate the decoded cache.
     func trimDecodedCache() async {
         await core.trimDecodedCache()
