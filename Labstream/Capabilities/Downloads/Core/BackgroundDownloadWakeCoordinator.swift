@@ -106,6 +106,14 @@ final class BackgroundDownloadWakeCoordinator: @unchecked Sendable {
         return drain
     }
 
+    /// B00: true while any attempt of the row holds a rebuild grace, i.e. the manager has been asked to
+    /// mint a replacement request and no task exists yet. The stale-row self-heal must not restart it.
+    func hasGrace(forRatingKey ratingKey: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return graceGenerations.keys.contains { $0.ratingKey == ratingKey }
+    }
+
     /// Re-arming advances the timer generation but retains one gate operation for the key.
     func beginGrace(for key: DownloadAttemptKey) -> GraceStart {
         lock.lock()

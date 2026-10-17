@@ -499,8 +499,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     /// B00: true while the session still owns static-range work for the row even though no
-    /// URLSession task is tracked — a live task, a queued body append, a delayed range retry, or a
-    /// claimed finalizer. Used by the stale queued/downloading self-heal, which may restart only rows
+    /// URLSession task is tracked — a live task, a queued body append, a delayed range retry, a
+    /// rebuild grace awaiting the manager's replacement request, or a claimed finalizer. Used by the stale queued/downloading self-heal, which may restart only rows
     /// the session has genuinely abandoned.
     func ownsInProgressStaticRangeWork(ratingKey: String) -> Bool {
         if isTrackingTransfer(ratingKey: ratingKey) { return true }
@@ -508,6 +508,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let pending = (pendingStaticRangeWorkCounts[ratingKey] ?? 0) > 0
         lock.unlock()
         if pending { return true }
+        if backgroundWakeCoordinator.hasGrace(forRatingKey: ratingKey) { return true }
         return finalizationStateQueue.sync {
             finalizerRequestIDsByAttempt.keys.contains { $0.ratingKey == ratingKey }
         }
