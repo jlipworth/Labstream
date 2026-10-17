@@ -2353,6 +2353,63 @@ final class DownloadStore: @unchecked Sendable {
         return stagedDeletion ? .retiring : .present(hydratedRecord(row))
     }
 
+    /// What a truncation strike is counted against (R2-5). Unknown components stay nil so that
+    /// only a proven change resets the count.
+    static func truncationSourceKey(ratingKey: String, metadata: OfflineMetadata?)
+        -> DownloadSourceKey {
+        func nonEmpty(_ value: String?) -> String? {
+            value?.isEmpty == false ? value : nil
+        }
+        return DownloadSourceKey(
+            server: nonEmpty(metadata?.backendServerID) ?? nonEmpty(metadata?.backendBaseURLString),
+            account: nonEmpty(metadata?.backendUserID),
+            backend: metadata?.backendKind?.rawValue,
+            item: ratingKey,
+            source: nonEmpty(metadata?.mediaSourceID) ?? metadata?.sourcePartID.map(String.init),
+            profile: nonEmpty(metadata?.requestedProfileLabel) ?? nonEmpty(metadata?.optimizeTargetName))
+    }
+
+    /// Persist one truncation strike for the exact attempt (deduplicated by `outcomeID`) and
+    /// return the strike count it now carries; nil for a stale or missing attempt.
+    func recordTruncationStrike(for key: DownloadAttemptKey, outcomeID: String) -> Int? {
+        lock.lock()
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
+            lock.unlock()
+            return nil
+        }
+        let (history, recorded) = row.history.recordingTruncation(
+            outcomeID: outcomeID,
+            source: Self.truncationSourceKey(ratingKey: key.ratingKey, metadata: row.metadata))
+        if recorded {
+            row.history = history
+            rows[key.ratingKey] = row
+            _ = enqueueAttemptPersistenceLocked()
+        }
+        let strikes = row.history.truncation?.strikes ?? 0
+        lock.unlock()
+        return strikes
+    }
+
+    func truncationStrikes(for key: DownloadAttemptKey) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else { return 0 }
+        return row.history.truncation?.strikes ?? 0
+    }
+
+    /// A complete verdict, or a user cancel that re-downloads from scratch, clears the strikes.
+    func clearTruncationStrikes(for key: DownloadAttemptKey) {
+        lock.lock()
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
+              row.history.truncation != nil else {
+            lock.unlock()
+            return
+        }
+        row.history.truncation = nil
+        rows[key.ratingKey] = row
+        _ = enqueueAttemptPersistenceLocked()
+        lock.unlock()
+    }
+
     /// The exact attempt's P3a lifecycle and history.
     func lifecycleState(for key: DownloadAttemptKey) -> DownloadLifecycleState? {
         lock.lock(); defer { lock.unlock() }
@@ -3193,7 +3250,7 @@ final class DownloadStore: @unchecked Sendable {
                 $0,
                 expectedBytes: previous.flatMap { Self.expectedBytesEstimate(row: $0) })
         } ?? record.progress
-        rows[record.ratingKey] = Row(
+        var newRow = Row(
             ratingKey: record.ratingKey,
             attemptID: attemptID,
             title: record.title,
@@ -3204,6 +3261,13 @@ final class DownloadStore: @unchecked Sendable {
             status: record.status,
             metadata: metadata,
         )
+        // R2-5: a replacement attempt inherits truncation strikes for the same source in this
+        // same transaction, so a Retry cannot reset the two-strike park (B54).
+        if let existing {
+            newRow.history = existing.history.inherited(
+                by: Self.truncationSourceKey(ratingKey: record.ratingKey, metadata: metadata))
+        }
+        rows[record.ratingKey] = newRow
         sideAssetHydrationCache.removeValue(forKey: record.ratingKey)
         let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
