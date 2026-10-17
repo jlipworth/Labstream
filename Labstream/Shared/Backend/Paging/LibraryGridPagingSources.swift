@@ -212,6 +212,21 @@ private func mediaBrowserAlphabetCounts(backend: MediaBackendID,
     let itemTypes = MediaBrowserLibraryGridPolicy.itemTypes(collectionType: view.collectionType)
     let recursive = MediaBrowserLibraryGridPolicy.recursive(collectionType: view.collectionType)
     return (try? await AlphabetCountFanout.counts(letters: letters) { letter in
+        // Count-only request: the rail needs `TotalRecordCount`, never the rows. Fall back to
+        // a one-row page if a server ever omits the total from a `Limit=0` response.
+        let count: Int? = switch backend {
+        case .jellyfin:
+            try await JellyfinBrowseService(appModel: appModel).itemCount(
+                parentId: view.id, recursive: recursive,
+                nameStartsWith: letter, includeItemTypes: itemTypes)
+        case .emby:
+            try await EmbyBrowseService(appModel: appModel).itemCount(
+                parentId: view.id, recursive: recursive,
+                nameStartsWith: letter, includeItemTypes: itemTypes)
+        case .plex:
+            preconditionFailure("Plex does not use MediaBrowser paging")
+        }
+        if let count { return count }
         let page = try await mediaBrowserItemsPage(
             backend: backend, view: view, appModel: appModel,
             recursive: recursive, startIndex: nil, limit: 1,

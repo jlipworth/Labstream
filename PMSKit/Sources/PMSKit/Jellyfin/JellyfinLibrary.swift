@@ -15,6 +15,25 @@ public enum JellyfinLibrary {
         return get(url: url, token: token, identity: identity)
     }
 
+    /// Count-only items request (`Limit=0`, no fields, images or user data): the response
+    /// carries `TotalRecordCount` and no rows. Same scope semantics as `itemsRequest`.
+    public static func itemCountRequest(server: URL,
+                                        token: String,
+                                        identity: JellyfinClientIdentity,
+                                        userId: String,
+                                        parentId: String?,
+                                        recursive: Bool,
+                                        nameStartsWith: String?,
+                                        includeItemTypes: String) throws -> URLRequest {
+        let shape = requestFactory.itemCount(userId: userId,
+                                             parentId: parentId,
+                                             recursive: recursive,
+                                             nameStartsWith: nameStartsWith,
+                                             includeItemTypes: includeItemTypes)
+        let url = try url(server: server, shape: shape)
+        return get(url: url, token: token, identity: identity)
+    }
+
     public static func itemsRequest(server: URL,
                                     token: String,
                                     identity: JellyfinClientIdentity,

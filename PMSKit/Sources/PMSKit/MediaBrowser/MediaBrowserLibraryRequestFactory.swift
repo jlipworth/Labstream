@@ -103,6 +103,31 @@ public struct MediaBrowserLibraryRequestFactory: Sendable {
         )
     }
 
+    /// Count-only `items` query for the same scope (library, recursion, item types, name
+    /// prefix, filters): `Limit=0` with no `Fields`, sort, images or user data, so the server
+    /// returns only `TotalRecordCount`. Used for A–Z rail probes, which never read the rows.
+    public func itemCount(userId: String,
+                          parentId: String?,
+                          recursive: Bool,
+                          nameStartsWith: String?,
+                          includeItemTypes: String,
+                          filters: [String] = []) -> MediaBrowserLibraryRequestShape {
+        let shape = items(userId: userId,
+                          parentId: parentId,
+                          recursive: recursive,
+                          limit: 0,
+                          nameStartsWith: nameStartsWith,
+                          sortBy: nil,
+                          sortOrder: nil,
+                          includeItemTypes: includeItemTypes,
+                          filters: filters)
+        var query = shape.queryItems
+        setOrRemoveQueryItem(.fields, value: nil, in: &query)
+        replaceQueryItem(.enableUserData, with: "false", in: &query)
+        replaceQueryItem(.enableImages, with: "false", in: &query)
+        return MediaBrowserLibraryRequestShape(path: shape.path, queryItems: query)
+    }
+
     public func albumArtists(userId: String,
                              parentId: String?,
                              startIndex: Int? = nil,
