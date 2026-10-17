@@ -225,7 +225,7 @@ struct DownloadCleanupIntentJournalTests {
             let quarantines = try FileManager.default.contentsOfDirectory(
                 at: directory, includingPropertiesForKeys: nil)
                 .filter { $0.lastPathComponent.hasPrefix(
-                    "download-cleanup-intents-quarantine-") }
+                    "download-cleanup-intents-rejected-") }
             #expect(quarantines.count == 1)
             #expect(try Data(contentsOf: #require(quarantines.first)) == original)
         }
