@@ -33,11 +33,13 @@ struct MacPlayerFixtureView: View {
                         sessionSource: source, identity: identity, client: PlexClient(identity: identity),
                         maxVideoBitrateKbps: 0)
                     controller = value
+                    DebugStatsFixture.seedWhenReady(value)
                     return value
                 }, onClose: { closed = true })
             } else { ProgressView("Preparing fixture") }
         }
         .task {
+            DebugStatsFixture.prepareLaunch()
             do { file = try await DebugPlayerFixtureMedia.ensureVideoFile() }
             catch { failed = true }
         }
