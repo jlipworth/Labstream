@@ -557,6 +557,28 @@ Acceptance is a phase's pins and inventory rows staying green.
   - **Pins:** a blocked commit followed by an overwriting `retryRejected` still leaves Retry at
     0 bytes with no working file while inheriting the strike, and the space is freed. A
     committed verdict deletes exactly the condemned body. A stale owner cannot condemn the path.
+- **2026-10-17 — P3a after-review, round 6: not ready, 2 P2s and 1 P3.** Relaunch handling after
+  a successful rename was confirmed. The fixes make the rename hygiene rather than the fence.
+  - **Persisted condemnation fence.** `DownloadAttemptHistory.bodyCondemned` is set by the
+    reducer in the same revision as a failing truncation verdict, whether through
+    `finalizeOutcome` or `transferFailed(.truncated)`. Nothing within the attempt clears it, and
+    a replacement attempt does not inherit it.
+  - **What the fence blocks.** A Retry clone, a checkpoint fact, and `bodyAtWorking` re-entry
+    into finalization. A later failure reason (for example `retryRejected`) cannot reopen the
+    body.
+  - **Rename before any wait.** The body is renamed as soon as the verdict applies in memory,
+    before any persistence wait, so a failed or wedged foreground commit cannot leave it at the
+    working path. Its deletion is scheduled at once.
+  - **Rename failure** is logged (`downloads.condemn_rename_failed`) and falls back to deleting
+    in place, as before P3a.
+  - **Deletion** of the renamed file retries up to three times, then is logged
+    (`downloads.condemned_body_delete_failed`).
+  - **Pins:**
+    - reducer: fence set, survives a reason overwrite, blocks re-entry, is not inherited, and
+      the legacy path also condemns;
+    - store: an unmoved condemned body is not a checkpoint and does not seed a Retry.
+  - **Still open:** a session-level pin with a blocked writer (the sequencing is covered at the
+    store and reducer levels).
 
 ## P2 detailed plan — cleanup foundation
 
