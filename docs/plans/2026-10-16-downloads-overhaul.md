@@ -10,7 +10,7 @@ local playback and row presentation. tvOS remains streaming-only and compiles no
 capability. No live-server or physical-device acceptance is implied by implementation completion.
 
 **Evidence:** the immutable [bugs versus main audit](../evidence/2026-10-17-downloads-overhaul-bugs-vs-main.md)
-compares merge-base `f43dfce7` with `0e7bae0f`, records B00–B85 plus relevant store/planner
+compares merge-base `f43dfce7` with `0e7bae0f`, records B00–B87 plus relevant store/planner
 items, named guards, status/area counts and limits. Git history retains superseded designs,
 review rounds, line maps and detailed lane journals; they are not repeated here.
 
@@ -221,6 +221,15 @@ heartbeat scheduling, checkpoint-admission timing, wake-clock overlap, shared su
 preferences). Fixtures now wait on explicit acknowledgements, events and isolated preference
 suites; no product race was demonstrated and no assertion or expiry pin was weakened. Five
 consecutive full parallel Mac hosted runs then passed.
+
+The build-1513 field report (see the evidence page) exposed two storage gaps in checkpoint
+ownership handoff, fixed in P7. **B86:** startup orphan inventory now recognises hard-killed
+checkpoint-copy temps through the audit's grammar, keeping startup identity, durable/pending-intent
+references, live leases and post-inventory protection. **B87:** handoff admits the whole
+checkpoint-copy peak plus existing headroom through the shared physical-space policy, reserving
+capacity across concurrent handoffs; a refusal keeps the predecessor's owner and bytes and surfaces
+the existing storage-full message. Aggregate diagnostics count copy bytes, sweep reclamation and
+space refusals, without paths or identifiers.
 
 ## Verification checkpoint
 
@@ -438,7 +447,7 @@ Use accepted implementation as the source, without copying a proposed note into 
 
 ## Appendix A — Bug list
 
-The complete B00–B85 dispositions, relevant st-/pu- cases, severities, phase/PRs, named guards,
+The complete B00–B87 dispositions, relevant st-/pu- cases, severities, phase/PRs, named guards,
 status/area counts and deferred reasons live only in the immutable
 [bugs versus main evidence page](../evidence/2026-10-17-downloads-overhaul-bugs-vs-main.md).
 Do not restore a second bug table here.

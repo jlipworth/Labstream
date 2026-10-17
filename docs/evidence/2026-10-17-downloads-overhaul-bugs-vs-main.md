@@ -1,7 +1,7 @@
 # Downloads overhaul: bugs versus main
 
 **Immutable audit date:** 2026-10-17. **Compared revisions:** `main` merge-base `f43dfce7`
-and P1–P7 implementation at `0e7bae0f` (`downloads/p7-mediabrowser-ux`). This records the
+and P1–P7 implementation at `0e7bae0f` (`downloads/p7-mediabrowser-ux`), with B86/B87 added from the later build-1513 report. This records the
 pre-release documentation checkpoint before the separate P7 review fixes/dead-facade cleanup
 and P7.7 release commit. It is not a live-server, simulator or device acceptance report.
 
@@ -20,7 +20,7 @@ Raw private evidence is excluded. No new app tests, builds or live probes were r
 - **deferred:** the defect or decision remains unresolved, with its reason below.
 
 Severity is the original Appendix A assessment, including uncertain findings. B00 is included
-alongside B01–B85. B23/B40 remain explicit aliases of B01/B28, and B44/B49 overlap; counts describe
+alongside B01–B87 (B86/B87 were added from the build-1513 field report). B23/B40 remain explicit aliases of B01/B28, and B44/B49 overlap; counts describe
 inventory rows, not independent root causes. Suite names identify guarding coverage, not proof
 that each individual pin was reproduced red. Source guards, retained controls and missing pins
 are labeled. P1 #371, P2 #374, P3a #375, P3b #376, P4 #385, P5 #387 and P6 #388 identify the
@@ -116,6 +116,8 @@ stacked PRs; P7 has no PR at this checkpoint.
 | B83 | Inherited completed bodies plus side assets have no proven global memory ceiling. | low | deferred | P6 #388 scoped out | P6BackgroundWakeTests retains bounded-wake controls; no process-wide memory ceiling pin |
 | B84 | A duplicate-row loader initializer can trap; current admission already blocks duplicates. | low | fixed | P6 #388 | P6StoreLoadSafetyTests.checkedIngestion (source guard plus byte conservation) |
 | B85 | Static append re-copies bodies without measuring/bounding lifetime write amplification. | low | deferred | P6 #388 scoped out | No amplification measurement/zero-copy pin; bounded-copy behaviour retained |
+| B86 | A hard kill during checkpoint ownership handoff leaves an unjournaled copy temp that startup never sweeps, so interrupted recoveries accumulate bytes. | high | fixed | P7 PR pending | P7CheckpointHandoffStorageTests.hardKillResidueSweepGuards; repeatedRecoverySweeps |
+| B87 | Checkpoint ownership handoff copies the whole partial before any free-space admission; concurrent handoffs can spend the same free bytes. | high | fixed | P7 PR pending | P7CheckpointHandoffStorageTests.insufficientSpaceBeforeCopy; competingHandoffsReserveCapacity; managerReportsStorageRefusal |
 
 B20 is fixed for lock-held I/O, stale resume authority and physical path exclusion; generalized
 durable working-body recipes remain deferred. B51 is fixed for new/provable original source
@@ -152,13 +154,13 @@ intentional scope choices visible; they are counted separately from B00–B85.
 
 ## Counts
 
-B00–B85: **78 fixed, 3 retained/refuted, 5 deferred; 86 rows**.
+B00–B87: **80 fixed, 3 retained/refuted, 5 deferred; 88 rows**.
 
 | Original area | Fixed | Retained/refuted | Deferred | Total |
 | --- | ---: | ---: | ---: | ---: |
 | bg-session | 15 | 0 | 0 | 15 |
 | store | 9 | 0 | 0 | 9 |
-| storage-delete | 8 | 1 | 3 | 12 |
+| storage-delete | 10 | 1 | 3 | 14 |
 | plex | 11 | 0 | 0 | 11 |
 | emby | 9 | 1 | 0 | 10 |
 | jellyfin | 7 | 0 | 1 | 8 |
@@ -169,9 +171,9 @@ B00–B85: **78 fixed, 3 retained/refuted, 5 deferred; 86 rows**.
 Additional st-/pu- inventory: **13 fixed, 3 retained/refuted,
 1 deferred; 17 rows**. Store: 9 fixed, 2 retained/refuted, 1 deferred (12 rows).
 Planner/UI: 4 fixed, 1 retained/refuted, 0 deferred (5 rows).
-Combined row count: **91 fixed,
+Combined row count: **93 fixed,
 6 retained/refuted,
-6 deferred; 103 rows**.
+6 deferred; 105 rows**.
 
 ## Build-1506 field-report verdict
 
@@ -183,6 +185,20 @@ confirmed**. The report has no termination signature. The matching **`.ips`/Jets
 needed** before attributing the termination or claiming that it cannot recur. Hosted heartbeats,
 fake-clock deadlines and bounded copy buffers do not establish hardware scheduling, process-wide
 memory bounds or lifetime disk-write amplification.
+
+## Build-1513 field-report verdict
+
+A second report (an older `main` build, visionOS) shows another launch recovery burst: 19 records
+(17 active, resuming at 11–52%), paired range restarts and 130 queued chapter-image requests, with
+the maintainer observing roughly 5 GB of free space lost. The exported event window starts after
+launch and contains no termination, watchdog, jetsam or storage-full signal; the shipped audit could
+not see hidden partials or temporary bodies (B19). It **refines** the build-1506 thesis: relaunch
+recovery combines whole-checkpoint ownership-handoff copies, persistence and renewed network and
+side-cache work, which can both stall launch and consume temporary storage, and a termination can
+interrupt reclamation so the next recovery repeats work. Source inspection of the overhaul found two
+remaining storage gaps in that path, recorded and fixed as **B86** and **B87**. The termination cause
+remains **unconfirmed**; the matching `.ips`/JetsamEvent and paired free-space snapshots are still
+needed.
 
 ## Deferred items and reasons
 
