@@ -38,11 +38,12 @@ struct DownloadStorageEstimatePolicyTests {
                                                                      chapterImageCount: 0) > 0)
     }
 
-    @Test("Total estimate adds side assets and treats sidecar-only downloads as nonzero")
+    /// B81 (P5): the old contract turned an unknown media size into a known extras-only estimate.
+    @Test("Total estimate adds side assets; an unknown media size stays unknown")
     func totalBytes() {
         #expect(DownloadStorageEstimatePolicy.totalBytes(mediaBytes: 100, sideAssetBytes: 0) == 100)
         #expect(DownloadStorageEstimatePolicy.totalBytes(mediaBytes: 100, sideAssetBytes: 25) == 125)
-        #expect(DownloadStorageEstimatePolicy.totalBytes(mediaBytes: nil, sideAssetBytes: 25) == 25)
+        #expect(DownloadStorageEstimatePolicy.totalBytes(mediaBytes: nil, sideAssetBytes: 25) == nil)
         #expect(DownloadStorageEstimatePolicy.totalBytes(mediaBytes: nil, sideAssetBytes: 0) == nil)
     }
 

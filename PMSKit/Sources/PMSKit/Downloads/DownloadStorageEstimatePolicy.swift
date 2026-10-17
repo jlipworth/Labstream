@@ -38,9 +38,11 @@ public enum DownloadStorageEstimatePolicy {
         max(0, chapterImageCount) * 30_000
     }
 
+    /// B81 (P5): an unknown media size stays unknown, whatever the side assets. Turning it into a
+    /// known extras-only number let the item evade the unknown-size confirmation.
     public static func totalBytes(mediaBytes: Int?, sideAssetBytes: Int) -> Int? {
-        guard sideAssetBytes > 0 else { return mediaBytes }
-        return (mediaBytes ?? 0) + sideAssetBytes
+        guard let mediaBytes else { return nil }
+        return mediaBytes + max(0, sideAssetBytes)
     }
 
     /// Full preflight estimate for a selected download source.
