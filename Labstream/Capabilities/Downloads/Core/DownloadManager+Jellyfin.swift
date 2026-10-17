@@ -165,7 +165,8 @@ extension DownloadManager {
                 }
                 let info = try JellyfinPlaybackInfoResponse.decode(from: data)
                 let decision = try JellyfinPlayback.downloadDecision(response: info,
-                                                                     preferredMediaSourceId: jellyfinMediaSourceID)
+                                                                     preferredMediaSourceId: jellyfinMediaSourceID,
+                                                                     audioStreamIndex: audioStreamIndex)
                 let sourcePlan = JellyfinDownloadSourcePlan.transcode(decision: decision,
                                                                       durationMs: item.duration,
                                                                       profile: profile)
@@ -222,7 +223,8 @@ extension DownloadManager {
                 }
                 let info = try JellyfinPlaybackInfoResponse.decode(from: data)
                 let decision = try JellyfinPlayback.downloadDecision(response: info,
-                                                                     preferredMediaSourceId: jellyfinMediaSourceID)
+                                                                     preferredMediaSourceId: jellyfinMediaSourceID,
+                                                                     audioStreamIndex: audioStreamIndex)
                 let fallbackProfile = DownloadPresetPolicy.jellyfinTranscodeProfile(named: DownloadPresetPolicy.jellyfinDefaultDownloadPreset)
                 let sourcePlan = JellyfinDownloadSourcePlan.compatible(
                     decision: decision,

@@ -160,6 +160,45 @@ struct JellyfinPlaybackTests {
         #expect(decision.transcodeReasons == ["ContainerNotSupported"])
     }
 
+    /// B58: remux audio-copy eligibility must follow the user-selected audio track, not the
+    /// source's first audio stream. A TrueHD-first source with a selected AC3 track copies AC3.
+    @Test func downloadDecisionUsesSelectedAudioStreamCodec() throws {
+        let response = try JellyfinPlaybackInfoResponse.decode(from: Data(#"""
+        {
+          "PlaySessionId": "download-play-1",
+          "MediaSources": [{
+            "Id": "source-1",
+            "Container": "mkv",
+            "SupportsDirectStream": true,
+            "MediaStreams": [
+              { "Index": 0, "Type": "Video", "Codec": "hevc" },
+              { "Index": 1, "Type": "Audio", "Codec": "truehd" },
+              { "Index": 2, "Type": "Audio", "Codec": "ac3" }
+            ]
+          }]
+        }
+        """#.utf8))
+
+        let selected = try JellyfinPlayback.downloadDecision(response: response,
+                                                            preferredMediaSourceId: "source-1",
+                                                            audioStreamIndex: 2)
+        #expect(selected.audioCodec == "ac3")
+        let eligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
+            videoCodec: selected.videoCodec, audioCodec: selected.audioCodec,
+            sourceContainer: selected.container)
+        #expect(eligibility.copiesAudio)
+
+        let unselected = try JellyfinPlayback.downloadDecision(response: response,
+                                                              preferredMediaSourceId: "source-1")
+        #expect(unselected.audioCodec == "truehd")
+
+        // An index that names no audio stream keeps the first-audio fallback.
+        let unknown = try JellyfinPlayback.downloadDecision(response: response,
+                                                           preferredMediaSourceId: "source-1",
+                                                           audioStreamIndex: 9)
+        #expect(unknown.audioCodec == "truehd")
+    }
+
     @Test func resolvesServerRelativeTranscodingURLFromPlaybackInfoWithStableHLSOverrides() throws {
         let response = try JellyfinPlaybackInfoResponse.decode(from: Data(#"""
         {
