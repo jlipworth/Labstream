@@ -161,6 +161,20 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
         return .committed(existing)
     }
 
+    /// Durably replace the entry with `updated`'s id, attempt and operation (provenance
+    /// classification). Returns false when the entry is gone or the commit fails.
+    func replace(_ updated: DurableDownloadCleanupIntent) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard case .loaded(var values) = readLocked(),
+              let index = values.firstIndex(where: {
+                  $0.matchesForClear(id: updated.id, attemptKey: updated.attemptKey,
+                                     operation: updated.operation)
+              }) else { return false }
+        values[index] = updated
+        guard let data = try? persistence.encode(values) else { return false }
+        return DurableJournalCommit.commit(data, to: fileURL, using: persistence.commit) == nil
+    }
+
     /// Remove only the exact cleanup operation that completed. Matching UUID alone is insufficient:
     /// a stale completion must also prove the same attempt and operation authority.
     @discardableResult

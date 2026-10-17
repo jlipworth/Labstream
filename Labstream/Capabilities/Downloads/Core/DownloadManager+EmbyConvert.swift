@@ -15,92 +15,6 @@ extension DownloadManager {
 
     // MARK: - Emby convert-then-download (server-side prepare → resumable download)
 
-    func recoverAndCancelEmbyConvertTombstone(
-        _ tombstone: DownloadStore.EmbyConvertCleanupTombstone,
-        server: URL, token: String, identity: EmbyClientIdentity,
-        currentUserID: String) async {
-        // One recovery per tombstone at a time: overlapping sweeps (pause/retry/backend-ready
-        // edges) otherwise duplicate the job-list fetch and race DELETEs for the same job.
-        guard !embyCleanupTombstonesInFlight.contains(tombstone.id) else { return }
-        embyCleanupTombstonesInFlight.insert(tombstone.id)
-        defer { embyCleanupTombstonesInFlight.remove(tombstone.id) }
-        let metadata = tombstone.metadata
-        guard let baseline = metadata.embyConvertJobBaselineIDs,
-              let fingerprint = metadata.embyConvertRecoveryFingerprint,
-              let startedAt = metadata.embyConvertRecoveryStartedAtEpochSeconds,
-              let phase = metadata.embyConvertRecoveryPhase else { return }
-        guard EmbyConvertRecoveryPolicy.publicUserMatches(
-            currentSessionUserID: currentUserID,
-            persistedBackendUserID: metadata.backendUserID,
-            fingerprintUserID: fingerprint.userId) else {
-            recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
-                "download_id": .identifier(tombstone.ratingKey),
-                "reason": .label("emby_user_mismatch"),
-            ])
-            return
-        }
-        do {
-            let listRequest = try EmbyConvertRequest.jobListRequest(
-                server: server, token: token, identity: identity)
-            let (data, response) = try await URLSession.shared.data(for: listRequest)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return }
-            let list = try EmbyConvertRequest.decodeJobList(from: data)
-            // Jobs currently OWNED by live rows are never cancellable by a tombstone: deleting a
-            // crash-window row and immediately re-downloading the same item/preset creates a
-            // fingerprint-identical job inside the creation window, and without this exclusion
-            // the sweep would DELETE the user's active conversion.
-            let liveJobIDs = Set(store.records.compactMap { $0.metadata?.embyConvertJobID })
-            let cleanupAction = EmbyConvertRecoveryPolicy.cleanupAction(
-                baselineJobIDs: Set(baseline), jobs: list.items, listIsComplete: list.isComplete,
-                fingerprint: fingerprint, attemptStartedAtEpochSeconds: startedAt, phase: phase,
-                nowEpochSeconds: Date().timeIntervalSince1970,
-                liveJobIDs: liveJobIDs)
-            switch cleanupAction {
-            case .retainTombstone:
-                return
-            case .discardTombstone:
-                _ = removeEmbyConvertCleanupTombstoneDurably(tombstone)
-                return
-            case .cancel(let jobId):
-                let deleteRequest = try EmbyConvertRequest.deleteJobRequest(
-                    server: server, token: token, identity: identity, jobId: jobId)
-                let (_, deleteResponse) = try await URLSession.shared.data(for: deleteRequest)
-                guard let deleteHTTP = deleteResponse as? HTTPURLResponse,
-                      (200..<300).contains(deleteHTTP.statusCode) || [404, 410].contains(deleteHTTP.statusCode)
-                else { return }
-                if removeEmbyConvertCleanupTombstoneDurably(tombstone) {
-                    recordDownloadDiagnostic("downloads.convert_cleanup_recovered", fields: [
-                        "download_id": .identifier(tombstone.ratingKey),
-                        "job_id": .int(jobId),
-                    ])
-                }
-            }
-        } catch {
-            // Retain the durable tombstone; a later backend-ready/lifecycle pass retries it.
-            recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
-                "download_id": .identifier(tombstone.ratingKey),
-            ])
-        }
-    }
-
-    @discardableResult
-    private func removeEmbyConvertCleanupTombstoneDurably(
-        _ tombstone: DownloadStore.EmbyConvertCleanupTombstone
-    ) -> Bool {
-        switch store.removeEmbyConvertCleanupTombstone(id: tombstone.id) {
-        case .committed:
-            deferredEmbyCleanupTombstones.removeAll { $0.id == tombstone.id }
-            return true
-        case .failed(let failure):
-            recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
-                "download_id": .identifier(tombstone.ratingKey),
-                "reason": .label("tombstone_\(failure.stage.rawValue)_failed"),
-                "error_type": .label(failure.errorType),
-            ])
-            return false
-        }
-    }
-
     func beginEmbyConvertAttempt(for key: DownloadAttemptKey) -> UUID {
         serverPrepAttempts.beginEmbyConvertAttempt(for: key)
     }
@@ -499,6 +413,14 @@ extension DownloadManager {
                                         audioStreamIndex: Int?,
                                         attemptKey storeAttemptKey: DownloadAttemptKey,
                                         attemptID: UUID) async {
+        // P2.3/B49: hold the per-server Convert coordinator from the job-list GET through the
+        // durable adoption commit, so journaled cleanup cannot cancel the job this recovery is
+        // about to adopt (or vice versa).
+        let coordinatorKey = EmbyConvertJobCoordinator.key(
+            baseURL: server, serverID: appModel.backendSession(for: .emby)?.serverID)
+        await embyConvertJobCoordinator.acquire(coordinatorKey)
+        var holdsCoordinator = true
+        defer { if holdsCoordinator { embyConvertJobCoordinator.release(coordinatorKey) } }
         let list: EmbyConvertJobList
         do {
             let req = try EmbyConvertRequest.jobListRequest(
@@ -564,6 +486,8 @@ extension DownloadManager {
             return
         }
         refreshRecords()
+        embyConvertJobCoordinator.release(coordinatorKey)
+        holdsCoordinator = false
         recordDownloadDiagnostic("downloads.convert_resume", fields: [
             "download_id": .identifier(ratingKey),
             "job_id": .int(jobId),
