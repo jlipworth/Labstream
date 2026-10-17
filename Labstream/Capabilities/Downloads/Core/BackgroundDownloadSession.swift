@@ -249,6 +249,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Destructive schema reset has no trustworthy row ownership. Unlike a current-schema purge,
     /// every callback is rejected until the daemon task list reaches an empty fixed point.
     private var startupRejectsAllCallbacks = false
+    /// B07: activation failed after the URLSession was constructed and returned admission to
+    /// `.dormant` while the session stays live. Owned current-attempt callbacks are still admitted
+    /// (as in the purge window) so healthy work is not cancelled and its bodies deleted while the
+    /// manager waits to retry; only non-owned callbacks are rejected.
+    private var startupFailedAfterSessionConstruction = false
     /// Cancellation completion can race a late body/progress callback. Once purge claims an ID it
     /// is rejected for the rest of this session object's life, even after admission opens.
     private var permanentlyRejectedTaskIdentifiers: Set<Int> = []
@@ -911,6 +916,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.lock()
         startupAdmissionState = .dormant
         startupRejectsAllCallbacks = false
+        // Both activation paths enumerate `urlSession` before they can fail, so it is live now.
+        startupFailedAfterSessionConstruction = true
         lock.unlock()
         AppDiagnostics.record(.downloads, "downloads.startup_admission_failed", fields: [
             "reason": .label(reason),
@@ -923,6 +930,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let state = startupAdmissionState
         let rejected = permanentlyRejectedTaskIdentifiers.contains(task.taskIdentifier)
         let rejectsAll = startupRejectsAllCallbacks
+        let failedAfterConstruction = startupFailedAfterSessionConstruction
         lock.unlock()
         guard !rejectsAll else { return false }
         let key = BackgroundDownloadTaskIdentity.attemptIdentity(
@@ -938,7 +946,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             hasCurrentMarker: BackgroundDownloadTaskIdentity.markerVersion(
                 taskDescription: task.taskDescription).isCurrent,
             taskKey: key,
-            ownsAttempt: key.map(store.ownsAttempt) ?? false
+            ownsAttempt: key.map(store.ownsAttempt) ?? false,
+            isDormantAfterFailedActivation: state == .dormant && failedAfterConstruction
         )
     }
 
@@ -948,10 +957,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         isPermanentlyRejected: Bool,
         hasCurrentMarker: Bool,
         taskKey: DownloadAttemptKey?,
-        ownsAttempt: Bool
+        ownsAttempt: Bool,
+        isDormantAfterFailedActivation: Bool = false
     ) -> Bool {
         guard !isPermanentlyRejected else { return false }
-        guard isActive || isPurging else { return false }
+        guard isActive || isPurging || isDormantAfterFailedActivation else { return false }
         return hasCurrentMarker && taskKey != nil && ownsAttempt
     }
 
