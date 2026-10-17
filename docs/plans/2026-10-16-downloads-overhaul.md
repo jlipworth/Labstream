@@ -695,8 +695,9 @@ Ambiguous Convert cleanup and Convert crash-window recovery are serialized on on
 
 ## P3 detailed plan — lifecycle, history, reducer and v5 migration
 
-*Revision 2 (2026-10-17). Revised after the GPT-6.1-Sol "before" co-review, whose verdict was
-"rework": deferring the physical split was judged sound, and it raised nine findings.*
+*Revision 2.1 (2026-10-17).*
+- *Round 1 (GPT-6.1-Sol): "rework", nine findings, folded into revision 2.*
+- *Round 2: "approve with changes", seven changes, applied here and marked (R2-n).*
 
 P3 now ships as **two PRs**:
 
@@ -737,6 +738,23 @@ optional on decode.
   the B54 containment still keeps published bodies.
 - `status` is still written, derived from lifecycle, so older binaries and diagnostics read a
   consistent value.
+- **(R2-3) Rollback compatibility.** P1/P2 binaries must keep working on a P3a index.
+  - Every authority that older binaries enforce keeps its legacy projection throughout P3a.
+    `seasonPlannerPendingAdmission` is still encoded from `history.admissionIntent`.
+  - No new case is added to the existing `ArtifactIntentOperation` enum. An older decoder would
+    fail the whole row, and that makes the index unreadable.
+  - New durable effects use only existing operation cases (see P3a.5), or a separate optional
+    field that older binaries ignore.
+  - Pin: P3a writes planned rows and pending effects, a P1/P2 store re-encodes them, P3a reloads,
+    and everything except strikes and reasons survives.
+- **(R2-6) Structural derivation only at load.**
+  - The store derives a missing lifecycle structurally (status → lifecycle, no effects) when it
+    loads.
+  - Recovery effects and fact-dependent corrections wait for the authoritative task enumeration
+    in `relaunchObserved`.
+  - A row with a lifecycle but no history, or the reverse, is completed structurally; it is never
+    treated as malformed.
+  - Pin: a pre-P3a v4 index upgrades straight to the P3b binary, skipping P3a.
 
 ### P3a.2 Types
 
@@ -758,9 +776,17 @@ optional on decode.
 
 - `truncation: TruncationHistory?`
   - Holds `strikes`, a `sourceKey`, and `lastOutcomeID` (dedupes replayed finalize outcomes).
-  - `sourceKey` is backend, item, media source or part, and requested profile. Strikes carry
-    across attempts with the same `sourceKey`, preserving today's per-item behaviour.
-  - They reset on `complete`, on a delete, and when the source or profile changes.
+  - `sourceKey` is server and account identity, backend, item, media source or part, and
+    requested profile. Strikes carry across attempts with the same `sourceKey`, preserving
+    today's per-item behaviour.
+  - **(R2-5) Inheritance:**
+    - History moves to the new owner in the same store transaction that replaces the row
+      (`createAttemptOwnedRecord` replacement).
+    - An *unknown* component, such as a part not yet resolved during negotiation, is not
+      treated as a change. Only a proven difference resets the strikes.
+    - Outcome IDs are `(attemptID, finalizerRequestID)`, which are stable across replay. They are
+      applied in commit order, and a replay of an already-recorded ID is a no-op.
+  - They reset on `complete`, on a delete, and on a proven source or profile change.
 - `unverifiedReason`: `probeMiss(String)`, `truncatedRepeated`, `backgroundProbeDeferred`,
   `migratedUnknown`.
 - `lastFailure`: a bounded enum.
@@ -812,13 +838,19 @@ expected lifecycle result. Notable rows:
 A transition's effects are **persisted in the same index revision as the state change**, as
 existing artifact intents where one fits:
 
-| Effect | Intent |
-|---|---|
-| `deleteBody(working)` | `rowDeletion`-style artifact intent scoped to the working body |
-| `clearResumeBlob` | `clearResumeBlob` |
-| held bodies | `heldBodyDeletion` |
-| `requestFinalization` | the persisted `finalizing` lifecycle itself (relaunch re-requests it) |
-| server cleanup | P2 journal intents, committed before the index revision under the P2 rule |
+**(R2-2)** The mapping, with terminal semantics:
+
+| Effect | Durable form | Row afterwards |
+|---|---|---|
+| `deleteBody(working)` (a truncation strike, an empty body) | the existing `heldBodyDeletion` operation with the working path, which deletes the body only | the row and its history stay |
+| `deleteBody(published)` (empty published body on revalidation) | `heldBodyDeletion` with the published path, plus a constrained `clearPublication` | the row stays, failed, with its history |
+| publish (complete or unverified) | the existing `validatedPromotion` recipe | the lifecycle stays `finalizing` until the terminal snapshot commits, then becomes the terminal |
+| `clearResumeBlob` | `clearResumeBlob` | unchanged |
+| held bodies | `heldBodyDeletion` | unchanged |
+| `requestFinalization` | the persisted `finalizing` lifecycle (relaunch re-requests it) | — |
+| server cleanup | P2 journal intents, committed before the index revision under the P2 rule | — |
+
+`rowDeletion` is used only to delete a whole row.
 
 Effects that are not durable (UI refresh, diagnostics) are marked transient.
 
@@ -831,14 +863,28 @@ revision commits.**
 Today the body is moved into the attempt working path (BDS ~3261), and only then is finalization
 recorded (~3296).
 
-- P3a writes `finalizing` **before** the move, as an intent carrying the source temp path and the
-  destination working path. It writes `finalizing(bodyMoved)` after the move.
-- On relaunch:
-  - A temp file still present means the move is replayed.
-  - A working body present means finalization is re-requested.
-  - If neither is present, the body was lost before any record existed, which is the same as
-    today, and the row goes to failed.
-- Pins cover a crash before the move, one between move and marker, and one after the marker.
+**(R2-4)** The URLSession temp file is system-owned and expires once the delegate returns, so it
+can never be a replay source. The protocol, inside the delegate callback:
+
+1. **Move to an attempt-owned path.** Before returning, move the temp file to an attempt-owned,
+   uniquely named capture path. The name is
+   `.attempt-capture-<attemptID>-<finalizerRequestID>`, so the attempt owns it exactly and no
+   pre-existing file can be mistaken for it. Then fsync the directory.
+2. **Record the capture.** Submit `finalizing(capture: path)`. If that persistence fails, keep the
+   capture file. The startup staging sweep recognizes a capture file only through its row record,
+   so an unrecorded capture is orphaned and swept, which is the same loss as today.
+3. **Promote the capture** to the working path. A pre-existing working file is replaced only if
+   the row record names it as this attempt's working body; otherwise the row fails and keeps
+   both files as evidence. Then submit `finalizing(bodyAtWorking)`.
+
+On relaunch:
+
+- a recorded capture path that still exists → resume from step 3;
+- the working body named by the record → re-request finalization;
+- neither → failed.
+
+Pins: the temp file has expired, a pre-existing destination exists, persistence fails after
+capture, and a crash happens after each step.
 
 ### P3a.7 Store API
 
@@ -929,6 +975,14 @@ migration therefore means:
 
 - **Identity:** `migrationID` (a UUID) and `sourceDigest`, a SHA-256 of the v4 bytes, recorded in
   `migration-v5.json` in the authority directory and written with the P2 committer.
+- **(R2-1) Digest progression:**
+  - Every canonical replacement the migration makes (step 3's artifact recovery) is journalled
+    in the receipt as `(beforeDigest, afterDigest)` before the write.
+  - Ordinary writers and session callback mutations are frozen for the whole migration. Admission
+    is closed, and the store rejects every mutation except the migration's own.
+  - The candidate's digest is persisted in the receipt **before** its rename.
+  - Recovery accepts the canonical index if its digest is any recorded `afterDigest`, the
+    `sourceDigest`, or the candidate digest. Only an unrecorded digest is indeterminate.
 - **Steps, each with a receipt:**
   1. `begin(migrationID, sourceDigest)`.
   2. **Drain transport.** A drain primitive is extracted that neither resets nor activates. Every
@@ -955,9 +1009,11 @@ migration therefore means:
      receipt.
   3. If the digests mismatch, block as `.migrationIndeterminate` with the bytes untouched.
   4. An ambiguous post-rename commit failure is settled by the digest comparison above.
-- **Runner gate:** the cleanup runner's `rowState` for every intent is `.unknown` until the
-  migration has ended. That keeps all P2 executions, migrated or not, behind committed v5
-  authority (Sol 2).
+- **(R2-7) Runner gate:** `rowState` is `.unknown` for every intent from `begin` until the v5
+  commit is proven and the store has loaded the committed rows.
+  - Cleanup then reopens.
+  - Reclaim resumes independently; a reclaim failure never holds back server cleanup.
+  - The runner's resource-ownership rechecks still apply.
 - **Unverified rows:** the reason recovered from P3a history is kept; `migratedUnknown` is used
   only when it is absent.
 - **Read-only blocked load:** this only takes effect once the index can be read. While protected
@@ -1199,10 +1255,10 @@ This is every edge case the history shows the module has had to handle. *Status*
 | st-25 | Joined deletion waiters (double-tap Delete, coalesced recovery) each receive the outcome for the same epoch | A second waiter must not see a stale or overwritten outcome from a different retry epoch. | handled | yes | yes | P6 |
 | st-26 | Deletion-pending capsule: if the cleanup journal is unavailable, the row and its exact cleanup intents stay durable, and reconcile and mutators must… | A delete while the journal is unwritable would otherwise drop the only server-cleanup authority. | handled | yes | yes | P6 |
 | st-27 | Cleanup journals: unreadable is not empty; exact-value proofs after an ambiguous atomic write; element-level quarantine repair (intent journal only) | An unreadable queue treated as empty would erase orphan-cleanup authority. | partially-handled | yes | yes | P6 |
-| st-28 | Reconcile: a complete or unverified row whose file is missing becomes failed | Offline Play must not be offered for a file that no longer exists. | handled | yes | yes | P6 |
-| st-29 | Reconcile: a non-live queued/downloading/paused row that cannot stay resumable is demoted to failed and its partial and resume blob deleted; resumabl… | Invisible dead bytes piled up on disk (e1dc0224). Deleting the partial of a resumable row made its resume data useless (adc8943f). | partially-handled | yes | yes | P6 |
-| st-30 | Reconcile skips rows with pending artifact intents | A staged validatedPromotion leaves the row in .downloading while the working file is the validated body. Demoting it would delete the source. | handled | yes | yes | P6 |
-| st-31 | Reconcile backend nuance: Plex server-prep rows return to queued; Jellyfin/Emby transcodes become failed; a live static range task stays downloading… | Emby/Jellyfin live renders die with the task, while Plex optimize jobs survive on the server. A paused row with a live task offered Resume and could start a duplicate Ra… | handled | yes | yes | P6 |
+| st-28 | Reconcile: a complete or unverified row whose file is missing becomes failed | Offline Play must not be offered for a file that no longer exists. | handled | yes | yes | P3a |
+| st-29 | Reconcile: a non-live queued/downloading/paused row that cannot stay resumable is demoted to failed and its partial and resume blob deleted; resumabl… | Invisible dead bytes piled up on disk (e1dc0224). Deleting the partial of a resumable row made its resume data useless (adc8943f). | partially-handled | yes | yes | P3a |
+| st-30 | Reconcile skips rows with pending artifact intents | A staged validatedPromotion leaves the row in .downloading while the working file is the validated body. Demoting it would delete the source. | handled | yes | yes | P3a |
+| st-31 | Reconcile backend nuance: Plex server-prep rows return to queued; Jellyfin/Emby transcodes become failed; a live static range task stays downloading… | Emby/Jellyfin live renders die with the task, while Plex optimize jobs survive on the server. A paused row with a live task offered Resume and could start a duplicate Ra… | handled | yes | yes | P3a |
 | st-32 | Side-asset owner fencing on load: a mismatched owner retires the bundle; a legacy ownerless bundle with an attempt is adopted | Stale-attempt side assets must not attach to a new attempt (SAFE-06). The fail-closed version, however, deleted every pre-owner-schema user's cached posters, trickplay,… | handled | no | yes | P6 |
 | st-33 | Load-time normalization of legacy Plex prepared-static lane rows | Rows written before the rendered-Part handoff moved lanes showed the wrong badge. | handled | no | yes | P6 |
 | st-34 | Atomic season plan: new rows plus retry markers commit in one snapshot off-lock; conditional compensation on failure; an indeterminate result blocks… | A partial season plan would admit work for rows that never became durable. The earlier version held the store lock across I/O and blocked delegate callbacks. | handled | yes | yes | P6 |
@@ -1212,7 +1268,7 @@ This is every edge case the history shows the module has had to handle. *Status*
 | st-38 | Storage audit: report referenced, unreferenced and orphan-candidate bytes in diagnostics (#171), report-only | Repeated pause/delete/restart cycles were suspected of leaking 5 GB ghost partials, and leaks need to be observable. | dropped-accidental (observability regressed by 6b62b5b0's h… | yes | no | P6 |
 | st-39 | General launch-time orphan sweep of unreferenced stable media and side assets | Files whose delete failed, side-cache writes after delete, and old leftovers were never collected (#171 gaps 2-3). | dropped-intentional | no | no | P6 |
 | st-40 | Bounded lifecycle bookkeeping: abandoned or superseded failures retire out of the live table into a FIFO capped at 512 | Every boundary scan walked dead intents and one dead intent poisoned every later boundary. | partially-handled | yes | yes | P6 |
-| st-41 | Filesystem and journal I/O happens off the store lock (the lock is shared with URLSession delegate callbacks) | Lock-held I/O blocked delegate callbacks and contributed to the main-thread and watchdog stalls reported in #187 and #210. | partially-handled | yes | yes | P6 |
+| st-41 | Filesystem and journal I/O happens off the store lock (the lock is shared with URLSession delegate callbacks) | Lock-held I/O blocked delegate callbacks and contributed to the main-thread and watchdog stalls reported in #187 and #210. | partially-handled | yes | yes | P3a |
 | st-42 | Rollback boundary: an older binary cannot decode newer pending intent cases, so intents must be drained before a downgrade | An exhaustive Codable enum fails on unknown cases, which makes the index unreadable for the older binary. | unclear | no | no | P6 |
 | st-43 | If Application Support is unavailable, fall back to the temporary directory | Defensive init. | unclear | no | no | P6 |
 
