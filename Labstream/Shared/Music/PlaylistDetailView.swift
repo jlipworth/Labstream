@@ -197,7 +197,9 @@ struct PlaylistDetailView: View {
     /// Tracks on a single material card in PLAYLIST ORDER, separated by hairlines —
     /// same card as the album list, but rows carry 44-pt art instead of numbers.
     private var trackList: some View {
-        VStack(spacing: 0) {
+        // Lazy: a long playlist must not realize every row (and start every row's artwork
+        // fetch and shimmer) as soon as it loads.
+        LazyVStack(spacing: 0) {
             // Position-keyed: a playlist may contain the SAME track twice, so the
             // ratingKey is not a unique row identity here (unlike an album).
             ForEach(Array(tracks.enumerated()), id: \.offset) { index, track in

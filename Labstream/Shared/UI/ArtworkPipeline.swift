@@ -385,12 +385,15 @@ enum ArtworkTransportPolicy {
 final class ArtworkPipeline: Sendable {
     typealias Transport = @Sendable (ArtworkRequestDescriptor) async throws -> (Data, URLResponse)
     private let core: ArtworkPipelineCore
+    private let memoryPressure: ArtworkMemoryPressureObserver?
 
     init(configuration: ArtworkPipelineConfiguration = ArtworkPipelineConfiguration()) {
         let session = URLSession(configuration: ArtworkTransportPolicy.nonpersistentConfiguration())
-        core = ArtworkPipelineCore(configuration: configuration) { descriptor in
+        let core = ArtworkPipelineCore(configuration: configuration) { descriptor in
             try await descriptor.remoteData(using: session)
         }
+        self.core = core
+        memoryPressure = ArtworkMemoryPressureObserver { Task { await core.trimDecodedCache() } }
     }
 
     #if DEBUG
@@ -401,11 +404,13 @@ final class ArtworkPipeline: Sendable {
         core = ArtworkPipelineCore(configuration: configuration) { descriptor in
             try await descriptor.remoteData(using: session)
         }
+        memoryPressure = nil
     }
 
     init(configuration: ArtworkPipelineConfiguration = ArtworkPipelineConfiguration(),
          transport: @escaping Transport) {
         core = ArtworkPipelineCore(configuration: configuration, transport: transport)
+        memoryPressure = nil
     }
     #endif
 
@@ -421,12 +426,38 @@ final class ArtworkPipeline: Sendable {
         await core.clear()
     }
 
+    /// Memory-pressure response: drop decoded bitmaps (the dominant 128 MB budget) but keep the
+    /// compressed bytes, so artwork that comes back on screen re-decodes locally instead of
+    /// refetching. Unlike `clear()` this is not a join boundary — in-flight results are still
+    /// valid pixels and may repopulate the decoded cache.
+    func trimDecodedCache() async {
+        await core.trimDecodedCache()
+    }
+
     #if DEBUG
     /// Deterministic hosted-test observation; production scheduling never consults it.
     func waiterCountForTesting(_ identity: ArtworkTaskIdentity) async -> Int {
         await core.waiterCount(for: identity)
     }
     #endif
+}
+
+/// Owns the process memory-pressure source for the app-lifetime artwork pipeline (the pattern
+/// `ChapterThumbnailImageCache` uses). The handler only schedules actor work.
+private final class ArtworkMemoryPressureObserver: @unchecked Sendable {
+    // Written once in init, cancelled in deinit; never mutated concurrently.
+    private let source: DispatchSourceMemoryPressure
+
+    init(onPressure: @escaping @Sendable () -> Void) {
+        source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical],
+                                                         queue: .global(qos: .utility))
+        source.setEventHandler(handler: onPressure)
+        source.resume()
+    }
+
+    deinit {
+        source.cancel()
+    }
 }
 
 private actor ArtworkPipelineCore {
@@ -534,6 +565,10 @@ private actor ArtworkPipelineCore {
         decodedCache.removeAll()
         compressedCache.removeAll()
         negativeCache.removeAll()
+    }
+
+    func trimDecodedCache() {
+        decodedCache.removeAll()
     }
 
     #if DEBUG

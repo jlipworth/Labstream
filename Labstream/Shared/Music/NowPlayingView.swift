@@ -17,11 +17,6 @@ struct NowPlayingView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
-    /// While true, the slider shows `scrubSeconds` instead of the live elapsed time
-    /// so the thumb tracks the user's finger; the seek fires once on release.
-    @State private var isScrubbing = false
-    @State private var scrubSeconds: Double = 0
-
     /// First queue index the Up Next card displays. Trails `player.currentIndex`
     /// by ~1.5s: as playback advances, the played rows pop off the front so the
     /// playing track is always the top row; rewinding prepends them back.
@@ -57,7 +52,7 @@ struct NowPlayingView: View {
                                                                          style: .continuous)))
 
                         titleBlock
-                        scrubber
+                        NowPlayingScrubber()
                             .frame(maxWidth: 420)
                         transportRow
 
@@ -193,42 +188,6 @@ struct NowPlayingView: View {
                 .padding(.horizontal, DS.Space.lg)
                 .padding(.vertical, DS.Space.sm)
                 .background(.thinMaterial, in: Capsule())
-        }
-    }
-
-    // MARK: - Scrubber
-
-    private var scrubber: some View {
-        VStack(spacing: DS.Space.xs) {
-            #if os(tvOS)
-            ProgressView(value: isScrubbing ? scrubSeconds : player.elapsedSeconds,
-                         total: max(player.durationSeconds, 1))
-            #else
-            Slider(
-                value: Binding(
-                    get: { isScrubbing ? scrubSeconds : player.elapsedSeconds },
-                    set: { scrubSeconds = $0 }
-                ),
-                in: 0...max(player.durationSeconds, 1)
-            ) { editing in
-                if editing {
-                    scrubSeconds = player.elapsedSeconds
-                    isScrubbing = true
-                } else {
-                    player.seek(to: scrubSeconds)
-                    isScrubbing = false
-                }
-            }
-            .disabled(player.current == nil)
-            #endif
-
-            HStack {
-                Text(formatTrackDuration(seconds: isScrubbing ? scrubSeconds : player.elapsedSeconds))
-                Spacer()
-                Text(formatTrackDuration(seconds: player.durationSeconds))
-            }
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.secondary)
         }
     }
 
@@ -447,5 +406,51 @@ struct NowPlayingView: View {
             .padding(.vertical, DS.Space.sm)
             // Exposes the rows' Int ids to `scrollPosition` for the re-anchor.
             .scrollTargetLayout()
+    }
+}
+
+/// The playhead slider and time labels. Its own view so the player's 0.5 s `elapsedSeconds`
+/// tick invalidates only this subtree, not the whole Now Playing body (art, title, transport,
+/// and the Up Next queue).
+private struct NowPlayingScrubber: View {
+    @Environment(MusicPlayerController.self) private var player
+
+    /// While true, the slider shows `scrubSeconds` instead of the live elapsed time
+    /// so the thumb tracks the user's finger; the seek fires once on release.
+    @State private var isScrubbing = false
+    @State private var scrubSeconds: Double = 0
+
+    var body: some View {
+        VStack(spacing: DS.Space.xs) {
+            #if os(tvOS)
+            ProgressView(value: isScrubbing ? scrubSeconds : player.elapsedSeconds,
+                         total: max(player.durationSeconds, 1))
+            #else
+            Slider(
+                value: Binding(
+                    get: { isScrubbing ? scrubSeconds : player.elapsedSeconds },
+                    set: { scrubSeconds = $0 }
+                ),
+                in: 0...max(player.durationSeconds, 1)
+            ) { editing in
+                if editing {
+                    scrubSeconds = player.elapsedSeconds
+                    isScrubbing = true
+                } else {
+                    player.seek(to: scrubSeconds)
+                    isScrubbing = false
+                }
+            }
+            .disabled(player.current == nil)
+            #endif
+
+            HStack {
+                Text(formatTrackDuration(seconds: isScrubbing ? scrubSeconds : player.elapsedSeconds))
+                Spacer()
+                Text(formatTrackDuration(seconds: player.durationSeconds))
+            }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+        }
     }
 }
