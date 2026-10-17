@@ -1,8 +1,7 @@
 # tvOS exhaustive screen audit
 
-Status: remaining open questions after the archived tvOS implementation plan
-([`docs/archive/plans/2026-07-20-tvos-implementation.md`](../archive/plans/2026-07-20-tvos-implementation.md))
-and [2026-07-21 session report](../archive/research/2026-07-21-tvos-session-report.md).
+Status: remaining open questions after the completed tvOS implementation plan
+and the 2026-07-21 session report (both removed; see git history).
 Historical rows below are a dated inventory; do not treat “Fix in progress” as current
 instruction. The leftover product gates are physical Siri Remote / keyboard / HDMI / HDR,
 not the simulator search-keyboard XCTest.

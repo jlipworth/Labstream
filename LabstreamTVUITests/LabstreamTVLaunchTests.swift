@@ -136,11 +136,4 @@ final class LabstreamTVLaunchTests: XCTestCase {
         app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
         return app
     }
-
-    private func attachScreen(named name: String, app: XCUIApplication) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
-        attachment.name = name
-        attachment.lifetime = .keepAlways
-        add(attachment)
-    }
 }

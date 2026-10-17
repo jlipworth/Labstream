@@ -1,21 +1,18 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+from _script_loader import load_script
 
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "app-store-screenshots.py"
 
-spec = importlib.util.spec_from_file_location("app_store_screenshots", SCRIPT)
-assert spec and spec.loader
-screenshots = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(screenshots)
+screenshots = load_script("app_store_screenshots", SCRIPT)
 
 
 class AppStoreScreenshotTests(unittest.TestCase):

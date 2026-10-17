@@ -200,10 +200,6 @@ public struct LibraryVisibilityStore {
         return current
     }
 
-    public func isHidden(id: String, forBackendKey backendKey: String?) -> Bool {
-        hiddenIDs(forBackendKey: backendKey).contains(id)
-    }
-
     /// Whether the first-run picker has already been shown for this backend key. A nil key is
     /// treated as "already shown" so we never prompt against an unresolved identity.
     public func hasShownPrompt(forBackendKey backendKey: String?) -> Bool {

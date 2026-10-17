@@ -117,10 +117,6 @@ def _utc(value: Any) -> datetime:
     return parsed
 
 
-def _sha256(path: pathlib.Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _canonical_sha256(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 

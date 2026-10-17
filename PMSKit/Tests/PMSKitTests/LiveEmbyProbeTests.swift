@@ -335,7 +335,7 @@ struct LiveEmbyProbeTests {
         let views2xx = (200..<300).contains(viewsStatus)
         #expect(views2xx, "Emby views expected 2xx")
         guard views2xx else { throw URLError(.badServerResponse) }
-        let views = try JSONDecoder().decode(EmbyUserViewsResponse.self, from: viewsData)
+        let views = try JSONDecoder().decode(MediaBrowserUserViewsResponse<EmbyFlavor>.self, from: viewsData)
         let hasViews = !views.items.isEmpty
         #expect(hasViews, "Emby test account should expose at least one user view")
         guard hasViews else { throw URLError(.resourceUnavailable) }

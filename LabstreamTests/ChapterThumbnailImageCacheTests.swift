@@ -9,7 +9,7 @@ final class ChapterThumbnailImageCacheTests: XCTestCase {
             limits: .init(maximumCount: 8, maximumPixelBytes: 1_024 * 1_024),
             observesMemoryPressure: false
         )
-        let transfers = ChapterThumbnailTransferCounter()
+        let transfers = TestCounter()
         var request = URLRequest(url: URL(
             string: "https://plex.example/photo?X-Plex-Token=private-token"
         )!)
@@ -117,10 +117,4 @@ final class ChapterThumbnailImageCacheTests: XCTestCase {
     private nonisolated static let onePixelPNG = Data(base64Encoded:
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
     )!
-}
-
-private actor ChapterThumbnailTransferCounter {
-    private var count = 0
-    func increment() { count += 1 }
-    var value: Int { count }
 }

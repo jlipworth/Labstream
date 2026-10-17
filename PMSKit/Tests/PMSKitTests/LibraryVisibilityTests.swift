@@ -120,9 +120,9 @@ struct LibraryVisibilityTests {
         let (store, _) = makeStore()
         let key = "plex:S"
         #expect(store.toggle(id: "x", hidden: true, forBackendKey: key) == ["x"])
-        #expect(store.isHidden(id: "x", forBackendKey: key))
+        #expect(store.hiddenIDs(forBackendKey: key).contains("x"))
         #expect(store.toggle(id: "x", hidden: false, forBackendKey: key).isEmpty)
-        #expect(!store.isHidden(id: "x", forBackendKey: key))
+        #expect(!store.hiddenIDs(forBackendKey: key).contains("x"))
     }
 
     @Test func emptySetIsClearedFromDefaults() {

@@ -1,19 +1,15 @@
 import contextlib
 import datetime as dt
-import importlib.util
 import io
 import json
 import pathlib
 import stat
-import sys
 import tempfile
 import unittest
+from _script_loader import load_script
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-spec = importlib.util.spec_from_file_location("asc_digest", ROOT / "scripts/asc-digest.py")
-digest_mod = importlib.util.module_from_spec(spec)
-sys.modules["asc_digest"] = digest_mod
-spec.loader.exec_module(digest_mod)
+digest_mod = load_script("asc_digest", ROOT / "scripts/asc-digest.py")
 tf = digest_mod.tf
 
 FAKE_APP = "1234567890"

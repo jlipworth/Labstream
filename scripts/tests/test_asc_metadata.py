@@ -1,17 +1,13 @@
 import contextlib
-import importlib.util
 import io
 import pathlib
-import sys
 import tempfile
 import unittest
 import unittest.mock
+from _script_loader import load_script
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-spec = importlib.util.spec_from_file_location("asc_metadata", ROOT / "scripts/asc-metadata.py")
-am = importlib.util.module_from_spec(spec)
-sys.modules["asc_metadata"] = am
-spec.loader.exec_module(am)
+am = load_script("asc_metadata", ROOT / "scripts/asc-metadata.py")
 
 
 class FakeClient:

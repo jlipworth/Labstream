@@ -1,24 +1,17 @@
 import hashlib
 import contextlib
-import importlib.util
 import io
 import json
 import pathlib
-import sys
 import tempfile
 import unittest
+from _script_loader import load_script
 
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "perf-compare.py"
-spec = importlib.util.spec_from_file_location("perf_compare", SCRIPT)
-compare = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = compare
-spec.loader.exec_module(compare)
+compare = load_script("perf_compare", SCRIPT)
 
 SUMMARY_SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "perf-log-summary.py"
-summary_spec = importlib.util.spec_from_file_location("perf_log_summary_for_compare", SUMMARY_SCRIPT)
-summary_tool = importlib.util.module_from_spec(summary_spec)
-sys.modules[summary_spec.name] = summary_tool
-summary_spec.loader.exec_module(summary_tool)
+summary_tool = load_script("perf_log_summary_for_compare", SUMMARY_SCRIPT)
 
 
 class PerfCompareTests(unittest.TestCase):

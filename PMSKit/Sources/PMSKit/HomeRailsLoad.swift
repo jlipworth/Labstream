@@ -61,17 +61,3 @@ public struct HomeRailsLoadTracker: Sendable {
         }
     }
 }
-
-/// The outcome of a Home-rails fetch: the rails that loaded, plus whether the load was
-/// degraded (one or more rail requests errored). Generic over the backend's rail type so
-/// both Jellyfin and Emby share the same contract. Consumed on the main actor by the
-/// Home view, so it does not require `Sendable` of the rail type.
-public struct HomeRailsLoad<Rail> {
-    public let rails: [Rail]
-    public let isDegraded: Bool
-
-    public init(rails: [Rail], isDegraded: Bool) {
-        self.rails = rails
-        self.isDegraded = isDegraded
-    }
-}

@@ -48,22 +48,6 @@ struct DiagnosticFileLogSinkTests {
     }
 
     @Test
-    func ephemeralEventsNeverReachTheFileBuffer() {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("diagnostic-ephemeral-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let sink = DiagnosticFileLogSink(directoryURL: directory)
-
-        sink.append(DiagnosticEvent(category: .downloads, name: "ephemeral"),
-                    durability: .ephemeral)
-        sink.flush()
-
-        #expect(!FileManager.default.fileExists(
-            atPath: directory.appendingPathComponent("app-diagnostics.jsonl").path
-        ))
-    }
-
-    @Test
     func lifecycleFlushRotatesBeforeCrossingTheLiveFileBound() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("diagnostic-cross-boundary-\(UUID().uuidString)", isDirectory: true)

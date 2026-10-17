@@ -18,10 +18,7 @@ final class LabstreamTVLiveAuthUITests: XCTestCase {
         XCUIRemote.shared.press(.select)
         let prompt = app.staticTexts["Waiting for authorization…"]
         XCTAssertTrue(prompt.waitForExistence(timeout: 30))
-        let attachment = XCTAttachment(screenshot: app.screenshot())
-        attachment.name = "private-plex-link-code"
-        attachment.lifetime = .keepAlways
-        add(attachment)
+        attachScreen(named: "private-plex-link-code", app: app)
         XCTAssertTrue(app.buttons["Home"].waitForExistence(timeout: 240),
                       "Browser authorization and server selection did not complete.")
         XCTAssertFalse(prompt.exists)

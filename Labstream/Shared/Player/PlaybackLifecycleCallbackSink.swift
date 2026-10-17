@@ -9,7 +9,6 @@ enum PlaybackLifecycleCallbackKind: Sendable {
     case videoPlaying
     case musicTick
     case musicStatus
-    case musicArtwork
     case musicAudioSession
 }
 
