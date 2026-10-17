@@ -665,8 +665,8 @@ Acceptance is a phase's pins and inventory rows staying green.
   - **Full-key marker match.** Tasks are matched on rating key and attempt ID together. The test
     (red-checked) covers a legacy attempt ID shared across keys, for both marker formats.
   - **More tests:**
-    - the candidate matrix: legacy promotion, existing deletion, paused static kept, paused
-      forward-only dropped;
+    - the candidate matrix: existing deletion, paused static kept, paused forward-only dropped
+      (the legacy-promotion exclusion is code-reviewed, not tested);
     - a crash after committed barriers but before the stamp, which reclassifies only what
       remains;
     - a pre-P3a v4 row without lifecycle fields, classified structurally.
@@ -679,6 +679,15 @@ Acceptance is a phase's pins and inventory rows staying green.
     the UserDefaults deviation.
   - **Docs and comments** now say that a crash before the stamp leaves the latest committed v4
     state, and the next launch reclassifies what remains.
+- **2026-10-17 — P3b after-review, round 2: ready with fixes (2 P3s).** It found no blocking
+  transport or capsule-recovery regression.
+  - **The stamp waits for a durable notice.** If the save fails, the index stays v4 and the next
+    launch repeats the pass. The entries are parked in a UserDefaults fallback that the next
+    load merges.
+  - **Full attempt keys.** Notice entries now use the full attempt key, so two items sharing a
+    legacy attempt ID count twice.
+  - **Test:** a failed save, the fallback merge, and shared legacy IDs.
+  - **Noted, still open:** the crash test does not suspend artifact execution at the barrier.
 
 ## P2 detailed plan — cleanup foundation
 
