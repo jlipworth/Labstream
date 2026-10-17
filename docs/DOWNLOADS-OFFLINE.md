@@ -477,6 +477,23 @@ described as one conversion at a time. A second Labstream Convert can therefore 
 server-side `Queued` even outside Labstream's own lane cap. Static downloads need no conversion
 and are not tied to that server queue.
 
+Storage uses one rule for every gate (`DownloadStorageAdmissionPolicy`, P5):
+
+- **Storage limit.** Every row counts once: the bytes it holds plus its cached side assets.
+  Admitted, preparing and transferring rows also reserve their known remaining bytes. A retry or
+  re-download replaces its own row's contribution instead of adding to it. The same rule checks
+  the download sheet, every backend start, the season commit (including retried episodes) and the
+  Plex fallback before it asks the server to render.
+- **Unknown sizes stay unknown.** Known side assets never turn an unknown media size into an
+  "extras-only" number. The download sheet says the size is unknown and that the download is not
+  counted toward the limit; the season sheet asks for confirmation. Jellyfin and Emby items now
+  carry their source size, so originals are rarely unknown.
+- **Free space** follows the file's physical timeline. The transfer still needs the network bytes
+  not yet on disk, plus the largest body it will append (that copy briefly exists twice), plus
+  side assets still to cache, plus 500 MB of headroom. Bytes already on disk, including held
+  bodies, are never charged twice. The measurement counts purgeable space, as the Settings gauge
+  does, and an ENOSPC during a transfer still fails the row with the storage-full affordance.
+
 A queued row that holds no in-flight slot is waiting, not transferring. The download sheet shows
 it as **Queued…**, or **Preparing on server…** for a server-prep row.
 **Downloading optimized** is the static transfer of an existing or converted version. When it reads
