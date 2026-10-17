@@ -1300,6 +1300,52 @@ D. **Startup cost** (round 5, finding 4).
      (`ensure` over the batch) before the per-row barriers. This bounds the MainActor turn to a
      single durable journal write plus in-memory work.
 
+### P3b revision 9 (2026-10-17): phase-aware admission, async upgrade pass
+
+Round 6 judged revision 8's approach feasible, with two corrections. Revisions 7 and 8 stand,
+amended as follows.
+
+1. **Phase-aware admission** (round 6, P1). `acquireStartAttempt` mints attempt B before the
+   store owns it, so a single predicate cannot cover the whole start.
+   - **Before the seed** (`acquireStartAttempt`, `acquireInFlightSlotForStart`, the
+     `startAttemptStillCurrent` call inside `persistAttemptSeed` before create):
+     - keep the existing token and slot validation;
+     - additionally require that the store holds either no row for the key, or the exact
+       expected previous owner;
+     - reject a row that carries a row-deletion barrier or a capsule.
+
+     The store's compare-and-swap in `createAttemptOwnedRecord` stays authoritative.
+   - **After the seed:** every continuation requires `attemptAdmitsWork(B)`.
+   - **Tests:** a successful fresh start and a successful A→B replacement, alongside the
+     deletion-race cases.
+   - **Season planner:** `applySeasonPlanAtomically` uses a lock-held variant of the
+     predicate, so it never calls a locking method under the store lock.
+2. **An async upgrade pass replaces the single MainActor turn** (round 6, P2). The upgrade runs
+   as an async sequence after activation succeeds and before `.ready` is published. Startup
+   stays `.preparing`, so no user action and no queue, season or runner work can start. For
+   each candidate:
+   - **Reclassify at its turn.** A row that healthy transport completed meanwhile is now kept.
+   - **Otherwise** `await` the row's Delete, then `Task.yield()`.
+
+   Each row costs what one user Delete costs. The MainActor is free between rows, so no
+   batching is required.
+   - Encoder release: the early process-work release uses a path that does not re-ensure
+     encoder intents the row's deletion has already sealed.
+   - `persistenceFailed` leaves the dirty capsule in memory. The stamp snapshot carries it, and
+     if no commit ever succeeds, v4 stays on disk and the upgrade runs again.
+   - The notice counts only confirmed handoffs (`barriered` or `capsule`) and is written after
+     the pass.
+   - The stamp follows the pass, then `.ready`, then reattach.
+3. **Implementation notes from round 6.**
+   - **Exact cancellation:** match the full `(ratingKey, attemptID)`, both for tracked entries
+     and for task markers. Never use the rating-key-wide removal.
+   - **Delayed cleanup:** guard rating-key-wide cleanup that runs after asynchronous deletion
+     (such as `clearOptimizeProgress`) by ownership.
+   - **Finalization and revalidation:** apply admission before revalidation's destructive
+     prechecks as well as before finalizer admission.
+   - **Existing paths:** deletion execution and recovery of committed promotions keep their
+     dedicated authority checks.
+
 ### P3b.1 Probe
 
 `currentSchemaVersion = 5`, with a new `.migratable(from: 4)` probe case.
