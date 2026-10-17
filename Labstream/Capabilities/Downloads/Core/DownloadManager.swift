@@ -284,6 +284,13 @@ public final class DownloadManager {
     /// Attempt-scoped ownership for async finalizers and side-cache tails. A replacement seed
     /// cancels only the previous owner's cancellable work; durable cleanup remains registered.
     @ObservationIgnored let downloadWorkRegistry = DownloadWorkRegistry()
+    /// P3b: the in-flight upgrade pass; a coalesced activation never starts a second one.
+    @ObservationIgnored var schemaUpgradeTask: Task<Void, Never>?
+    /// Set by the synchronous part of Delete: whether this deletion could not represent a server
+    /// cleanup obligation (legacy row without server identity). Read right after the call.
+    @ObservationIgnored var deleteCleanupGapObserved = false
+    /// P3b: what the upgrade removed, shown once in the Offline library until dismissed.
+    public private(set) var upgradeNotice: DownloadUpgradeNotice? = DownloadUpgradeNotice.load()
     /// Process-wide pacing/coalescing for optional download hydration. DownloadManager remains the
     /// lifecycle owner, while the shared default prevents multiple app scenes/managers from creating
     /// independent request budgets for the same server origin.
@@ -805,14 +812,18 @@ public final class DownloadManager {
                 guard let self else { return }
                 switch result {
                 case .activated, .alreadyActive:
-                    self.startupRecoveryInFlight = false
-                    self.startupRecoveryState = .ready
-                    self.startupRecoveryRetryTask?.cancel()
-                    self.startupRecoveryRetryTask = nil
-                    self.startupRecoveryRetryCount = 0
-                    for key in self.startupRecoveryErrorKeys { self.lastError[key] = nil }
-                    self.startupRecoveryErrorKeys.removeAll()
-                    self.performInitialStartupReattachIfNeeded()
+                    // P3b: a v4 index is upgraded before `.ready`, with startup still in flight
+                    // so Retry Recovery and the transient retry cannot start a second pass.
+                    if self.store.requiresSchemaUpgrade {
+                        guard self.schemaUpgradeTask == nil else { return }
+                        self.schemaUpgradeTask = Task { @MainActor in
+                            await self.runSchemaUpgradePass()
+                            self.schemaUpgradeTask = nil
+                            self.publishCurrentStoreReady()
+                        }
+                        return
+                    }
+                    self.publishCurrentStoreReady()
                 case .alreadyPurging:
                     // A coalesced caller owns the live completion. Keep admission visibly pending;
                     // never launch a second task enumeration/reconcile pass.
@@ -831,6 +842,64 @@ public final class DownloadManager {
         #if PERFORMANCE_AUDIT
         submissionSpan.end(fields: ["startup_submission": 1])
         #endif
+    }
+
+    /// Union the pass's confirmed handoffs into the persisted notice (idempotent across a
+    /// repeated pass after a crash).
+    private func recordUpgradeNotice(retired: [String], cleanupGaps: [String]) {
+        guard !retired.isEmpty else { return }
+        var notice = upgradeNotice ?? DownloadUpgradeNotice()
+        notice.retiredAttemptIDs.formUnion(retired)
+        notice.cleanupGapAttemptIDs.formUnion(cleanupGaps)
+        notice.save()
+        upgradeNotice = notice
+    }
+
+    public func dismissUpgradeNotice() {
+        DownloadUpgradeNotice.clear()
+        upgradeNotice = nil
+    }
+
+    /// The `.ready` publication that ends a current-store activation.
+    private func publishCurrentStoreReady() {
+        startupRecoveryInFlight = false
+        startupRecoveryState = .ready
+        startupRecoveryRetryTask?.cancel()
+        startupRecoveryRetryTask = nil
+        startupRecoveryRetryCount = 0
+        for key in startupRecoveryErrorKeys { lastError[key] = nil }
+        startupRecoveryErrorKeys.removeAll()
+        performInitialStartupReattachIfNeeded()
+    }
+
+    /// P3b upgrade pass (plan revisions 7–10). Runs after activation and before `.ready`, so no
+    /// user action, queue, season or runner work can start. Every candidate fixed at the start
+    /// is removed through the ordinary Delete unless transport has since completed it; the
+    /// notice counts only confirmed handoffs; then every later snapshot is stamped v5.
+    func runSchemaUpgradePass() async {
+        let candidates = store.schemaUpgradeCandidates()
+        var retired: [String] = []
+        var cleanupGaps: [String] = []
+        for key in candidates {
+            if !store.schemaUpgradeRescues(key), let record = store.record(for: key) {
+                deleteCleanupGapObserved = false
+                switch delete(record: record) {
+                case .barriered, .capsule:
+                    retired.append(key.attemptID.rawValue)
+                    if deleteCleanupGapObserved { cleanupGaps.append(key.attemptID.rawValue) }
+                case .persistenceFailed, .stale:
+                    break
+                }
+            }
+            await Task.yield()
+        }
+        recordUpgradeNotice(retired: retired, cleanupGaps: cleanupGaps)
+        store.stampSchemaV5()
+        recordDownloadDiagnostic("downloads.schema_upgraded", fields: [
+            "candidates": .int(candidates.count),
+            "retired": .int(retired.count),
+            "cleanup_gaps": .int(cleanupGaps.count),
+        ])
     }
 
     private func blockDownloadStartup(
@@ -3752,6 +3821,7 @@ public final class DownloadManager {
                 }
             }
         }
+        deleteCleanupGapObserved = serverCleanupLeakDisclosure != nil
         if let rowAttemptKey, !cleanupIntentsToExecute.isEmpty {
             // Journal first, destructive local deletion second. If the standalone queue is
             // unavailable, reserve every exact operation (including transient PlaySessionId) in

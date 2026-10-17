@@ -2528,6 +2528,32 @@ final class DownloadStore: @unchecked Sendable {
             && indexSchemaVersion < DownloadIndexCoding.currentSchemaVersion }
     }
 
+    /// P3b candidates, fixed when the upgrade pass starts (maintainer decision "keep partials"):
+    /// every owned row that is not complete, unverified or paused on the static-range route, and
+    /// is not already being deleted or publishing a legacy validated promotion.
+    func schemaUpgradeCandidates() -> [DownloadAttemptKey] {
+        lock.lock(); defer { lock.unlock() }
+        return rows.values.compactMap { row -> DownloadAttemptKey? in
+            guard let attemptID = row.attemptID else { return nil }
+            switch row.lifecycle {
+            case .complete, .unverified: return nil
+            case .paused where row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey)
+                == .staticByteRange: return nil
+            default: break
+            }
+            guard row.pendingValidatedPromotionStatus == nil, !row.deletionPending,
+                  !Self.hasPendingRowDeletion(row) else { return nil }
+            return DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: attemptID)
+        }.sorted { $0.ratingKey < $1.ratingKey }
+    }
+
+    /// P3b rescue rule (rev 10): a candidate is spared only if transport has since completed it.
+    func schemaUpgradeRescues(_ key: DownloadAttemptKey) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else { return true }
+        return row.lifecycle == .complete || row.lifecycle == .unverified
+    }
+
     /// P3b stamp: every snapshot enqueued from now on is v5. Unverified rows without a recorded
     /// reason get `migratedUnknown` in the same snapshot. Not awaited by the caller: a failed
     /// commit stays dirty for the ordinary writer, and a crash leaves the v4 index, whose rows are
