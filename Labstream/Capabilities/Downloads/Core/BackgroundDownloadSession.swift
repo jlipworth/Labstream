@@ -1401,6 +1401,35 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     ])
                     continue
                 }
+                // B02: a pause/cancel/supersede in flight still lists its task until the async
+                // cancel lands. Never adopt or rebuild it, and never resurrect a paused row.
+                switch BackgroundReattachTaskGatePolicy.disposition(
+                    isSuperseded: self.supersededRangeTaskIdentifiers.contains(task.taskIdentifier),
+                    isCanceling: task.state == .canceling,
+                    isAttemptHalted: record?.attemptID.map {
+                        self.rangeHaltKinds[DownloadAttemptKey(ratingKey: ratingKey, attemptID: $0)] != nil
+                    } ?? false,
+                    rowStatus: record?.status
+                ) {
+                case .leaveAlone:
+                    AppDiagnostics.record(.downloads, "downloads.reattach_task_skipped", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "task_id": .int(task.taskIdentifier),
+                        "reason": .label("teardown_in_flight"),
+                    ])
+                    continue
+                case .cancelForPausedRow:
+                    self.supersededRangeTaskIdentifiers.insert(task.taskIdentifier)
+                    rangeTaskIdentifiersToCancel.append(task.taskIdentifier)
+                    AppDiagnostics.record(.downloads, "downloads.reattach_task_skipped", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "task_id": .int(task.taskIdentifier),
+                        "reason": .label("row_paused"),
+                    ])
+                    continue
+                case .classify:
+                    break
+                }
                 guard let record, let rowAttemptID = record.attemptID,
                       let workingLayout = self.store.attemptWorkingFileLayout(
                         for: DownloadAttemptKey(ratingKey: ratingKey, attemptID: rowAttemptID)) else {
@@ -1615,6 +1644,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 let expectedBytes = recordsByKey[ratingKey].flatMap {
                     BackgroundDownloadProgressPolicy.derivedExpectedBytes($0)
                 }
+                // B02: re-read at write time; a pause may have landed after classification.
+                guard BackgroundReattachTaskGatePolicy.mayWriteActiveStatus(
+                    currentStatus: self.store.record(for: attemptKey)?.status,
+                    isAttemptHalted: self.isRangeHalted(for: attemptKey)) else { continue }
                 _ = self.store.resetStaticRangeProgressToDurableCheckpoint(
                     for: attemptKey,
                     expectedBytes: expectedBytes
@@ -1625,9 +1658,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
             for ratingKey in adoptedRangeKeys {
                 guard let attemptID = recordsByKey[ratingKey]?.attemptID else { continue }
-                _ = self.store.setStatus(
-                    for: DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID),
-                    .downloading)
+                let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+                // B02: never force `.downloading` over a pause that landed after classification.
+                guard BackgroundReattachTaskGatePolicy.mayWriteActiveStatus(
+                    currentStatus: self.store.record(for: attemptKey)?.status,
+                    isAttemptHalted: self.isRangeHalted(for: attemptKey)) else { continue }
+                _ = self.store.setStatus(for: attemptKey, .downloading)
             }
             for (ratingKey, count) in adoptedSegmentCounts {
                 AppDiagnostics.record(.downloads, "downloads.range_segment_train_adopted", fields: [
