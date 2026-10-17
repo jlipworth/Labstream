@@ -1254,7 +1254,7 @@ final class DownloadStore: @unchecked Sendable {
         }
         row.bytes = bytes
         row.progress = 1
-        row.status = terminalStatus
+        Self.applyPromotionTerminal(terminalStatus, on: &row)
         row.attemptWorkingRelativePath = nil
         artifactRetirementKeys.insert(ticket.key)
         let retiring = row.pendingArtifactIntents.removeFirst()
@@ -1300,7 +1300,8 @@ final class DownloadStore: @unchecked Sendable {
         }
         artifactRetirementKeys.insert(ticket.key)
         let retiring = row.pendingArtifactIntents.removeFirst()
-        row.status = .failed
+        Self.reduceLocked(row.lifecycle == .finalizing
+                          ? .promotionAbandoned : .transferFailed(.internalError), on: &row)
         rows[ticket.key.ratingKey] = row
         let terminal = enqueueAttemptPersistenceLocked()
         lock.unlock()
@@ -1376,7 +1377,7 @@ final class DownloadStore: @unchecked Sendable {
         }
         current.bytes = bytes
         current.progress = 1
-        current.status = terminalStatus
+        Self.reduceLocked(.promotionRecovered(Self.terminalLifecycle(terminalStatus)), on: &current)
         current.attemptWorkingRelativePath = nil
         current.pendingValidatedPromotionStatus = nil
         rows[key.ratingKey] = current
@@ -4763,11 +4764,9 @@ final class DownloadStore: @unchecked Sendable {
         row.bytes = bytes
         row.progress = progress
         let previousStatus = row.status
-        var statusChanged = false
-        if row.status == .queued || row.status == .paused || row.status == .failed {
-            row.status = .downloading
-            statusChanged = true
-        }
+        let previousLifecycle = row.lifecycle
+        Self.reduceLocked(.transferProgress, on: &row)
+        let statusChanged = row.lifecycle != previousLifecycle
         rows[ratingKey] = row
         let now = Date()
         let shouldPersist = statusChanged
@@ -4855,6 +4854,31 @@ final class DownloadStore: @unchecked Sendable {
         case accepted(effects: [DownloadLifecycleEffect], ticket: PersistenceTicket?)
         case rejected(DownloadLifecycleTransition.Rejection)
         case staleOrMissing
+    }
+
+    /// Apply a reducer event to a row the caller holds under the lock. Events whose result never
+    /// depends on route or body facts use this; a rejected event leaves the row unchanged.
+    @discardableResult
+    private static func reduceLocked(_ event: DownloadLifecycleEvent, on row: inout Row) -> Bool {
+        guard case .applied(let next, _) = DownloadLifecycleReducer.reduce(
+            DownloadLifecycleState(lifecycle: row.lifecycle, history: row.history),
+            event, facts: DownloadRowFacts(route: .staticRange)) else { return false }
+        row.lifecycle = next.lifecycle
+        row.history = next.history
+        return true
+    }
+
+    fileprivate static func terminalLifecycle(_ status: DownloadStatus) -> DownloadLifecycle {
+        status == .unverified ? .unverified : .complete
+    }
+
+    /// The validated-promotion terminal snapshot: a finalizing row commits through
+    /// `promotionCommitted`; any other row (legacy or revalidation) through `promotionRecovered`.
+    private static func applyPromotionTerminal(_ status: DownloadStatus, on row: inout Row) {
+        let terminal = terminalLifecycle(status)
+        if !reduceLocked(.promotionCommitted(terminal), on: &row) {
+            reduceLocked(.promotionRecovered(terminal), on: &row)
+        }
     }
 
     /// P3a facts for the exact attempt, derived from the row. Session-owned facts (a live task)
@@ -5047,7 +5071,7 @@ final class DownloadStore: @unchecked Sendable {
             lock.unlock()
             return .notUnverified
         }
-        row.status = .complete
+        Self.reduceLocked(.localPlaybackProgressed, on: &row)
         rows[key.ratingKey] = row
         let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
