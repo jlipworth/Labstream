@@ -171,37 +171,6 @@ public enum DownloadRowStatusCaptionPolicy {
         return context.isActive ? .activeTransfer : .inactiveTransfer
     }
 
-    /// Compact in-sheet label for an already-started/in-flight download row. The full offline list
-    /// caption includes percentages, bytes, ETA, and speed; the modal sheet already renders progress
-    /// separately, so it only needs the phase verb.
-    public static func compactActiveCaption(lane: DownloadLane,
-                                            backend: DownloadBackendKind,
-                                            isServerPreparedVersion: Bool) -> String {
-        switch lane {
-        case .original where isServerPreparedVersion:
-            // Static byte-range prepared version — see `DownloadRowDisplayPolicy.activeHead`.
-            return "Downloading optimized…"
-        case .original:
-            return "Downloading…"
-        case .compatibleRemux:
-            return "Remuxing + downloading…"
-        case .optimize:
-            return backend == .plex ? "Downloading transcode…" : "Transcoding + downloading…"
-        }
-    }
-
-    /// Compact in-sheet label for an existing row that is durably `.queued` but owns no live slot or
-    /// transfer, such as a season row waiting for admission behind another download (#362). Such a
-    /// row must read as waiting, matching the offline list, never as an active transfer phase
-    /// ("Downloading optimized…") with a spinner. Returns `nil` when the row is genuinely active, so
-    /// the caller keeps `compactActiveCaption` and its progress UI.
-    public static func compactWaitingCaption(status: DownloadStatus,
-                                             isActive: Bool,
-                                             resumeMode: DownloadResumeMode?) -> String? {
-        guard status == .queued, !isActive else { return nil }
-        return resumeMode == .serverPrepThenStatic ? "Preparing on server…" : "Queued…"
-    }
-
     /// pu-33 (P4): a row waiting for an admission lane (planned, or parked with a retry request)
     /// reads as waiting, with the reason, never as active work or a plain failure.
     public static func admissionWaitingCaption(lifecycle: DownloadLifecycle?,
