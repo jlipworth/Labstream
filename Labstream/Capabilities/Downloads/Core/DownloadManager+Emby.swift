@@ -360,6 +360,12 @@ extension DownloadManager {
             return
         }
 
+        // B56 (P5): the negotiated MediaSource's size is authoritative for a static original or a
+        // converted copy (a Convert handoff downloads a different file than the item's primary
+        // source), so it replaces the item-derived size that completeness checks would read.
+        if route == .original, let negotiatedSize = decision.size, negotiatedSize > 0 {
+            metadata.sourcePartSize = negotiatedSize
+        }
         guard persistEmbyAttemptRecord(
             DownloadRecord(ratingKey: ratingKey, attemptID: startAttempt.attemptID,
                            title: item.title,
