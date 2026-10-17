@@ -881,6 +881,21 @@ Acceptance is a phase's pins and inventory rows staying green.
      sites share one check, `rejectOptimizeFallbackOverStorageLimit`. A season commit charges its
      retried rows' remaining bytes.
 
+
+- **2026-10-17 — P5 after-review session fixes (findings 1, 2 and 5).** Rebuild callbacks now
+  carry the timer's epoch/generation through the main-actor hop and backend Tasks. The exact
+  committed successor seed hands off that fence and the wake hold; post-await guards and task
+  registration re-check it. A backend rebuild cannot clear a newer Pause/Resume halt or acquire
+  fresh user-Resume authority. Manager edits are limited to callback/start/seed plumbing.
+  Consumed append claims retire before continuation admission; already-checkpointed,
+  checkpoint-straddling and overlapping bodies receive no duplicate network-byte credit.
+  The shared start/continuation/blob/parking preflight now adds the duration/chapter side-asset
+  estimate less bytes already cached, floored at zero. Current storage guidance reflects this.
+  Nine new pins were red-checked by restoring the old callback/fence behavior, claim accounting
+  and zero future-side-asset input: four auth/manager handoff pins, two consumed/overlap pins and
+  three side-asset admission pins all failed. The backend pin also proves a current successor
+  can start after an attempt re-seed. No simulator or live acceptance was run in this lane.
+
 ## P2 detailed plan — cleanup foundation
 
 *Revision 3.1 (2026-10-17). The round-3 co-review approved it with three changes, applied here:

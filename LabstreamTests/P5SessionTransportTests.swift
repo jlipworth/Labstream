@@ -79,7 +79,7 @@ struct P5SessionTransportTests {
         try await withSession { session, store, requests in
             let key = try seed(in: store, expected: total)
             let observed = P5Values<DownloadAttemptKey>()
-            session.onRangeRequestNeeded = { key, _ in observed.append(key) }
+            session.onRangeRequestNeeded = { key, _, _ in observed.append(key) }
             #expect(session.recoverMissingRangeBodyForTesting(key, hasRequest: false))
             #expect(observed.values == [key])
             #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false)
@@ -277,6 +277,217 @@ struct P5SessionTransportTests {
             #expect(observed.values == [true])
             #expect(await waitUntil { store.record(for: key)?.metadata?.heldRangeSegments?.count == 1 })
             session.cancel(ratingKey: key.ratingKey)
+        }
+    }
+
+    @Test("Auth retry rechecks its timer generation after the queued manager hop (after-review 1)")
+    func authRetryPausedAfterTimerCheck() async throws {
+        try await withSession { session, store, requests in
+            let key = try seed(in: store, expected: total)
+            let callbacks = P5Values<Bool>()
+            let rebuilds = P5Values<Bool>()
+            // Install the pause at the real timer boundary, before the main-actor callback runs.
+            session.delayedRetryDidPassCurrencyForTesting = { session.pause(ratingKey: key.ratingKey) }
+            session.onRangeRequestNeeded = { _, _, currency in
+                Task { @MainActor in
+                    session.withRangeRequestRebuild(currency) {
+                        rebuilds.append(true)
+                        try? session.start(ratingKey: key.ratingKey, with: request(), expectedBytes: total,
+                                           byteRangeCheckpoint: true, resetRangeRestartCounters: false)
+                    }
+                    callbacks.append(true)
+                }
+            }
+            try session.start(ratingKey: key.ratingKey, with: request(), expectedBytes: total,
+                              byteRangeCheckpoint: true)
+            let first = try #require(await requests.waitForCount(1).first)
+            first.finish(status: 401, body: Data(), headers: [:])
+            #expect(await waitUntil { !callbacks.values.isEmpty })
+            #expect(rebuilds.values.isEmpty)
+            #expect(!session.isTrackingTransfer(ratingKey: key.ratingKey))
+            #expect(requests.count == 1)
+        }
+    }
+
+    @Test("Auth retry keeps its generation through an awaited backend rebuild (after-review 1)")
+    func authRetryPausedDuringBackendRebuild() async throws {
+        try await withSession { session, store, requests in
+            let key = try seed(in: store, expected: total)
+            let rejected = P5Values<Bool>()
+            session.onRangeRequestNeeded = { _, _, currency in
+                Task { @MainActor in
+                    session.withRangeRequestRebuild(currency) {
+                        // The manager's retry creates a child Task. Its backend await must not
+                        // shed currency, even if a user Pause and Resume clears the halt meanwhile.
+                        Task { @MainActor in
+                            await Task.yield()
+                            guard var record = store.record(for: key) else {
+                                rejected.append(false)
+                                return
+                            }
+                            let successor = DownloadAttemptKey(ratingKey: key.ratingKey, attemptID: .init(uuid: UUID()))
+                            record.attemptID = successor.attemptID
+                            #expect(store.createAttemptOwnedRecord(record, attemptID: successor.attemptID,
+                                replacing: key.attemptID) == .committed(successor))
+                            #expect(session.advanceRangeRequestRebuild(to: successor, replacing: key.attemptID))
+                            #expect(BackgroundDownloadSession.rangeRequestRebuildCurrency?.attemptKey == successor)
+                            // A valid successor must start; carrying only the original owner would
+                            // accidentally fence every successful backend re-seed.
+                            do {
+                                try session.start(ratingKey: key.ratingKey, with: request(), expectedBytes: total,
+                                                  byteRangeCheckpoint: true, resetRangeRestartCounters: false)
+                            } catch { Issue.record("Current backend successor was refused") }
+                            session.pause(ratingKey: key.ratingKey)
+                            try? BackgroundDownloadSession.$rangeRequestRebuildContext.withValue(nil) {
+                                try session.start(ratingKey: key.ratingKey, with: request(), expectedBytes: total,
+                                                  byteRangeCheckpoint: true)
+                            }
+                            do {
+                                try session.start(ratingKey: key.ratingKey, with: request(), expectedBytes: total,
+                                                  byteRangeCheckpoint: true, resetRangeRestartCounters: false)
+                                rejected.append(false)
+                            } catch is CancellationError { rejected.append(true) }
+                            catch { rejected.append(false) }
+                        }
+                    }
+                }
+            }
+            try session.start(ratingKey: key.ratingKey, with: request(), expectedBytes: total,
+                              byteRangeCheckpoint: true)
+            let first = try #require(await requests.waitForCount(1).first)
+            first.finish(status: 401, body: Data(), headers: [:])
+            #expect(await waitUntil { !rejected.values.isEmpty })
+            #expect(rejected.values == [true])
+            session.cancel(ratingKey: key.ratingKey)
+        }
+    }
+
+    @Test("Auth rebuild rechecks its original generation at successor registration (after-review 1)")
+    func authRebuildRegistrationRechecksGeneration() async throws {
+        try await withSession { session, store, requests in
+            let key = try seed(in: store, expected: total)
+            let rejected = P5Values<Bool>()
+            session.delayedRetryRegistrationRejectedForTesting = { rejected.append(true) }
+            session.delayedRetryWillRegisterForTesting = {
+                session.pause(ratingKey: key.ratingKey)
+            }
+            session.onRangeRequestNeeded = { _, _, currency in
+                Task { @MainActor in
+                    session.withRangeRequestRebuild(currency) {
+                        try? session.start(ratingKey: key.ratingKey, with: request(), expectedBytes: total,
+                                           byteRangeCheckpoint: true, resetRangeRestartCounters: false)
+                    }
+                }
+            }
+            try session.start(ratingKey: key.ratingKey, with: request(), expectedBytes: total,
+                              byteRangeCheckpoint: true)
+            let first = try #require(await requests.waitForCount(1).first)
+            first.finish(status: 401, body: Data(), headers: [:])
+            #expect(await waitUntil { !rejected.values.isEmpty })
+            #expect(rejected.values == [true])
+            #expect(!session.isTrackingTransfer(ratingKey: key.ratingKey))
+            #expect(requests.count == 1)
+        }
+    }
+
+    @Test("Consumed claims retire before continuation admission (after-review 2)")
+    func consumedBodyIsNotCreditedByContinuation() async throws {
+        try await withSession { session, store, requests in
+            let key = try seed(in: store, expected: 400)
+            let retired = P5Values<Bool>()
+            session.rangeBodyDidConsumeForTesting = { url in
+                retired.append(!session.claimedRangeBodiesForTesting().contains(url.standardizedFileURL))
+            }
+            try session.start(ratingKey: key.ratingKey, with: request(), expectedBytes: 400,
+                              byteRangeCheckpoint: true)
+            let first = try #require(await requests.waitForCount(1).first)
+            session.availableStorageBytesForTesting = headroom + 650
+            first.finish(status: 206, body: Data(repeating: 1, count: 64),
+                         headers: ["Content-Range": "bytes 0-63/400"])
+            #expect(await waitUntil { store.lifecycleState(for: key)?.history.lastFailure == .storage })
+            #expect(retired.values == [true])
+            #expect(store.durableStaticRangeCheckpointSize(for: key) == 64)
+            #expect(requests.count == 1)
+        }
+    }
+
+    @Test("Held-byte credit excludes checkpointed and overlapping ranges (after-review 2)")
+    func heldCreditUsesDistinctUncheckpointedRanges() async throws {
+        try await withSession { session, store, _ in
+            let key = try seed(in: store, expected: 500)
+            let first = store.directory.appendingPathComponent("body-one")
+            let duplicate = store.directory.appendingPathComponent("body-two")
+            let consumed = store.directory.appendingPathComponent("body-consumed")
+            session.installHeldBodyForTesting(first, for: key, offset: 50, length: 150)
+            session.claimRangeBodyForTesting(duplicate, for: key, bytes: 150, offset: 150)
+            session.claimRangeBodyForTesting(consumed, for: key, bytes: 100, offset: 0)
+            // The [50,200) body straddles the checkpoint and cannot be spliced.
+            // Only [150,300) earns credit: 250 network + 150 append peak.
+            #expect(session.requiredAdditionalFreeBytes(for: key, expectedBytes: 500,
+                durableCheckpointBytes: 100, plansRanges: false) == headroom + 400)
+            let aligned = store.directory.appendingPathComponent("body-aligned")
+            session.claimRangeBodyForTesting(aligned, for: key, bytes: 100, offset: 100)
+            // [100,200) now wins; the overlapping [150,300) is not a spliceable suffix.
+            #expect(session.requiredAdditionalFreeBytes(for: key, expectedBytes: 500,
+                durableCheckpointBytes: 100, plansRanges: false) == headroom + 450)
+        }
+    }
+
+    @Test("Physical admission reserves side assets at start and subtracts cached bytes (after-review 5)")
+    func sideAssetsReachStartAndParkingPreflight() async throws {
+        try await withSession { session, store, requests in
+            let key = try seed(in: store, expected: 400)
+            _ = store.updateMetadata(for: key) { metadata in
+                metadata.duration = 1_000
+                metadata.chapters = [OfflineChapter(tag: "Chapter", thumb: "/chapter")]
+            }
+            let estimate = 330_000
+            #expect(session.requiredAdditionalFreeBytes(for: key, expectedBytes: 400,
+                durableCheckpointBytes: 0) == headroom + 800 + Int64(estimate))
+            session.availableStorageBytesForTesting = headroom + 800
+            #expect(throws: DownloadManager.DownloadError.storageFull) {
+                try session.start(ratingKey: key.ratingKey, with: request(), expectedBytes: 400,
+                                  byteRangeCheckpoint: true)
+            }
+            #expect(requests.count == 0)
+            let cached = store.directory.appendingPathComponent("preview.bif")
+            try Data(repeating: 1, count: 20_000).write(to: cached)
+            _ = store.updateMetadata(for: key) { $0.plexBIFRelativePath = "preview.bif" }
+            #expect(store.record(for: key)?.sideAssetBytes == 20_000)
+            #expect(session.requiredAdditionalFreeBytes(for: key, expectedBytes: 400,
+                durableCheckpointBytes: 0) == headroom + 800 + Int64(estimate - 20_000))
+        }
+    }
+
+    @Test("Continuation admission includes newly known side assets (after-review 5)")
+    func sideAssetsReachContinuationPreflight() async throws {
+        try await withSession { session, store, requests in
+            let key = try seed(in: store, expected: 400)
+            try session.start(ratingKey: key.ratingKey, with: request(), expectedBytes: 400,
+                              byteRangeCheckpoint: true)
+            let first = try #require(await requests.waitForCount(1).first)
+            _ = store.updateMetadata(for: key) { $0.duration = 1_000 }
+            session.availableStorageBytesForTesting = headroom + 800
+            first.finish(status: 206, body: Data(repeating: 1, count: 64),
+                         headers: ["Content-Range": "bytes 0-63/400"])
+            #expect(await waitUntil { store.lifecycleState(for: key)?.history.lastFailure == .storage })
+            #expect(requests.count == 1)
+        }
+    }
+
+    @Test("Blob Resume reserves uncached side assets and retains refused authority (after-review 5)")
+    func sideAssetsReachBlobPreflight() async throws {
+        try await withSession { session, store, requests in
+            let key = try seed(in: store, expected: 400)
+            _ = store.updateMetadata(for: key) { $0.duration = 1_000 }
+            let blob = try PropertyListSerialization.data(fromPropertyList: [:], format: .xml, options: 0)
+            _ = store.setResumeData(for: key, blob, displayBytes: 64)
+            session.availableStorageBytesForTesting = headroom + 800
+            #expect(session.resumeRange(ratingKey: key.ratingKey, resumeData: blob,
+                                       expectedBytes: 400) == .storageRefused)
+            #expect(store.resumeData(for: key) == blob)
+            #expect(store.resumeDisplayBytes(for: key) == 64)
+            #expect(requests.count == 0)
         }
     }
 

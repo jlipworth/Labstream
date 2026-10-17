@@ -214,7 +214,8 @@ sequenceDiagram
   file size rather than appending unvalidated bytes.
 - **Free-space admission follows the physical append timeline.** Start, continuation, blob Resume,
   and automatic storage-full parking charge the remaining network bytes, the largest upcoming
-  append copy, and headroom. Durable checkpoints and held bodies already on disk are counted once.
+  append copy, uncached side-asset estimate, and headroom. Durable checkpoints and held bodies
+  already on disk are counted once.
   A blob refused for space keeps its resume authority and display watermark; it reports storage
   exhaustion without treating the blob as corrupt or restarting the transfer.
 - **Transient Range retries are bounded by durable progress.** Optimistic URLSession progress does
@@ -395,8 +396,8 @@ transport, recovery work, persistence barriers, or background-completion durabil
   last failure was storage-full is not automatically redriven: every automatic static-range
   redrive (rebuilds, backend-ready drains, launch recovery) first re-measures free space —
   counting iOS purgeable space, matching the Settings storage gauge — and, if the volume still
-  cannot hold the remaining network bytes, largest append copy and headroom, parks the row as a pending resume instead of
-  retrying. A user-initiated Retry always dispatches regardless of this gate;
+  cannot hold the remaining network bytes, largest append copy, uncached side assets and headroom,
+  parks the row as a pending resume instead of retrying. A user-initiated Retry always dispatches regardless of this gate;
 - migrates legacy Emby tombstones and pre-upgrade quarantined Plex intents into the cleanup
   journal, then runs required server cleanup through the cleanup runner (see
   [Server cleanup](#server-cleanup));
@@ -503,8 +504,10 @@ Storage uses one rule for every gate (`DownloadStorageAdmissionPolicy`, P5):
   carry their source size, so originals are rarely unknown.
 - **Free space** follows the file's physical timeline. The transfer still needs the network bytes
   not yet on disk, plus the largest body it will append (that copy briefly exists twice), plus
-  side assets still to cache, plus 500 MB of headroom. Bytes already on disk, including held
-  bodies, are never charged twice. The measurement counts purgeable space, as the Settings gauge
+  the duration/chapter-based side-asset estimate less bytes already cached (floored at zero),
+  plus 500 MB of headroom. Only usable, nonoverlapping held bodies beyond the checkpoint reduce
+  future network bytes; consumed bodies receive no further credit. The measurement counts
+  purgeable space, as the Settings gauge
   does, and an ENOSPC during a transfer still fails the row with the storage-full affordance.
 
 A queued row that holds no in-flight slot is waiting, not transferring. The download sheet shows
