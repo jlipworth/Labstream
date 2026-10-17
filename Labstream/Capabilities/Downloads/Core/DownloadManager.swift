@@ -1833,6 +1833,9 @@ public final class DownloadManager {
         isQueuePaused = paused
     }
 
+    /// A per-manager storage cap, so cap tests never write the shared defaults.
+    @ObservationIgnored var storageLimitBytesOverrideForTesting: Int?
+
     /// Pause all non-terminal work and persist the queue gate across relaunch.
     public func pauseQueue() {
         isQueuePaused = true
@@ -2598,6 +2601,21 @@ public final class DownloadManager {
             supportsPersistedResumeData: supportsPersistedResumeData,
             hasResumeData: persistedResumeData != nil
         ), let resumeData = persistedResumeData {
+            // P5 (B24): a blob Resume continues the same row, so it passes the self-excluding cap
+            // projection first. A refusal keeps the blob and the checkpoint for a later Retry.
+            if let message = storageLimitMessage(adding: expectedDownloadBytes(for: record),
+                                                 replacingRatingKey: ratingKey) {
+                recordDownloadDiagnostic("downloads.enqueue_failed", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "reason": .label("storage_limit"),
+                    "lane": .label("resume_blob"),
+                ])
+                lastError[ratingKey] = .storageLimitExceeded(message)
+                clearStaticRangePendingResume(ratingKey: ratingKey)
+                retryState.removeRetrying(ratingKey)
+                refreshRecords()
+                return nil
+            }
             guard applyLifecycleEvent(
                 .retry(.resumeBlob), for: retryAttemptKey, context: "resume_blob") else {
                 retryState.removeRetrying(ratingKey)
@@ -3656,7 +3674,7 @@ public final class DownloadManager {
     }
 
     public var storageLimitBytes: Int {
-        PlaybackPreferences.downloadStorageLimitBytes()
+        storageLimitBytesOverrideForTesting ?? PlaybackPreferences.downloadStorageLimitBytes()
     }
 
     /// P5 (B24): the one cap rule. Every row is counted once, active rows reserve their known
@@ -3674,11 +3692,20 @@ public final class DownloadManager {
             let reserves = record.lifecycle == .admitted || record.lifecycle == .serverPrep
                 || record.lifecycle == .transferring
             return DownloadStorageAdmissionPolicy.CapRow(
-                id: record.ratingKey, retainedBytes: record.bytes,
+                id: record.ratingKey, retainedBytes: retainedCapBytes(for: record),
                 sideAssetBytes: record.sideAssetBytes,
                 estimatedTotalBytes: reserves ? expectedDownloadBytes(for: record) : nil,
                 reservesRemaining: reserves)
         }
+    }
+
+    /// What a row holds on disk for the cap: the larger of its exact-attempt durable checkpoint and
+    /// its published `bytes` (an append can grow the working file before progress is published).
+    func retainedCapBytes(for record: DownloadRecord) -> Int {
+        guard record.status != .complete, record.status != .unverified,
+              let key = attemptKey(for: record),
+              let checkpoint = store.durableStaticRangeCheckpointSize(for: key) else { return record.bytes }
+        return max(record.bytes, checkpoint)
     }
 
     /// The season projection (P5.2): new rows' known bytes plus each included retry row's
@@ -3687,7 +3714,7 @@ public final class DownloadManager {
         let retryRemaining = retryAttempts.reduce(0) { total, key in
             guard let record = store.record(for: key),
                   let expected = expectedDownloadBytes(for: record) else { return total }
-            return total + max(0, expected - record.bytes)
+            return total + max(0, expected - retainedCapBytes(for: record))
         }
         let adding = newKnownBytes + retryRemaining
         guard adding > 0 else { return nil }

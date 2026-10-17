@@ -92,7 +92,7 @@ An adversarial skeptic then re-checked the high-severity claims and looked for g
 **Results:**
 
 - 329 edge cases, of which 299 must be preserved. 164 of the required cases cite no test.
-- 82 bug rows: 81 from the first pass plus B81 from the second review.
+- 86 bug rows: 81 from the first pass, B81 from the second review, and B82–B85 from the build-1506 field report.
 - 63 confirmed bugs, 1 refuted (B29) and 1 misdiagnosed (B64).
 
 The full result is kept outside git at `build/downloads-overhaul/archaeology.json`.
@@ -853,7 +853,6 @@ Acceptance is a phase's pins and inventory rows staying green.
     ordinary and held appends, ignores zero-byte advances, and resets at start only for an
     explicit user start or resume.
 
-
 - **2026-10-17 — P5 session transport implemented** on `downloads/p5-transport` from the P5
   contract base. Session starts/continuations, blob resumes and manager storage-full parking use
   the physical storage policy without changing its semantics. Typed blob outcomes preserve authority
@@ -867,6 +866,20 @@ Acceptance is a phase's pins and inventory rows staying green.
   filter remains narrow; current attempt-stage files are not added to orphan deletion authority.
   Validation: 1,614 hermetic PMSKit tests; 785 Swift Testing + 66 XCTest Mac tests; hygiene
   (386 tooling tests and strict documentation/link/Mermaid checks). No simulator or live gate run.
+- **2026-10-17 — P5 implementation review, round 1: approve with fixes (5 P2, 1 P3).** All fixed
+  with pins that fail on the reverted code:
+  1. **Auth retries (delegate).** They carry their generation through the manager hop, the
+     backend rebuild and successor registration.
+  2. **Held bodies (delegate).** Consumed claims retire before continuation admission, and
+     checkpointed or overlapping ranges get no second credit.
+  3. **Blob Resume (lead).** It passes the self-excluding cap projection first, and a refusal
+     keeps the blob.
+  4. **Cap rows (lead).** They count `max(durable checkpoint, bytes)`, in the season retry
+     projection as well.
+  5. **Side assets (delegate).** Every physical gate charges the side assets still to be cached.
+  6. **Pins (lead).** The validation fallback refuses an over-cap optimize create. Both fallback
+     sites share one check, `rejectOptimizeFallbackOverStorageLimit`. A season commit charges its
+     retried rows' remaining bytes.
 
 ## P2 detailed plan — cleanup foundation
 
@@ -2132,6 +2145,23 @@ optional consolidation is deferred, as the review suggested, so the overhaul can
 
 These are candidates for P6, or for separate issues if P6 does not reach them.
 
+**Field report (2026-10-17, build 1506, visionOS).** The app terminated soon after it relaunched
+with background downloads that had completed while the headset slept. The redacted report holds no
+termination signature. Its ring buffer shows a recovery burst of six starts and twelve range starts,
+and no completion or handler events. The ranked causes are:
+
+1. a watchdog termination from recovery fan-out plus synchronous persistence on the main actor;
+2. an unbounded background wake;
+3. a reattach/append ownership race.
+
+Coverage:
+
+- **Fixed in the stack:** P4 caps new starts. B11 is fixed in P1. B03, B04, B08 and B12 are fixed
+  in P5.
+- **Planned for P6:** the synchronous store wrappers (§6, B20) remain. B06 and B13 move from
+  "candidate" into P6 scope, and B82–B85 are new.
+- **Still open:** the root cause, until the matching `.ips` (Analytics Data) is captured.
+
 ### P5.1 Storage policy (PMSKit, pure) — lead, committed first as the contract
 
 **`DownloadStorageAdmissionPolicy`**
@@ -2364,6 +2394,10 @@ Severity is the area agent's confidence, and *verified* is the result of the ske
 | B79 | offline-playback | low | confirmed | - | The launch gate stats every record's file on each ContentView body evaluation | `Labstream/Capabilities/Downloads/Core/DownloadManager.swift:255-259; Labstream/Shared/App/ContentView.swift:225-233` | P7 |
 | B80 | offline-playback | medium | uncertain | - | Sidecar subtitles hide subtitle tracks embedded in the downloaded file | `Labstream/Shared/Player/PlaybackController.swift:1280-1283, 1359-1376` | P7 |
 | B81 | storage-delete | high | 2nd review | never handled | An unknown media size plus known side-asset bytes yields a known extras-only estimate, so the item evades the unknown-size confirmation (the test pins the wrong contract) | `PMSKit/Sources/PMSKit/Downloads/DownloadStorageEstimatePolicy.swift:43; PMSKit/Tests/PMSKitTests/DownloadStorageEstimatePolicyTests.swift:45` | P5 |
+| B82 | background-wake | medium | field report | never handled | A background wake has no aggregate time bound: each gate operation balances, but queued completions plus slow append/index I/O can keep the wake open past the OS budget | `Labstream/Capabilities/Downloads/Core/BackgroundDownloadWakeCoordinator.swift:67; Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift:1141, 3526` | P6 |
+| B83 | background-wake | low | field report | never handled | No memory ceiling is established for an inherited backlog of completed bodies plus side assets at relaunch | `Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift:5194` | P6 |
+| B84 | store | low | field report | never handled | Duplicate persisted row identities trap during index load instead of salvaging or blocking recovery | `Labstream/Capabilities/Downloads/Core/DownloadStore.swift:5169` | P6 |
+| B85 | storage-delete | low | field report | never handled | Static append re-copies already downloaded bodies; write amplification is unmeasured and unbounded (MetricKit disk-write exceptions) | `Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift:5188-5199; Labstream/Shared/Diagnostics/MetricKitDiagnostics.swift:107, 135` | P6 |
 
 ## Appendix B — Edge-case inventory
 
