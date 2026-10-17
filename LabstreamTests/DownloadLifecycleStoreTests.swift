@@ -354,6 +354,14 @@ struct DownloadLifecycleStoreTests {
             // Every same-attempt reader sees no body: no checkpoint, no recovery evidence, no
             // promotion source.
             #expect(store.durableStaticRangeCheckpointSize(for: key) == nil)
+            #expect(store.attemptWorkingFileURL(for: key) == nil)
+            #expect(store.attemptWorkingFileLayout(for: key) == nil)
+            // A deferred Retry still gets a usable answer: an empty checkpoint, applied to the
+            // row, so the restart-from-zero intent survives (never "stale owner").
+            #expect(store.resolveStaticCheckpointSynchronously(
+                store.submitStaticRangeCheckpointReset(for: key)) == .applied(bytes: 0))
+            #expect(store.record(for: key)?.bytes == 0)
+            #expect(FileManager.default.fileExists(atPath: body.path), "condemned bytes untouched")
             #expect(store.staticRangeRecoveryEvidence().allSatisfy { $0.ratingKey != key.ratingKey })
             if case .immediate = store.submitValidatedPromotion(
                 for: key, terminalStatus: .unverified) {} else {
