@@ -199,6 +199,37 @@ struct JellyfinPlaybackTests {
         #expect(unknown.audioCodec == "truehd")
     }
 
+    /// B59: a requested download version that PlaybackInfo no longer returns must fail closed
+    /// instead of silently downloading the first DirectStream source (a different edition).
+    @Test func downloadDecisionRejectsMissingPreferredMediaSource() throws {
+        let response = try JellyfinPlaybackInfoResponse.decode(from: Data(#"""
+        {
+          "PlaySessionId": "download-play-1",
+          "MediaSources": [
+            { "Id": "version-a", "Container": "mkv", "SupportsDirectStream": true,
+              "MediaStreams": [{ "Index": 0, "Type": "Video", "Codec": "hevc" }] },
+            { "Id": "version-c", "Container": "mp4", "SupportsDirectPlay": true,
+              "MediaStreams": [{ "Index": 0, "Type": "Video", "Codec": "h264" }] }
+          ]
+        }
+        """#.utf8))
+
+        #expect(throws: JellyfinPlaybackError.preferredMediaSourceUnavailable("version-b-old")) {
+            _ = try JellyfinPlayback.downloadDecision(response: response,
+                                                      preferredMediaSourceId: "version-b-old")
+        }
+        // An exact match on a non-first source is honoured.
+        let exact = try JellyfinPlayback.downloadDecision(response: response,
+                                                          preferredMediaSourceId: "version-c")
+        #expect(exact.mediaSourceId == "version-c")
+        // Without a requested version, the DirectStream-first server choice still applies.
+        let unpinned = try JellyfinPlayback.downloadDecision(response: response)
+        #expect(unpinned.mediaSourceId == "version-a")
+        let emptyPin = try JellyfinPlayback.downloadDecision(response: response,
+                                                             preferredMediaSourceId: "")
+        #expect(emptyPin.mediaSourceId == "version-a")
+    }
+
     @Test func resolvesServerRelativeTranscodingURLFromPlaybackInfoWithStableHLSOverrides() throws {
         let response = try JellyfinPlaybackInfoResponse.decode(from: Data(#"""
         {

@@ -235,6 +235,14 @@ public enum JellyfinPlayback {
         guard let playSessionId = response.playSessionId, !playSessionId.isEmpty else {
             throw JellyfinPlaybackError.missingPlaySessionId
         }
+        // B59: a requested version that the server no longer returns must not silently become a
+        // different edition (download, retry and stall restart all pass the persisted id). Fail
+        // closed like the playback path; the server's own choice applies only when unpinned.
+        if let preferredMediaSourceId,
+           !preferredMediaSourceId.isEmpty,
+           !response.mediaSources.contains(where: { $0.id == preferredMediaSourceId }) {
+            throw JellyfinPlaybackError.preferredMediaSourceUnavailable(preferredMediaSourceId)
+        }
         guard let source = chooseDownloadSource(response.mediaSources, preferredMediaSourceId: preferredMediaSourceId) else {
             throw JellyfinPlaybackError.noMediaSources
         }
