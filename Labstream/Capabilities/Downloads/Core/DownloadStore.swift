@@ -4749,8 +4749,17 @@ final class DownloadStore: @unchecked Sendable {
             return .staleOrMissing
         }
         let previousStatus = row.status
-        let statusChanged = row.status == .queued || row.status == .paused || row.status == .failed
-        if statusChanged { row.status = .downloading }
+        // P3a/B09: progress is the `transferProgress` event. It may move an admitted row to
+        // transferring, but never promotes a paused, failed or finalizing row; those only record
+        // their bytes (`checkpointAdvanced`).
+        let previousLifecycle = row.lifecycle
+        if case .applied(let next, _) = DownloadLifecycleReducer.reduce(
+            DownloadLifecycleState(lifecycle: row.lifecycle, history: row.history),
+            .transferProgress, facts: DownloadRowFacts(route: .staticRange)) {
+            row.lifecycle = next.lifecycle
+            row.history = next.history
+        }
+        let statusChanged = row.lifecycle != previousLifecycle
         let changed = row.bytes != bytes || row.progress != progress || statusChanged
         guard changed else {
             lock.unlock()
@@ -4776,6 +4785,56 @@ final class DownloadStore: @unchecked Sendable {
             ])
         }
         return .accepted(change: .applied, ticket: ticket)
+    }
+
+    enum LifecycleEventSubmission: Sendable, Equatable {
+        case accepted(effects: [DownloadLifecycleEffect], ticket: PersistenceTicket?)
+        case rejected(DownloadLifecycleTransition.Rejection)
+        case staleOrMissing
+    }
+
+    /// The P3a way to change an exact attempt's lifecycle: run the pure reducer under the store
+    /// lock, persist the new lifecycle and history in one revision, and return the committed
+    /// effects for the caller to execute. A rejected event changes nothing.
+    @discardableResult
+    func submitLifecycleEvent(
+        _ event: DownloadLifecycleEvent,
+        for key: DownloadAttemptKey,
+        facts: DownloadRowFacts
+    ) -> LifecycleEventSubmission {
+        lock.lock()
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
+            lock.unlock()
+            return .staleOrMissing
+        }
+        let previousStatus = row.status
+        switch DownloadLifecycleReducer.reduce(
+            DownloadLifecycleState(lifecycle: row.lifecycle, history: row.history),
+            event, facts: facts) {
+        case .rejected(let rejection):
+            lock.unlock()
+            return .rejected(rejection)
+        case .applied(let next, let effects):
+            row.lifecycle = next.lifecycle
+            row.history = next.history
+            rows[key.ratingKey] = row
+            let ticket = enqueueAttemptPersistenceLocked()
+            let bytes = row.bytes
+            let progress = row.progress
+            let status = row.status
+            lock.unlock()
+            if previousStatus != status {
+                AppDiagnostics.record(.downloads, "downloads.status_transition", fields: [
+                    "download_id": .identifier(key.ratingKey),
+                    "from": .label(previousStatus.rawValue),
+                    "to": .label(status.rawValue),
+                    "bytes_exact": .int(bytes),
+                    "progress_percent": .int(Int((progress * 100).rounded(.down))),
+                    "source": .label("lifecycle_event"),
+                ])
+            }
+            return .accepted(effects: effects, ticket: ticket)
+        }
     }
 
     /// Set the explicit lifecycle status for a row (D2). No-op if the row is gone.
