@@ -24,11 +24,11 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
     #expect(r.headers["X-Plex-Token"] == "tok")
 }
 
-@Test func createOnPlaylistPutsToKeyWithItemGrammar() {
-    let r = OptimizeRequest.createOnPlaylist(
+@Test func createOnPlaylistPutsToKeyWithItemGrammar() throws {
+    let r = try OptimizeRequest.createOnPlaylist(
         server: server, token: "tok", identity: id,
         backgroundProcessingKey: "/playlists/9/items",
-        ratingKey: "101", title: "Blade Runner",
+        ratingKey: "101", serverMachineIdentifier: "MACHINE", title: "Blade Runner",
         targetTagID: 7,
         mediaSettings: .init(videoQuality: 100, maxVideoBitrateKbps: 8000,
                              videoResolution: "1920x1080"))
@@ -44,15 +44,18 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
     #expect(v("Item[MediaSettings][videoResolution]") == "1920x1080")
     #expect(v("Item[locationID]") == "-1")
     #expect(v("Item[Policy][scope]") == "all")
-    #expect(v("Item[Location][uri]")?.contains("/library/metadata/101") == true)
+    // B38: the fallback Location URI names the SERVER (machine identifier), never the client.
+    #expect(v("Item[Location][uri]")
+        == "server://MACHINE/com.plexapp.plugins.library/library/metadata/101")
+    #expect(v("Item[Location][uri]")?.contains("CID") == false)
     #expect(r.headers["X-Plex-Token"] == "tok")
 }
 
-@Test func createOnPlaylistCanCarryBuiltInTargetName() {
-    let r = OptimizeRequest.createOnPlaylist(
+@Test func createOnPlaylistCanCarryBuiltInTargetName() throws {
+    let r = try OptimizeRequest.createOnPlaylist(
         server: server, token: "tok", identity: id,
         backgroundProcessingKey: "/playlists/9/items",
-        ratingKey: "101", title: "T", targetTagID: 3,
+        ratingKey: "101", serverMachineIdentifier: "MACHINE", title: "T", targetTagID: 3,
         targetName: "Original Quality",
         mediaSettings: .init(videoQuality: 100, maxVideoBitrateKbps: nil, videoResolution: nil))
     func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
@@ -60,8 +63,8 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
     #expect(v("Item[targetTagID]") == "3")
 }
 
-@Test func createOnPlaylistSupportsCustomDeviceProfileQuality() {
-    let r = OptimizeRequest.createOnPlaylist(
+@Test func createOnPlaylistSupportsCustomDeviceProfileQuality() throws {
+    let r = try OptimizeRequest.createOnPlaylist(
         server: server, token: "tok", identity: id,
         backgroundProcessingKey: "/playlists/9/items",
         ratingKey: "101", sourceURI: "library://section/item/%2Flibrary%2Fmetadata%2F101",
@@ -80,15 +83,34 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
     #expect(v("Item[Location][uri]") == "library://section/item/%2Flibrary%2Fmetadata%2F101")
 }
 
-@Test func createOnPlaylistOmitsAbsentMediaSettings() {
-    let r = OptimizeRequest.createOnPlaylist(
+@Test func createOnPlaylistOmitsAbsentMediaSettings() throws {
+    let r = try OptimizeRequest.createOnPlaylist(
         server: server, token: "tok", identity: id,
         backgroundProcessingKey: "/playlists/9/items",
-        ratingKey: "101", title: "T", targetTagID: 3,
+        ratingKey: "101", serverMachineIdentifier: "MACHINE", title: "T", targetTagID: 3,
         mediaSettings: .init(videoQuality: 100, maxVideoBitrateKbps: nil, videoResolution: nil))
     func names() -> [String] { r.queryItems.map(\.name) }
     #expect(!names().contains("Item[MediaSettings][maxVideoBitrate]"))
     #expect(!names().contains("Item[MediaSettings][videoResolution]"))
+}
+
+@Test func createOnPlaylistFailsClosedWithoutAnyServerSourceIdentity() {
+    // B38: with no library source URI and no server machine identifier there is no URI PMS can
+    // resolve. Fail clearly instead of sending a client-identifier URI the server ignores.
+    #expect(throws: OptimizeRequest.CreateError.missingSourceLocation) {
+        try OptimizeRequest.createOnPlaylist(
+            server: server, token: "tok", identity: id,
+            backgroundProcessingKey: "/playlists/9/items",
+            ratingKey: "101", serverMachineIdentifier: "  ", title: "T", targetTagID: 3,
+            mediaSettings: .init())
+    }
+    #expect(throws: OptimizeRequest.CreateError.missingSourceLocation) {
+        try OptimizeRequest.createOnPlaylist(
+            server: server, token: "tok", identity: id,
+            backgroundProcessingKey: "/playlists/9/items",
+            ratingKey: "101", title: "T", targetTagID: 3,
+            mediaSettings: .init())
+    }
 }
 
 @Test func decodesBackgroundProcessingPlaylistKey() throws {
@@ -119,7 +141,7 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
 }
 
 @Test func urlRequestEscapesOptimizerReservedQueryValueSeparators() throws {
-    let r = OptimizeRequest.createOnPlaylist(
+    let r = try OptimizeRequest.createOnPlaylist(
         server: server, token: "tok", identity: id,
         backgroundProcessingKey: "/playlists/9/items",
         ratingKey: "31518",
