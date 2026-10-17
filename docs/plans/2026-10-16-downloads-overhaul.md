@@ -1244,6 +1244,62 @@ revisions 4–6; where it conflicts with P3b.1 or P3b.2, it wins.
    - a pre-P3a v4 index upgrades directly;
    - v5 loads as current; 1–3 reset; 6 is unreadable.
 
+### P3b revision 8 (2026-10-17): amend revision 7 by fixing Delete itself
+
+The round-5 review accepted revision 7's snapshot ordering, its startup recovery of committed v4
+barriers, and its removal of the retirement list and the envelope metadata. Its two P1 findings
+describe **existing defects in the user Delete path**, and they affect users today. Delete
+during Plex optimize preparation can still create the server job. Delete's `session.cancel` is a
+no-op once its own barrier is installed. The migration relies on Delete, so P3b fixes Delete
+rather than working around it. The rest of revision 7 stands, with the following amendments.
+
+A. **Delete quiescence** (round 5, finding 1; a pre-existing bug).
+   - `delete(record:)` captures the exact attempt key before submission. After an accepted
+     submission it calls a new `session.haltForDeletion(attemptKey:)`, which does not consult
+     `ownsAttempt`:
+     - it installs the halt fence for that attempt;
+     - it cancels tracked task IDs;
+     - it enumerates `getAllTasks` and cancels every OS task whose marker carries that exact
+       attempt, including untracked daemon tasks before reattach.
+   - Manager-owned work (pollers, keepalive, server-prep tasks) is stopped at once through the
+     exact-attempt release, while server-cleanup authority stays with the journaled intents.
+   - The capsule-persistence-failure branch performs the same quiescence and reports
+     `persistenceFailed`. It never claims a durable reservation.
+   - Delete reports its outcome through a returned value, used by the migration, while the UI
+     keeps ignoring it: `barriered`, `capsule`, `stale` or `persistenceFailed`.
+B. **One work-admission predicate** (round 5, finding 2; a pre-existing bug).
+   - `store.attemptAdmitsWork(key)` holds only for the exact owner with no row-deletion barrier
+     and no capsule.
+   - It replaces bare `ownsAttempt`/`isDeletionPending` checks at work-admission and
+     continuation boundaries:
+     - `acquireStartAttempt`, `acquireInFlightSlotForStart`, `startAttemptStillCurrent`,
+       `retryAttemptCanContinue`;
+     - season `admitSeasonPlannerRowsOnce`, `seasonAdmissionStillCurrent`, and the retry-row
+       validation inside `applySeasonPlanAtomically`, which happens under the store lock;
+     - `assertCurrentOptimizeAttempt`, `resumeOptimizePollerIsCurrent`, and
+       `pollForOptimizedPart`;
+     - `triggerOptimize`, immediately before the server create;
+     - the session's start, resume, range-resume and fresh-finalizer entry points.
+   - Publication paths keep their existing store fences.
+   - **Tests:** delete during a suspended start, prep continuation and optimize trigger; and
+     capsule admission refused at each boundary.
+C. **Notice after handoff** (round 5, finding 3).
+   - The notice union is written in the same MainActor turn, **after** the deletions return.
+     It contains only attempts whose Delete returned `barriered` or `capsule`, which are
+     confirmed handoffs that nothing can rescue.
+   - **Residual cost:** a crash between handoff and the notice write can undercount, never
+     overcount. This is journaled.
+   - **Upgrade blocked:** `persistenceFailed` or `stale` outcomes are left for the next launch,
+     and the stamp still runs. A capsule that never persisted is a row that v4 or v5 recovery
+     reclassifies.
+D. **Startup cost** (round 5, finding 4).
+   - Only rows with server obligations journal anything, and that means rows in server prep or
+     with an active encoder, which the queue's concurrency bounds. Every other dropped row costs
+     one in-memory barrier plus a coalesced index snapshot.
+   - The journal entries for all dropped rows are prepared in **one** batched journal write
+     (`ensure` over the batch) before the per-row barriers. This bounds the MainActor turn to a
+     single durable journal write plus in-memory work.
+
 ### P3b.1 Probe
 
 `currentSchemaVersion = 5`, with a new `.migratable(from: 4)` probe case.
