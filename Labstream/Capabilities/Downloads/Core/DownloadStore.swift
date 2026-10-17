@@ -739,6 +739,7 @@ final class DownloadStore: @unchecked Sendable {
     private let rootIndexPersistence: IndexPersistence
     private let artifactFilesystem: DownloadArtifactFilesystem
     private let storeFilesystem: DownloadStoreFilesystem
+    private let availableStorageBytes: @Sendable (URL) -> Int64?
     private let checkpointFilesystem: DownloadStaticCheckpointFilesystem
     private let promotionFilesystem: DownloadPromotionFilesystem
     private let artifactLifecycle = DownloadArtifactLifecycleCoordinator()
@@ -793,8 +794,12 @@ final class DownloadStore: @unchecked Sendable {
          checkpointFilesystem: DownloadStaticCheckpointFilesystem = .live,
          promotionFilesystem: DownloadPromotionFilesystem = .live,
          storeFilesystem: DownloadStoreFilesystem = .live,
+         availableStorageBytes: @escaping @Sendable (URL) -> Int64? = {
+             DownloadVolumeFreeSpace.measure(directory: $0)?.bytes
+         },
          startupOnWorker: Bool = false,
          startupRepairWillBegin: @escaping @Sendable () -> Void = {}) {
+        self.availableStorageBytes = availableStorageBytes
         self.storeFilesystem = storeFilesystem
         self.fileManager = fileManager
         self.artifactFilesystem = artifactFilesystem
