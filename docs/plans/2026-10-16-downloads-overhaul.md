@@ -592,6 +592,20 @@ Acceptance is a phase's pins and inventory rows staying green.
     may proceed without entering finalizing. Any other rejection stops before probing or
     publication (`downloads.finalize_refused`).
   - **The downgrade loss** of the fence is now stated next to the strike and reason loss.
+- **2026-10-17 — P3a after-review, round 8: one blocking P2, two P3s.** No `serverPrep` or
+  `planned` completion is stranded by the finalization refusal, and side-asset and deletion paths
+  are unaffected.
+  - **Deferred Retry lost its intent** (blocking; it needed no filesystem failure). A
+    checkpoint reset on a condemned current owner now returns `condemned`, which resolves to
+    `applied(bytes: 0)` after zeroing the row's progress. It never reads or rewrites the bytes.
+    Offline Retry therefore keeps its restart-from-zero intent, and the backend-ready path
+    starts a replacement.
+  - **Layout API** (P3, done): `attemptWorkingFileLayout`/`attemptWorkingFileURL` now derive
+    from the fenced path. The pin asserts that both return nil and that the checkpoint reset
+    returns `applied(0)` without touching the bytes.
+  - **Reclaiming a surviving condemned body on replacement** (P3, journaled for P3b). It occurs
+    only after both the rename and the in-place delete failed. The next launch's staging sweep
+    reclaims it, and P3b's journaled artifact effects own retired-body cleanup.
 
 ## P2 detailed plan — cleanup foundation
 
