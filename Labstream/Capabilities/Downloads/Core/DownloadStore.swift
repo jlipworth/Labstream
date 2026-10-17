@@ -670,6 +670,10 @@ final class DownloadStore: @unchecked Sendable {
     private var nextPersistenceRevision: UInt64 = 0 // guarded by `lock`
     private var startupSchemaProbe: DownloadIndexCoding.StartupProbe // guarded by `lock`
     private var seasonCommitIndeterminate = false // guarded by `lock`
+    #if DEBUG
+    /// Runs after reconcile's demotion commits and before its fenced deletions (race pins).
+    var reconcileBeforeDeletionsForTesting: (() -> Void)?
+    #endif
     private var activeArtifactIntentIDs: Set<UUID> = [] // guarded by `lock`
     private var pendingResumeArtifactData: [UUID: Data] = [:] // guarded by `lock`
     private var artifactLifecycleTickets: [UUID: DownloadArtifactLifecycleCoordinator.Ticket] = [:]
@@ -5205,11 +5209,27 @@ final class DownloadStore: @unchecked Sendable {
     /// Relaunch/foreground recovery (P3a): each eligible row's facts go through the reducer's
     /// `relaunchObserved`. Lifecycle and byte accounting change under the lock; file deletions are
     /// durable decisions executed after it is released (st-41).
+    /// The identity of a file reconcile condemned: inode, size and modification time.
+    struct CondemnedFileIdentity: Equatable {
+        let fileNumber: UInt64
+        let size: UInt64
+        let modified: Date
+    }
+
+    private func condemnedFileIdentity(at url: URL) -> CondemnedFileIdentity? {
+        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+              let fileNumber = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value,
+              let size = (attributes[.size] as? NSNumber)?.uint64Value,
+              let modified = attributes[.modificationDate] as? Date else { return nil }
+        return CondemnedFileIdentity(fileNumber: fileNumber, size: size, modified: modified)
+    }
+
     func reconcile(liveRatingKeys: Set<String>, snapshotRatingKeys: Set<String>) {
         lock.lock()
         var changed = false
         // Each deletion is fenced by the exact owner and the lifecycle that condemned it.
-        var deletions: [(ratingKey: String, attemptID: DownloadAttemptID?, lifecycle: DownloadLifecycle, url: URL)] = []
+        var deletions: [(ratingKey: String, attemptID: DownloadAttemptID?, lifecycle: DownloadLifecycle,
+                         url: URL, identity: CondemnedFileIdentity?)] = []
         for (ratingKey, var row) in rows {
             // A deletion-pending row is a sealed recovery capsule, and a row with pending artifact
             // intents is owned by the durable artifact queue (a staged `.validatedPromotion` head
@@ -5243,12 +5263,14 @@ final class DownloadStore: @unchecked Sendable {
                         partialBytes, expectedBytes: Self.expectedBytesEstimate(row: row))
                 case .deleteWorkingBody:
                     if let workingURL {
-                        deletions.append((ratingKey, row.attemptID, next.lifecycle, workingURL))
+                        deletions.append((ratingKey, row.attemptID, next.lifecycle, workingURL,
+                                          condemnedFileIdentity(at: workingURL)))
                     }
                 case .clearResumeBlob:
                     if let resume = row.metadata?.resumeDataRelativePath, !resume.isEmpty {
-                        deletions.append((ratingKey, row.attemptID, next.lifecycle,
-                                          baseDirectory.appendingPathComponent(resume)))
+                        let url = baseDirectory.appendingPathComponent(resume)
+                        deletions.append((ratingKey, row.attemptID, next.lifecycle, url,
+                                          condemnedFileIdentity(at: url)))
                     }
                 case .deletePublishedBody, .publish, .requestFinalization:
                     break // Relaunch never publishes; finalization is re-requested by the manager.
@@ -5283,6 +5305,9 @@ final class DownloadStore: @unchecked Sendable {
             ])
             return
         }
+        #if DEBUG
+        reconcileBeforeDeletionsForTesting?()
+        #endif
         // Range I/O dispatched before reconcile may have moved the same attempt on (for example
         // back to finalizing) while the commit was in flight. Delete under the lock, as before
         // P3a, and only while the row is still the exact owner in the condemned lifecycle.
@@ -5290,7 +5315,12 @@ final class DownloadStore: @unchecked Sendable {
         for deletion in deletions {
             guard let row = rows[deletion.ratingKey], row.attemptID == deletion.attemptID,
                   row.lifecycle == deletion.lifecycle, row.pendingArtifactIntents.isEmpty,
-                  !row.deletionPending else { continue }
+                  !row.deletionPending,
+                  // Range I/O writes files outside the store lock and may keep a failed row
+                  // failed: only the exact bytes reconcile condemned are deleted. A file that is
+                  // absent, new, or changed since is left for the row's Retry or Delete.
+                  let identity = deletion.identity,
+                  condemnedFileIdentity(at: deletion.url) == identity else { continue }
             try? fileManager.removeItem(at: deletion.url)
         }
         lock.unlock()

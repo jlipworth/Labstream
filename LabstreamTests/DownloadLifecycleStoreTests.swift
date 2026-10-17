@@ -247,6 +247,37 @@ struct DownloadLifecycleStoreTests {
         }
     }
 
+    @Test("Reconcile deletes only the exact bytes it condemned, never bytes written meanwhile")
+    func reconcileDeletionIsFencedByFileIdentity() throws {
+        try withDirectory { directory in
+            var metadata = OfflineMetadata(ratingKey: "plex:race", title: "Race", type: "movie")
+            metadata.resumeMode = .staticByteRange
+            // Control: an empty condemned working file is deleted with its failed row.
+            let control = DownloadStore(baseDirectory: directory)
+            let controlKey = try seed("plex:race", status: .downloading, metadata: metadata,
+                                      in: control)
+            let controlBody = try #require(control.attemptWorkingFileURL(for: controlKey))
+            try Data().write(to: controlBody)
+            control.reconcile(liveRatingKeys: [], snapshotRatingKeys: [controlKey.ratingKey])
+            #expect(control.record(for: controlKey)?.status == .failed)
+            #expect(!FileManager.default.fileExists(atPath: controlBody.path))
+
+            // Race: Range I/O writes the file between the commit and the deletion.
+            var raceMetadata = metadata
+            raceMetadata.ratingKey = "plex:race2"
+            let key = try seed("plex:race2", status: .downloading, metadata: raceMetadata,
+                               in: control)
+            let body = try #require(control.attemptWorkingFileURL(for: key))
+            try Data().write(to: body)
+            control.reconcileBeforeDeletionsForTesting = {
+                try? Data(repeating: 5, count: 4_096).write(to: body)
+            }
+            control.reconcile(liveRatingKeys: [], snapshotRatingKeys: [key.ratingKey])
+            #expect(control.record(for: key)?.status == .failed)
+            #expect((try? Data(contentsOf: body))?.count == 4_096, "new bytes are never deleted")
+        }
+    }
+
     @Test("A Retry that removes the failed row first still inherits its strikes; Delete does not")
     func retryRemovalCarriesStrikes() throws {
         try withDirectory { directory in
