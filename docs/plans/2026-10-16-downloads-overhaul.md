@@ -385,7 +385,9 @@ Acceptance is a phase's pins and inventory rows staying green.
 
 ## P2 detailed plan — cleanup foundation
 
-*Revision 3 (2026-10-17).*
+*Revision 3.1 (2026-10-17). The round-3 co-review approved it with three changes, applied here:
+terminal-release eligibility after deletion, retention of unresolved Plex creates, and the expiry
+cutover moved into commit 3.*
 - *Two "before" co-review rounds by GPT-6.1-Sol: round 1 (rework, 10 findings) and round 2
   (rework, 7 findings). All findings are incorporated.*
 - *Scope was narrowed on the reviewer's advice:*
@@ -489,6 +491,9 @@ its successor authority has committed.
 - `.terminalRelease` runs while the row is present and terminal, unless the operation-specific
   protection holds. A failed Convert row with `shouldKeepEmbyConvertAuthorityForRetry` is
   protected (B44); its intent is retained and re-checked.
+  - It also runs on `.committedAbsent`. Delete can reuse an existing terminal-release intent
+    through `ensure`, and after the row is removed that intent must still run.
+  - It is blocked while `.retiring`.
 - `.abandonment(origin)` runs whenever the ownership recheck passes. The originating attempt does
   not count as an owner.
 
@@ -508,9 +513,11 @@ Ambiguous Convert cleanup and Convert crash-window recovery are serialized on on
 
 - `.malformed`: retain.
 - `.absent`: retire only when `create == .confirmed`.
-  - An `.unresolved` create is retained for 24 h and then retired, with a diagnostic.
-  - The bound is justified because every Labstream item carries the marker title. The stale sweep
-    in P2.4 deletes any marker item that appears late and that no live row protects.
+  - An `.unresolved` create is **retained**, and each pass re-runs the GET.
+    - After 24 h its backoff grows to 6 h.
+    - It is retired with a diagnostic only after 7 days. A PUT that becomes visible more than 7
+      days late is treated as out of scope.
+  - The stale sweep only runs on the next optimize kickoff, so it is not relied on as a follow-up.
 - `.completed`: retire; the render stays on the server (D2).
 - `.cancellable(id)`: requires a unique title match and a known non-terminal state. An unknown
   state is retained.
@@ -532,7 +539,7 @@ Ambiguous Convert cleanup and Convert crash-window recovery are serialized on on
     polling it.
 - **Superseded encoder stops.** These use the captured `BackendSession` and the originating
   attempt. If `ensure` fails, they fall back to best-effort (a residual window).
-- **Emby 24-hour expiry.**
+- **Emby 24-hour expiry** (lands in commit 3, with the cutover).
   - `ensure` an `ambiguousCreate` `.abandonment` intent, and clear the identity and fail the row
     only after it commits.
   - If it fails, the row stays `.preparing` and retries on the next pass.
@@ -550,6 +557,7 @@ Ambiguous Convert cleanup and Convert crash-window recovery are serialized on on
 - **Migration receipt.** The runner skips any intent whose ID is still present in the tombstone
   file, so retained tombstones cannot recreate intents that have already drained. Unrelated
   intents stay runnable.
+  - An unreadable tombstone file blocks every migrated intent. It is never read as "absent".
 - **Preserved, not dropped:**
   - an unreadable legacy file is kept;
   - tombstones that cannot be converted are moved to an evidence file.
@@ -603,8 +611,9 @@ Ambiguous Convert cleanup and Convert crash-window recovery are serialized on on
    - legacy provenance classification;
    - quarantine re-import: a completed known entry next to an unknown Plex entry, mixed
      unsupported elements, and a crash before the rename.
-3. **Runner, eligibility, ownership and migration (P2.3, P2.5, P2.6, the P2.7 policy).** The
-   legacy tombstone executor still compiles. Pins:
+3. **Runner, eligibility, ownership, migration and the expiry cutover** (P2.3, P2.5, P2.6, the
+   P2.7 policy, and P2.4's expiry producer). After this commit no code writes or executes a
+   tombstone. Pins:
    - eligibility by provenance;
    - ownership recheck, including a recovery-identity claim under a different attempt key and a
      migrated synthetic attempt;
@@ -613,15 +622,20 @@ Ambiguous Convert cleanup and Convert crash-window recovery are serialized on on
    - backoff and the self-scheduled timer without refreshes;
    - single flight;
    - both startup orderings;
-   - migration: partial, a removal failure, and the receipt;
-   - parity.
-4. **Producers and UI (P2.4, P2.7 UI).** Pins:
+   - migration: partial, a removal failure, the receipt, and an unreadable legacy file;
+   - parity;
+   - expiry ordering;
+   - Emby coordinator serialization spanning the awaited DELETE through the durable commit of
+     the adoption.
+4. **Remaining producers and UI (P2.4, P2.7 UI).** Pins:
    - for each producer, journal failure followed by process death;
    - the duplicate-job skip;
    - the stale-create fallback;
    - a superseded stop whose row is gone;
-   - expiry ordering;
-   - stale-sweep routing.
+   - stale-sweep routing;
+   - launch sweep → failed cleanup → delete reuses the intent → committed removal → cleanup
+     runs;
+   - a late Plex create with no new kickoff.
 
 ### Out of P2
 
