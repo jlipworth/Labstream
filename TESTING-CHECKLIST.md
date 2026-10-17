@@ -308,6 +308,12 @@ background-session registration, or migration/recovery work.
       unambiguous backend badges.
 - [ ] Pause/Resume, Pause All/Resume All, Retry, Delete, completed-only deletion, queue pause,
       cellular permission, and storage-limit rejection leave coherent durable rows.
+- [ ] Plan a season on Emby (and separately on Plex) that mixes one new Convert/optimize episode
+      with an episode that already has a converted/optimized version and a directly playable
+      original. While the conversion is still preparing, the static episodes are admitted and
+      transfer (at most two static, one server-prep, three total). A waiting row reads
+      **Queued…** in both the offline list and the download sheet, never "Downloading
+      optimized…" with a spinner.
 - [ ] Server-side encoders/optimizer/Convert jobs are stopped or reconciled when their row
       completes, fails, is canceled, or is recovered after relaunch.
 

@@ -118,6 +118,23 @@ struct DownloadRowStatusCaptionPolicyTests {
                                                                    isServerPreparedVersion: false) == "Transcoding + downloading…")
     }
 
+    @Test("A queued row with no live slot reads as waiting in the sheet, never as a transfer (#362)")
+    func compactWaitingCaptionForUnadmittedQueuedRows() {
+        #expect(DownloadRowStatusCaptionPolicy.compactWaitingCaption(
+            status: .queued, isActive: false, resumeMode: .staticByteRange) == "Queued…")
+        #expect(DownloadRowStatusCaptionPolicy.compactWaitingCaption(
+            status: .queued, isActive: false, resumeMode: nil) == "Queued…")
+        #expect(DownloadRowStatusCaptionPolicy.compactWaitingCaption(
+            status: .queued, isActive: false, resumeMode: .serverPrepThenStatic) == "Preparing on server…")
+        // Genuinely active rows keep the transfer phase wording and progress UI.
+        #expect(DownloadRowStatusCaptionPolicy.compactWaitingCaption(
+            status: .queued, isActive: true, resumeMode: .staticByteRange) == nil)
+        for status in [DownloadStatus.downloading, .preparing, .paused, .failed, .complete, .unverified] {
+            #expect(DownloadRowStatusCaptionPolicy.compactWaitingCaption(
+                status: status, isActive: false, resumeMode: .staticByteRange) == nil)
+        }
+    }
+
     @Test("Record context derives persisted row facts from the shared job snapshot")
     func recordContextDerivesPersistedFacts() {
         let record = DownloadRecord(

@@ -180,7 +180,13 @@ extension DownloadManager {
                 && ($0.status == .queued || $0.status == .failed)
         }
         guard !pendingRecords.isEmpty else { return false }
-        let active = snapshot.filter { activeJobs.contains($0.ratingKey) }.map {
+        // A row occupies admission capacity while it holds a live in-flight slot OR while its
+        // admission start is still running (the metadata refresh happens before the start
+        // acquires its slot). Counting both keeps the 2-second loop from over-admitting rows
+        // whose starts run concurrently.
+        let active = snapshot.filter {
+            activeJobs.contains($0.ratingKey) || seasonPlannerAdmittingKeys.contains($0.ratingKey)
+        }.map {
             SeasonDownloadAdmissionCandidate(id: $0.ratingKey, lane: seasonAdmissionLane(for: $0))
         }
         let pending = pendingRecords.map {
@@ -198,13 +204,25 @@ extension DownloadManager {
             case .applied, .noChange:
                 if record.status == .failed {
                     retry(ratingKey: record.ratingKey, allowReplacingExistingActiveRow: true)
+                    seasonPlannerAdmittingKeys.remove(record.ratingKey)
                 } else {
-                    await startSeasonPlannedRecord(record)
+                    // #362: never await a start inline. A server-prep start (Emby Convert, Plex
+                    // optimize) does not return until the server job finishes and hands off to
+                    // the static lane, which can take hours. Awaiting it here stalled every other
+                    // admitted row and the whole admission loop, so static/original episodes
+                    // waited behind a conversion despite free static/live lanes. Each start now
+                    // owns only its own lane slot; the admitting key is held until it returns.
+                    let ratingKey = record.ratingKey
+                    Task { [weak self] in
+                        guard let self else { return }
+                        await self.startSeasonPlannedRecord(record)
+                        self.seasonPlannerAdmittingKeys.remove(ratingKey)
+                        self.refreshRecords()
+                    }
                 }
             case .staleOrMissing, .persistenceFailed:
-                break
+                seasonPlannerAdmittingKeys.remove(record.ratingKey)
             }
-            seasonPlannerAdmittingKeys.remove(record.ratingKey)
         }
         refreshRecords()
         return store.records.contains { $0.metadata?.seasonPlannerPendingAdmission == true }
