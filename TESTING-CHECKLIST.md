@@ -205,6 +205,12 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
 - [ ] **iPhone:** Full-screen video requests the intended landscape orientation and restores
       the prior orientation policy on close. Ordinary backgrounding pauses, while active PiP
       or AirPlay is allowed to continue.
+- [ ] **iPhone player layout (#258):** In landscape, with the same chrome state, the close/utility
+      buttons, center play/pause, and bottom platter sit in the same place and size for a
+      pillarboxed (16:9 or 4:3) and a letterboxed (2.39:1) title, for streamed and downloaded
+      playback, and with or without the Quality menu. No control is clipped by the rounded
+      display corners, and the platter outline stays visible over black bars. Simulator
+      fixture evidence exists; physical-device confirmation is open.
 - [ ] **iPadOS:** Player layout and menus work in regular and compact multitasking widths;
       PiP, AirPlay, keyboard controls, and the adaptive sidebar do not strand presentation.
 - [ ] **iPad pointer preview:** Continuous pointer movement over the timeline advances the

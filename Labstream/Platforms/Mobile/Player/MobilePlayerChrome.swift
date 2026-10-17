@@ -13,6 +13,13 @@ extension CustomPlayerChrome {
                                        viewportSize: chromeViewportSize)
     }
 
+    var mobileChromeGeometryDetail: String {
+        let layout = mobileChromeLayout
+        return "phoneLandscape=\(layout.isPhoneLandscape) compact=\(layout.usesCompactChrome)"
+            + " h=\(horizontalSizeClass.map { "\($0)" } ?? "nil")"
+            + " v=\(verticalSizeClass.map { "\($0)" } ?? "nil")"
+    }
+
     var topUtilityButtonExtraTopPadding: CGFloat {
         10
     }
@@ -118,15 +125,38 @@ extension CustomPlayerChrome {
             compactScrubberColumn
                 .frame(maxWidth: .infinity)
 
-            HStack(spacing: 8) {
-                phoneLandscapeSkipButton(seconds: -30)
-                phoneLandscapeSkipButton(seconds: -10)
-                phoneLandscapeSkipButton(seconds: 10)
-                phoneLandscapeSkipButton(seconds: 30)
+            // The row must never be wider than the platter it sits in (#258): a fixed-size
+            // menu strip that overflowed used to widen the platter and, through it, the whole
+            // chrome envelope, so the item's menu set (Quality availability) moved every control.
+            // Degrade deterministically instead: drop to the -10/+30 pair the portrait compact
+            // layout already uses, then let the full-size pills scroll. (Hardware keys are
+            // separate: ←/→ skip 30 s, Shift-←/→ skip 10 s.)
+            ViewThatFits(in: .horizontal) {
+                phoneLandscapeTransportRow(skips: [-30, -10, 10, 30], scrollsMenus: false)
+                phoneLandscapeTransportRow(skips: [-10, 30], scrollsMenus: false)
+                phoneLandscapeTransportRow(skips: [-10, 30], scrollsMenus: true)
+            }
+            .frame(maxWidth: .infinity)
+            .playerGeometryProbe("bottomMenuRow")
+        }
+    }
 
-                Spacer(minLength: 12)
+    func phoneLandscapeTransportRow(skips: [Int], scrollsMenus: Bool) -> some View {
+        HStack(spacing: 8) {
+            ForEach(skips, id: \.self) { seconds in
+                phoneLandscapeSkipButton(seconds: seconds)
+            }
 
-                phoneLandscapeMenuStrip
+            Spacer(minLength: 12)
+
+            if scrollsMenus {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    phoneLandscapeMenuButtons
+                }
+                .defaultScrollAnchor(.trailing)
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            } else {
+                phoneLandscapeMenuButtons
                     .fixedSize(horizontal: true, vertical: false)
             }
         }
@@ -179,13 +209,12 @@ extension CustomPlayerChrome {
 
     /// Compact landscape controls keep the complete playback-option set visible now
     /// that play/pause lives over the picture and no longer consumes this row.
-    var phoneLandscapeMenuStrip: some View {
+    var phoneLandscapeMenuButtons: some View {
         HStack(spacing: 6) {
             ForEach(availableMenus) { menu in
                 phoneLandscapeMenuButton(menu)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .trailing)
     }
 
     func phoneLandscapeMenuButton(_ menu: CustomPlayerMenuKind) -> some View {
@@ -196,7 +225,7 @@ extension CustomPlayerChrome {
                 .labelStyle(.titleAndIcon)
                 .font(.caption.weight(.semibold))
                 .lineLimit(1)
-                .frame(minWidth: phoneLandscapeMenuMinWidth(menu), minHeight: 40)
+                .frame(minWidth: phoneLandscapeMenuMinWidth(menu), minHeight: 44)
                 .padding(.horizontal, 4)
                 .contentShape(Capsule())
         }
@@ -284,6 +313,18 @@ struct PhoneLandscapePlayerMenuButtonStyle: ViewModifier {
 }
 
 extension View {
+    /// Hairline edge for the bottom control platter. Liquid Glass takes its colour from what is
+    /// behind it, so over letterbox/pillarbox black it nearly vanishes and the platter reads as
+    /// only as wide as the picture (#258). The outline keeps the same envelope legible over any
+    /// source aspect.
+    func iosPlayerPlatterOutline(cornerRadius: CGFloat) -> some View {
+        overlay {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(.white.opacity(0.16), lineWidth: 0.75)
+                .allowsHitTesting(false)
+        }
+    }
+
     func iosPlayerTopUtilityButtonStyle(isPhoneLandscape: Bool) -> some View {
         modifier(IOSPlayerTopUtilityButtonStyle(isPhoneLandscape: isPhoneLandscape))
     }
