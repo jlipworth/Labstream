@@ -317,22 +317,20 @@ extension DownloadManager {
         let store = self.store
         downloadWorkRegistry.startIfAbsent(for: attemptKey, kind: .sideCache(.poster)) { [weak self] in
             guard let self, !Task.isCancelled else { return }
-            defer { try? FileManager.default.removeItem(at: stagingURL) }
+            defer { Self.discardSideAssetStaging(store: store, key: attemptKey, url: stagingURL) }
             guard let data = try? await self.fetchOptionalSideAsset(
                     request, for: attemptKey, source: sourceIdentity, kind: .poster),
-                  await DownloadSideAssetService.prepare(
+                  await Self.prepareSideAsset(store: store, key: attemptKey, expectedSource: sourceIdentity,
                     data, as: .image, at: stagingURL),
                   !Task.isCancelled,
-                  Self.promoteSideAsset(store: store, key: attemptKey,
+                  await Self.promoteSideAsset(store: store, key: attemptKey,
                                         expectedSource: sourceIdentity,
                                         stagingURL: stagingURL, stableURL: posterURL) else { return }
-            await MainActor.run {
-                let result = store.updateMetadata(
+            let result = await store.updateMetadataAsync(
                     for: attemptKey, expectedSideAssetSource: sourceIdentity) {
                     $0.recordCachedPoster(relativePath: posterURL.lastPathComponent)
                 }
-                if result == .applied || result == .noChange { self.refreshRecords() }
-            }
+                if result == .applied || result == .noChange { await MainActor.run { self.refreshRecords() } }
         }
     }
 
@@ -484,14 +482,14 @@ extension DownloadManager {
                     if let track = item.track { tracks.append(track) }
                     continue
                 }
-                defer { try? FileManager.default.removeItem(at: item.staging) }
+                defer { Self.discardSideAssetStaging(store: store, key: attemptKey, url: item.staging) }
                 guard let data = try? await self.fetchOptionalSideAsset(
                         item.request, for: attemptKey, source: sourceIdentity,
                         kind: .textSubtitles, resource: item.destination.lastPathComponent),
-                      await DownloadSideAssetService.prepare(
+                      await Self.prepareSideAsset(store: store, key: attemptKey, expectedSource: sourceIdentity,
                         data, as: .textSubtitle, at: item.staging),
                       !Task.isCancelled,
-                      Self.promoteSideAsset(store: store, key: attemptKey,
+                      await Self.promoteSideAsset(store: store, key: attemptKey,
                                             expectedSource: sourceIdentity,
                                             stagingURL: item.staging, stableURL: item.destination)
                 else { continue }
@@ -499,13 +497,11 @@ extension DownloadManager {
             }
             guard !tracks.isEmpty else { return }
             let batch = DownloadSideAssetPublicationBatch(textSubtitles: tracks)
-            await MainActor.run {
-                let result = store.updateMetadata(
+            let result = await store.updateMetadataAsync(
                     for: attemptKey, expectedSideAssetSource: sourceIdentity) {
                     batch.apply(to: &$0)
                 }
-                if result == .applied || result == .noChange { self.refreshRecords() }
-            }
+                if result == .applied || result == .noChange { await MainActor.run { self.refreshRecords() } }
         }
     }
 
@@ -544,22 +540,20 @@ extension DownloadManager {
         let store = self.store
         downloadWorkRegistry.startIfAbsent(for: attemptKey, kind: .sideCache(.plexBIF)) { [weak self] in
             guard let self, !Task.isCancelled else { return }
-            defer { try? FileManager.default.removeItem(at: staging) }
+            defer { Self.discardSideAssetStaging(store: store, key: attemptKey, url: staging) }
             do {
                 let data = try await self.fetchOptionalSideAsset(
                     bifRequest, for: attemptKey, source: sourceIdentity, kind: .plexBIF)
-                guard await DownloadSideAssetService.prepare(data, as: .bif, at: staging) else { return }
+                guard await Self.prepareSideAsset(store: store, key: attemptKey, expectedSource: sourceIdentity, data, as: .bif, at: staging) else { return }
                 guard !Task.isCancelled,
-                      Self.promoteSideAsset(store: store, key: attemptKey,
+                      await Self.promoteSideAsset(store: store, key: attemptKey,
                                             expectedSource: sourceIdentity,
                                             stagingURL: staging, stableURL: destination) else { return }
-                await MainActor.run {
-                    let result = store.updateMetadata(
+                let result = await store.updateMetadataAsync(
                         for: attemptKey, expectedSideAssetSource: sourceIdentity) {
                         $0.plexBIFRelativePath = destination.lastPathComponent
                     }
-                    if result == .applied || result == .noChange { self.refreshRecords() }
-                }
+                    if result == .applied || result == .noChange { await MainActor.run { self.refreshRecords() } }
             } catch {
                 // Expected for items/servers without BIFs, auth churn, or cache races.
                 // Keep silent and never log token-bearing URLs.
@@ -593,24 +587,22 @@ extension DownloadManager {
             for: attemptKey, kind: .sideCache(.embyBIF)
         ) { [weak self] in
             guard let self, !Task.isCancelled else { return }
-            defer { try? FileManager.default.removeItem(at: staging) }
+            defer { Self.discardSideAssetStaging(store: store, key: attemptKey, url: staging) }
             do {
                 let data = try await self.fetchOptionalSideAsset(
                     bifRequest, for: attemptKey, source: sourceIdentity, kind: .embyBIF)
                 guard !Task.isCancelled,
-                      await DownloadSideAssetService.prepare(data, as: .bif, at: staging) else { return }
+                      await Self.prepareSideAsset(store: store, key: attemptKey, expectedSource: sourceIdentity, data, as: .bif, at: staging) else { return }
                 guard !Task.isCancelled,
                       store.record(for: attemptKey)?.metadata?.mediaSourceID == mediaSourceId,
-                      Self.promoteSideAsset(store: store, key: attemptKey,
+                      await Self.promoteSideAsset(store: store, key: attemptKey,
                                             expectedSource: sourceIdentity,
                                             stagingURL: staging, stableURL: destination) else { return }
-                await MainActor.run {
-                    let result = store.updateMetadata(
+                let result = await store.updateMetadataAsync(
                         for: attemptKey, expectedSideAssetSource: sourceIdentity) {
                         $0.embyBIFRelativePath = destination.lastPathComponent
                     }
-                    if result == .applied || result == .noChange { self.refreshRecords() }
-                }
+                    if result == .applied || result == .noChange { await MainActor.run { self.refreshRecords() } }
             } catch {
                 // Optional asset miss/auth churn/cancellation. Never log the authenticated URL.
             }
@@ -721,10 +713,10 @@ extension DownloadManager {
                         failedCount += 1
                         continue
                     }
-                    defer { try? FileManager.default.removeItem(at: staging) }
-                    guard await DownloadSideAssetService.prepare(
+                    defer { Self.discardSideAssetStaging(store: store, key: attemptKey, url: staging) }
+                    guard await Self.prepareSideAsset(store: store, key: attemptKey, expectedSource: sourceIdentity,
                             data, as: .image, at: staging),
-                          Self.promoteSideAsset(store: store, key: attemptKey,
+                          await Self.promoteSideAsset(store: store, key: attemptKey,
                                                 expectedSource: sourceIdentity,
                                                 stagingURL: staging, stableURL: destination) else {
                         failedCount += 1
@@ -747,28 +739,39 @@ extension DownloadManager {
             }
             guard !relativesByIndex.isEmpty else { return }
             let batch = DownloadSideAssetPublicationBatch(chapterImages: relativesByIndex)
-            await MainActor.run {
-                let result = store.updateMetadata(
+            let result = await store.updateMetadataAsync(
                     for: attemptKey, expectedSideAssetSource: sourceIdentity) {
                     batch.apply(to: &$0)
                 }
-                if result == .applied || result == .noChange { self.refreshRecords() }
-            }
+                if result == .applied || result == .noChange { await MainActor.run { self.refreshRecords() } }
         }
     }
 
-    /// Shared stale-tail boundary. Always removes only this attempt's derived staging file; a
-    /// rejected stale promotion never touches the stable destination owned by a newer attempt.
+    nonisolated static func prepareSideAsset(store: DownloadStore, key: DownloadAttemptKey,
+        expectedSource: OfflineSideAssetSourceIdentity, _ data: Data,
+        as kind: DownloadSideAssetPayloadKind, at staging: URL) async -> Bool {
+        guard case .acquired(let lease) = await store.acquirePathLease(for: key,
+            relativePaths: [staging.lastPathComponent], purpose: .sideCacheWrite, deadline: .after(30)) else { return false }
+        defer { store.releasePathLease(lease) }
+        guard !Task.isCancelled, store.sideAssetSourceIdentity(for: key) == expectedSource else { return false }
+        let prepared = await DownloadSideAssetService.prepare(data, as: kind, at: staging)
+        return prepared && !Task.isCancelled && store.sideAssetSourceIdentity(for: key) == expectedSource
+    }
+
+    nonisolated static func discardSideAssetStaging(store: DownloadStore, key: DownloadAttemptKey, url: URL) {
+        DispatchQueue.global(qos: .utility).async { store.discardSideAssetStaging(at: url, for: key) }
+    }
+
     nonisolated static func promoteSideAsset(
                                              store: DownloadStore,
                                              key: DownloadAttemptKey,
                                              expectedSource: OfflineSideAssetSourceIdentity,
-                                             stagingURL: URL, stableURL: URL) -> Bool {
-        defer { try? FileManager.default.removeItem(at: stagingURL) }
-        guard !Task.isCancelled else { return false }
-        return store.promoteSideAssetStagingFile(
-            for: key, expectedSource: expectedSource,
-            stagingURL: stagingURL, to: stableURL)
-            == .promoted
+                                             stagingURL: URL, stableURL: URL) async -> Bool {
+        await DownloadStoreWork {
+            defer { store.discardSideAssetStaging(at: stagingURL, for: key) }
+            guard !Task.isCancelled else { return false }
+            return store.promoteSideAssetStagingFile(for: key, expectedSource: expectedSource,
+                stagingURL: stagingURL, to: stableURL) == .promoted
+        }.resolve(deadline: .after(30), timedOut: { false })
     }
 }

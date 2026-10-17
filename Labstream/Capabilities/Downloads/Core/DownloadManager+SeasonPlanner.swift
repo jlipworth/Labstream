@@ -213,7 +213,7 @@ extension DownloadManager {
             // The item is gone: a visible source-missing failure, not an endless wait.
             if Self.isDefinitiveMissingItem(error), seasonAdmissionStillCurrent(record),
                let attemptID = record.attemptID {
-                _ = applyLifecycleEvent(
+                _ = await applyLifecycleEvent(
                     .transferFailed(.sourceMissing),
                     for: DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID),
                     context: "season_plan_source_missing")
@@ -255,7 +255,7 @@ extension DownloadManager {
             }
             guard let exact = matches.first else {
                 if let attemptID = record.attemptID {
-                    _ = applyLifecycleEvent(
+                    _ = await applyLifecycleEvent(
                         .transferFailed(.sourceMissing),
                         for: DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID),
                         context: "season_plan_source_missing")

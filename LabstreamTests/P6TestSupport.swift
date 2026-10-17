@@ -79,9 +79,7 @@ func p6ExpectReadableWhileHeld(_ store: DownloadStore, key: DownloadAttemptKey,
     try #require(await p6Signal(ready))
     begin.signal()
     let readable = await p6Signal(done)
-    withKnownIssue("P6 red pin: \(phase) — store lookup blocked by held filesystem operation") {
         #expect(readable)
-    }
     hold.release.signal()
     if !readable { try #require(await p6Signal(done)) }
 }

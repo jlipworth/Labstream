@@ -76,7 +76,7 @@ extension DownloadManager {
                                             downloadLane: DownloadChoicePolicy.downloadLane(for: choice),
                                             serverPreparedVersion: DownloadChoicePolicy.isServerPreparedVersion(for: choice))
         let seedDestination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
-        guard persistAttemptSeed(
+        guard await persistAttemptSeed(
             DownloadRecord(ratingKey: ratingKey, attemptID: startAttempt.attemptID,
                            title: item.title, localURL: seedDestination,
                            bytes: 0, progress: 0, metadata: metadata),
@@ -148,7 +148,7 @@ extension DownloadManager {
                 fallbackOptimizeTarget: Self.originalFallbackOptimizeTarget()
             ) {
             case .staticOriginal:
-                startStaticPlexPartDownload(ratingKey: ratingKey, item: item, part: part, url: url,
+                await startStaticPlexPartDownload(ratingKey: ratingKey, item: item, part: part, url: url,
                                             metadata: metadata, choiceLabel: "original",
                                             attemptID: startAttempt.attemptID,
                                             choice: choice, mediaIndex: mediaIndex, partIndex: partIndex,
@@ -188,7 +188,7 @@ extension DownloadManager {
                 return
             }
             let url = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
-            startStaticPlexPartDownload(ratingKey: ratingKey, item: item, part: part, url: url,
+            await startStaticPlexPartDownload(ratingKey: ratingKey, item: item, part: part, url: url,
                                         metadata: metadata, choiceLabel: "existing_version",
                                         attemptID: startAttempt.attemptID,
                                         choice: choice, mediaIndex: mediaIndex, partIndex: partIndex,
@@ -235,7 +235,7 @@ extension DownloadManager {
                                              metadata: OfflineMetadata, choiceLabel: String,
                                              attemptID: DownloadAttemptID,
                                              choice: DownloadChoice, mediaIndex: Int, partIndex: Int,
-                                             server: URL, token: String) {
+                                             server: URL, token: String) async {
         let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
         let expectedBytes = estimatedBytes(for: item, choice: choice,
                                            mediaIndex: mediaIndex,
@@ -254,8 +254,15 @@ extension DownloadManager {
         let record = DownloadRecord(ratingKey: ratingKey, attemptID: attemptID, title: item.title,
                                     localURL: destination, bytes: 0, progress: 0,
                                     metadata: metadata)
-        switch store.createAttemptOwnedRecord(record, attemptID: attemptID) {
+        let fence = managerActionGenerations[ratingKey, default: 0]
+        let result = await store.createAttemptOwnedRecordAsync(record, attemptID: attemptID)
+        guard managerContinuationIsCurrent(attemptKey, fence: fence),
+              startAttempts.isCurrent(ratingKey, id: attemptID) else { return }
+        switch result {
         case .committed(let committed) where committed == attemptKey:
+            guard managerContinuationIsCurrent(attemptKey, fence: fence),
+                  startAttempts.isCurrent(ratingKey, id: attemptID), inFlightAttempts.owns(attemptKey),
+                  session.rangeRequestRebuildIsCurrent(for: ratingKey) else { return }
             break
         case .committed, .rejectedOwnership:
             recordDownloadDiagnostic("downloads.start_superseded_after_await", fields: [
@@ -268,8 +275,10 @@ extension DownloadManager {
         case .failed:
             lastError[ratingKey] = .transferFailed(
                 "The download could not be saved safely. Check storage and try again.")
-            _ = applyLifecycleEvent(
+            let failureFence = managerActionGenerations[attemptKey.ratingKey, default: 0]
+            _ = await applyLifecycleEvent(
                 .transferFailed(.internalError), for: attemptKey, context: "plex_static_publish")
+            guard !Task.isCancelled, managerActionGenerations[attemptKey.ratingKey, default: 0] == failureFence, store.ownsAttempt(attemptKey) else { return }
             if store.ownsAttempt(attemptKey) { releaseInFlight(for: attemptKey) }
             refreshRecords()
             return

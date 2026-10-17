@@ -2777,6 +2777,61 @@ These amendments bind the plan above. Where they conflict with it, they win.
 5. **B84 keeps whole-index blocking.** It does not guess a winner between duplicate rows.
    B83/B85, the structural splits, tombstone removal and the broad API cleanup stay deferred.
 
+### P6.2/P6.3 implementation journal (2026-10-17)
+
+Lead lane, based on the frozen P6.1 handoff. Manager lifecycle/seed/metadata/PlaySession,
+playback-position and recovery callers now submit work and await bounded proof. Synchronous
+Pause and Delete still install their halt/admission fences immediately; same-row continuations
+are ordered, and start, poller, source and exact-handle authority are checked again after waits.
+Season-plan persistence keeps its existing detached transaction. B76's persistence mechanism is
+fixed; playback binding and observed-playback semantics remain P7.
+
+Store observations copy row authority and an in-memory mutation generation before off-lock I/O.
+Retry reserves the predecessor and private successor paths, uses the existing durable-copy seam,
+then compares the captured generation before publishing. Failed/ambiguous commits retain the
+source. Side-cache writers/publication, condemned bodies, startup staging and reconcile cleanup
+participate in path reservations; expiration never releases a physical writer's lease. A current-
+source rename remains an in-memory reference until metadata catches up, so delayed retirement
+cannot remove the new bundle. Same-attempt staging cleanup defers rather than unlinking a newer
+source's deterministic staging path. Reconcile
+uses the durable resume-clear recipe instead of unlinking behind a live reference, retains failed
+cleanup authority and protects other rows' complete artifact references (B20/st-41).
+
+Typed resolvers preserve absolute deadlines and return timeout without cancelling physical work.
+Promotion/checkpoint/deletion results use complete ticket epochs. Registered exact artifact
+waiters retain failures outside the capped 512-entry unclaimed history; repeated failed retries
+supersede old live entries. Generic index success retries only a head whose failed prepared
+revision has since committed, rather than restarting permanent artifact I/O failures (B17).
+
+The report-only audit includes hidden, infrastructure, working, held, resume and pending-intent
+paths, recognizes the existing hidden staging grammar and accounts for every regular file once
+(B19). Startup staging deletion remains limited to the initialization inventory and matching file
+identity. Load performs checked insertion before normalization; duplicate rows still block the
+whole index, conserve the exact bytes/files and never select a winner (B84/st-09).
+
+Lead pins 01–05 and 10–12 have their known-issue/disabled markers removed. Independent store
+lease coverage proves Retry/reconcile exclusion through physical completion; the original shared
+append integration assertions remain annotated for the delegate's session lease participation.
+No persisted fields, lifecycle values, filename grammar, D1 migration policy or v5 schema changed.
+Frozen store/lease/wake signatures remain available; async convenience methods and typed worker
+timeout handling are additive. Legacy synchronous worker/fixture adapters remain isolated from
+mapped manager callers; delegate-owned callers are outside this lane.
+
+Validation: hermetic PMSKit passed **1,616 tests** with no expected issues. The full
+`LabstreamMacTests` plan passed **899 tests**: **889 passed, 10 expected delegate-owned
+failures, zero unexpected failures and zero skips**. This was a clean build using worktree-local
+DerivedData and `-parallel-testing-enabled NO`; the terminal Xcode result and readable
+`build/p6-closeout.xcresult` both report success. Earlier parallel runs intermittently exceeded
+fixture startup/read scheduling deadlines. Fixture fixes use explicit admission/registration
+acknowledgements, preserve a safe one-level path, and return captured recovery ticket epochs
+instead of resampling a live map that a fast worker may already have retired.
+
+Repository hygiene passed **386 tooling tests** plus strict documentation, link, Mermaid and
+public-redaction checks. No simulator was booted. Physical-device, live-backend, wake-budget and
+background-continuation acceptance remain open. Failed current-owner side-cache staging and
+working-body cleanup can defer conservatively; this does not claim a universal durable recipe
+for every abandoned working-body deletion.
+
 ## Open gates (never claimed by this work)
 
 - Live Plex, Jellyfin and Emby acceptance for every shared-behaviour phase.

@@ -97,7 +97,7 @@ extension DownloadManager {
         ])
         // Seed a 0% record so the UI shows the job immediately while we set up the optimize.
         do {
-            try replacePlexOptimizeRecord(
+            try await replacePlexOptimizeRecord(
                 DownloadRecord(ratingKey: ratingKey, attemptID: attemptKey.attemptID,
                                title: item.title,
                                localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
@@ -108,7 +108,9 @@ extension DownloadManager {
         } catch {
             lastError[ratingKey] = .transferFailed(
                 "The download could not be saved safely. Check storage and try again.")
-            _ = applyServerPrepFailure(.internalError, for: attemptKey, context: "plex_optimize_seed")
+            let failureFence = managerActionGenerations[attemptKey.ratingKey, default: 0]
+            _ = await applyServerPrepFailure(.internalError, for: attemptKey, context: "plex_optimize_seed")
+            guard !Task.isCancelled, managerActionGenerations[attemptKey.ratingKey, default: 0] == failureFence, store.ownsAttempt(attemptKey) else { return }
             if store.ownsAttempt(attemptKey) {
                 releaseInFlight(for: attemptKey)
             }
@@ -169,7 +171,7 @@ extension DownloadManager {
                 mediaIndex: sourceMediaIndex,
                 partIndex: sourcePartIndex
             )
-            try replacePlexOptimizeRecord(
+            try await replacePlexOptimizeRecord(
                 DownloadRecord(ratingKey: ratingKey, attemptID: attemptKey.attemptID,
                                title: sourceItem.title,
                                localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
@@ -196,7 +198,7 @@ extension DownloadManager {
             try assertCurrentOptimizeAttempt(attemptKey: attemptKey,
                                              metadata: optimizeMetadata,
                                              targetName: targetName)
-            try startOptimizedPartDownload(attemptKey: attemptKey,
+            try await startOptimizedPartDownload(attemptKey: attemptKey,
                                            title: item.title,
                                            part: part.part,
                                            metadata: optimizeMetadata,
@@ -230,8 +232,10 @@ extension DownloadManager {
                 "error": .error(error),
             ])
             lastError[ratingKey] = error
-            _ = applyServerPrepFailure(Self.lifecycleFailureReason(for: error),
+            let failureFence = managerActionGenerations[attemptKey.ratingKey, default: 0]
+            _ = await applyServerPrepFailure(Self.lifecycleFailureReason(for: error),
                                        for: attemptKey, context: "plex_optimize_start")
+            guard !Task.isCancelled, managerActionGenerations[attemptKey.ratingKey, default: 0] == failureFence, store.ownsAttempt(attemptKey) else { return }
             clearOptimizeProgress(ratingKey: ratingKey)
             refreshRecords()
         } catch is CancellationError {
@@ -253,7 +257,9 @@ extension DownloadManager {
             ])
             lastError[ratingKey] = .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            _ = applyServerPrepFailure(.network, for: attemptKey, context: "plex_optimize_start")
+            let failureFence = managerActionGenerations[attemptKey.ratingKey, default: 0]
+            _ = await applyServerPrepFailure(.network, for: attemptKey, context: "plex_optimize_start")
+            guard !Task.isCancelled, managerActionGenerations[attemptKey.ratingKey, default: 0] == failureFence, store.ownsAttempt(attemptKey) else { return }
             clearOptimizeProgress(ratingKey: ratingKey)
             refreshRecords()
         }
@@ -264,7 +270,7 @@ extension DownloadManager {
                                             part: Part,
                                             metadata: OfflineMetadata,
                                             server: URL,
-                                            token: String) throws {
+                                            token: String) async throws {
         let ratingKey = attemptKey.ratingKey
         guard store.ownsAttempt(attemptKey) else {
             throw DownloadLifecycleCancellation.staleOptimizeAttempt
@@ -274,7 +280,9 @@ extension DownloadManager {
         let destination = store.destinationURL(ratingKey: ratingKey,
                                                ext: ext.isEmpty ? "mp4" : ext)
         if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Plex", expectedBytes: part.size) {
-            _ = applyServerPrepFailure(.storage, for: attemptKey, context: "plex_optimize_storage")
+            let failureFence = managerActionGenerations[attemptKey.ratingKey, default: 0]
+            _ = await applyServerPrepFailure(.storage, for: attemptKey, context: "plex_optimize_storage")
+            guard !Task.isCancelled, managerActionGenerations[attemptKey.ratingKey, default: 0] == failureFence, store.ownsAttempt(attemptKey) else { return }
             releaseInFlight(for: attemptKey)
             throw lastError[ratingKey] ?? DownloadError.storageLimitExceeded("Storage limit exceeded.")
         }
@@ -307,7 +315,7 @@ extension DownloadManager {
             downloadMetadata.chapterImageRelativePaths = store.metadata(for: ratingKey)?
                 .chapterImageRelativePaths
         }
-        try replacePlexOptimizeRecord(
+        try await replacePlexOptimizeRecord(
             DownloadRecord(ratingKey: ratingKey, attemptID: attemptKey.attemptID,
                            title: title, localURL: destination, bytes: 0, progress: 0,
                            metadata: downloadMetadata),
@@ -398,12 +406,16 @@ extension DownloadManager {
     /// The Store performs the owner comparison and full-row write under one lock, so checking A
     /// before this call can never turn into an upsert over B.
     private func replacePlexOptimizeRecord(_ record: DownloadRecord,
-                                           for attemptKey: DownloadAttemptKey) throws {
+                                           for attemptKey: DownloadAttemptKey) async throws {
         guard record.ratingKey == attemptKey.ratingKey else {
             throw DownloadLifecycleCancellation.staleOptimizeAttempt
         }
-        switch store.createAttemptOwnedRecord(record, attemptID: attemptKey.attemptID) {
+        let fence = managerActionGenerations[attemptKey.ratingKey, default: 0]
+        switch await store.createAttemptOwnedRecordAsync(record, attemptID: attemptKey.attemptID) {
         case .committed(let committed) where committed == attemptKey:
+            guard managerContinuationIsCurrent(attemptKey, fence: fence), inFlightAttempts.owns(attemptKey) else {
+                throw DownloadLifecycleCancellation.staleOptimizeAttempt
+            }
             return
         case .committed, .rejectedOwnership:
             throw DownloadLifecycleCancellation.staleOptimizeAttempt
@@ -458,7 +470,7 @@ extension DownloadManager {
                                  server: URL, token: String,
                                  identity: ClientIdentity,
                                  isStillCurrent: () -> Bool = { true },
-                                 willDispatch: () throws -> Void = {}) async throws {
+                                 willDispatch: () async throws -> Void = {}) async throws {
         // 1. Background-processing playlist key.
         let bgKey: String
         do {
@@ -531,7 +543,9 @@ extension DownloadManager {
         // be followed by creating a server job nobody owns.
         guard isStillCurrent() else { throw DownloadLifecycleCancellation.staleOptimizeAttempt }
         try Task.checkCancellation()
-        try willDispatch()
+        try await willDispatch()
+        guard isStillCurrent() else { throw DownloadLifecycleCancellation.staleOptimizeAttempt }
+        try Task.checkCancellation()
         // Preserve the typed HTTP error so a duplicate can re-run adoption.
         try await appModel.client.send(create)
 
@@ -680,8 +694,8 @@ extension DownloadManager {
     }
 
     /// Exact-attempt confirmation that the optimize create PUT landed (P2.2 create evidence).
-    func markPlexOptimizeCreateConfirmed(for attemptKey: DownloadAttemptKey, queueTitle: String) {
-        _ = store.updateMetadata(for: attemptKey) { metadata in
+    func markPlexOptimizeCreateConfirmed(for attemptKey: DownloadAttemptKey, queueTitle: String) async {
+        _ = await store.updateMetadataAsync(for: attemptKey) { metadata in
             guard metadata.optimizeQueueTitle == queueTitle else { return }
             metadata.plexOptimizeCreateConfirmed = true
         }

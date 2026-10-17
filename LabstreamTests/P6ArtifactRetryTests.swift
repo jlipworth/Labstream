@@ -26,9 +26,8 @@ struct P6ArtifactRetryTests {
             guard case .failed(.artifact) = store.resolveArtifactSynchronously(retry) else { Issue.record("retry did not fail"); return }
         }
         let counts = store.artifactEntryCountsForP6Testing
-        withKnownIssue("P6 red pin: P6.3 — each failed retry remains in the live coordinator table") {
-            #expect(counts.live <= 1)
-        }
+        #expect(counts.live <= 1)
+
         #expect(counts.retired <= 512)
         let index = try Data(contentsOf: fixture.directory.appendingPathComponent("index.json"))
         #expect(String(decoding: index, as: UTF8.self).contains(first.intentID.uuidString))
@@ -54,9 +53,8 @@ struct P6ArtifactRetryTests {
         #expect(coordinator.retiredFailureCountForTesting == 512)
         hold.release.signal()
         let result = await waiter.value
-        withKnownIssue("P6 red pin: P6.3 — capped history evicts an already registered waiter's exact failure") {
-            #expect(result == .failed(.artifact(errorType: "Original")))
-        }
+        #expect(result == .failed(.artifact(errorType: "Original")))
+
     }
 
     @Test("P6-pin-11 an unrelated successful index commit does not retry a failed artifact head")
@@ -79,9 +77,23 @@ struct P6ArtifactRetryTests {
         // recovery (capturing currentArtifactLifecycleWatermark would itself be a retry trigger).
         await store.drainArtifactWorkerForP6Testing()
         let after = attempts.withLock { $0 }
-        withKnownIssue("P6 red pin: P6.3 — generic index success retries an unrelated permanent artifact failure") {
-            #expect(after == before)
-        }
+        #expect(after == before)
+
     }
+    @Test("a retry beyond a captured watermark still gates its unresolved durable intent")
+    func retryPreservesBoundaryAuthority() async {
+        let coordinator = DownloadArtifactLifecycleCoordinator()
+        let key = DownloadAttemptKey(ratingKey: "plex:fixture", attemptID: .generated())
+        let intent = UUID()
+        let first = coordinator.register(key: key, generation: 1, intentID: intent, preparedRevision: .init(revision: 1))
+        coordinator.failArtifact(first, errorType: "Original")
+        let watermark = coordinator.currentWatermark
+        let retry = coordinator.register(key: key, generation: 1, intentID: intent, preparedRevision: .init(revision: 2))
+        #expect(await coordinator.flush(through: watermark, timeout: 0.01) == .timedOut(sequence: watermark.sequence))
+        coordinator.complete(retry)
+        #expect(await coordinator.flush(through: watermark, timeout: 0.01) == .completed)
+        #expect(coordinator.waitSynchronously(for: first) == .failed(.artifact(errorType: "Original")))
+    }
+
 }
 #endif
