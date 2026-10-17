@@ -315,13 +315,21 @@ system profile's supported font, size, colors, opacity, edge, window, and corner
 
 ## Local/offline playback
 
-Detail and the Offline library both present an immutable `OfflinePlaybackLaunch` through
-`CustomPlayerView(offlineLaunch:trickPlayProvider:onClose:)`. Final admission follows orientation
-and checks exact attempt, file, deletion and presentation generation. The launch captures the
-metadata backend, local resume with rewind applied once, local assets and event authority.
-Playing observation is separate from position: it verifies eligible unverified files without
-erasing repeated-truncation warnings. Progress and terminal close samples use one bounded async
-P6 resolver, coalesce pending samples and reject stale attempt/session callbacks.
+Detail and the Offline library use one manager-owned `OfflinePlaybackLaunchFactory`. After
+orientation, it admits the captured exact attempt, rejects deletion/nonterminal/missing files and
+superseded presentation requests, and constructs an immutable local launch for the shared player.
+Metadata chooses the backend/assets; only legacy metadata without backend identity uses a prefix fallback. Local
+position takes precedence over the captured server position and resume rewind applies once.
+Rejection never falls back to remote playback; orientation must be restored when launch is refused.
+
+A bound event sink keeps the playing attempt and an independent playback-session generation.
+Position alone (including initial seek/resume) cannot verify a download: only the current item's
+actual playing observation can clear eligible probe-miss/background-deferred warnings. Known
+repeated truncation stays unverified. Saves use one resolving async commit and one latest pending
+sample, including a captured close sample; reopening supersedes old callbacks and terminal samples.
+Timeout/failure is not an acknowledged save and close never blocks MainActor on a flush. Readable
+blocked recovery allows playback with mutations disabled. Cold-launch availability is derived by
+generation-tagged off-main scans, and Play rechecks the actual file after orientation.
 
 Completed downloads play from local file URLs. Local playback has no remote progress stream,
 server session, or transcode cleanup path. Its playhead is persisted on the offline record,

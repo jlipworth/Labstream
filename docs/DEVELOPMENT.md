@@ -626,6 +626,12 @@ Where a current topic page owns the invariant, the bullet points there instead o
 
 ### Backends and downloads
 
+Download correctness uses the [P-phase pin suites](TESTING-STRATEGY.md#downloads-overhaul-pin-suites).
+The `macos-hosted` matrix lane runs deterministic app-level downloads without a simulator. Keep
+one Xcode lane active and use the normal manifest/parallelism for the full combined gate; focused
+serial diagnosis does not close that gate. Product smokes and live/device acceptance remain
+separate. tvOS builds shared policies/player code but no Downloads capability.
+
 - **Emby stream URLs carry the access token as an `api_key` query value.** Besides the
   `Authorization: Emby …` and `X-Emby-Token` headers, server-generated HLS and direct-stream URLs
   embed the token, so any logged Emby URL must have `api_key` (and `X-Emby-Token`) redacted. Emby

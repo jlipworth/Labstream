@@ -325,7 +325,7 @@ upstream connection rotation used by `PlaybackController`.
   revisioned index writes. `BackgroundCompletionPersistenceBarrier.swift` flushes the
   exact boundary before releasing background-session completion handlers.
 - `DownloadWorkRegistry.swift` tracks attempt-scoped side-cache and encoder work.
-  `DownloadCleanupIntentJournal.swift` persists credential-free Jellyfin/Emby cleanup
+  `DownloadCleanupIntentJournal.swift` persists credential-free Plex/Jellyfin/Emby cleanup
   independently so deleting a row cannot discard required server cleanup.
   `EmbyConvertCleanupJournal.swift` owns the compatibility Emby Convert tombstone file and
   serializes that queue independently of the `DownloadStore` index lock.
@@ -341,6 +341,49 @@ upstream connection rotation used by `PlaybackController`.
   known/unknown/not-applicable storage presentation.
 - `PMSKit/Sources/PMSKit/Downloads/` contains pure route, status, retry, display, storage,
   identity, and range-transfer policies and offline models.
+
+### Download subsystem file guide
+
+App files below are under `Labstream/Capabilities/Downloads/`; pure policy files are under
+`PMSKit/Sources/PMSKit/Downloads/`. The file boundaries complement the behavioural contracts in
+[Downloads and offline](DOWNLOADS-OFFLINE.md) and [Persistence](PERSISTENCE.md#download-store-execution-and-file-ownership).
+
+| File | Role |
+| --- | --- |
+| `Core/DownloadAdmissionCoordinator.swift` | Generation-supervised, event-driven start scheduling and deferral wakes. |
+| `Core/DownloadManager+Admission.swift` | Connects taps, season rows, retries, recovery, lane occupancy and Pause All exemptions to admission. |
+| `DownloadAdmissionPolicy.swift` | Pure lane caps, occupancy and request ordering. |
+| `Core/DownloadCleanupIntentRunner.swift` | Bounded cleanup execution, claims, eligibility and per-intent retry deadlines. |
+| `Core/DownloadManager+CleanupRunner.swift` | Cleanup producers, recovery barriers and backend-specific journal executors. |
+| `CleanupIntentEligibilityPolicy.swift` | Exact resource/owner claims and deletion, terminal-release and abandonment eligibility. |
+| `Core/DurableJournalCommit.swift` | Full-sync atomic commit shared by cleanup authority files. |
+| `DownloadLifecycle.swift` | Persisted lifecycle, pause/failure reasons and attempt history, including truncation and condemnation. |
+| `DownloadLifecycleReducer.swift` | Pure authority for lifecycle/history transitions and their effects. |
+| `Core/DownloadStoreAsyncContract.swift` | Typed submissions and bounded asynchronous resolution; acceptance is separate from durability. |
+| `Core/DownloadPathLease.swift` | Process-local exclusion for all physical source/destination paths until I/O ends. |
+| `Core/DownloadStoreFilesystem.swift` | Narrow injected stat/read/copy/rename/remove scheduling and fault seam. |
+| `Core/DownloadUpgradeNotice.swift` | Durable, full-attempt-key removal/cleanup notice for the v4-to-v5 upgrade. |
+| `Core/DownloadWakeBudgetContract.swift` | Monotonic receipt deadlines, identified operations and typed wake terminal outcomes. |
+| `BackgroundReattachTaskGatePolicy.swift` | Rejects paused, halted or stale task adoption without reviving the row. |
+| `DownloadStorageAdmissionPolicy.swift` | Shared physical free-space and self-excluding storage-cap accounting. |
+| `DownloadNetworkAccessPolicy.swift` | One cellular/constrained/expensive network preference for new requests. |
+| `DownloadExistingVersionDiscovery.swift` | Distinguishes interactive existing-version discovery from season planning. |
+| `PlexOptimizePrepPolicy.swift` | Proven absence, create visibility grace and existing-render adoption decisions. |
+| `Core/MediaBrowserDownloadNegotiator.swift` | Shared PlaybackInfo transport/decode/verdict boundary with captured-session currency checks. |
+| `MediaBrowserDownloadContainer.swift` | First trimmed, lowercased container token shared by eligibility, requests and destinations. |
+| `DownloadKeepaliveTransferGate.swift` | Ensures keepalive follows a tracked exact-attempt transfer rather than row status alone. |
+| `Core/DownloadManager+OfflinePlayback.swift` | Manager-owned local launch factory implementation and exact event-sink binding. |
+| `Core/OfflinePlaybackLaunchFactory.swift` | Immutable admitted local launch, presentation generation and typed rejection contract. |
+| `Core/OfflinePlaybackEventSink.swift` | Exact-attempt/session observed-playing and bounded coalesced position persistence. |
+| `Core/OfflinePlayableAvailability.swift` | Generation-tagged off-main local-file scan, independent of mutation admission. |
+| `LaunchDownloadRecoveryGate.swift` | One serialized recovery replay when an offline launch reconnects. |
+| `DownloadRowPresentation.swift` | Shared lifecycle, progress, caption, color and accessibility presentation. |
+| `UI/DownloadRowContent.swift` | Common row layout for Offline and mobile, visionOS and Mac download sheets. |
+
+`BackgroundDownloadWakeCoordinator.swift` consumes the wake contract, while the completion
+registry timestamps handlers before MainActor registration. `DownloadKeepaliveCoordinator.swift`
+uses the common transfer gate and retains backend-specific request payloads. These owners remain
+separate from the pure reducer and from the physical store workers.
 
 Do not assume simulator and device transfers use identical URLSession configuration:
 hardware uses the relaunch-capable background session, while simulator runs normally use

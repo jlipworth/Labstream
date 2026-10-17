@@ -37,8 +37,9 @@ flowchart TD
 
   Player --> AV[AVFoundation]
   Downloads --> Store[DownloadStore]
-  Downloads --> BG[BackgroundDownloadSession]
-  Store --> Files[Application Support]
+  Downloads --> Admission[Admission coordinator]
+  Admission --> BG[BackgroundDownloadSession]
+  Store --> Files[Application Support and cleanup authority]
 ```
 
 ## Native targets and release trains
@@ -295,20 +296,59 @@ path and reuses the same controller and chrome.
 
 ## Downloads and offline ownership
 
-The download pipeline has five layers:
+Downloads have separate policy, orchestration, transport, persistence and presentation owners:
 
-1. backend-specific `DownloadManager` extensions select a source and perform any Plex
-   optimize, Jellyfin transcode/remux, or Emby Convert preparation;
-2. `DownloadManager` owns queue policy, retries, storage limits, diagnostics, the
-   observable Offline snapshot, and attempt-scoped work/cleanup coordination;
-3. `DownloadKeepaliveCoordinator` privately owns exact-attempt Jellyfin/Emby control-plane
-   keepalive tasks and credential-generation quarantine;
-4. `BackgroundDownloadSession` owns background URLSession work and durable static
-   byte-range recovery, with every adoptable task stamped by its exact download attempt;
-5. `DownloadStore` owns the locked relative-path JSON index and transactional artifact
-   state in Application Support. `DownloadArtifactLifecycleCoordinator` orders filesystem
-   work with index persistence, while `DownloadCleanupIntentJournal` independently keeps
-   credential-free server cleanup durable across deletion and process death.
+- **Lifecycle and admission:** PMSKit's lifecycle/history model and pure reducer are the authority
+  for transitions. Admission policy plus the manager-owned coordinator supervise starts across
+  every entry point, counting static, server-prep and live-forward lanes and waiting with backoff.
+- **Backend preparation:** backend manager adapters retain Plex optimize and Emby Convert runners.
+  Jellyfin/Emby share PlaybackInfo negotiation and first-container-token policy; source/audio
+  authority and backend wire profiles remain explicit. Keepalive owns exact-attempt transfers,
+  with independent credential-generation fencing.
+- **Transport and wakes:** the session owns range trains, forward streams and finalization. The
+  registry records OS handler receipt before MainActor registration. Wake budgets and identified
+  operations bound the entire completion interval, including persistence; timeout retains recovery
+  authority and physical-worker leases.
+- **Store and cleanup:** the store owns the v5 index and attempt admission. Typed async submission
+  and resolution distinguish accepted work from committed work. Off-lock filesystem observations
+  revalidate ownership/generation; path leases exclude actual writers and removers. Artifact queues
+  and the independent durable cleanup journal preserve local and server obligations through crash,
+  deletion and upgrade. Only the cleanup runner executes journaled server work.
+- **Offline launch and UI:** one factory supplies both Detail and Offline with an immutable local
+  launch after orientation. Exact-attempt/session sinks separate actual-playing verification from
+  coalesced position saves. Derived availability scans run off-main at lifecycle boundaries.
+  Shared row presentation/content gives mobile, visionOS and Mac the same lifecycle semantics.
+
+```mermaid
+flowchart TD
+  accTitle: Download authority and execution
+  accDescr: User and recovery requests enter one admission coordinator. Backend preparation hands off to transport. The reducer and async store preserve exact-attempt state; independent cleanup intents go to a runner. Terminal publication refreshes availability and both local player launch surfaces use one factory and event sink.
+  Requests[Tap, season, resume, retry and recovery] --> Admission[Admission policy and coordinator]
+  Admission --> Backend[Backend preparation and shared MediaBrowser negotiation]
+  Backend --> Transport[Range train or forward stream]
+  Transport --> Finalize[Capture, fixup, validate and publish]
+  Admission --> State[Lifecycle reducer and attempt history]
+  Transport --> State
+  Finalize --> State
+  State --> Store[Async store and artifact queue]
+  Store --> Files[Leased physical file work]
+  Store --> Cleanup[Independent durable cleanup journal]
+  Cleanup --> Runner[Claim-checked cleanup runner]
+  Finalize --> Availability[Off-main playable availability]
+  Availability --> Surfaces[Detail and Offline library]
+  Surfaces --> Factory[Exact-attempt local launch factory]
+  Factory --> Player[Local player and bound event sink]
+  Player --> Store
+  Transport --> Wake[Receipt-based wake budget and exact handler release]
+  Store --> Wake
+```
+
+The reducer decides transitions; it does not perform filesystem or network I/O. Submission alone
+never authorizes dependent work: callers await bounded commit proof and recheck exact attempt,
+source and action generation. Cleanup authority survives row removal independently. Local playback
+uses metadata-owned assets without server requests and verifies eligible warnings only after actual
+playing; known truncation stays visible. File-by-file ownership is in the
+[download code map](CODE-MAP.md#download-subsystem-file-guide).
 
 Device builds use a background URLSession that can relaunch the app. Simulator builds
 normally substitute a foreground session because the visionOS simulator background

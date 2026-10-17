@@ -62,6 +62,11 @@ root, plus the shared `PMSKit` package. The public mobile support floor is iOS/i
   leads the top-trailing group, so its per-item availability never moves the display-mode or
   AirPlay buttons. A hairline outline keeps the glass platter legible over letterbox/pillarbox
   black.
+- Detail and Offline share exact-attempt local launch admission after orientation, local resume
+  and rewind, observed-playing verification and the combined embedded/text-sidecar subtitle menu.
+  A superseded or rejected launch must restore orientation without presenting a stale player.
+  Download rows share lifecycle captions, accessibility values and exact-attempt controls with Mac
+  and visionOS; device rotation, narrow layouts and background continuation remain acceptance gates.
 - Cellular downloads default to **off**. The Settings download toggle controls the
   cellular, Low Data Mode and expensive-network policy stamped onto freshly created
   request-based transfer tasks; existing

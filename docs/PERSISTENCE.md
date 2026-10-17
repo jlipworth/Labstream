@@ -131,8 +131,8 @@ actions, queue work, season admission and cleanup runs are therefore still close
 A schema newer than the binary (after a downgrade) is also kept and fails closed. Rows carry an
 authoritative `lifecycle` and attempt `history` fields (added in v4), and the derived
 `status` is still written. An older binary that drops the new fields leaves rows whose lifecycle
-is re-derived from status on the next load; only truncation strikes and recorded reasons are lost
-that way.
+is re-derived from status on the next load; attempt history, including truncation strikes, reasons
+and the condemnation fence, can be lost that way. A binary too old to admit v5 must preserve it as unsupported rather than rewrite it.
 Active rows carry a typed
 `DownloadAttemptID`; asynchronous tasks, artifact reservations, and cleanup compare the
 full rating-key/attempt key so stale work cannot mutate a retry or re-download of the same
@@ -148,7 +148,7 @@ filenames so token-bearing server URLs are not retained.
 
 Index writes are revisioned and serialized; filesystem publication/checkpoint/resume/delete
 work is registered before it starts and reaches a terminal index outcome before its
-lifecycle ticket is released. Required Jellyfin/Emby active-encoding or Emby Convert cleanup
+lifecycle ticket is released. Required Plex optimize, Jellyfin/Emby active-encoding or Emby Convert cleanup
 also has an independent `download-cleanup-intents.json` journal containing an exact attempt,
 credential-free server identity, and cleanup operation. The journal deliberately does not
 share the versioned Downloads root: it lives in a protected sibling authority directory, so row
@@ -168,6 +168,71 @@ from backup. PMSKit's `CredentialArtifactStorage` applies appropriate file prote
 iOS/visionOS; macOS host paths do not claim iOS file-protection semantics.
 
 Container paths are implementation details and should not appear in user-submitted diagnostic reports.
+
+## Download store execution and file ownership
+
+The store keeps its lock and serialized revision writer. Production callers submit exact-attempt
+work and resolve it asynchronously against one monotonic deadline. Accepted means admitted in
+memory, not durable; timeout abandons only the waiter. It never cancels the physical write,
+rolls back a possible commit, frees an artifact head or releases a writer's lease. After suspension,
+callers compare the captured owner, action generation, source and exact server handle again before
+starting work or clearing metadata. Pause and Delete install immediate admission fences before
+asynchronous persistence. The admissible startup load/repair tail and recovery journal work run on
+workers; initial classification/protection and some off-lock lookups still perform synchronous I/O.
+This is not an actor conversion or a claim of zero synchronous filesystem access.
+
+Filesystem observations copy row authority and mutation generation, run outside the store lock,
+then revalidate before mutation. Process-local path leases reserve every source and destination
+atomically, including cross-kind pending-intent references. Session appends, Retry copies,
+side-cache writes/publication, reconcile, condemnation and artifact execution participate. Leases
+last through physical I/O and handle closure, even after a resolver deadline. A stale observation
+or busy path defers cleanup conservatively. Relative names, current references and file identity
+are validated again at the effect boundary; these mapped operations do not hold the store/session lock across physical I/O.
+
+Artifact outcomes name a complete ticket epoch. Registered exact waiters retain their own failed
+epoch; a later success cannot answer an earlier failure. Unclaimed retired history is capped at
+512, and repeated failures do not grow live bookkeeping without bound. Unrelated index/artifact
+success does not retry a permanently failed head; explicit recovery retains that authority.
+Reconcile clears resume references through the durable recipe rather than unlinking behind a
+live row. Generalized durable working-body reconcile recipes remain deferred.
+
+The storage audit is report-only. It counts hidden working/staging bodies, held ranges, resume
+blobs, pending publication sources, condemned bodies, index temporaries and infrastructure files,
+counting each regular file once. Startup staging deletion is limited to the initialization
+inventory and rechecks current references and claims. Stable media/side-asset orphan deletion is
+not generalized from this audit. Duplicate current row identities block recovery and conserve the
+original index bytes; the loader does not trap or silently publish a salvaged partial library.
+
+### Additive subtitle source identity
+
+Schema v5 optionally records `textSubtitleSourceMediaSourceID`. Missing fields decode as absent;
+unknown fields can be ignored by older readers, and this does not change the envelope version.
+Emby Convert/reuse/static handoff and retry preserve the original text-subtitle source separately
+from the converted media/BIF output source. Repair resolves the exact source ID after reordering.
+Historically ambiguous originals skip repair and retain cached sidecars and playable media rather
+than substituting a sibling. Metadata merges also preserve newly cached attempt-owned assets.
+
+### Upgrade and failure boundaries
+
+D1 keeps complete, unverified and **every paused static-range row**, including a zero-byte partial.
+The fixed upgrade candidate set can be rescued only by completion. Existing deletion barriers,
+capsules and legacy pending promotion are respected; no ready state is published before the pass
+finishes. The removal notice is keyed by full item/attempt identity and committed in the authority
+directory with file and directory sync before the v5 stamp. Failed notice persistence leaves v4
+current, retaining a fallback notice union for the next pass. Each enqueued snapshot captures its
+schema version, so a delayed v4 write cannot stamp or replace later v5 authority.
+
+Unreadable, malformed, duplicate and newer indices remain fail-closed. A readable store whose
+mutation admission is blocked can still expose terminal local playback with its recovery banner;
+opaque unreadable/unsupported input cannot. Retry Recovery re-probes rather than caching failure
+for the process lifetime. A season transaction with indeterminate durability has its own reason
+and needs exact commit proof; it is not relabeled unreadable or compensated speculatively.
+
+Delete may queue behind a normal promotion, but preempting a wedged legacy promotion remains
+unresolved. A completely full volume can prevent a durable deletion intent from being prepared;
+there is no emergency bytes-first deletion protocol. Retry after space is available. A bounded
+wake or a 4 MiB append buffer does not establish a global inherited-backlog memory ceiling or
+bound lifetime append write amplification.
 
 ## Publication identity boundary
 

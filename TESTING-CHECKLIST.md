@@ -281,6 +281,15 @@ never capture account names, server addresses, provider IDs, item IDs, or activi
 
 ## 5. Downloads and Offline
 
+The downloads overhaul's deterministic pin suites and Mac hosted command are documented in
+[Testing strategy](docs/TESTING-STRATEGY.md#downloads-overhaul-pin-suites). Their results do not
+check off the live-server or physical-device items below.
+
+- [ ] Reject or supersede an offline launch while orientation is suspended: no stale player
+      appears and orientation returns to the surface.
+- [ ] Sign out with an encoder-release journal write held or failed: UI remains responsive,
+      records stay parked, and recovery retains exact cleanup authority without clearing a newer handle.
+
 This section applies only to visionOS, iOS/iPadOS, and macOS. The tvOS app must compile
 without the Downloads capability and expose no Offline tab, download action, storage control,
 background-session registration, or migration/recovery work.
@@ -338,7 +347,7 @@ background-session registration, or migration/recovery work.
       with an episode that already has a converted/optimized version and a directly playable
       original. While the conversion is still preparing, the static episodes are admitted and
       transfer (at most two static, one server-prep, three total). A waiting row reads
-      **Waiting for a download slot…** in the offline list (**Queued…** in the download sheet),
+      **Waiting for a download slot…** in Offline and the current-download sheets,
       never "Downloading optimized…" with a spinner.
 - [ ] Admission (P4): with five paused rows, Resume All starts at most the caps and the rest read
       **Waiting for a download slot…** until a lane frees. A tap while every lane is busy waits and
