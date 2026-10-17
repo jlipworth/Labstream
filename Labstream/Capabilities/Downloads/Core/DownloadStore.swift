@@ -5212,32 +5212,43 @@ final class DownloadStore: @unchecked Sendable {
     /// Relaunch/foreground recovery (P3a): each eligible row's facts go through the reducer's
     /// `relaunchObserved`. Lifecycle and byte accounting change under the lock; file deletions are
     /// durable decisions executed after it is released (st-41).
-    /// Delete a working body that a committed failure verdict condemned. The evidence is the
-    /// verdict's own persistence ticket: nothing is deleted unless that revision commits, the
-    /// attempt still owns the row, the row is still failed, and the file is the one condemned.
-    /// Otherwise the body stays; a truncated body is never inherited, and relaunch or the row's
-    /// Delete reclaims it.
+    /// Take a working body a failure verdict condemned off its working path at once (P3a).
+    /// The atomic rename gives it a fresh attempt-staging name that no row references, so it can
+    /// never again be a checkpoint, a recovery source or a Retry clone, whatever later happens
+    /// to the row. Returns the condemned URL, or nil when the attempt no longer owns that path.
+    func condemnWorkingBody(at url: URL, for key: DownloadAttemptKey) -> URL? {
+        lock.withLock {
+            guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
+                  workingRelativePath(for: row, key: key)
+                    .map({ baseDirectory.appendingPathComponent($0).standardizedFileURL })
+                    == url.standardizedFileURL else { return nil }
+            let condemned = baseDirectory.appendingPathComponent(Self.attemptStagingRelativePath(
+                for: key, stableRelativePath: "condemned-\(UUID().uuidString)"))
+            guard Darwin.rename(url.path, condemned.path) == 0 else { return nil }
+            return condemned
+        }
+    }
+
+    /// Delete a condemned body once its verdict's revision commits, or after `timeout` if it
+    /// cannot: the body is no longer anyone's checkpoint, and keeping multi-GB bytes while the
+    /// index cannot be written (often a full volume) only makes that worse. An unchanged file
+    /// identity is required. Returns whether the verdict was proven committed first.
     @discardableResult
-    func deleteCondemnedWorkingBody(
-        at url: URL,
-        for key: DownloadAttemptKey,
+    func deleteCondemnedBody(
+        at condemned: URL,
         afterCommitOf ticket: PersistenceTicket?,
         timeout: TimeInterval = 30
     ) async -> Bool {
-        let identity = condemnedFileIdentity(at: url)
-        guard let ticket, let identity else { return false }
-        guard case .committed(let revision) = await flushPersistence(
-            through: ticket, timeout: timeout), revision >= ticket.revision else { return false }
-        return lock.withLock {
-            guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
-                  row.lifecycle == .failed, row.pendingArtifactIntents.isEmpty,
-                  !row.deletionPending,
-                  workingRelativePath(for: row, key: key)
-                    .map({ baseDirectory.appendingPathComponent($0).standardizedFileURL })
-                    == url.standardizedFileURL,
-                  condemnedFileIdentity(at: url) == identity else { return false }
-            return (try? fileManager.removeItem(at: url)) != nil
+        let identity = condemnedFileIdentity(at: condemned)
+        var committed = false
+        if let ticket, case .committed(let revision) = await flushPersistence(
+            through: ticket, timeout: timeout) {
+            committed = revision >= ticket.revision
         }
+        if let identity, condemnedFileIdentity(at: condemned) == identity {
+            try? fileManager.removeItem(at: condemned)
+        }
+        return committed
     }
 
     /// The identity of a file reconcile condemned: inode, size and modification time.

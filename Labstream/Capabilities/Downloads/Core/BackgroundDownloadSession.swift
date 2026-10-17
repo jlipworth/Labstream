@@ -5840,17 +5840,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             if finalizationResult.shouldDeleteFile,
                !Task.isCancelled,
                stillOwnsAttempt(attemptKey, phase: "finalize_truncated_delete") {
-                // The deletion waits for the verdict's commit, whether or not a background
-                // completion handler made acceptance admission-only. Until then the body is
-                // condemned (`.truncated`), so a Retry never inherits it as a checkpoint.
-                let store = self.store
-                let ticket = truncationVerdictTicket
-                Task.detached(priority: .utility) {
-                    if await !store.deleteCondemnedWorkingBody(
-                        at: destination, for: attemptKey, afterCommitOf: ticket) {
-                        AppDiagnostics.record(.downloads, "downloads.truncated_body_kept", fields: [
-                            "download_id": .identifier(attemptKey.ratingKey),
-                        ])
+                // The condemned body leaves its working path at once, so nothing can treat it as
+                // a checkpoint again, and is deleted once the verdict commits (bounded; a lost
+                // commit can cost this one strike, never a second count of the same bytes).
+                if let condemned = store.condemnWorkingBody(at: destination, for: attemptKey) {
+                    let store = self.store
+                    let ticket = truncationVerdictTicket
+                    Task.detached(priority: .utility) {
+                        if await !store.deleteCondemnedBody(at: condemned, afterCommitOf: ticket) {
+                            AppDiagnostics.record(
+                                .downloads, "downloads.truncated_verdict_unproven", fields: [
+                                    "download_id": .identifier(attemptKey.ratingKey),
+                                ])
+                        }
                     }
                 }
             }

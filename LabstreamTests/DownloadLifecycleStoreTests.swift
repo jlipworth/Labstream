@@ -278,8 +278,8 @@ struct DownloadLifecycleStoreTests {
         }
     }
 
-    @Test("A truncated body is deleted only after its verdict commits and never seeds a Retry")
-    func condemnedTruncatedBodyNeedsCommitAndIsNeverInherited() async throws {
+    @Test("A condemned truncated body leaves its working path at once and never seeds a Retry")
+    func condemnedTruncatedBodyNeverSeedsARetry() async throws {
         try await withAsyncDirectory { directory in
             final class SwitchableWriter: @unchecked Sendable {
                 var failing = false
@@ -300,7 +300,7 @@ struct DownloadLifecycleStoreTests {
                                            facts: DownloadRowFacts(route: .staticRange))
             let source = try #require(store.truncationSourceKey(for: key))
 
-            // The verdict cannot persist: the condemned body is kept.
+            // The verdict cannot persist; the body is condemned anyway and leaves the path.
             writer.failing = true
             guard case .accepted(_, let ticket) = store.submitLifecycleEvent(
                 .finalizeOutcome(id: "t#body-8192", outcome: .truncated, source: source),
@@ -308,12 +308,14 @@ struct DownloadLifecycleStoreTests {
                 Issue.record("Expected the truncation verdict to apply"); return
             }
             #expect(store.lifecycleState(for: key)?.history.lastFailure == .truncated)
-            #expect(await !store.deleteCondemnedWorkingBody(
-                at: body, for: key, afterCommitOf: ticket, timeout: 1))
-            #expect(FileManager.default.fileExists(atPath: body.path))
+            let condemned = try #require(store.condemnWorkingBody(at: body, for: key))
+            #expect(!FileManager.default.fileExists(atPath: body.path))
+            #expect(FileManager.default.fileExists(atPath: condemned.path))
 
-            // Retry never inherits the condemned body as a checkpoint.
+            // A later failure overwrites the reason; the body still cannot come back.
             writer.failing = false
+            _ = store.submitLifecycleEvent(.retryRejected(.sourceMissing), for: key,
+                                           facts: DownloadRowFacts(route: .staticRange))
             let retry = DownloadAttemptKey(ratingKey: key.ratingKey,
                                            attemptID: DownloadAttemptID(uuid: UUID()))
             #expect(store.createAttemptOwnedRecord(
@@ -323,6 +325,10 @@ struct DownloadLifecycleStoreTests {
             let retryBody = try #require(store.attemptWorkingFileURL(for: retry))
             #expect(!FileManager.default.fileExists(atPath: retryBody.path))
             #expect(store.truncationStrikes(for: retry) == 1, "the strike itself is inherited")
+
+            // The unproven verdict still frees the space once its bounded wait ends.
+            _ = await store.deleteCondemnedBody(at: condemned, afterCommitOf: ticket, timeout: 1)
+            #expect(!FileManager.default.fileExists(atPath: condemned.path))
         }
     }
 
@@ -342,10 +348,13 @@ struct DownloadLifecycleStoreTests {
                 for: key) else {
                 Issue.record("Expected the truncation verdict to apply"); return
             }
-            // No ticket is no evidence.
-            #expect(await !store.deleteCondemnedWorkingBody(at: body, for: key, afterCommitOf: nil))
-            #expect(await store.deleteCondemnedWorkingBody(at: body, for: key, afterCommitOf: ticket))
-            #expect(!FileManager.default.fileExists(atPath: body.path))
+            // A stale owner cannot condemn the path.
+            let stale = DownloadAttemptKey(ratingKey: key.ratingKey,
+                                           attemptID: DownloadAttemptID(uuid: UUID()))
+            #expect(store.condemnWorkingBody(at: body, for: stale) == nil)
+            let condemned = try #require(store.condemnWorkingBody(at: body, for: key))
+            #expect(await store.deleteCondemnedBody(at: condemned, afterCommitOf: ticket))
+            #expect(!FileManager.default.fileExists(atPath: condemned.path))
         }
     }
 
