@@ -45,7 +45,7 @@ Reproduce with private captured evidence, never a credential-bearing network URL
 
 ```sh
 mkdir -p build/dv316
-swiftc -parse-as-library scripts/dv-decoder-init-probe.swift -o build/dv316/dv-init-probe
+xcrun swiftc -parse-as-library scripts/dv-decoder-init-probe.swift -o build/dv316/dv-init-probe
 build/dv316/dv-init-probe --self-test
 build/dv316/dv-init-probe /path/to/private/init.mp4
 ```

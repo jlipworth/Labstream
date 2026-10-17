@@ -1,5 +1,5 @@
 // Read-only native-macOS format-description experiment for issue #316.
-// Compile: swiftc -parse-as-library scripts/dv-decoder-init-probe.swift -o build/dv-init-probe
+// Compile: xcrun swiftc -parse-as-library scripts/dv-decoder-init-probe.swift -o build/dv-init-probe
 // Run: build/dv-init-probe /path/to/private/init.mp4
 // This never rewrites media, submits compressed samples, or establishes a playback pass.
 import Foundation
