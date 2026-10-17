@@ -324,7 +324,8 @@ public final class DownloadManager {
     @ObservationIgnored let embyConvertJobCoordinator = EmbyConvertJobCoordinator()
     /// Receipt state of the legacy Plex quarantine import (blocks affected intents until durable).
     @ObservationIgnored var legacyCleanupImport = DownloadCleanupIntentJournal.LegacyImportOutcome()
-    @ObservationIgnored var cleanupRunnerPrepared = false
+    /// The latest launch-sweep journaling hop (tests await it).
+    @ObservationIgnored var launchSweepJournaling: Task<Void, Never>?
 
     private static let queuePausedDefaultsKey = "downloads.queuePaused"
 
@@ -945,6 +946,7 @@ public final class DownloadManager {
     /// never treated as an empty queue.
     func migrateAndRetryActiveEncodingCleanupOnLaunch() {
         guard startupRecoveryState == .ready else { return }
+        var terminalReleases: [DurableDownloadCleanupIntent] = []
 
         for record in records {
             guard let attemptID = record.attemptID else { continue }
@@ -1022,10 +1024,11 @@ public final class DownloadManager {
 
             // P2: journal terminal handles as terminal releases; the runner decides when they may
             // run (and re-checks B44 protection at execution time).
-            if let playSessionID = metadata.playSessionID, !playSessionID.isEmpty {
-                _ = persistActiveEncodingCleanupIntent(
-                    attemptKey: key, metadata: metadata, playSessionID: playSessionID,
-                    provenance: .terminalRelease)
+            if let playSessionID = metadata.playSessionID, !playSessionID.isEmpty,
+               let intent = Self.makeActiveEncodingCleanupIntent(
+                attemptKey: key, metadata: metadata, playSessionID: playSessionID,
+                provenance: .terminalRelease) {
+                terminalReleases.append(intent)
             }
             // B44/B49: a failed row whose Retry resumes its Convert job (poll-health or 401/403
             // failure) or crash-window recovery keeps that authority. Cleaning it up here would
@@ -1037,16 +1040,27 @@ public final class DownloadManager {
                     isEmbyRecord: DownloadRecordIdentity.isEmbyRecordKey(record.ratingKey),
                     hasEmbyConvertJobID: metadata.embyConvertJobID != nil,
                     hasEmbyConvertRecoveryIdentity: metadata.hasEmbyConvertRecoveryIdentity)
-            if !retryKeepsConvertAuthority, Self.hasEmbyConvertCleanupAuthority(metadata) {
-                _ = persistEmbyConvertCleanupIntent(
-                    attemptKey: key, metadata: metadata, provenance: .terminalRelease)
+            if !retryKeepsConvertAuthority, Self.hasEmbyConvertCleanupAuthority(metadata),
+               let intent = Self.makeEmbyConvertCleanupIntent(
+                attemptKey: key, metadata: metadata, provenance: .terminalRelease) {
+                terminalReleases.append(intent)
             }
         }
 
-        // Every launch, backend-ready and backend-switch pass funnels through here. A changed
-        // session can make backed-off intents runnable, so reset backoff before kicking.
         prepareCleanupRunnerIfNeeded()
-        cleanupRunner?.resetBackoff(reason: "recovery_pass")
+        // Every launch, backend-ready and backend-switch pass funnels through here. Journal the
+        // terminal releases off the main actor (each is a full durable commit or directory sync),
+        // then reset backoff, since a changed session can make backed-off intents runnable.
+        let journal = cleanupIntentJournal
+        let pendingReleases = terminalReleases
+        launchSweepJournaling = Task { [weak self] in
+            if !pendingReleases.isEmpty {
+                await Task.detached {
+                    for intent in pendingReleases { _ = journal.ensure(intent) }
+                }.value
+            }
+            self?.cleanupRunner?.resetBackoff(reason: "recovery_pass")
+        }
     }
 
     /// Diagnostic for a launch-time pending-deletion completion that did not resolve to `.removed`.
@@ -1141,20 +1155,6 @@ public final class DownloadManager {
             provenance: provenance,
             plexCreate: create,
             recordedAtEpochSeconds: Date().timeIntervalSince1970)
-    }
-
-    private func persistEmbyConvertCleanupIntent(
-        attemptKey: DownloadAttemptKey,
-        metadata: OfflineMetadata,
-        provenance: DurableDownloadCleanupIntent.Provenance
-    ) -> DurableDownloadCleanupIntent? {
-        guard let candidate = Self.makeEmbyConvertCleanupIntent(
-            attemptKey: attemptKey, metadata: metadata, provenance: provenance
-        ) else { return nil }
-        switch cleanupIntentJournal.ensure(candidate) {
-        case .committed(let durable): return durable
-        case .conflictingID, .failed: return nil
-        }
     }
 
     nonisolated static func makeEmbyConvertCleanupIntent(

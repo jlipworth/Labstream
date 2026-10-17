@@ -25,6 +25,7 @@ struct CleanupRunnerManagerTests {
         #expect(await waitUntil { manager.startupRecoveryState == .ready })
 
         manager.teardownOrphanedEncodersOnLaunch()
+        await manager.launchSweepJournaling?.value
 
         guard case .loaded(let intents) = journal.load() else {
             Issue.record("Expected a readable journal"); return
@@ -54,6 +55,7 @@ struct CleanupRunnerManagerTests {
         defer { session.invalidateInjectedSessionForTesting() }
         #expect(await waitUntil { manager.startupRecoveryState == .ready })
         manager.teardownOrphanedEncodersOnLaunch()
+        await manager.launchSweepJournaling?.value
         guard case .loaded(let intents) = journal.load(),
               let migrated = intents.first(where: { $0.id == tombstone.id }) else {
             Issue.record("Expected the migrated intent"); return
@@ -176,7 +178,7 @@ struct CleanupRunnerManagerTests {
         #expect(intent.server.userID == "user-1")
     }
 
-    @Test("A launch-sweep intent reused by delete becomes runnable once the removal commits")
+    @Test("A launch-sweep intent reused by delete is eligible to run once the removal commits")
     func terminalReleaseReusedByDeleteRuns() async throws {
         let directory = try makeDirectory("reuse")
         defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
@@ -199,6 +201,7 @@ struct CleanupRunnerManagerTests {
 
         // Launch sweep: no Jellyfin session, so the intent is journaled and stays.
         manager.teardownOrphanedEncodersOnLaunch()
+        await manager.launchSweepJournaling?.value
         guard case .loaded(let swept) = journal.load(), let release = swept.first else {
             Issue.record("Expected the terminal-release intent"); return
         }
@@ -221,6 +224,75 @@ struct CleanupRunnerManagerTests {
         #expect(first == DownloadManager.staleSweepAttemptKey(queueTitle: title))
         #expect(first != DownloadManager.staleSweepAttemptKey(queueTitle: title + "x"))
         #expect(!first.attemptID.rawValue.contains("Title"))
+    }
+
+    @Test("An abandonment cannot cancel a resource its still-active origin row holds")
+    func activeOriginKeepsItsClaim() async throws {
+        let directory = try makeDirectory("active-origin")
+        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+        let store = DownloadStore(baseDirectory: directory)
+        let key = DownloadAttemptKey(
+            ratingKey: "jellyfin:live", attemptID: DownloadAttemptID(uuid: UUID()))
+        let record = DownloadRecord(
+            ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Live",
+            localURL: store.destinationURL(ratingKey: key.ratingKey, ext: "mp4"),
+            status: .downloading,
+            metadata: OfflineMetadata(
+                ratingKey: key.ratingKey, title: "Live", type: "movie", backendKind: .jellyfin,
+                backendBaseURLString: "https://jellyfin.example", backendServerID: "server-1",
+                backendUserID: "user-1", playSessionID: "session-A"))
+        #expect(store.createAttemptOwnedRecord(record, attemptID: key.attemptID) == .committed(key))
+        let (manager, _, session) = makeManager(store: store, directory: directory)
+        defer { session.invalidateInjectedSessionForTesting() }
+        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        manager.appModel.jellyfinServerBaseURL = URL(string: "https://jellyfin.example")!
+        manager.appModel.jellyfinAccessToken = "token"
+        manager.appModel.jellyfinUserID = "user-1"
+        manager.appModel.jellyfinServerID = "server-1"
+        // A producer whose journal write looked failed kept the encoder, yet the entry is visible.
+        let server = try #require(DurableDownloadCleanupIntent.ServerIdentity(
+            baseURL: URL(string: "https://jellyfin.example")!, serverID: "server-1", userID: "user-1"))
+        let intent = try #require(DurableDownloadCleanupIntent(
+            attemptKey: key, backend: .jellyfin, server: server,
+            operation: .activeEncoding(playSessionID: "session-A"),
+            provenance: .abandonment(originAttempt: key)))
+
+        #expect(await manager.executeCleanupIntent(intent) == .waiting)
+    }
+
+    @Test("Ownership claims are scoped to the persisted server and user")
+    func claimsAreServerAndUserScoped() throws {
+        let server = try #require(DurableDownloadCleanupIntent.ServerIdentity(
+            baseURL: URL(string: "https://emby.example")!, serverID: "server-1", userID: "user-1"))
+        func metadata(server: String?, user: String?, url: String? = nil) -> OfflineMetadata {
+            OfflineMetadata(ratingKey: "emby:x", title: "X", type: "movie", backendKind: .emby,
+                            backendBaseURLString: url, backendServerID: server,
+                            backendUserID: user)
+        }
+        #expect(DownloadManager.persistedServer(of: metadata(server: "server-1", user: "user-1"),
+                                                matches: server))
+        #expect(!DownloadManager.persistedServer(of: metadata(server: "server-2", user: "user-1"),
+                                                 matches: server))
+        #expect(!DownloadManager.persistedServer(of: metadata(server: "server-1", user: "user-2"),
+                                                 matches: server))
+        // Rows without persisted identity conservatively claim.
+        #expect(DownloadManager.persistedServer(of: metadata(server: nil, user: nil), matches: server))
+    }
+
+    @Test("Producer sessions never rebind captured work to another user on the same server")
+    func cleanupSessionKeepsCapturedUser() async throws {
+        let directory = try makeDirectory("session-user")
+        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+        let store = DownloadStore(baseDirectory: directory)
+        let (manager, _, session) = makeManager(store: store, directory: directory)
+        defer { session.invalidateInjectedSessionForTesting() }
+        signInEmby(manager.appModel)
+        let server = URL(string: "https://emby.example")!
+        let other = manager.cleanupSession(kind: .emby, server: server, token: "old", userID: "user-9")
+        #expect(other.userID == "user-9")
+        #expect(other.token == "old")
+        let same = manager.cleanupSession(kind: .emby, server: server, token: "old", userID: "user-1")
+        #expect(same.serverID == "server-1", "the live session is reused for the same user")
     }
 
     // MARK: - Fixtures

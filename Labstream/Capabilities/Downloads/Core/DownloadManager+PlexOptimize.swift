@@ -396,13 +396,13 @@ extension DownloadManager {
         // P2.4: the seed may already own a queue item (its create PUT can land after the attempt
         // died), so journal the item's cleanup before the row goes. Without durable authority,
         // keep the row: it still carries the queue title.
-        guard let plexSession = appModel.backendSession(for: .plex),
-              journalCleanupAbandonment(
-                .plexOptimize(queueTitle: queueTitle), originAttempt: attemptKey,
-                session: plexSession,
-                plexCreate: row.metadata?.plexOptimizeCreateConfirmed == true
-                    ? .confirmed : .unresolved,
-                reason: "server_prep_seed_removed") else {
+        // Identity comes from the row's persisted server, never whichever Plex server is current.
+        guard let metadata = row.metadata,
+              let intent = Self.makePlexOptimizeCleanupIntent(
+                attemptKey: attemptKey, metadata: metadata,
+                create: metadata.plexOptimizeCreateConfirmed == true ? .confirmed : .unresolved,
+                provenance: .abandonment(originAttempt: attemptKey)),
+              case .committed = cleanupIntentJournal.ensure(intent) else {
             recordDownloadDiagnostic("downloads.server_prep_seed_kept", fields: [
                 "download_id": .identifier(ratingKey),
                 "reason": .label("cleanup_not_durable"),
@@ -420,6 +420,8 @@ extension DownloadManager {
         Task { [weak self] in
             guard let self,
                   case .removed = await store.resolveRowDeletion(submission) else { return }
+            // The runner skips the intent while the removal is still retiring; wake it now.
+            cleanupRunner?.kick(reason: "server_prep_seed_removed")
             lastError[ratingKey] = nil
             clearOptimizeProgress(ratingKey: ratingKey)
             refreshRecords()

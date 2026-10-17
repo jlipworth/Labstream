@@ -41,6 +41,9 @@ final class DownloadCleanupIntentRunner {
     static let maxConcurrentRuns = 2 // Matches the two workers in `pass()`.
     /// Retry interval after the journal itself could not be read.
     static let loadFailureRetrySeconds: Double = 30
+    /// Local-only re-examination of intents that are waiting on row state, ownership, or a
+    /// migration receipt. Nothing is ever left without a wake-up, even if its trigger is lost.
+    static let waitingRecheckSeconds: Double = 120
 
     private let dependencies: Dependencies
     private var isEnabled = false
@@ -50,6 +53,7 @@ final class DownloadCleanupIntentRunner {
     private var failureCounts: [UUID: Int] = [:]
     private var notBefore: [UUID: Date] = [:]
     private var loadRetryAt: Date?
+    private var waitingRecheckAt: Date?
     private var pending: [DurableDownloadCleanupIntent] = []
     private var wakeTask: Task<Void, Never>?
     private var passCompletionWaiters: [CheckedContinuation<Void, Never>] = []
@@ -116,19 +120,27 @@ final class DownloadCleanupIntentRunner {
             return
         }
         loadRetryAt = nil
+        var hasWaiting = false
         let liveIDs = Set(intents.map(\.id))
         failureCounts = failureCounts.filter { liveIDs.contains($0.key) }
         notBefore = notBefore.filter { liveIDs.contains($0.key) }
 
         var runnable: [DurableDownloadCleanupIntent] = []
         for candidate in intents {
-            guard !inFlight.contains(candidate.id), !dependencies.isBlocked(candidate) else { continue }
+            guard !inFlight.contains(candidate.id) else { continue }
+            guard !dependencies.isBlocked(candidate) else {
+                hasWaiting = true
+                continue
+            }
             if let due = notBefore[candidate.id], due > now { continue }
             var intent = candidate
             let rowState = dependencies.rowState(intent)
             if intent.provenance == nil {
                 guard let classified = CleanupIntentEligibilityPolicy.legacyProvenance(for: rowState),
-                      let updated = intent.with(provenance: classified) else { continue }
+                      let updated = intent.with(provenance: classified) else {
+                    hasWaiting = true
+                    continue
+                }
                 let replace = dependencies.replace
                 guard await Task.detached(operation: { replace(updated) }).value else {
                     recordFailure(intent.id, now: now)
@@ -137,7 +149,10 @@ final class DownloadCleanupIntentRunner {
                 intent = updated
             }
             guard CleanupIntentEligibilityPolicy.decision(
-                provenance: intent.provenance, rowState: rowState) == .run else { continue }
+                provenance: intent.provenance, rowState: rowState) == .run else {
+                hasWaiting = true
+                continue
+            }
             guard dependencies.hasMatchingSession(intent) else {
                 // No live credential for the persisted server/user: keep it and retry later.
                 recordFailure(intent.id, now: now)
@@ -145,6 +160,8 @@ final class DownloadCleanupIntentRunner {
             }
             runnable.append(intent)
         }
+        waitingRecheckAt = hasWaiting
+            ? now.addingTimeInterval(Self.waitingRecheckSeconds) : nil
         guard !runnable.isEmpty else { return }
 
         pending = runnable
@@ -162,9 +179,12 @@ final class DownloadCleanupIntentRunner {
             inFlight.remove(intent.id)
             let now = dependencies.now()
             switch outcome {
-            case .retired, .waiting:
+            case .retired:
                 failureCounts.removeValue(forKey: intent.id)
                 notBefore.removeValue(forKey: intent.id)
+            case .waiting:
+                failureCounts.removeValue(forKey: intent.id)
+                notBefore[intent.id] = now.addingTimeInterval(Self.waitingRecheckSeconds)
             case .failed:
                 recordFailure(intent.id, now: now)
             case .retained(let minimumDelay):
@@ -183,7 +203,7 @@ final class DownloadCleanupIntentRunner {
     // MARK: - Self-scheduled wake-up
 
     private func earliestDeadline() -> Date? {
-        ([loadRetryAt].compactMap { $0 } + Array(notBefore.values)).min()
+        ([loadRetryAt, waitingRecheckAt].compactMap { $0 } + Array(notBefore.values)).min()
     }
 
     private func scheduleWake() {

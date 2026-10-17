@@ -397,6 +397,24 @@ Acceptance is a phase's pins and inventory rows staying green.
       outcomes. No hermetic test drives the network executors end to end.
     - Plex states counted as cancellable are an explicit list. Any other state is retained.
   - A P1 test race was found and fixed (B00 pin outliving its URLSession) and carried to #371.
+  - **After-review round 1** (GPT-6.1-Sol, high) returned "not ready" with nine findings. All
+    were fixed and pinned:
+    - Claims and eligibility are re-read after every awaited GET, immediately before the
+      DELETE.
+    - An intent's own attempt keeps its claim while its row is active, so a visible-but-failed
+      abandonment write cannot cancel a resource the producer kept.
+    - Claims are scoped to the persisted server and user.
+    - Producer sessions never rebind captured work to another user.
+    - Seed removal uses persisted authority and kicks after the commit.
+    - The launch barriers re-run on every recovery pass, and an unreadable directory fails
+      closed.
+    - Every waiting intent keeps a 2-minute local recheck.
+    - Session hydration covers backends that owe cleanup but have no intent journaled yet.
+    - Only an unresolved Plex create can expire.
+    - Launch-sweep journaling runs off the main actor.
+  - **Remaining deviation:** one-off producers (delete, expiry, abandonments) still commit their
+    single intent on the main actor, as before P2. Moving them off-main changes their ordering
+    contracts and belongs with the store-internals work in P6.
 
 ## P2 detailed plan — cleanup foundation
 
