@@ -41,6 +41,12 @@ because those servers bind the token to the device id used at sign-in. See
 [Persistence](PERSISTENCE.md#icloud-keychain-sync) for the full rationale. Per-worktree Mac development
 identities use isolated credential storage instead of this canonical sync path.
 
+Jellyfin and Emby username/password sign-in report HTTP 401 as an invalid username or password,
+and HTTP 403 as an account the server refuses (for example disabled or locked out, or not allowed
+remote access). Saved-session restore keeps the same split: only a 401 retires a saved credential,
+and neither status opens the Offline launch surface. The full restore outcome table is in
+[Downloads and offline playback](DOWNLOADS-OFFLINE.md).
+
 ## Canonical models and MediaBrowser sharing
 
 The app-facing library model is historically Plex-shaped. `MediaItem`, `Media`, `Part`,

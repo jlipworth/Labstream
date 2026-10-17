@@ -304,6 +304,21 @@ sign-in, Settings, resume-position, and deletion controls; it does not fabricate
 browse session. Missing or explicitly invalid credentials continue to show sign-in instead, and
 tvOS never enters this path because it does not ship downloads.
 
+Admission is decided from a typed selected-session restore outcome that Plex, Jellyfin, and Emby
+all report through `AuthManager.sessionRestoreOutcome` (PMSKit `SessionRestoreOutcome`):
+
+| Outcome | Produced by | Saved credential | Launch surface |
+| --- | --- | --- | --- |
+| `restored` | live lane published | kept | browse |
+| `missingCredential` | no saved credential, or explicit sign-out | absent | sign-in |
+| `invalidCredential` | HTTP 401 (Emby: probe reports another user); a Plex 401 on inactive download hydration also classifies here but keeps the token | retired | sign-in |
+| `unconfirmedCredential` | HTTP 403, or Jellyfin 2xx probe for a different user | kept | sign-in/retry |
+| `temporarilyUnavailable` | transport, DNS, TLS, timeout, Plex discovery, HTTP 429/5xx or any other non-401/403 status (a reverse proxy can answer 404 while its upstream is down), or an unreadable reply such as a captive portal | kept | Offline if a completed local file exists, otherwise sign-in/retry |
+
+`OfflineLaunchAvailability.admitsOfflineLaunch` is the pure gate. Reconnect re-runs the selected
+restore in place; a successful restore flips `isBrowseReady` and `BrowseUIGate` mounts the normal
+root.
+
 Season confirmation captures one immutable draft containing new rows and exact retry attempts. The
 Store validates every owner and commits insertions plus retry admission markers in one schema-v4
 snapshot before any lane starts; stale ownership, a normal persistence failure, and an indeterminate
