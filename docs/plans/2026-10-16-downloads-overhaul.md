@@ -457,6 +457,42 @@ Acceptance is a phase's pins and inventory rows staying green.
     - Durable effects are executed by the existing call sites, chosen by the reducer, rather than
       through a new effect queue. Every effect maps onto an existing artifact recipe, or onto
       reconcile's post-lock deletions.
+- **2026-10-17 — P3a after-review, round 1 (GPT-6.1-Sol, high): not ready, 8 findings.** All
+  eight were valid. Each fix below has a pin, red-checked against the unfixed code where a pin
+  can express it.
+  - **Pause stranded a finalizing row.** The reducer kept it finalizing while the manager
+    cancelled its finalizer. Pause now leaves a finalizing body and its finalizer alone.
+  - **Reconcile could delete a static checkpoint.** A resume manifest masked the durable
+    partial, and a manifest counted even when its blob was gone. The pre-P3a precedence is
+    restored: the static partial comes first, and a blob counts only while it exists.
+  - **Plex Retry lost truncation strikes.** That path removes the failed row before seeding its
+    replacement, so there was nothing to inherit from. A non-user removal now hands its strikes
+    to the replacement in memory, matching the pre-P3a session counter. Delete and cancel never
+    carry strikes.
+  - **A relaunch could count one truncated body twice.** The outcome ID now names the body
+    (attempt and byte count) rather than the finalizer run. A working-body truncation goes
+    through the reducer's `finalizeOutcome`, so the strike, the verdict and the lifecycle
+    commit in one revision.
+  - **Probe-miss and repeated-truncation publication skipped `unverifiedReason`.** Both now
+    record it through `finalizeOutcome` before the promotion.
+  - **B10 capture.** P3a.6 is implemented in a reduced form:
+    - The attempt working path (`.attempt-stage-v1-<digest>.stage`) is attempt-unique and named
+      by the row, so it serves as the capture path, and steps 1 and 3 collapse into one rename.
+    - The parent directory is fsynced after the rename.
+    - `bodyAtWorking` is persisted and must be accepted before validation starts; a stale owner
+      stops.
+    - Not built: a separate capture file and the pins for a crash at each step.
+  - **Reconcile deletions** now run only after the demotion commits. A failed index write keeps
+    the bytes with the row. They are still not journaled artifact intents; that is P3b, with the
+    v5 effect records.
+  - **The hygiene guard matched nothing.** BSD `git grep -E` has no `\b`. The guard now uses an
+    explicit identifier pattern and also rejects any lifecycle assignment that is not a reducer
+    result. Whole-row replacement is not guarded.
+  - **Still open:**
+    - the session-level pin for the replayed-outcome path (pinned at the store/reducer level only);
+    - the B02, B62/B63 and re-encode pins listed above;
+    - B16 protected-data and concurrent-recovery coverage;
+    - B21 with a real indeterminate candidate commit.
 
 ## P2 detailed plan — cleanup foundation
 
