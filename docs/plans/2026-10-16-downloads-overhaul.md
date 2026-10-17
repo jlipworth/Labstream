@@ -349,7 +349,7 @@ maintainer gate**. It is never claimed as passed.
 | **P4** | Admission coordinator and server-prep runners | Sections 2 and 3. |
 | **P5** | Transport and storage consolidation | Sections 5 and 6 (session). |
 | **P6** | Store internals | Section 6 (store). |
-| **P7** | MediaBrowser, offline playback and row UX | Section 7. |
+| **P7** | MediaBrowser, offline playback and row UX | Section 7. Its last commit bumps the marketing version to **1.8.0** for every platform target (maintainer request, 2026-10-17), with the matching `docs/RELEASES.md` note. |
 
 Bug counts and estimated line removal (roughly 5–8k net) are indicators, not acceptance criteria.
 Acceptance is a phase's pins and inventory rows staying green.
