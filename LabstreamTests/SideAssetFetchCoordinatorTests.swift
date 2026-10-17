@@ -906,9 +906,13 @@ final class DownloadSideAssetPlexRepairPacingTests: XCTestCase {
         for ratingKey in ["101", "102"] {
             let attemptID = DownloadAttemptID.generated()
             let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+            // A completed row needs its published media file, or startup reconcile correctly
+            // demotes it to failed before the repair scan runs.
+            let localURL = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
+            try Data([0]).write(to: localURL)
             let record = DownloadRecord(
                 ratingKey: ratingKey, attemptID: attemptID, title: "Item",
-                localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
+                localURL: localURL,
                 bytes: 1, progress: 1, status: .complete,
                 metadata: OfflineMetadata(
                     ratingKey: ratingKey, title: "Item", type: "movie",
@@ -935,11 +939,15 @@ final class DownloadSideAssetPlexRepairPacingTests: XCTestCase {
         }
         XCTAssertEqual(manager.startupRecoveryState, .ready)
         XCTAssertFalse(manager.isQueuePaused)
+        XCTAssertEqual(store.records.filter(\.isComplete).count, 2)
 
         manager.rehydrateMissingOptionalSideAssetsForCompletedRows(reason: "test")
 
+        // Admission hops through unstructured tasks and the coordinator actor; give a loaded
+        // simulator host a generous deadline while still exiting as soon as both rows are admitted.
         var admitted: Set<String> = []
-        for _ in 0..<100 {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < deadline {
             admitted = Set(await coordinator.recordedAdmissionsForTesting().map(\.owner.rawValue))
             if admitted == owners { break }
             try await Task.sleep(for: .milliseconds(20))
