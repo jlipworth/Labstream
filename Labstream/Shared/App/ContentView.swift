@@ -223,11 +223,14 @@ struct ContentView: View {
     /// inactive backends that currently own durable active work. Paused/failed/completed rows
     /// remain cold until their explicit resume, retry, or side-asset dispatch edge.
     private func runLaunchDownloadRecovery(reason: String) async {
+        // P2: backends that only owe journaled server cleanup need a session too, or their
+        // cleanup could never run while the user stays on another backend.
         let inactiveDownloadBackends = Set(
             downloadManager.records.lazy
                 .filter { $0.status.isActiveWork }
                 .map { DownloadJobSnapshot(record: $0).backend }
-        ).subtracting([appModel.activeBackend])
+        ).union(downloadManager.pendingCleanupBackends())
+            .subtracting([appModel.activeBackend])
         for backend in inactiveDownloadBackends.sorted(by: { $0.rawValue < $1.rawValue }) {
             _ = await authManager.hydrateSavedSessionForDownloads(backend: backend)
         }

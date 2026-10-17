@@ -727,6 +727,18 @@ final class DownloadStore: @unchecked Sendable {
         try? DownloadIndexFileCommitter.cleanupAbandonedTemps(
             for: indexURL,
             fileManager: fileManager)
+        // B18: the cleanup-authority directory carries the same protection and backup exclusion as
+        // the media root, including directories created by older builds, and its journals' own
+        // abandoned commit temps are swept like the index's.
+        try? CredentialArtifactStorage.applyProtectionAndBackupExclusion(
+            to: authority,
+            protection: CredentialArtifactStorage.authArtifactProtection,
+            fileManager: fileManager)
+        for name in ["download-cleanup-intents.json", "emby-convert-cleanup.json"] {
+            try? DownloadIndexFileCommitter.cleanupAbandonedTemps(
+                for: authority.appendingPathComponent(name),
+                fileManager: fileManager)
+        }
         try? DownloadArtifactFileCommitter.cleanupAbandonedResumeTemps(
             in: dir,
             fileManager: fileManager)
@@ -2248,6 +2260,40 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else { return false }
         return !Self.hasPendingRowDeletion(row)
+    }
+
+    /// Where an attempt's row stands for server-cleanup eligibility (P2.2). Absence in memory is
+    /// not proof of deletion: `executeRowDeletion` drops the row before its terminal revision
+    /// commits and restores it if that commit fails, so that window and any staged deletion read
+    /// as `.retiring`. `.unknown` covers a store whose index could not be opened as current, where
+    /// an empty row map says nothing about what is durable.
+    enum CleanupDisposition: Sendable, Equatable {
+        case present(DownloadRecord)
+        case retiring
+        case committedAbsent
+        case unknown
+    }
+
+    func cleanupDisposition(for key: DownloadAttemptKey) -> CleanupDisposition {
+        lock.lock()
+        guard startupSchemaProbe == .current || startupSchemaProbe == .missing else {
+            lock.unlock()
+            return .unknown
+        }
+        if artifactRetirementKeys.contains(key) {
+            lock.unlock()
+            return .retiring
+        }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else {
+            lock.unlock()
+            return .committedAbsent
+        }
+        let stagedDeletion = row.deletionPending || row.pendingArtifactIntents.contains {
+            if case .rowDeletion = $0.operation { return true }
+            return false
+        }
+        lock.unlock()
+        return stagedDeletion ? .retiring : .present(hydratedRecord(row))
     }
 
     func isDeletionPending(for key: DownloadAttemptKey) -> Bool {

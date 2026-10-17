@@ -1,73 +1,43 @@
 import Foundation
 
-/// Pure deletion decisions for download rows.
+/// Pure deletion decisions for download rows (downloads overhaul P2).
 ///
-/// Deleting a row always remains an app-side operation (URLSession cancellation, file removal,
-/// in-flight release, diagnostics). This policy captures the backend-specific delete-time
-/// nuances: an Emby convert row with a live Sync job may need a best-effort server-side job
-/// cancel, and a Plex optimize row still in server prep may need its type-42 background queue
-/// item removed — both before the local row disappears and the identifiers are lost.
+/// Deleting a row is an app-side operation (URLSession cancellation, file removal, in-flight
+/// release). Server work the row still owns is not cancelled here: delete journals a cleanup
+/// intent first and the cleanup runner executes it once the row's removal has committed.
 public enum DownloadDeletePolicy {
-    public enum EmbyConvertCancelDecision: Equatable, Sendable {
-        case none
-        case cancel(jobID: Int)
-        case skip(jobID: Int, reason: String)
-    }
-
-    public static let embySessionUnavailableOrMismatchReason = "emby_session_mismatch_or_unavailable"
-
-    /// `.preparing` is the normal in-prep shape. `.failed` is included too: a row can fail
-    /// terminally on the app side (e.g. a terminal 401/403 poll status) while the server-side
-    /// Convert job is still Converting — its persisted `embyConvertJobID` is the only remaining
-    /// handle, and the server's own job-state check makes a DELETE of an already-finished job a
-    /// harmless no-op.
-    public static func embyConvertCancelDecision(for record: DownloadRecord?,
-                                                 embySessionMatchesPersistedServer: Bool) -> EmbyConvertCancelDecision {
-        guard let record,
-              record.status == .preparing || record.status == .failed,
-              let jobID = record.metadata?.embyConvertJobID else {
-            return .none
-        }
-        return embySessionMatchesPersistedServer
-            ? .cancel(jobID: jobID)
-            : .skip(jobID: jobID, reason: embySessionUnavailableOrMismatchReason)
-    }
-
-    // MARK: - Plex optimize
-
-    public enum PlexOptimizeCancelDecision: Equatable, Sendable {
-        case none
-        case cancel(queueTitle: String)
-        case skip(queueTitle: String, reason: String)
-    }
-
-    public static let plexSessionUnavailableOrMismatchReason = "plex_session_mismatch_or_unavailable"
-
-    /// Delete-time decision for a Plex optimize row: should the app try to remove this row's
-    /// server-side optimize job (its type-42 background-processing item)?
+    /// The Plex optimize queue title a deleted row still owes cleanup for, if any.
     ///
-    /// Cancel only while the row is still in SERVER PREP — the optimize job was triggered but no
-    /// rendered Part has been handed off yet (`resumeMode == .serverPrepThenStatic`; the handoff
-    /// in `startOptimizedPartDownload` rewrites it to `.staticByteRange`). Once handed off, the
-    /// server job is complete and its type-42 item IS the rendered version — deleting it would
-    /// destroy a server render other rows/relaunches may reuse, so the decision is `.none`.
-    /// `.failed` prep rows are included: their queue item may still be pending/converting and the
-    /// row's deletion loses the queue-title handle forever. `.paused` is deliberately excluded
-    /// from active statuses (pause is an intentional keep), and the caller must still apply the
-    /// completed-state check server-side (`BackgroundProcessingItems.cancellableItemID`) before
-    /// deleting anything.
-    public static func plexOptimizeCancelDecision(for record: DownloadRecord?,
-                                                  plexSessionMatchesPersistedServer: Bool) -> PlexOptimizeCancelDecision {
+    /// Owed only while the row is in SERVER PREP — the optimize job was triggered but no rendered
+    /// Part has been handed off (`resumeMode == .serverPrepThenStatic`; the handoff rewrites it to
+    /// `.staticByteRange`). After the handoff the queue item IS the rendered version and is kept.
+    /// D2: queued, preparing, paused and failed prep rows all owe it. The runner still classifies
+    /// the server's queue item and never deletes a completed render.
+    public static func plexOptimizeCleanupQueueTitle(for record: DownloadRecord?) -> String? {
         guard let record,
               let metadata = record.metadata,
               metadata.resolvedBackendKind(ratingKey: record.ratingKey) == .plex,
               metadata.resolvedResumeMode(ratingKey: record.ratingKey) == .serverPrepThenStatic,
-              record.status == .queued || record.status == .preparing || record.status == .failed,
+              [.queued, .preparing, .paused, .failed].contains(record.status),
               let queueTitle = metadata.optimizeQueueTitle, !queueTitle.isEmpty else {
-            return .none
+            return nil
         }
-        return plexSessionMatchesPersistedServer
-            ? .cancel(queueTitle: queueTitle)
-            : .skip(queueTitle: queueTitle, reason: plexSessionUnavailableOrMismatchReason)
+        return queueTitle
+    }
+
+    /// Whether deleting this row cancels server-side preparation, so the confirmation can say so
+    /// (D2): a Plex optimize item or an Emby Convert job that has not yet been handed off.
+    public static func deletionCancelsServerPrep(_ record: DownloadRecord?) -> Bool {
+        guard let record, let metadata = record.metadata,
+              metadata.resolvedResumeMode(ratingKey: record.ratingKey) == .serverPrepThenStatic,
+              [.queued, .preparing, .paused, .failed].contains(record.status) else { return false }
+        switch metadata.resolvedBackendKind(ratingKey: record.ratingKey) {
+        case .plex:
+            return plexOptimizeCleanupQueueTitle(for: record) != nil
+        case .emby:
+            return metadata.embyConvertJobID != nil || metadata.hasEmbyConvertCrashWindowIdentity
+        case .jellyfin:
+            return false
+        }
     }
 }

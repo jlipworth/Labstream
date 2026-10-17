@@ -16,7 +16,21 @@ final class EmbyConvertCleanupJournal: @unchecked Sendable {
     struct Persistence: Sendable {
         let read: @Sendable (URL) throws -> Data?
         let encode: @Sendable ([Tombstone]) throws -> Data
-        let atomicWrite: @Sendable (Data, URL) throws -> Void
+        /// Full durable replace (B18): temp write, full fsync, rename, directory fsync.
+        let commit: @Sendable (Data, URL) throws -> Void
+        let syncDirectory: @Sendable (URL) throws -> Void
+
+        init(
+            read: @escaping @Sendable (URL) throws -> Data?,
+            encode: @escaping @Sendable ([Tombstone]) throws -> Data,
+            commit: @escaping @Sendable (Data, URL) throws -> Void,
+            syncDirectory: @escaping @Sendable (URL) throws -> Void = DurableJournalCommit.liveSyncDirectory
+        ) {
+            self.read = read
+            self.encode = encode
+            self.commit = commit
+            self.syncDirectory = syncDirectory
+        }
 
         static let live = Self(
             read: { url in
@@ -32,7 +46,7 @@ final class EmbyConvertCleanupJournal: @unchecked Sendable {
                 }
             },
             encode: { try JSONEncoder().encode($0) },
-            atomicWrite: { data, url in try data.write(to: url, options: .atomic) }
+            commit: DurableJournalCommit.liveCommit
         )
     }
 
@@ -86,6 +100,12 @@ final class EmbyConvertCleanupJournal: @unchecked Sendable {
         case .failed(let failure): return .failed(failure)
         }
         guard !values.contains(where: { $0.id == tombstone.id }) else {
+            // Possibly visible from an earlier ambiguous commit; make it durable before relying on it.
+            do {
+                try persistence.syncDirectory(fileURL)
+            } catch {
+                return .failed(Self.failure(.commit, error))
+            }
             return .committed(tombstone)
         }
         let expectedIDs = EmbyConvertRecoveryPolicy.appendingCleanupTombstoneID(
@@ -98,15 +118,7 @@ final class EmbyConvertCleanupJournal: @unchecked Sendable {
         } catch {
             return .failed(Self.failure(.encode, error))
         }
-        do {
-            try persistence.atomicWrite(data, fileURL)
-        } catch {
-            // Atomic replacement can succeed before its injected/filesystem error is observed.
-            // Re-read within this journal transaction: the generated UUID is exact add proof.
-            if case .loaded(let durable) = readLocked(),
-               durable.contains(where: { $0.id == tombstone.id }) {
-                return .committed(tombstone)
-            }
+        if let error = DurableJournalCommit.commit(data, to: fileURL, using: persistence.commit) {
             return .failed(Self.failure(.commit, error))
         }
         return .committed(tombstone)
@@ -129,14 +141,7 @@ final class EmbyConvertCleanupJournal: @unchecked Sendable {
         } catch {
             return .failed(Self.failure(.encode, error))
         }
-        do {
-            try persistence.atomicWrite(data, fileURL)
-        } catch {
-            // Absence of this exact UUID after a thrown replacement proves removal won.
-            if case .loaded(let durable) = readLocked(),
-               !durable.contains(where: { $0.id == id }) {
-                return .committed(removed: true)
-            }
+        if let error = DurableJournalCommit.commit(data, to: fileURL, using: persistence.commit) {
             return .failed(Self.failure(.commit, error))
         }
         return .committed(removed: true)

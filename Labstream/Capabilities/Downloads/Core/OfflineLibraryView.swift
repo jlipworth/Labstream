@@ -224,6 +224,8 @@ public struct OfflineLibraryView: View {
         let id = UUID()
         let entries: [Entry]
         let title: String?
+        /// D2: at least one row still has server-side preparation that deleting it cancels.
+        var cancelsServerPrep = false
 
         var isMultiple: Bool { entries.count > 1 }
 
@@ -236,13 +238,16 @@ public struct OfflineLibraryView: View {
         }
 
         var message: String {
+            let base: String
             if isMultiple {
-                return "This removes \(entries.count) downloads from offline storage. You can download them again later."
+                base = "This removes \(entries.count) downloads from offline storage. You can download them again later."
+            } else if let title, !title.isEmpty {
+                base = "This removes “\(title)” from offline storage. You can download it again later."
+            } else {
+                base = "This removes the download from offline storage. You can download it again later."
             }
-            if let title, !title.isEmpty {
-                return "This removes “\(title)” from offline storage. You can download it again later."
-            }
-            return "This removes the download from offline storage. You can download it again later."
+            guard cancelsServerPrep else { return base }
+            return base + " Server preparation that is still in progress is cancelled where possible; finished server versions stay on the server."
         }
     }
 
@@ -448,7 +453,11 @@ public struct OfflineLibraryView: View {
         let title = rows.count == 1 ? rows[0].title : nil
         pendingDeletion = PendingOfflineDeletion(
             entries: rows.map { .init(ratingKey: $0.id, attemptID: $0.attemptID) },
-            title: title)
+            title: title,
+            cancelsServerPrep: rows.contains { row in
+                DownloadDeletePolicy.deletionCancelsServerPrep(
+                    manager.records.first { $0.ratingKey == row.id })
+            })
     }
 
     private func commitPendingDeletion() {

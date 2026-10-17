@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import PMSKit
 import os
@@ -199,6 +200,7 @@ extension DownloadManager {
                 try await triggerOptimize(item: sourceItem, targetName: targetName,
                                           queueTitle: queueTitle,
                                           server: server, token: token, identity: identity)
+                markPlexOptimizeCreateConfirmed(for: attemptKey, queueTitle: queueTitle)
             } catch {
                 // Do not flash a terminal failed row here. Plex may reject duplicate/odd optimize
                 // creates (HTTP 400) while an already-rendered Plex Version is still discoverable
@@ -391,6 +393,22 @@ extension DownloadManager {
               row.status == .queued, row.bytes == 0, row.progress == 0,
               row.metadata?.optimizeQueueTitle == queueTitle,
               row.metadata?.optimizeTargetName == targetName else { return }
+        // P2.4: the seed may already own a queue item (its create PUT can land after the attempt
+        // died), so journal the item's cleanup before the row goes. Without durable authority,
+        // keep the row: it still carries the queue title.
+        // Identity comes from the row's persisted server, never whichever Plex server is current.
+        guard let metadata = row.metadata,
+              let intent = Self.makePlexOptimizeCleanupIntent(
+                attemptKey: attemptKey, metadata: metadata,
+                create: metadata.plexOptimizeCreateConfirmed == true ? .confirmed : .unresolved,
+                provenance: .abandonment(originAttempt: attemptKey)),
+              case .committed = cleanupIntentJournal.ensure(intent) else {
+            recordDownloadDiagnostic("downloads.server_prep_seed_kept", fields: [
+                "download_id": .identifier(ratingKey),
+                "reason": .label("cleanup_not_durable"),
+            ])
+            return
+        }
         recordDownloadDiagnostic("downloads.server_prep_seed_removed", fields: [
             "download_id": .identifier(ratingKey),
             "target": .label(targetName),
@@ -402,6 +420,8 @@ extension DownloadManager {
         Task { [weak self] in
             guard let self,
                   case .removed = await store.resolveRowDeletion(submission) else { return }
+            // The runner skips the intent while the removal is still retiring; wake it now.
+            cleanupRunner?.kick(reason: "server_prep_seed_removed")
             lastError[ratingKey] = nil
             clearOptimizeProgress(ratingKey: ratingKey)
             refreshRecords()
@@ -661,13 +681,22 @@ extension DownloadManager {
         // still needs to discover and download. Also protect persisted queue titles so relaunches
         // do not briefly expose still-valid server work before serverPrepAttempts is rebuilt.
         let stale = queue.staleItemIDs(marker: marker, protectedTitles: protectedTitles)
+        // P2.4: discoveries become durable abandonment intents (the item was seen, so its create
+        // is confirmed) and the cleanup runner removes them with the same ownership recheck and
+        // completed-render protection as every other cleanup.
         var removed = 0
-        for id in stale {
-            let del = OptimizeRequest.removeBackgroundItem(server: server, token: token,
-                                                           identity: identity,
-                                                           backgroundProcessingKey: backgroundProcessingKey,
-                                                           itemID: id)
-            if (try? await appModel.client.send(del)) != nil { removed += 1 }
+        let session = cleanupSession(kind: .plex, server: server, token: token, userID: nil)
+        let staleTitles = Set(queue.items.compactMap { item -> String? in
+            guard let id = item.id, stale.contains(id) else { return nil }
+            return item.title
+        })
+        for title in staleTitles {
+            if journalCleanupAbandonment(
+                .plexOptimize(queueTitle: title),
+                originAttempt: Self.staleSweepAttemptKey(queueTitle: title),
+                session: session, plexCreate: .confirmed, reason: "stale_optimize_job") {
+                removed += 1
+            }
         }
         // Always record — including the zero-match case — so we can tell "server didn't keep our
         // marker" (marked_count 0 while pending_count high) from "matched but all protected".
@@ -677,51 +706,26 @@ extension DownloadManager {
             "pending_count": .int(queue.pendingCount),
             "protected": .int(protectedTitles.count),
             "stale_found": .int(stale.count),
-            "removed": .int(removed),
+            "journaled": .int(removed),
         ])
     }
 
-    /// Delete-time (audit B.9): best-effort removal of ONE optimize job — the type-42 item whose
-    /// title is the deleted row's persisted queue title. Unlike `cleanStaleOptimizeJobs` (a broad
-    /// sweep that runs only on the NEXT optimize kickoff), this fires immediately when the user
-    /// deletes a row still in server prep, so the server stops transcoding work nobody wants.
-    /// Same completed-state safety as the sweep: `cancellableItemID` returns nil for a completed
-    /// item because deleting it would destroy the rendered server-side version. NEVER throws or
-    /// blocks the delete; every outcome is recorded via `downloads.optimize_cancel`.
-    func removePlexOptimizeQueueItem(ratingKey: String, queueTitle: String,
-                                     server: URL, token: String,
-                                     identity: ClientIdentity) async {
-        func record(_ removed: Bool, _ reason: String) {
-            recordDownloadDiagnostic("downloads.optimize_cancel", fields: [
-                "download_id": .identifier(ratingKey),
-                "removed": .bool(removed),
-                "reason": .label(reason),
-            ])
+    /// Exact-attempt confirmation that the optimize create PUT landed (P2.2 create evidence).
+    func markPlexOptimizeCreateConfirmed(for attemptKey: DownloadAttemptKey, queueTitle: String) {
+        _ = store.updateMetadata(for: attemptKey) { metadata in
+            guard metadata.optimizeQueueTitle == queueTitle else { return }
+            metadata.plexOptimizeCreateConfirmed = true
         }
-        guard let bgKey = await bgKeyForPolling(server: server, token: token, identity: identity) else {
-            record(false, "bg_key_unavailable")
-            return
-        }
-        let trimmed = bgKey.hasPrefix("/") ? String(bgKey.dropFirst()) : bgKey
-        let listReq = PlexRequest(url: server.appendingPathComponent(trimmed), method: "GET",
-                                  queryItems: [],
-                                  headers: PlexHeaders.standard(identity: identity, token: token))
-        guard let queue = try? await appModel.client.send(listReq, as: BackgroundProcessingItems.self) else {
-            record(false, "queue_fetch_failed")
-            return
-        }
-        guard let itemID = queue.cancellableItemID(queueTitle: queueTitle) else {
-            // Not found (already reaped / server dropped the title) or completed (rendered
-            // version present — deliberately preserved).
-            record(false, "no_cancellable_item")
-            return
-        }
-        let del = OptimizeRequest.removeBackgroundItem(server: server, token: token,
-                                                       identity: identity,
-                                                       backgroundProcessingKey: bgKey,
-                                                       itemID: itemID)
-        let ok = (try? await appModel.client.send(del)) != nil
-        record(ok, ok ? "removed" : "delete_failed")
+    }
+
+    /// Stable synthetic attempt for a stale queue item no row owns. Derived from a digest of the
+    /// title so repeated sweeps deduplicate in the journal without putting the title in an id.
+    nonisolated static func staleSweepAttemptKey(queueTitle: String) -> DownloadAttemptKey {
+        let digest = SHA256.hash(data: Data(queueTitle.utf8))
+            .prefix(16).map { String(format: "%02x", $0) }.joined()
+        return DownloadAttemptKey(
+            ratingKey: "plex:stale-optimize-sweep",
+            attemptID: DownloadAttemptID(rawValue: "stale-sweep-\(digest)")!)
     }
 
     /// If the server's background conversion queue is idle-paused, clear it so queued optimize

@@ -167,7 +167,7 @@ extension DownloadManager {
         // store; best-effort release of the session the negotiation just minted.
         guard startAttemptStillCurrent(startAttempt, backend: "Emby",
                                        phase: "playback_info") else {
-            stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
+            stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                               playSessionID: decision.playSessionId,
                                               backendKind: .emby,
                                               backendSession: backendSession)
@@ -182,7 +182,7 @@ extension DownloadManager {
             explicitOverride: mediaSourceIDOverride,
             decidedMediaSourceID: decision.mediaSourceId
         ) else {
-            stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
+            stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                               playSessionID: decision.playSessionId,
                                               backendKind: .emby,
                                               backendSession: backendSession)

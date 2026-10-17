@@ -431,6 +431,7 @@ struct DownloadCleanupOrderingTests {
 
         // Backend-switch edge: the same sweep that ran at launch.
         manager.teardownOrphanedEncodersOnLaunch()
+        await manager.launchSweepJournaling?.value
 
         guard case .loaded(let intents) = journal.load() else {
             Issue.record("Expected a readable cleanup journal"); return
@@ -470,6 +471,7 @@ struct DownloadCleanupOrderingTests {
         #expect(await waitUntil { manager.startupRecoveryState == .ready })
 
         manager.teardownOrphanedEncodersOnLaunch()
+        await manager.launchSweepJournaling?.value
 
         guard case .loaded(let intents) = journal.load() else {
             Issue.record("Expected a readable cleanup journal"); return
@@ -650,7 +652,7 @@ struct DownloadCleanupOrderingTests {
         .init(
             read: liveRead,
             encode: { try JSONEncoder().encode($0) },
-            atomicWrite: { _, _ in throw OrderingFailure() })
+            commit: { _, _ in throw OrderingFailure() })
     }
 
     private func loadedJournal(_ directory: URL) throws -> [DurableDownloadCleanupIntent] {
@@ -691,12 +693,19 @@ private final class JournalWriteController: @unchecked Sendable {
                 return try Data(contentsOf: url)
             },
             encode: { try JSONEncoder().encode($0) },
-            atomicWrite: { [self] data, url in
+            commit: { [self] data, url in
                 let shouldFail = lock.withLock {
                     writes += 1
                     return writes == failOnWrite
                 }
-                if shouldFail { throw OrderingFailure() }
+                // A real committer failure before its temp write: nothing replaced, no recommit.
+                if shouldFail {
+                    throw DownloadIndexFileCommitter.CommitFailure(
+                        stage: .beforeTempWrite,
+                        errorType: String(reflecting: OrderingFailure.self),
+                        errnoCode: nil,
+                        replacementMayHaveOccurred: false)
+                }
                 try data.write(to: url, options: .atomic)
             })
     }

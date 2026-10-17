@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import PMSKit
 import Testing
 @testable import Labstream
@@ -24,7 +25,7 @@ struct EmbyCleanupTombstonePersistenceTests {
                         return nil
                     },
                     encode: { try JSONEncoder().encode($0) },
-                    atomicWrite: { data, url in try data.write(to: url, options: .atomic) }
+                    commit: { data, url in try data.write(to: url, options: .atomic) }
                 )
             )
 
@@ -134,7 +135,7 @@ struct EmbyCleanupTombstonePersistenceTests {
                 embyCleanupPersistence: .init(
                     read: { _ in throw InjectedTombstoneFailure() },
                     encode: { try JSONEncoder().encode($0) },
-                    atomicWrite: { data, url in try data.write(to: url, options: .atomic) }
+                    commit: { data, url in try data.write(to: url, options: .atomic) }
                 )
             )
             guard case .failed(let loadFailure) = readFailureStore.loadEmbyConvertCleanupTombstones()
@@ -156,7 +157,7 @@ struct EmbyCleanupTombstonePersistenceTests {
                 embyCleanupPersistence: .init(
                     read: { _ in nil },
                     encode: { _ in throw InjectedTombstoneFailure() },
-                    atomicWrite: { _, _ in Issue.record("Commit must not run after encode failure") }
+                    commit: { _, _ in Issue.record("Commit must not run after encode failure") }
                 )
             )
             guard case .failed(let encodeFailure) = encodeFailureStore.addEmbyConvertCleanupTombstone(
@@ -182,7 +183,7 @@ struct EmbyCleanupTombstonePersistenceTests {
                 embyCleanupPersistence: .init(
                     read: { try Data(contentsOf: $0) },
                     encode: { try JSONEncoder().encode($0) },
-                    atomicWrite: { data, _ in
+                    commit: { data, _ in
                         try data.write(to: temp)
                         throw InjectedTombstoneFailure()
                     }
@@ -202,18 +203,49 @@ struct EmbyCleanupTombstonePersistenceTests {
         }
     }
 
-    @Test func replaceThenThrowReconcilesAddFromCanonicalQueue() throws {
+    /// B18: bytes made visible by a commit that then failed are not durable proof. The add fails,
+    /// and a later add of the same tombstone syncs the visible value before reporting it committed.
+    @Test func replaceThenThrowIsNeverReportedDurable() throws {
         try withTemporaryDirectory { directory in
             let replacing = DownloadStore(
                 baseDirectory: directory,
                 embyCleanupPersistence: replaceThenThrowPersistence()
             )
-            guard case .committed(let tombstone) = replacing.addEmbyConvertCleanupTombstone(
-                ratingKey: "emby:ambiguous", metadata: metadata("emby:ambiguous")
-            ) else {
-                Issue.record("Expected canonical re-read to prove the add committed")
+            let tombstone = DownloadStore.EmbyConvertCleanupTombstone(
+                id: UUID(), ratingKey: "emby:ambiguous", metadata: metadata("emby:ambiguous"))
+            guard case .failed(let failure) = replacing.addEmbyConvertCleanupTombstone(tombstone) else {
+                Issue.record("A commit that keeps throwing must not report durable authority")
                 return
             }
+            #expect(failure.stage == .commit)
+
+            let healthy = DownloadStore(baseDirectory: directory)
+            #expect(healthy.addEmbyConvertCleanupTombstone(tombstone) == .committed(tombstone))
+            let restored = try loaded(DownloadStore(baseDirectory: directory))
+            #expect(restored == [tombstone])
+        }
+    }
+
+    @Test func oneAmbiguousCommitIsRecommittedOnce() throws {
+        try withTemporaryDirectory { directory in
+            let attempts = Mutex(0)
+            let store = DownloadStore(
+                baseDirectory: directory,
+                embyCleanupPersistence: .init(
+                    read: { url in
+                        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+                        return try Data(contentsOf: url)
+                    },
+                    encode: { try JSONEncoder().encode($0) },
+                    commit: { data, url in
+                        try data.write(to: url, options: .atomic)
+                        let attempt = attempts.withLock { value in value += 1; return value }
+                        if attempt == 1 { throw InjectedTombstoneFailure() }
+                    }
+                )
+            )
+            let tombstone = try committedAdd(store, ratingKey: "emby:recommitted")
+            #expect(attempts.withLock { $0 } == 2)
             let restored = try loaded(DownloadStore(baseDirectory: directory))
             #expect(restored == [tombstone])
         }
@@ -233,7 +265,7 @@ struct EmbyCleanupTombstonePersistenceTests {
                 embyCleanupPersistence: .init(
                     read: { try Data(contentsOf: $0) },
                     encode: { try JSONEncoder().encode($0) },
-                    atomicWrite: { _, _ in throw InjectedTombstoneFailure() }
+                    commit: { _, _ in throw InjectedTombstoneFailure() }
                 )
             )
             guard case .failed(let preFailure) = beforeReplace.removeEmbyConvertCleanupTombstone(
@@ -250,13 +282,13 @@ struct EmbyCleanupTombstonePersistenceTests {
                 baseDirectory: directory,
                 embyCleanupPersistence: replaceThenThrowPersistence()
             )
-            guard case .committed(removed: true) = afterReplace.removeEmbyConvertCleanupTombstone(
+            guard case .failed(let postFailure) = afterReplace.removeEmbyConvertCleanupTombstone(
                 id: first.id
             ) else {
-                Issue.record("Expected canonical re-read to prove removal committed")
+                Issue.record("A removal whose commit keeps throwing must not claim durability")
                 return
             }
-            #expect(try loaded(DownloadStore(baseDirectory: directory)).map(\.id) == [second.id])
+            #expect(postFailure.stage == .commit)
         }
     }
 
@@ -267,7 +299,7 @@ struct EmbyCleanupTombstonePersistenceTests {
                 return try Data(contentsOf: url)
             },
             encode: { try JSONEncoder().encode($0) },
-            atomicWrite: { data, url in
+            commit: { data, url in
                 try data.write(to: url, options: .atomic)
                 throw InjectedTombstoneFailure()
             }
