@@ -222,7 +222,7 @@ extension DownloadManager {
                           let part = Self.subtitleRepairPart(item: currentItem, metadata: metadata) else { return }
                     self.cacheJellyfinTextSubtitles(
                         for: attemptKey, itemId: itemID,
-                        mediaSourceId: metadata.mediaSourceID, part: part,
+                        mediaSourceId: Self.subtitleSourceID(metadata), part: part,
                         server: server, token: token, identity: identity)
                 }
             }
@@ -269,7 +269,7 @@ extension DownloadManager {
                           let part = Self.subtitleRepairPart(item: currentItem, metadata: metadata) else { return }
                     self.cacheEmbyTextSubtitles(
                         for: attemptKey, itemId: metadata.ratingKey,
-                        mediaSourceId: metadata.mediaSourceID, part: part,
+                        mediaSourceId: Self.subtitleSourceID(metadata), part: part,
                         server: server, token: token, identity: identity, userId: userID)
                 }
             }
@@ -279,7 +279,15 @@ extension DownloadManager {
 
     /// Production subtitle-repair selection shared by the MediaBrowser repair branches.
     nonisolated static func subtitleRepairPart(item: MediaItem, metadata: OfflineMetadata) -> Part? {
-        item.media?[safe: metadata.mediaIndex ?? 0]?.part[safe: metadata.partIndex ?? 0]
+        guard let sourceID = subtitleSourceID(metadata) else { return nil }
+        return DownloadMediaSelectionPolicy.selection(item: item, mediaSourceID: sourceID)?.part
+    }
+
+    nonisolated static func subtitleSourceID(_ metadata: OfflineMetadata) -> String? {
+        if let original = metadata.textSubtitleSourceMediaSourceID, !original.isEmpty { return original }
+        // A historical converted output does not prove which original supplied subtitles.
+        guard !metadata.isServerPreparedVersion else { return nil }
+        return metadata.mediaSourceID
     }
 
     /// Lens 4 F2: side assets (posters, text subtitles, chapter images, Plex/Emby BIF, JF trickplay)

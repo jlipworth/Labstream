@@ -1,28 +1,29 @@
 import Foundation
 import PMSKit
 
-/// Owns the process-lifetime control-plane keepalives used by Jellyfin transcodes and Emby
-/// compatible remuxes. Task slots are exact-attempt keyed; rating keys are used only for the
-/// credential-generation quarantine that prevents an auth-dead refresh loop.
+/// One exact-attempt lifecycle. Backend policy supplies candidate eligibility and request bodies;
+/// ownership, transfer grace, auth quarantine and generation removal are common.
 @MainActor
 final class DownloadKeepaliveCoordinator {
+    private struct Key: Hashable {
+        let backend: DownloadBackendKind
+        let attempt: DownloadAttemptKey
+    }
     private struct TaskHandle {
         let generation: UUID
         let task: Task<Void, Never>
+        let playSessionID: String?
+        init(generation: UUID, task: Task<Void, Never>, playSessionID: String? = nil) {
+            self.generation = generation; self.task = task; self.playSessionID = playSessionID
+        }
     }
-
     private let appModel: AppModel
     private let store: DownloadStore
-    private var jellyfinTasks: [DownloadAttemptKey: TaskHandle] = [:]
-    private var embyTasks: [DownloadAttemptKey: TaskHandle] = [:]
-    private var jellyfinAuthQuarantine: [String: String] = [:]
-    private var embyAuthQuarantine: [String: String] = [:]
-    /// B60 / IC-4: whether the transport currently tracks a live transfer for this exact attempt.
-    /// Store status alone let a `.queued` row with no task keep an encoder alive indefinitely.
     private let isTrackingTransfer: @MainActor (DownloadAttemptKey) -> Bool
+    private var tasks: [Key: TaskHandle] = [:]
+    private var authQuarantine: [DownloadBackendKind: [String: String]] = [:]
 
-    init(appModel: AppModel,
-         store: DownloadStore,
+    init(appModel: AppModel, store: DownloadStore,
          isTrackingTransfer: @escaping @MainActor (DownloadAttemptKey) -> Bool) {
         self.appModel = appModel
         self.store = store
@@ -30,447 +31,210 @@ final class DownloadKeepaliveCoordinator {
     }
 
     func reconcile(records: [DownloadRecord]) {
-        ensureJellyfinDownloadKeepalives(for: records)
-        ensureEmbyDownloadKeepalives(for: records)
+        for backend in [DownloadBackendKind.jellyfin, .emby] {
+            guard let session = appModel.backendSession(for: backend), session.userID != nil else { continue }
+            let authGeneration = Self.keepaliveAuthGeneration(session)
+            for record in records {
+                guard let attemptID = record.attemptID, let metadata = record.metadata,
+                      session.matchesPersistedServer(metadata) else { continue }
+                let key = Key(backend: backend, attempt: .init(ratingKey: record.ratingKey, attemptID: attemptID))
+                switch DownloadKeepaliveLifecyclePolicy.authQuarantineAction(
+                    quarantinedGeneration: authQuarantine[backend]?[record.ratingKey],
+                    currentGeneration: authGeneration) {
+                case .suppress: continue
+                case .clear: authQuarantine[backend]?.removeValue(forKey: record.ratingKey)
+                case .none: break
+                }
+                if let handle = tasks[key], handle.playSessionID != metadata.playSessionID {
+                    tasks.removeValue(forKey: key)?.task.cancel()
+                }
+                guard tasks[key] == nil, candidate(record, backend: backend),
+                      DownloadKeepaliveTransferGate.shouldStart(isTrackingTransfer: isTrackingTransfer(key.attempt)) else { continue }
+                start(key)
+            }
+        }
     }
 
     func cancel(_ attemptKey: DownloadAttemptKey) {
-        jellyfinTasks.removeValue(forKey: attemptKey)?.task.cancel()
-        embyTasks.removeValue(forKey: attemptKey)?.task.cancel()
+        for backend in [DownloadBackendKind.jellyfin, .emby] {
+            tasks.removeValue(forKey: Key(backend: backend, attempt: attemptKey))?.task.cancel()
+        }
     }
 
     func clearAuthQuarantine(forRatingKey ratingKey: String) {
-        jellyfinAuthQuarantine.removeValue(forKey: ratingKey)
-        embyAuthQuarantine.removeValue(forKey: ratingKey)
+        for backend in [DownloadBackendKind.jellyfin, .emby] {
+            authQuarantine[backend]?.removeValue(forKey: ratingKey)
+        }
     }
 
     func activeCount(for backend: DownloadBackendKind) -> Int {
+        tasks.keys.filter { $0.backend == backend }.count
+    }
+
+    private func candidate(_ record: DownloadRecord, backend: DownloadBackendKind) -> Bool {
         switch backend {
-        case .jellyfin: jellyfinTasks.count
-        case .emby: embyTasks.count
-        case .plex: 0
-        }
-    }
-
-    private func attemptKey(for record: DownloadRecord) -> DownloadAttemptKey? {
-        record.attemptID.map { DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: $0) }
-    }
-
-    private func recordDownloadDiagnostic(
-        _ name: String,
-        fields: [String: DiagnosticFieldValue] = [:]
-    ) {
-        AppDiagnostics.record(.downloads, name, fields: fields)
-    }
-
-    private func ensureJellyfinDownloadKeepalives(for records: [DownloadRecord]) {
-        // Session and auth generation are loop-invariant: resolve once, not per record per refresh.
-        guard let session = appModel.backendSession(for: .jellyfin),
-              let userId = session.userID else { return }
-        let authGeneration = Self.keepaliveAuthGeneration(session)
-        for record in records {
-            guard let metadata = record.metadata,
-                  let key = attemptKey(for: record),
-                  session.matchesPersistedServer(metadata)
-            else { continue }
-            switch DownloadKeepaliveLifecyclePolicy.authQuarantineAction(
-                quarantinedGeneration: jellyfinAuthQuarantine[record.ratingKey],
-                currentGeneration: authGeneration) {
-            case .suppress:
-                continue
-            case .clear:
-                jellyfinAuthQuarantine.removeValue(forKey: record.ratingKey)
-            case .none:
-                break
-            }
-            guard let candidate = JellyfinDownloadKeepalivePolicy.candidate(
-                for: record,
-                hasExistingTask: jellyfinTasks[key] != nil),
-                DownloadKeepaliveTransferGate.shouldStart(isTrackingTransfer: isTrackingTransfer(key))
-            else { continue }
-
-            startJellyfinDownloadKeepalive(
-                attemptKey: key,
-                itemId: candidate.itemID,
-                mediaSourceId: candidate.mediaSourceID,
-                playSessionId: candidate.playSessionID,
-                userId: userId,
-                durationMs: candidate.durationMs)
-        }
-    }
-
-    private func ensureEmbyDownloadKeepalives(for records: [DownloadRecord]) {
-        // Session and auth generation are loop-invariant: resolve once, not per record per refresh.
-        guard let session = appModel.backendSession(for: .emby),
-              let userId = session.userID else { return }
-        let authGeneration = Self.keepaliveAuthGeneration(session)
-        for record in records {
-            guard let metadata = record.metadata,
-                  let key = attemptKey(for: record),
-                  session.matchesPersistedServer(metadata),
-                  EmbyDownloadKeepalivePolicy.matchesPersistedUser(
-                    metadata.backendUserID, currentUserID: userId)
-            else { continue }
-            switch DownloadKeepaliveLifecyclePolicy.authQuarantineAction(
-                quarantinedGeneration: embyAuthQuarantine[record.ratingKey],
-                currentGeneration: authGeneration) {
-            case .suppress:
-                continue
-            case .clear:
-                embyAuthQuarantine.removeValue(forKey: record.ratingKey)
-            case .none:
-                break
-            }
-            guard let candidate = EmbyDownloadKeepalivePolicy.candidate(
-                for: record,
-                hasExistingTask: embyTasks[key] != nil),
-                DownloadKeepaliveTransferGate.shouldStart(isTrackingTransfer: isTrackingTransfer(key))
-            else { continue }
-
-            startEmbyDownloadKeepalive(
-                attemptKey: key,
-                playSessionId: candidate.playSessionID,
-                userId: userId)
+        case .jellyfin: JellyfinDownloadKeepalivePolicy.candidate(for: record, hasExistingTask: false) != nil
+        case .emby: EmbyDownloadKeepalivePolicy.candidate(for: record, hasExistingTask: false) != nil
+        case .plex: false
         }
     }
 
     private nonisolated static func keepaliveAuthGeneration(_ session: BackendSession) -> String {
-        return DiagnosticRedactor.stableIdentifier(
+        DiagnosticRedactor.stableIdentifier(
             for: "\(session.serverID ?? "")|\(session.baseURL.absoluteString)|\(session.userID ?? "")|\(session.token)")
     }
 
-    private func startEmbyDownloadKeepalive(
-        attemptKey: DownloadAttemptKey,
-        playSessionId: String,
-        userId: String
-    ) {
-        let ratingKey = attemptKey.ratingKey
-        embyTasks.removeValue(forKey: attemptKey)?.task.cancel()
-        let identity = appModel.identity.emby
-        let enqueueUserId = userId
-        let generation = UUID()
-        let task = Task { [weak self] in
-            guard let self else { return }
-            defer {
-                Task { @MainActor [weak self] in
-                    self?.removeTaskIfCurrent(
-                        for: attemptKey,
-                        backend: .emby,
-                        completingGeneration: generation)
-                }
-            }
-            var lastTickOutcome: JellyfinKeepaliveTickOutcome?
-            var transferGate = DownloadKeepaliveTransferGate()
-            while !Task.isCancelled {
-                guard !self.store.isDeletionPending(for: attemptKey),
-                      let record = self.store.record(for: attemptKey),
-                      EmbyDownloadKeepalivePolicy.candidate(for: record, hasExistingTask: false) != nil
-                else { return }
-                switch transferGate.evaluate(isTrackingTransfer: self.isTrackingTransfer(attemptKey)) {
-                case .send:
-                    break
-                case .skip:
-                    do {
-                        try await Task.sleep(for: .seconds(EmbyDownloadKeepalivePolicy.intervalSeconds))
-                    } catch { return }
-                    continue
-                case .stop:
-                    self.recordDownloadDiagnostic("downloads.emby_keepalive_degraded", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "reason": .label("no_tracked_transfer"),
-                        "action": .label("stopped"),
-                    ])
-                    return
-                }
-                // Re-resolve every tick so token rotation, sign-out, or server replacement stops
-                // the old control plane rather than silently pinging with stale credentials.
-                guard let liveSession = self.appModel.backendSession(for: .emby),
-                      record.metadata.map(liveSession.matchesPersistedServer) != false,
-                      EmbyDownloadKeepalivePolicy.matchesPersistedUser(
-                        record.metadata?.backendUserID, currentUserID: liveSession.userID) else {
-                    self.recordDownloadDiagnostic("downloads.emby_keepalive_degraded", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "reason": .label("emby_session_mismatch_or_unavailable"),
-                        "action": .label("stopped"),
-                    ])
-                    return
-                }
-                let server = liveSession.baseURL
-                let token = liveSession.token
-                let liveUserId = liveSession.userID ?? enqueueUserId
-                var statuses: [Int?] = []
-                do {
-                    // Live evidence: Ping alone keeps Emby's compatible-remux encoder alive past
-                    // its ~60s idle deadline. Do not send Playing/Progress here: those mutate the
-                    // user's resume position/watch history for what is only a file download.
-                    let ping = try EmbyPlayback.pingRequest(
-                        server: server, token: token, identity: identity,
-                        userId: liveUserId, playSessionId: playSessionId)
-                    guard !self.store.isDeletionPending(for: attemptKey) else { return }
-                    statuses.append(await Self.controlPlaneRequestStatus(ping))
-                } catch {
-                    self.recordDownloadDiagnostic("downloads.emby_keepalive_failed", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "error": .error(error),
-                    ])
-                }
-                let outcome = JellyfinDownloadKeepalivePolicy.tickOutcome(statuses: statuses)
-                switch JellyfinDownloadKeepalivePolicy.healthAction(previous: lastTickOutcome,
-                                                                    outcome: outcome) {
-                case .none:
-                    break
-                case .emitDegraded(let reason):
-                    self.recordDownloadDiagnostic("downloads.emby_keepalive_degraded", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "reason": .label(reason),
-                    ])
-                case .emitRecovered:
-                    self.recordDownloadDiagnostic("downloads.emby_keepalive_recovered", fields: [
-                        "download_id": .identifier(ratingKey),
-                    ])
-                case .stopAuthDead(let statusCode):
-                    self.embyAuthQuarantine[ratingKey] =
-                        Self.keepaliveAuthGeneration(liveSession)
-                    self.recordDownloadDiagnostic("downloads.emby_keepalive_degraded", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "reason": .label("auth_dead"),
-                        "status_code": .int(statusCode),
-                        "action": .label("stopped"),
-                    ])
-                    return
-                }
-                lastTickOutcome = outcome
-                do {
-                    try await Task.sleep(for: .seconds(EmbyDownloadKeepalivePolicy.intervalSeconds))
-                } catch { return }
-            }
-        }
-        embyTasks[attemptKey] = TaskHandle(generation: generation, task: task)
-        recordDownloadDiagnostic("downloads.emby_keepalive_start", fields: [
-            "download_id": .identifier(ratingKey),
-        ])
+    /// Kept for the existing manager adapter. Reconciliation owns start eligibility, including
+    /// the live-transfer gate, so pre-transfer publication cannot keep an idle encoder alive.
+    func startJellyfinDownloadKeepalive(attemptKey: DownloadAttemptKey, itemId: String,
+                                      mediaSourceId: String, playSessionId: String,
+                                      userId: String, durationMs: Int?) {
+        guard let record = store.record(for: attemptKey) else { return }
+        reconcile(records: [record])
     }
 
-    func startJellyfinDownloadKeepalive(
-        attemptKey: DownloadAttemptKey,
-        itemId: String,
-        mediaSourceId: String,
-        playSessionId: String,
-        userId: String,
-        durationMs: Int?
-    ) {
-        let ratingKey = attemptKey.ratingKey
-        jellyfinTasks.removeValue(forKey: attemptKey)?.task.cancel()
-        let identity = appModel.identity.jellyfin
-        let enqueueUserId = userId
+    private func start(_ key: Key) {
         let generation = UUID()
+        let playSessionID = store.record(for: key.attempt)?.metadata?.playSessionID
         let task = Task { [weak self] in
             guard let self else { return }
-            defer {
-                // Self-remove on ANY exit (auth-dead, session mismatch, natural). Leaving the
-                // entry behind made `ensureJellyfinDownloadKeepalives` see hasExistingTask forever
-                // and never restart the keepalive after re-login — the server then idle-killed the
-                // transcode mid-download.
-                Task { @MainActor [weak self] in
-                    self?.removeTaskIfCurrent(
-                        for: attemptKey,
-                        backend: .jellyfin,
-                        completingGeneration: generation)
-                }
-            }
+            defer { self.removeTaskIfCurrent(for: key.attempt, backend: key.backend,
+                                            completingGeneration: generation) }
             var sentPlaying = false
-            // D3 interim: Playing/Progress report a FIXED position of 0. The superseded N2/F2c
-            // advancing position (bytes vs estimate, else wall clock) moved the user's resume
-            // point for a file download (B55). Whether the keepalive becomes Ping-only is pending
-            // the live A/B probe; do not remove Playing/Progress until that decision lands.
-            var lastTickOutcome: JellyfinKeepaliveTickOutcome?
+            var previous: JellyfinKeepaliveTickOutcome?
             var transferGate = DownloadKeepaliveTransferGate()
             while !Task.isCancelled {
-                guard !self.store.isDeletionPending(for: attemptKey),
-                      let record = self.store.record(for: attemptKey),
-                      record.status == .queued || record.status == .downloading else { return }
-                // B60 / IC-4: a row with no tracked transfer for this exact attempt must not keep
-                // the encoder alive. Tolerate one untracked tick (start / stall-restart handoff).
-                switch transferGate.evaluate(isTrackingTransfer: self.isTrackingTransfer(attemptKey)) {
-                case .send:
-                    break
-                case .skip:
-                    do {
-                        try await Task.sleep(for: .seconds(JellyfinDownloadKeepalivePolicy.intervalSeconds))
-                    } catch { return }
-                    continue
+                guard !self.store.isDeletionPending(for: key.attempt),
+                      let record = self.store.record(for: key.attempt),
+                      self.candidate(record, backend: key.backend),
+                      record.metadata?.playSessionID == playSessionID else { return }
+                switch transferGate.evaluate(isTrackingTransfer: self.isTrackingTransfer(key.attempt)) {
                 case .stop:
-                    self.recordDownloadDiagnostic("downloads.jellyfin_keepalive_degraded", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "reason": .label("no_tracked_transfer"),
-                        "action": .label("stopped"),
-                    ])
+                    self.diagnostic("degraded", key, reason: "no_tracked_transfer")
+                    return
+                case .skip:
+                    do { try await Task.sleep(for: .seconds(JellyfinDownloadKeepalivePolicy.intervalSeconds)) }
+                    catch { return }
+                    continue
+                case .send: break
+                }
+                guard let liveSession = self.appModel.backendSession(for: key.backend),
+                      let userID = liveSession.userID,
+                      let metadata = record.metadata,
+                      liveSession.matchesPersistedServer(metadata) else {
+                    self.diagnostic("degraded", key, reason: "session_mismatch_or_unavailable")
                     return
                 }
-                // A-2 (audit lens 8): re-resolve the Jellyfin lane per tick — token rotation or a
-                // re-login mid-download must not keep pinging with the enqueue-time snapshot (the
-                // server sees silence and idle-kills the encoder with no diagnostic trail).
-                guard let liveSession = self.appModel.backendSession(for: .jellyfin),
-                      record.metadata.map(liveSession.matchesPersistedServer) != false else {
-                    self.recordDownloadDiagnostic("downloads.jellyfin_keepalive_degraded", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "reason": .label("jellyfin_session_mismatch_or_unavailable"),
-                        "action": .label("stopped"),
-                    ])
-                    return
-                }
-                let server = liveSession.baseURL
-                let token = liveSession.token
-                let liveUserId = liveSession.userID ?? enqueueUserId
-                let positionTicks = JellyfinDownloadKeepalivePolicy.reportedPositionTicks
                 var statuses: [Int?] = []
                 do {
-                    if !sentPlaying {
-                        let playing = try JellyfinPlayback.playingRequest(
-                            server: server,
-                            token: token,
-                            identity: identity,
-                            userId: liveUserId,
-                            itemId: itemId,
-                            mediaSourceId: mediaSourceId,
-                            playSessionId: playSessionId,
-                            playMethod: .transcode,
-                            positionTicks: positionTicks)
-                        guard !self.store.isDeletionPending(for: attemptKey) else { return }
-                        let status = await Self.controlPlaneRequestStatus(playing)
+                    let requests = try self.requests(for: record, backend: key.backend,
+                                                     session: liveSession, userID: userID,
+                                                     sentPlaying: sentPlaying)
+                    for (index, request) in requests.enumerated() {
+                        // A request may suspend while the attempt or owning login is replaced.
+                        guard !Task.isCancelled, self.tasks[key]?.generation == generation,
+                              !self.store.isDeletionPending(for: key.attempt),
+                              let current = self.store.record(for: key.attempt),
+                              self.candidate(current, backend: key.backend),
+                              current.metadata?.playSessionID == playSessionID,
+                              self.appModel.backendSession(for: key.backend) == liveSession else { return }
+                        let status = await Self.controlPlaneRequestStatus(request)
+                        guard !Task.isCancelled, self.tasks[key]?.generation == generation,
+                              self.appModel.backendSession(for: key.backend) == liveSession,
+                              self.store.ownsAttempt(key.attempt) else { return }
                         statuses.append(status)
-                        // Only mark the session opened once the server actually accepted it, so a
-                        // transient failure retries the open instead of orphaning the session.
-                        if let status, (200..<300).contains(status) { sentPlaying = true }
+                        if key.backend == .jellyfin, !sentPlaying, index == 0,
+                           let status, (200..<300).contains(status) { sentPlaying = true }
+                        if status == 401 || status == 403 { break }
                     }
-                    let progressReq = try JellyfinPlayback.progressRequest(
-                        server: server,
-                        token: token,
-                        identity: identity,
-                        userId: liveUserId,
-                        itemId: itemId,
-                        mediaSourceId: mediaSourceId,
-                        playSessionId: playSessionId,
-                        playMethod: .transcode,
-                        positionTicks: positionTicks,
-                        isPaused: false)
-                    guard !self.store.isDeletionPending(for: attemptKey) else { return }
-                    statuses.append(await Self.controlPlaneRequestStatus(progressReq))
-                    let ping = try JellyfinPlayback.pingRequest(server: server,
-                                                                token: token,
-                                                                identity: identity,
-                                                                playSessionId: playSessionId)
-                    guard !self.store.isDeletionPending(for: attemptKey) else { return }
-                    statuses.append(await Self.controlPlaneRequestStatus(ping))
                 } catch {
-                    recordDownloadDiagnostic("downloads.jellyfin_keepalive_failed", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "error": .error(error),
-                    ])
+                    AppDiagnostics.record(.downloads, "downloads.\(key.backend.rawValue)_keepalive_failed", fields: [
+                        "download_id": .identifier(key.attempt.ratingKey), "error": .error(error)])
                 }
                 let outcome = JellyfinDownloadKeepalivePolicy.tickOutcome(statuses: statuses)
-                switch JellyfinDownloadKeepalivePolicy.healthAction(previous: lastTickOutcome,
-                                                                    outcome: outcome) {
-                case .none:
-                    break
-                case .emitDegraded(let reason):
-                    self.recordDownloadDiagnostic("downloads.jellyfin_keepalive_degraded", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "reason": .label(reason),
-                    ])
-                case .emitRecovered:
-                    self.recordDownloadDiagnostic("downloads.jellyfin_keepalive_recovered", fields: [
-                        "download_id": .identifier(ratingKey),
-                    ])
+                switch JellyfinDownloadKeepalivePolicy.healthAction(previous: previous, outcome: outcome) {
+                case .none: break
+                case .emitDegraded(let reason): self.diagnostic("degraded", key, reason: reason)
+                case .emitRecovered: self.diagnostic("recovered", key)
                 case .stopAuthDead(let statusCode):
-                    // Quarantine THIS credential generation so refreshRecords doesn't immediately
-                    // recreate the task and hammer the server; a re-login mints a new generation
-                    // and the ensure gate clears the sentinel and restarts the keepalive.
-                    self.jellyfinAuthQuarantine[ratingKey] =
+                    self.authQuarantine[key.backend, default: [:]][key.attempt.ratingKey] =
                         Self.keepaliveAuthGeneration(liveSession)
-                    self.recordDownloadDiagnostic("downloads.jellyfin_keepalive_degraded", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "reason": .label("auth_dead"),
-                        "status_code": .int(statusCode),
-                        "action": .label("stopped"),
-                    ])
+                    AppDiagnostics.record(.downloads, "downloads.\(key.backend.rawValue)_keepalive_degraded", fields: [
+                        "download_id": .identifier(key.attempt.ratingKey), "reason": .label("auth_dead"),
+                        "status_code": .int(statusCode), "action": .label("stopped")])
                     return
                 }
-                lastTickOutcome = outcome
-                do {
-                    try await Task.sleep(for: .seconds(JellyfinDownloadKeepalivePolicy.intervalSeconds))
-                } catch {
-                    return
-                }
+                previous = outcome
+                do { try await Task.sleep(for: .seconds(JellyfinDownloadKeepalivePolicy.intervalSeconds)) }
+                catch { return }
             }
         }
-        jellyfinTasks[attemptKey] = TaskHandle(generation: generation, task: task)
-        recordDownloadDiagnostic("downloads.jellyfin_keepalive_start", fields: [
-            "download_id": .identifier(ratingKey),
-        ])
+        tasks[key] = TaskHandle(generation: generation, task: task, playSessionID: playSessionID)
+        diagnostic("start", key)
     }
 
-    private func removeTaskIfCurrent(
-        for key: DownloadAttemptKey,
-        backend: DownloadBackendKind,
-        completingGeneration: UUID
-    ) {
+    private func requests(for record: DownloadRecord, backend: DownloadBackendKind,
+                          session: BackendSession, userID: String, sentPlaying: Bool) throws -> [URLRequest] {
         switch backend {
-        case .jellyfin:
-            guard DownloadKeepaliveLifecyclePolicy.shouldRemoveTask(
-                completingGeneration: completingGeneration,
-                currentGeneration: jellyfinTasks[key]?.generation) else { return }
-            jellyfinTasks.removeValue(forKey: key)
         case .emby:
-            guard EmbyDownloadKeepalivePolicy.shouldRemoveTask(
-                completingGeneration: completingGeneration,
-                currentGeneration: embyTasks[key]?.generation) else { return }
-            embyTasks.removeValue(forKey: key)
-        case .plex:
-            break
+            guard let candidate = EmbyDownloadKeepalivePolicy.candidate(for: record, hasExistingTask: false) else { return [] }
+            // Emby is Ping-only. Jellyfin retains D3's fixed-zero interim pending live A/B evidence.
+            return [try EmbyPlayback.pingRequest(server: session.baseURL, token: session.token,
+                identity: appModel.identity.emby, userId: userID, playSessionId: candidate.playSessionID)]
+        case .jellyfin:
+            guard let candidate = JellyfinDownloadKeepalivePolicy.candidate(for: record, hasExistingTask: false) else { return [] }
+            let identity = appModel.identity.jellyfin
+            var requests: [URLRequest] = []
+            if !sentPlaying {
+                requests.append(try JellyfinPlayback.playingRequest(server: session.baseURL, token: session.token,
+                    identity: identity, userId: userID, itemId: candidate.itemID,
+                    mediaSourceId: candidate.mediaSourceID, playSessionId: candidate.playSessionID,
+                    playMethod: .transcode, positionTicks: JellyfinDownloadKeepalivePolicy.reportedPositionTicks))
+            }
+            requests.append(try JellyfinPlayback.progressRequest(server: session.baseURL, token: session.token,
+                identity: identity, userId: userID, itemId: candidate.itemID,
+                mediaSourceId: candidate.mediaSourceID, playSessionId: candidate.playSessionID,
+                playMethod: .transcode, positionTicks: JellyfinDownloadKeepalivePolicy.reportedPositionTicks, isPaused: false))
+            requests.append(try JellyfinPlayback.pingRequest(server: session.baseURL, token: session.token,
+                identity: identity, playSessionId: candidate.playSessionID))
+            return requests
+        case .plex: return []
         }
     }
 
-    /// Send one control-plane request (keepalive/report ping) and surface its HTTP status
-    /// (nil = transport failure). Control-plane traffic is deliberately EXEMPT from the
-    /// Wi-Fi-only download policy — tiny bodies that keep the server encoder alive.
+    private func diagnostic(_ event: String, _ key: Key, reason: String? = nil) {
+        var fields: [String: DiagnosticFieldValue] = ["download_id": .identifier(key.attempt.ratingKey)]
+        if let reason { fields["reason"] = .label(reason) }
+        AppDiagnostics.record(.downloads, "downloads.\(key.backend.rawValue)_keepalive_\(event)", fields: fields)
+    }
+
+    private func removeTaskIfCurrent(for key: DownloadAttemptKey, backend: DownloadBackendKind,
+                                     completingGeneration: UUID) {
+        let slot = Key(backend: backend, attempt: key)
+        guard DownloadKeepaliveLifecyclePolicy.shouldRemoveTask(
+            completingGeneration: completingGeneration, currentGeneration: tasks[slot]?.generation) else { return }
+        tasks.removeValue(forKey: slot)
+    }
+
     private nonisolated static func controlPlaneRequestStatus(_ request: URLRequest) async -> Int? {
         guard let (_, response) = try? await URLSession.shared.data(for: request) else { return nil }
         return (response as? HTTPURLResponse)?.statusCode
     }
 
-
     #if DEBUG
     @discardableResult
-    func registerTaskForTesting(
-        _ task: Task<Void, Never>,
-        for key: DownloadAttemptKey,
-        backend: DownloadBackendKind
-    ) -> UUID? {
+    func registerTaskForTesting(_ task: Task<Void, Never>, for key: DownloadAttemptKey,
+                                backend: DownloadBackendKind) -> UUID? {
+        guard backend != .plex else { return nil }
+        let slot = Key(backend: backend, attempt: key)
         let generation = UUID()
-        let handle = TaskHandle(generation: generation, task: task)
-        switch backend {
-        case .jellyfin:
-            jellyfinTasks.removeValue(forKey: key)?.task.cancel()
-            jellyfinTasks[key] = handle
-        case .emby:
-            embyTasks.removeValue(forKey: key)?.task.cancel()
-            embyTasks[key] = handle
-        case .plex:
-            return nil
-        }
+        tasks.removeValue(forKey: slot)?.task.cancel()
+        tasks[slot] = TaskHandle(generation: generation, task: task)
         return generation
     }
-
-    func removeTaskForTesting(
-        for key: DownloadAttemptKey,
-        backend: DownloadBackendKind,
-        completingGeneration: UUID
-    ) {
-        removeTaskIfCurrent(
-            for: key,
-            backend: backend,
-            completingGeneration: completingGeneration)
+    func removeTaskForTesting(for key: DownloadAttemptKey, backend: DownloadBackendKind,
+                              completingGeneration: UUID) {
+        removeTaskIfCurrent(for: key, backend: backend, completingGeneration: completingGeneration)
     }
     #endif
 }

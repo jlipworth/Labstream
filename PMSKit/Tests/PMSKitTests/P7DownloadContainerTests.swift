@@ -12,7 +12,7 @@ struct P7DownloadContainerTests {
         let request = try JellyfinLibrary.downloadRequest(server: URL(string: "https://media.invalid")!,
             token: "", identity: JellyfinClientIdentity(client: "Fixture", device: "Fixture", deviceId: "fixture", version: "1"),
             itemId: "fixture", mediaSourceId: "source", container: container)
-        withKnownIssue("P7 red pin: 07") {
+        do {
             #expect(OfflineDownloadDecision.isLocallyPlayableOriginal(part: part))
             #expect(request.url?.lastPathComponent == "stream.mp4")
             #expect(DownloadMediaSelectionPolicy.containerExtension(selection: selection) == "mp4")

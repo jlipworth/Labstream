@@ -22,7 +22,7 @@ struct P7SubtitleSourceRecoveryTests {
         let reordered = MediaItem(ratingKey: "fixture", title: "Fixture", type: "movie", media: [
             Media(id: 2, part: [converted]), Media(id: 1, part: [source])])
         let selected = DownloadManager.subtitleRepairPart(item: reordered, metadata: reloaded)
-        withKnownIssue("P7 red pin: 08") {
+        do {
             #expect(selected?.key == source.key)
             #expect(selected?.streams?.contains { $0.id == 7 } == true)
         }
@@ -40,7 +40,7 @@ struct P7SubtitleSourceRecoveryTests {
         let item = MediaItem(ratingKey: "fixture", title: "Fixture", type: "movie",
             media: ambiguous ? [output, source, source] : [output])
         let selected = DownloadManager.subtitleRepairPart(item: item, metadata: reloaded)
-        withKnownIssue("P7 red pin: 08-source-proof") { #expect(selected == nil) }
+        do { #expect(selected == nil) }
     }
 }
 #endif

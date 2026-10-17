@@ -54,7 +54,7 @@ struct P7SideAssetOrderingTests {
         release.signal(true)
         _ = await oldDelivered.wait()
         let parked = await f.manager.sideAssetFetchCoordinator.isParkedForP7Testing(owner)
-        withKnownIssue("P7 red pin: 14") { #expect(!parked) }
+        do { #expect(!parked) }
         fetch?.cancel()
         await f.manager.sideAssetFetchCoordinator.cancel(owner: owner)
         if let fetch { _ = await fetch.result }
@@ -62,5 +62,21 @@ struct P7SideAssetOrderingTests {
         f.manager.optionalSideAssetControlDidDeliver = nil
         await f.finish()
     }
+    @Test func cancellationFencesOldRegistrationButAllowsLaterRepairPass() async throws {
+        let coordinator = SideAssetFetchCoordinator()
+        let owner = SideAssetOwner(rawValue: "fixture-owner")
+        await coordinator.applyDownloadControl(.cancel, owner: owner, version: 2)
+        await coordinator.applyDownloadControl(.park(true), owner: owner, version: 1, registration: true)
+        await coordinator.applyDownloadControl(.park(false), owner: owner, version: 3)
+        await #expect(throws: CancellationError.self) {
+            try await coordinator.fetch(origin: .init(rawValue: "fixture-origin"), owner: owner,
+                requestKey: .init(rawValue: "cancelled")) { Data([1]) }
+        }
+        // Completion releases optional work too; a later foreground repair is a new admission.
+        await coordinator.applyDownloadControl(.park(false), owner: owner, version: 4, registration: true)
+        #expect(try await coordinator.fetch(origin: .init(rawValue: "fixture-origin"), owner: owner,
+            requestKey: .init(rawValue: "repair")) { Data([2]) } == Data([2]))
+    }
+
 }
 #endif

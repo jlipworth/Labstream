@@ -71,6 +71,7 @@ public enum DownloadOfflineMetadataBuilder {
                                backendServerID: session.serverID,
                                backendUserID: session.userID,
                                mediaSourceID: mediaSourceID,
+                               textSubtitleSourceMediaSourceID: session.kind == .emby ? mediaSourceID : nil,
                                audioStreamIndex: audioStreamIndex,
                                playSessionID: nil,
                                downloadLane: downloadLane,

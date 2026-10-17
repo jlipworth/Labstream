@@ -312,7 +312,7 @@ public enum JellyfinLibrary {
                                        itemId: String,
                                        mediaSourceId: String?,
                                        container: String?) throws -> URLRequest {
-        let cleanContainer = (container ?? "mp4")
+        let cleanContainer = (MediaBrowserDownloadContainer.token(container) ?? "mp4")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
             .filter { $0.isLetter || $0.isNumber }

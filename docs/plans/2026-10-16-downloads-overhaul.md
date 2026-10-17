@@ -356,6 +356,23 @@ Acceptance is a phase's pins and inventory rows staying green.
 
 ## Progress journal
 
+- **2026-10-17 — P7.3 MediaBrowser lane.** Added one first-container-token policy,
+  one injected PlaybackInfo transport/decode/verdict boundary and one backend/exact-attempt
+  keepalive lifecycle. Selected source/audio remain authoritative; owning-session checks fence
+  suspended work. Emby Convert/reuse/static handoff and retry preserve the independent original
+  text-subtitle source; repair resolves exact IDs after source reordering and skips ambiguous or
+  historically unprovable origins. Added only optional `textSubtitleSourceMediaSourceID`, decoded
+  with `decodeIfPresent`; store/envelope schema remains v5. Compatibility coverage includes missing
+  and unknown v5 fields, round-trip, handoff merge and an old-reader subset. Media/BIF retain the
+  negotiated output source. Side-work tickets are reserved before suspension, with actor-side
+  ordering and cancellation fencing for controls and fetch-entry registration; later explicit
+  repair passes can register fresh work. Pins **07, 08, 08-source-proof, 08-coding and 14** were
+  reproduced red and unwrapped green. Hermetic PMSKit: **1,621 tests**, two retained lead-lane
+  known issues. Focused hosted negotiation/keepalive/subtitle/ordering controls passed; full hosted
+  and final hygiene gates are recorded with P7.4. `Generic`, fixed-zero Jellyfin interim, Emby
+  Ping-only, static checkpoint extensions and P6 publication/lease ownership are retained.
+  No simulator, live backend, hardware, push, PR or merge was used.
+
 - **2026-10-17 — P7.2/P7.5 playback lane** on `t3/offline-playback-launch`, based on
   P7.1 `4c0bc1d3`. Detail now admits an exact attempt after orientation through the shared
   factory, with independent presentation-request and playback-session generations. The factory

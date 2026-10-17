@@ -96,6 +96,8 @@ extension DownloadManager {
         // Carry the convert preset + a `.preparing`-grade metadata snapshot. `optimizeTargetName`
         // doubles as the server-prep marker the UI/resume paths key off (parity with Plex).
         var convertMetadata = metadata
+        convertMetadata.textSubtitleSourceMediaSourceID = metadata.textSubtitleSourceMediaSourceID
+            ?? (metadata.isServerPreparedVersion ? nil : metadata.mediaSourceID)
         convertMetadata.optimizeTargetName = targetName
         convertMetadata.downloadLane = .optimize
         convertMetadata.resumeMode = .serverPrepThenStatic
@@ -991,12 +993,14 @@ extension DownloadManager {
                                           targetName: targetName),
               inFlightAttempts.owns(attemptKey),
               endEmbyConvertPoller(for: attemptKey, id: pollerID) else { return }
+        let subtitleSourceID = store.record(for: attemptKey)?.metadata?.textSubtitleSourceMediaSourceID
         clearOptimizeProgress(ratingKey: attemptKey.ratingKey)
         releaseInFlight(for: attemptKey)
         // Keep the preparing row until downloadEmby commits its exact static source. The existing
         // static gate parks this handoff during Pause All; Convert polling itself remains active.
         await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
                            mediaSourceIDOverride: sourceID,
+                           textSubtitleSourceMediaSourceIDOverride: subtitleSourceID,
                            deferStaticStartWhenQueuePaused: !allowWhileQueuePaused,
                            requestedProfileLabelOverride: targetName,
                            allowReplacingExistingActiveRow: true)
