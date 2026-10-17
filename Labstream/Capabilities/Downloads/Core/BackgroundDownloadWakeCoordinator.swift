@@ -33,6 +33,19 @@ final class BackgroundDownloadWakeCoordinator: @unchecked Sendable {
         let drain: Drain
     }
 
+    private let budget: DownloadWakeBudget
+    private let clockHooks: DownloadWakeClockHooks?
+    private var contractWake: DownloadWakeGeneration?
+
+    init(clockHooks: DownloadWakeClockHooks? = nil, budget: DownloadWakeBudget = .application) {
+        self.clockHooks = clockHooks
+        self.budget = budget
+    }
+
+    /// P6.1 scheduling seam only. P6.4 implements identified expiry/release transitions here.
+    /// Timers deliberately do not mutate existing count-only gate behavior in this phase.
+    private func contractTimerFired() {}
+
     private let lock = NSLock()
     private var completionGate = BackgroundDownloadCompletionGate()
     private var deferredRevalidationKeys: Set<DownloadAttemptKey> = []
@@ -64,6 +77,21 @@ final class BackgroundDownloadWakeCoordinator: @unchecked Sendable {
         return true
     }
 
+    /// P6.1 identified facade; P6.4 makes expiry/end validate this exact handle. The current
+    /// adapter deliberately preserves anonymous count behavior so stale-end pins remain red.
+    func beginOperation(kind: DownloadWakeOperation.Kind) -> DownloadWakeOperation {
+        beginOperation()
+        let operation = DownloadWakeOperation(id: UUID(), wake: lock.withLock { contractWake },
+                                     startedAt: clockHooks?.now() ?? DispatchTime.now().uptimeNanoseconds,
+                                     kind: kind)
+        clockHooks?.register(.init(id: operation.id,
+            deadline: operation.startedAt + UInt64(budget.operation * 1_000_000_000),
+            kind: .operation)) { [weak self] in self?.contractTimerFired() }
+        return operation
+    }
+
+    func endOperation(_ operation: DownloadWakeOperation) -> Drain { endOperation() }
+
     func beginOperation() {
         lock.lock()
         completionGate.beginOperation()
@@ -79,10 +107,25 @@ final class BackgroundDownloadWakeCoordinator: @unchecked Sendable {
         return drain
     }
 
+    /// P6.1 compatibility adapter. P6.4 preserves the registry's original absolute deadline.
+    func storeHandler(_ receipt: DownloadWakeHandlerReceipt) {
+        storeHandler(identifier: receipt.identifier, token: receipt.token)
+    }
+
     func storeHandler(identifier: String, token: BackgroundDownloadCompletionHandlerToken) {
         lock.lock()
         completionGate.storeHandler(identifier: identifier, token: token)
+        let arm = contractWake == nil
+        if arm { contractWake = DownloadWakeGeneration(id: UUID()) }
         lock.unlock()
+        if arm, let hooks = clockHooks {
+            let now = hooks.now()
+            for (seconds, kind) in [(max(0, budget.wholeWake - budget.persistenceReserve), DownloadWakeClockHooks.Timer.Kind.persistenceReserve),
+                                    (budget.wholeWake, .absoluteDeadline)] {
+                hooks.register(.init(id: UUID(), deadline: now + UInt64(seconds * 1_000_000_000),
+                                     kind: kind)) { [weak self] in self?.contractTimerFired() }
+            }
+        }
     }
 
     func finishEvents(identifier: String) -> Drain {
@@ -131,6 +174,10 @@ final class BackgroundDownloadWakeCoordinator: @unchecked Sendable {
         let acquiredHold = graceGenerations.updateValue(generation, forKey: key) == nil
         if acquiredHold { completionGate.beginOperation() }
         lock.unlock()
+        if let hooks = clockHooks {
+            hooks.register(.init(id: UUID(), deadline: hooks.now() + UInt64(budget.operation * 1_000_000_000),
+                                 kind: .grace)) { [weak self] in self?.contractTimerFired() }
+        }
         return GraceStart(generation: generation, acquiredHold: acquiredHold)
     }
 
@@ -169,7 +216,11 @@ final class BackgroundDownloadWakeCoordinator: @unchecked Sendable {
     ) -> Drain {
         let didDrain = wasPending && !completionGate.hasPendingHandler
         let keys = didDrain ? deferredRevalidationKeys : []
-        if didDrain { deferredRevalidationKeys.removeAll() }
+        if didDrain {
+            deferredRevalidationKeys.removeAll()
+            // P6.4 acknowledges terminal claim/dispatch after persistence, not this gate drain.
+            contractWake = nil
+        }
         return Drain(completionBatches: batches, deferredRevalidationKeys: keys)
     }
 }

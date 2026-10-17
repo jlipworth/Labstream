@@ -91,4 +91,14 @@ struct OfflineDownloadFileInventoryTests {
         #expect(!OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("../escape.mp4"))
         #expect(!OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("unowned.tmp"))
     }
+    @Test("P6-pin-12: existing hidden attempt staging grammar is recognized")
+    func p6HiddenStagingGrammar() {
+        let path = ".attempt-stage-v1-" + String(repeating: "a", count: 64) + ".stage"
+        withKnownIssue("P6 red pin: P6.3 — classifier omits existing hidden staging grammar") {
+            #expect(OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename(path))
+        }
+        #expect(!OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename(".index.json.commit-fixture"))
+        #expect(!OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("foreign.bin"))
+    }
+
 }

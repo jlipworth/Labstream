@@ -301,7 +301,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// reached a safe state. `urlSessionDidFinishEvents` must not release the app delegate
     /// background completion handler until these reach zero, or visionOS can suspend us between a
     /// temp-stash move and the append/finalize/status write that makes the row durable.
-    private let backgroundWakeCoordinator = BackgroundDownloadWakeCoordinator()
+    private let backgroundWakeCoordinator: BackgroundDownloadWakeCoordinator
+    private let transportWillConstruct: @Sendable () -> Void
+    private let appendWillPerformIO: @Sendable (URL, URL) -> Void
     /// Last scene phase recorded only for diagnostics; scene changes no longer alter the transfer
     /// shape because foreground and background both use one open-ended remainder task.
     /// Task identifiers intentionally abandoned while replacing a range task (duplicate supersede,
@@ -582,6 +584,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private lazy var urlSession: URLSession = makeURLSession()
 
     private func makeURLSession() -> URLSession {
+        transportWillConstruct()
         #if PERFORMANCE_AUDIT
         let transportSpan = PerformanceInstrumentation.begin(
             .runtimeDownloadTransportConstruct,
@@ -708,12 +711,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         store: DownloadStore,
         protocolClasses: [AnyClass]? = nil,
         playbackValidator: (@Sendable (URL, Double?) async -> PlaybackValidation)? = nil,
+        wakeClockHooks: DownloadWakeClockHooks? = nil,
+        wakeBudget: DownloadWakeBudget = .application,
+        transportWillConstruct: @escaping @Sendable () -> Void = {},
+        appendWillPerformIO: @escaping @Sendable (URL, URL) -> Void = { _, _ in },
         releaseBackgroundCompletion: @escaping @MainActor @Sendable (
             BackgroundDownloadCompletionReleaseBatch
         ) -> Void = {
             BackgroundDownloadCompletionRegistry.shared.fireCompletions(in: $0)
         }
     ) {
+        self.backgroundWakeCoordinator = BackgroundDownloadWakeCoordinator(clockHooks: wakeClockHooks, budget: wakeBudget)
+        self.transportWillConstruct = transportWillConstruct
+        self.appendWillPerformIO = appendWillPerformIO
         self.store = store
         self.injectedProtocolClasses = protocolClasses
         self.injectedPlaybackValidator = playbackValidator
@@ -748,6 +758,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     func releaseRangeBodyForTesting(_ url: URL) { releaseRangeBodyClaim(url) }
+
+    /// P6 scheduling seam invokes the same physical append primitive; no fixture copy algorithm.
+    func appendFileForP6Testing(at source: URL, onto destination: URL) throws -> Int {
+        try appendFile(at: source, onto: destination)
+    }
 
     func holdRangeIOForTesting() { rangeIOQueue.suspend() }
     func releaseRangeIOForTesting() { rangeIOQueue.resume() }
@@ -5869,6 +5884,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         defer { try? reader.close() }
         let writer = try FileHandle(forWritingTo: destination)
         defer { try? writer.close() }
+        appendWillPerformIO(source, destination)
         try writer.seekToEnd()
         var appended = 0
         let blockSize = 4 * 1_024 * 1_024
