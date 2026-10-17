@@ -272,7 +272,7 @@ User-facing expectations worth setting (the "downloads disclaimer"):
 | `DownloadManager+SeasonPlanner` and `SeasonDownloadPlannerSheet` | Immutable season drafts, one atomic Store commit of new rows plus retry markers, and lane-capped concurrent admission. |
 | `DownloadOptionsModel` | Typed per-item option resolution for the download sheet; it does not own season planning. |
 | `DownloadVolumeFreeSpace` | Purgeable-inclusive free-space measurement used by storage-full parking. |
-| `DownloadStore` | Schema-v4 index state, exact-attempt mutation admission, and transactional artifact state. |
+| `DownloadStore` | Schema-v5 index state (v4 loads and is upgraded once), exact-attempt mutation admission, work admission (`attemptAdmitsWork`), and transactional artifact state. |
 | `DownloadArtifactLifecycleCoordinator` and file-effect seams | Order attempt-scoped resume/checkpoint/promotion/deletion work with its terminal persistence outcome. |
 | `DownloadWorkRegistry` | Attempt-scoped side-cache and encoder-task ownership. |
 | `DownloadCleanupIntentJournal` | Independent durable, credential-free server-cleanup authority for all three backends: Jellyfin/Emby encoders, Emby Convert jobs and Plex optimize queue items. |
@@ -346,9 +346,20 @@ Startup first installs all transfer callbacks and registers the still-dormant se
 background-completion registry. When the Store admits a healthy current index, the initial
 transport submission crosses one bounded MainActor turn and retains the manager until that
 submission occurs. A retry before that turn cancels the deferred edge and owns the one immediate
-submission, so retry cannot overtake it or submit activation twice. Unsupported schemas retain
-their explicit reset path, while unreadable indexes and malformed current ownership remain
-fail-closed. The deferral changes critical-path scheduling only: it does not delete the background
+submission, so retry cannot overtake it or submit activation twice.
+
+- **Unsupported schemas** keep their explicit reset path.
+- **Unreadable indexes and malformed current ownership** remain fail-closed.
+- **A v4 index** runs the one-time upgrade pass (see PERSISTENCE) before `.ready` is published.
+
+**Delete** stops exactly its attempt: tracked tasks, any OS task carrying that attempt's marker,
+prep pollers and keepalive. It never stops a replacement attempt.
+
+A row being deleted, whether behind a row-deletion barrier or as a capsule, admits no new work:
+- transfer start, resume and finalization;
+- retry continuation;
+- season admission;
+- Plex optimize polling and creation. The deferral changes critical-path scheduling only: it does not delete the background
 transport, recovery work, persistence barriers, or background-completion durability.
 
 - adopts only current task markers whose exact attempt matches the durable row;
