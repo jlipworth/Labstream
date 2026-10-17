@@ -356,6 +356,10 @@ Acceptance is a phase's pins and inventory rows staying green.
 
 ## Progress journal
 
+- **2026-10-17 — Dead-code cleanup.** Removed unused rating-key mutations, legacy Emby
+  tombstone producers, compact captions and async adapters; migrated synchronous test fixtures
+  to bounded submissions. Kept legacy consumption, exact outcomes, schema v5 and D1 unchanged.
+
 - **2026-10-17 — P7.6 integration.** Joined the library's default factory to the stable
   manager-owned launch authority and both surfaces to the event-consuming admitted-launch player.
   Removed the temporary rejecting Debug factory, library progress/close shim and legacy fixture
