@@ -1,3 +1,4 @@
+#if !os(tvOS)
 import Foundation
 import PMSKit
 import Synchronization
@@ -290,3 +291,4 @@ private final class TerminalSnapshotGate: @unchecked Sendable {
 
     func releaseFailing() { release.signal() }
 }
+#endif
