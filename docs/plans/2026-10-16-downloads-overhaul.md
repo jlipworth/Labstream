@@ -733,6 +733,16 @@ Acceptance is a phase's pins and inventory rows staying green.
   - **No further plan round.** Implementation starts on revision 3, per the maintainer's pace
     decision.
 
+- **2026-10-17 — P4 server-prep runners implemented** on `downloads/p4-runners`.
+  Plex fresh/resume share adoption, typed queue inspection, durable dispatch grace and live-lane
+  handoff; Emby fresh/relaunch use registered Convert pollers and one non-cancelling static
+  handoff, with injectable HTTP/cadences. Runner pins 18–24 and relaunch-inside-grace were
+  red-checked against the original runner bodies with transport, timing and task-inspection seams. Pin 25
+  (Convert continues through Pause All and parks its static handoff) is retained and green.
+  Pure policy tests also cover metadata-inspection gating, tier/playability/source exclusion,
+  persisted grace and stale Emby poller removal. Admission wiring and live/device gates remain
+  with their respective owners.
+
 ## P2 detailed plan — cleanup foundation
 
 *Revision 3.1 (2026-10-17). The round-3 co-review approved it with three changes, applied here:
