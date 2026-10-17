@@ -25,11 +25,7 @@ struct P6ManagerPersistenceTests {
                                     registerForBackgroundEvents: false), session)
         }
         defer { hold.release.signal(); pair.1.invalidateInjectedSessionForTesting() }
-        let readyDeadline = DownloadStoreDeadline.after(5)
-        while !(await MainActor.run { pair.0.admission.recoveryComplete }), readyDeadline.remaining > 0 {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        try #require(await MainActor.run { pair.0.admission.recoveryComplete })
+        try #require(await pair.0.awaitStartupRecoveryForTesting())
         hold.arm()
         let action = Task { @MainActor in
             await pair.0.applyLifecycleEvent(.pause(.user), for: key, context: "p6_pin")
@@ -80,11 +76,7 @@ struct P6ManagerPersistenceTests {
                                     store: store, session: session, registerForBackgroundEvents: false), session)
         }
         defer { hold.release.signal(); pair.1.invalidateInjectedSessionForTesting() }
-        let readyDeadline = DownloadStoreDeadline.after(5)
-        while !(await MainActor.run { pair.0.admission.recoveryComplete }), readyDeadline.remaining > 0 {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        try #require(await MainActor.run { pair.0.admission.recoveryComplete })
+        try #require(await pair.0.awaitStartupRecoveryForTesting())
         hold.arm()
         let observationDone = DispatchSemaphore(value: 0)
         Thread.detachNewThread { _ = store.lifecycleFacts(for: key); observationDone.signal() }
@@ -123,11 +115,7 @@ struct P6ManagerPersistenceTests {
             return (manager, session)
         }
         defer { hold.release.signal(); pair.1.invalidateInjectedSessionForTesting() }
-        let deadline = DownloadStoreDeadline.after(5)
-        while !(await MainActor.run { pair.0.admission.recoveryComplete }), deadline.remaining > 0 {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        try #require(await MainActor.run { pair.0.admission.recoveryComplete })
+        try #require(await pair.0.awaitStartupRecoveryForTesting())
         hold.arm()
         let record = try #require(store.record(for: key))
         #expect(await MainActor.run { pair.0.requestAdmission(for: record, origin: .user) })

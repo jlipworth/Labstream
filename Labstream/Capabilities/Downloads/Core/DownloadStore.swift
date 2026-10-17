@@ -863,7 +863,8 @@ final class DownloadStore: @unchecked Sendable {
          checkpointFilesystem: DownloadStaticCheckpointFilesystem = .live,
          promotionFilesystem: DownloadPromotionFilesystem = .live,
          storeFilesystem: DownloadStoreFilesystem = .live,
-         startupOnWorker: Bool = false) {
+         startupOnWorker: Bool = false,
+         startupRepairWillBegin: @escaping @Sendable () -> Void = {}) {
         self.storeFilesystem = storeFilesystem
         self.fileManager = fileManager
         self.artifactFilesystem = artifactFilesystem
@@ -914,6 +915,7 @@ final class DownloadStore: @unchecked Sendable {
             initialStartupSubmission = RecoverySubmission { [self] in
                 startupReprobeWorkerLock.lock()
                 defer { startupReprobeWorkerLock.unlock() }
+                startupRepairWillBegin()
                 captureStartupStagingIdentities()
                 completeAdmissibleStartup(probe: startupProbe, indexData: startupIndexData)
                 return startupIndexAdmission()
@@ -4451,7 +4453,7 @@ final class DownloadStore: @unchecked Sendable {
             }
         }
         artifactLifecycle.complete(ticket)
-        recoverPendingArtifactIntents()
+        recoverPendingArtifactIntents(successorOf: ticket.key)
     }
 
     private func failArtifactLifecycle(
@@ -4551,11 +4553,12 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     @discardableResult
-    private func recoverPendingArtifactIntents(explicit: Bool = true) -> [DownloadArtifactLifecycleCoordinator.Ticket] {
+    private func recoverPendingArtifactIntents(explicit: Bool = true, successorOf completedKey: DownloadAttemptKey? = nil) -> [DownloadArtifactLifecycleCoordinator.Ticket] {
         lock.lock()
         let pending: [(DownloadAttemptKey, Row.ArtifactIntent)] = rows.values.compactMap { row -> (DownloadAttemptKey, Row.ArtifactIntent)? in
             guard let attemptID = row.attemptID else { return nil }
             let key = DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: attemptID)
+            guard completedKey == nil || key == completedKey else { return nil }
             guard !artifactRetirementKeys.contains(key) else { return nil }
             guard let head = row.pendingArtifactIntents.first,
                   !activeArtifactIntentIDs.contains(head.id) else { return nil }

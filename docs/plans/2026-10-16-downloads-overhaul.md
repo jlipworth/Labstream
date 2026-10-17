@@ -2802,6 +2802,28 @@ These amendments bind the plan above. Where they conflict with it, they win.
   B's revival and poller registration after Pause (with A's prep slot freed while its commit is
   held), and bounded acknowledgement failure when the lease hook is removed.
 
+- **Review follow-up:** cleanup recovery and v4 upgrade Delete now install an immediate
+  deletion fence, perform journal I/O on a worker and await bounded exact persistence proof;
+  continuations recheck action/attempt authority. Wake expiry retains background authorization
+  state even with zero operations; late startup stays dormant until foreground/new-wake
+  authorization, and probe/refill gates remain closed. Artifact completion advances only that
+  attempt's successors, preserving other rows' failed-head suppression and explicit recovery.
+  Red controls restored synchronous cleanup (both heartbeat arguments failed), forgot empty-wake
+  expiry (activation/probe/refill assertions failed), and restored global artifact recovery
+  (unrelated completion retried the failed head).
+- The full concurrent hosted lane reproduced both failed-Convert startup waits, while the
+  focused seven-suite run passed all 41 tests. The readiness assertion raced activation/reattach
+  scheduling, rather than proving a product startup stall. Startup fixtures now await the actual
+  recovery-complete/blocked acknowledgement; held-worker fixtures await entry acknowledgement,
+  and the synchronous exact artifact waiter uses a dedicated thread instead of the cooperative
+  executor. Restoring the two-second startup poll reproduced both failures again. iPhone execution
+  remains the lead's gate; no simulator was booted for this follow-up. D1 and schema v5 are unchanged.
+  Final validation: the affected macOS hosted lane passed twice, **909 tests per run**
+  (843 Swift Testing plus 66 XCTest), with no failures/skips; a clean-DerivedData run was included.
+  Hermetic PMSKit passed **1,616 tests**. Hygiene passed **386 tooling tests**, public-redaction,
+  strict MkDocs, rendered links and Mermaid checks. Red controls and both green runs remain in
+  worktree-local ignored build artifacts.
+
 Lead lane, based on the frozen P6.1 handoff. Manager lifecycle/seed/metadata/PlaySession,
 playback-position and recovery callers now submit work and await bounded proof. Synchronous
 Pause and Delete still install their halt/admission fences immediately; same-row continuations

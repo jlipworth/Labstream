@@ -284,7 +284,7 @@ private final class PrepRunnerFixture {
         manager.embyConvertPollInterval = 0.01
         manager.embyConvertSession = transport
         item = try JSONDecoder().decode(MediaItem.self, from: Data(Self.plexItem(output: false).utf8))
-        try #require(await wait { self.manager.startupRecoveryState == .ready })
+        try #require(await manager.awaitStartupRecoveryForTesting())
         // Cleanup execution has its own integration suite; keep these prep pins off the network.
         await manager.cleanupRunner?.waitUntilIdle()
         manager.cleanupRunner = nil

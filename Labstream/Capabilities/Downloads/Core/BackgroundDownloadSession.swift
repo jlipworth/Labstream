@@ -849,6 +849,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         return admitted && settled.wait(timeout: .now() + 2) == .success
     }
 
+    func continueRangeAfterBodyForTesting(_ key: DownloadAttemptKey, partialSize: Int) {
+        guard let destination = store.attemptWorkingFileURL(for: key) else { return }
+        continueRangeAfterBody(entry: RangeTransfer(ratingKey: key.ratingKey, attemptID: key.attemptID,
+            request: nil, destination: destination, expectedBytes: 100, baseOffset: 0,
+            segmentLength: nil, responseStatus: 206, bodyBytesWritten: partialSize,
+            remainderReason: nil), partialSize: partialSize)
+    }
+
     var rangeBodyDirectoryForTesting: URL?
     var availableStorageBytesForTesting: Int64?
     /// B00: the instant a finished/errored task leaves live tracking, before disposition.
@@ -1586,6 +1594,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         backgroundWakeCoordinator.hasPendingHandler
     }
 
+    var startupAuthorizationExpired: Bool { backgroundWakeCoordinator.hasExpiredBackgroundAuthorization }
+    var onBackgroundWakeAuthorized: (@Sendable () -> Void)?
+
+    func noteForegroundAuthorization() {
+        backgroundWakeCoordinator.noteForegroundAuthorization()
+    }
+
     /// Atomically observes the global wake gate and, for a revalidation request, registers the
     /// exact retry before that gate can drain. This closes the check-then-register lost-wakeup race.
     private func deferPlaybackProbeIfBackgroundWakePending(
@@ -1610,11 +1625,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     ) {
         backgroundWakeCoordinator.storeHandler(identifier: identifier, token: token)
         releaseIfStartupBlocked()
+        onBackgroundWakeAuthorized?()
     }
 
     func noteBackgroundCompletionHandlerStored(_ receipt: DownloadWakeHandlerReceipt) {
         backgroundWakeCoordinator.storeHandler(receipt)
         releaseIfStartupBlocked()
+        onBackgroundWakeAuthorized?()
     }
 
     func noteStartupWakeState(_ state: DownloadStartupWakeState) {

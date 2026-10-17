@@ -5,15 +5,46 @@ import Synchronization
 import Testing
 @testable import Labstream
 
+/// A production scheduling acknowledgement, without a timer racing a loaded executor.
+final class P6Acknowledgement<Value: Sendable>: @unchecked Sendable {
+    private struct State {
+        var value: Value?
+        var waiters: [CheckedContinuation<Value, Never>] = []
+    }
+    private let state = Mutex(State())
+    func signal(_ value: Value) {
+        let waiters = state.withLock { state -> [CheckedContinuation<Value, Never>] in
+            guard state.value == nil else { return [] }
+            state.value = value
+            let waiters = state.waiters
+            state.waiters.removeAll()
+            return waiters
+        }
+        for waiter in waiters { waiter.resume(returning: value) }
+    }
+    func wait() async -> Value {
+        await withCheckedContinuation { continuation in
+            let value = state.withLock { state -> Value? in
+                if let value = state.value { return value }
+                state.waiters.append(continuation)
+                return nil
+            }
+            if let value { continuation.resume(returning: value) }
+        }
+    }
+}
+
 /// Dedicated semaphore gates are released independently of MainActor, even after assertion failure.
 final class P6Hold: @unchecked Sendable {
     let entered = DispatchSemaphore(value: 0)
+    let acknowledgement = P6Acknowledgement<Bool>()
     let release = DispatchSemaphore(value: 0)
     private let armed = Mutex(false)
     func arm() { armed.withLock { $0 = true } }
     func hit() {
         guard armed.withLock({ value in let old = value; value = false; return old }) else { return }
         entered.signal()
+        acknowledgement.signal(true)
         _ = release.wait(timeout: .now() + 10)
     }
 }
