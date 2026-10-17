@@ -85,6 +85,20 @@ struct BackgroundDownloadWakeCoordinatorTests {
         #expect(coordinator.snapshot.pendingOperationCount == 0)
     }
 
+    @Test("Rebuild grace marks its row as owned until the grace ends (B00)")
+    func graceMarksRowOwnedUntilEnded() throws {
+        let coordinator = BackgroundDownloadWakeCoordinator()
+        let attempt = try key("grace-owned")
+        #expect(!coordinator.hasGrace(forRatingKey: attempt.ratingKey))
+
+        _ = coordinator.beginGrace(for: attempt)
+        #expect(coordinator.hasGrace(forRatingKey: attempt.ratingKey))
+        #expect(!coordinator.hasGrace(forRatingKey: "plex:other"))
+
+        _ = coordinator.endGrace(for: attempt)
+        #expect(!coordinator.hasGrace(forRatingKey: attempt.ratingKey))
+    }
+
     @Test("Startup abort clears grace ownership and permits a balanced rearm")
     func abortClearsGraceOwnership() throws {
         let coordinator = BackgroundDownloadWakeCoordinator()
