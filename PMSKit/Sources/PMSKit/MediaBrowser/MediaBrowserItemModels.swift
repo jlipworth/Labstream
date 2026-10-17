@@ -897,14 +897,11 @@ public struct MediaBrowserUserDataDto: Decodable, Sendable, Equatable {
 // MARK: - Backend-specific names (preserve existing call sites & tests)
 
 public typealias EmbyImageType = MediaBrowserImageType
-public typealias EmbyUserViewsResponse = MediaBrowserUserViewsResponse<EmbyFlavor>
 public typealias EmbyItemsResponse = MediaBrowserItemsResponse<EmbyFlavor>
 public typealias EmbyBaseItemDto = MediaBrowserBaseItemDto<EmbyFlavor>
-public typealias EmbyItemMediaSourceDto = MediaBrowserItemMediaSourceDto<EmbyFlavor>
 public typealias EmbyItemMediaStreamDto = MediaBrowserItemMediaStreamDto
 
 public typealias JellyfinImageType = MediaBrowserImageType
-public typealias JellyfinUserViewsResponse = MediaBrowserUserViewsResponse<JellyfinFlavor>
 public typealias JellyfinItemsResponse = MediaBrowserItemsResponse<JellyfinFlavor>
 public typealias JellyfinBaseItemDto = MediaBrowserBaseItemDto<JellyfinFlavor>
 public typealias JellyfinItemMediaStreamDto = MediaBrowserItemMediaStreamDto

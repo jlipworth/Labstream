@@ -163,7 +163,7 @@ struct SharePlayMediaIdentityTests {
     @Test func unsupportedContainersDoNotProduceSharePlayIdentity() {
         let show = MediaItem(ratingKey: "show-rk", title: "Show", type: "show")
         #expect(show.sharePlayMediaIdentity == nil)
-        #expect(show.sharePlayActivityPayload == nil)
+        #expect(SharePlayMediaActivityPayload(mediaItem: show) == nil)
     }
 
     @Test func resolvesMovieByProviderIdAndExactDuration() throws {

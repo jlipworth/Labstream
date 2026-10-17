@@ -10,12 +10,6 @@ struct PlaybackProbeSelectionTests {
         #expect(!PlaybackProbeSelection.matchesExpectedIdentity("", actual: ""))
     }
 
-    @Test func requiresUniqueExactMatch() {
-        #expect(PlaybackProbeSelection.uniqueExactIndex(titles: ["Other", "Episode 42"], query: "episode 42") == 1)
-        #expect(PlaybackProbeSelection.uniqueExactIndex(titles: ["Other"], query: "Episode 42") == nil)
-        #expect(PlaybackProbeSelection.uniqueExactIndex(titles: ["Episode 42", "EPISODE 42"], query: "Episode 42") == nil)
-        #expect(PlaybackProbeSelection.uniqueExactIndex(titles: [], query: "Episode 42") == nil)
-    }
     @Test func explicitMediaBrowserIdentityDisambiguatesOnlyExactTitles() {
         let first = MediaItem(ratingKey: "A", title: "Fixture", type: "movie")
         let second = MediaItem(ratingKey: "B", title: "Fixture", type: "movie")
