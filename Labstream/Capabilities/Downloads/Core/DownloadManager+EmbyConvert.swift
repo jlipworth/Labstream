@@ -190,14 +190,29 @@ extension DownloadManager {
         // Snapshot the existing File MediaSources. Used both to (a) reuse an already-converted version
         // instead of re-converting, and (b) identify the freshly-converted source once a new job
         // completes (a second `File` source appears on the same item).
-        let fileSources = await embyFileSources(server: server, token: token, identity: identity,
-                                                userId: userId, itemId: itemId)
+        let fetchedFileSources = await fetchEmbyFileSources(server: server, token: token,
+                                                            identity: identity,
+                                                            userId: userId, itemId: itemId)
         guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
                                           targetName: targetName) else {
             recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "preflight_sources")
             return
         }
-        let snapshotIds = Set(fileSources.compactMap { $0.id })
+        // B46: a failed or empty fetch is not a real snapshot. Persisting it empty let pickup adopt
+        // the original or an older sibling, so fail closed before any job exists (Retry is fresh:
+        // no recovery identity has been written yet).
+        guard let snapshotIds = EmbyConvertedSourcePolicy.preConversionSnapshotIDs(
+            fetched: fetchedFileSources, primaryMediaSourceID: metadata.mediaSourceID) else {
+            recordDownloadDiagnostic("downloads.convert_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "phase": .label("snapshot"),
+                "fetch_failed": .bool(fetchedFileSources == nil),
+            ])
+            failEmbyConvert(for: storeAttemptKey, .transferFailed(
+                "Couldn't read this item's versions from the server. Retry to continue."))
+            return
+        }
+        let fileSources = fetchedFileSources ?? []
 
         // REUSE PREFLIGHT (#126 on the auto-convert path): if a server-prepared converted version that
         // satisfies this preset's output resolution ALREADY exists, download THAT via the resumable
@@ -998,18 +1013,26 @@ extension DownloadManager {
     /// non-empty id are returned. Best-effort: empty array on any error.
     private func embyFileSources(server: URL, token: String, identity: EmbyClientIdentity,
                                  userId: String, itemId: String) async -> [EmbyMediaSourceInfo] {
+        await fetchEmbyFileSources(server: server, token: token, identity: identity,
+                                   userId: userId, itemId: itemId) ?? []
+    }
+
+    /// `embyFileSources`, but nil on any HTTP/transport/decode error so a caller that must not
+    /// mistake a failure for "no sources" (the pre-conversion snapshot, B46) can fail closed.
+    private func fetchEmbyFileSources(server: URL, token: String, identity: EmbyClientIdentity,
+                                      userId: String, itemId: String) async -> [EmbyMediaSourceInfo]? {
         do {
             let req = try EmbyPlayback.downloadPlaybackInfoRequest(
                 server: server, token: token, identity: identity, userId: userId, itemId: itemId,
                 mediaSourceId: nil, maxStaticBitrate: 200_000_000)
             let (data, response) = try await URLSession.shared.data(for: req)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                return []
+                return nil
             }
             let sources = try EmbyPlaybackInfoResponse.decode(from: data).mediaSources
             return EmbyConvertedSourcePolicy.fileSources(sources)
         } catch {
-            return []
+            return nil
         }
     }
 
