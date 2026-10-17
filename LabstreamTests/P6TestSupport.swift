@@ -40,12 +40,31 @@ final class P6Hold: @unchecked Sendable {
     let acknowledgement = P6Acknowledgement<Bool>()
     let release = DispatchSemaphore(value: 0)
     private let armed = Mutex(false)
+    private let held = Mutex(false)
+    var isHeld: Bool { held.withLock { $0 } }
     func arm() { armed.withLock { $0 = true } }
     func hit() {
         guard armed.withLock({ value in let old = value; value = false; return old }) else { return }
+        held.withLock { $0 = true }
+        defer { held.withLock { $0 = false } }
         entered.signal()
         acknowledgement.signal(true)
         _ = release.wait(timeout: .now() + 10)
+    }
+}
+
+/// Captures progress before the physical gate releases. An old synchronous implementation
+/// cannot pass merely because the hold's independent cleanup watchdog eventually releases it.
+final class P6HeldProgress: @unchecked Sendable {
+    private let value = Mutex<Bool?>(nil)
+    private let events = TestEvents()
+    func acknowledge(_ hold: P6Hold) {
+        value.withLock { $0 = hold.isHeld }
+        events.signal()
+    }
+    func wait() async -> Bool {
+        let arrived = await events.wait { self.value.withLock { $0 != nil } }
+        return arrived && value.withLock { $0 == true }
     }
 }
 

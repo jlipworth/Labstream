@@ -1444,7 +1444,7 @@ private final class LockedFinalizerRequestBox: @unchecked Sendable {
 /// reopened #212 off-head stall.
 @Suite("Held-range body completion gate")
 struct HeldRangeBodyCompletionGateTests {
-    @Test @MainActor
+    @Test
     func heldBodyLifecycleHoldsCompletionGateUntilTrainSlotIsReplanned() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("held-body-gate-\(UUID().uuidString)", isDirectory: true)
@@ -1464,12 +1464,18 @@ struct HeldRangeBodyCompletionGateTests {
             metadata: OfflineMetadata(
                 ratingKey: key.ratingKey, title: "Held Gate", type: "movie",
                 resumeMode: .staticByteRange))
-        #expect(store.createAttemptOwnedRecord(record, attemptID: attemptID) == .committed(key))
+        #expect(await store.createAttemptOwnedRecordAsync(record, attemptID: attemptID) == .committed(key))
         let working = try #require(store.attemptWorkingFileURL(for: key))
         try Data(repeating: 0x5A, count: 8).write(to: working)
 
-        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
-        defer { session.invalidateInjectedSessionForTesting() }
+        // This pin proves operation overlap, not wake expiry. Keep its clock fixed while
+        // the writer is deliberately held; P6's manual-clock pins separately exercise expiry.
+        let clock = DownloadWakeClockHooks(now: { 0 }, register: { _, _ in },
+                                           terminalAcknowledged: { _ in })
+        let registry = await MainActor.run { BackgroundDownloadCompletionRegistry(clockHooks: clock) }
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [],
+            wakeClockHooks: clock, releaseBackgroundCompletion: { registry.fireCompletions(in: $0) })
+        defer { writes.release.signal(); session.invalidateInjectedSessionForTesting() }
         let rebuildNeeded = DispatchSemaphore(value: 0)
         session.onRangeRequestNeeded = { _, _, _ in rebuildNeeded.signal() }
 
@@ -1477,13 +1483,13 @@ struct HeldRangeBodyCompletionGateTests {
         // what keeps it — and the app — alive until the next task/hold exists.
         let identifier = "held-gate-\(UUID().uuidString)"
         let fired = DispatchSemaphore(value: 0)
-        let completionToken = BackgroundDownloadCompletionRegistry.shared.store(
-            identifier: identifier, completion: { fired.signal() })
+        let completionToken = await MainActor.run {
+            registry.store(identifier: identifier, completion: { fired.signal() })
+        }
         defer {
-            BackgroundDownloadCompletionRegistry.shared.fireCompletions(in: .init(
-                identifier: identifier,
-                tokens: [completionToken]
-            ))
+            Task { @MainActor in
+                registry.fireCompletions(in: .init(identifier: identifier, tokens: [completionToken]))
+            }
         }
         session.noteBackgroundCompletionHandlerStored(
             identifier: identifier,
@@ -1507,23 +1513,22 @@ struct HeldRangeBodyCompletionGateTests {
         #expect(await waitForSignal(writes.entered, timeout: 5))
         #expect(await waitForSignal(applied, timeout: 5))
         #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false).pendingBackgroundCompletionOperationCount == 1)
-        #expect(await waitForSignal(fired, timeout: 0) == false)
+        #expect(!hasFired(fired))
 
         // Releasing the writer lets the lifecycle complete; its completion replans the train
         // (request rebuild grace) BEFORE ending the nested operation, so the gate never drains.
         writes.release.signal()
         #expect(await waitForSignal(rebuildNeeded, timeout: 5))
-        var settled = false
-        for _ in 0..<200 {
-            if session.diagnosticSnapshot(includePendingTempCleanupBytes: false).pendingBackgroundCompletionOperationCount == 1 {
-                settled = true
-                break
-            }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(settled, "rebuild-grace hold must overlap the held-lifecycle completion")
-        #expect(await waitForSignal(fired, timeout: 0) == false)
+        await session.drainRangeIOForTesting()
+        #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false).pendingBackgroundCompletionOperationCount == 1,
+                "rebuild-grace hold must overlap the held-lifecycle completion")
+        #expect(!hasFired(fired))
         #expect(store.metadata(for: key.ratingKey)?.heldRangeSegments?.map(\.offset) == [30])
+    }
+
+    /// A synchronous, nonblocking peek; queuing this check can cross the wake deadline.
+    private func hasFired(_ semaphore: DispatchSemaphore) -> Bool {
+        semaphore.wait(timeout: .now()) == .success
     }
 
     private func waitForSignal(
@@ -1531,7 +1536,7 @@ struct HeldRangeBodyCompletionGateTests {
         timeout: TimeInterval
     ) async -> Bool {
         await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
+            Thread.detachNewThread {
                 continuation.resume(returning: semaphore.wait(timeout: .now() + timeout) == .success)
             }
         }

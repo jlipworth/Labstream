@@ -220,16 +220,25 @@ public final class DownloadManager {
     /// Live records (in-progress + completed), backed by `DownloadStore`.
     public private(set) var records: [DownloadRecord] = []
     #if DEBUG
-    @ObservationIgnored private var startupCompletionWaiters: [CheckedContinuation<Bool, Never>] = []
+    @ObservationIgnored private var startupCompletionWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
     /// Observe the actual terminal startup edge. Scheduling delay is not a startup failure;
     /// store operations retain their own bounded deadlines and failure transitions.
     func awaitStartupRecoveryForTesting() async -> Bool {
         if startupRecoveryState == .ready && admission.recoveryComplete { return true }
         if case .blocked = startupRecoveryState { return false }
-        return await withCheckedContinuation { startupCompletionWaiters.append($0) }
+        let id = UUID()
+        return await withCheckedContinuation { continuation in
+            startupCompletionWaiters[id] = continuation
+            // A missing terminal acknowledgement must fail the fixture, including when a red
+            // control restores an implementation that never publishes startup completion.
+            Task { @MainActor [weak self] in
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                self?.startupCompletionWaiters.removeValue(forKey: id)?.resume(returning: false)
+            }
+        }
     }
     private func acknowledgeStartupRecoveryForTesting(_ ready: Bool) {
-        let waiters = startupCompletionWaiters
+        let waiters = startupCompletionWaiters.values
         startupCompletionWaiters.removeAll()
         for waiter in waiters { waiter.resume(returning: ready) }
     }

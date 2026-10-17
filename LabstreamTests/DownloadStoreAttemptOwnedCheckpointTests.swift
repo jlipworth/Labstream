@@ -59,15 +59,30 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
     }
 
     @Test func delayedStaticCheckpointResolversRetainAllTypedOutcomesPast128() async throws {
-        try await withStoreAsync { store, directory in
+        try await withStoreAsync { initial, directory in
             let owner = key("plex:checkpoint-many-results", "attempt-a")
             let media = directory.appendingPathComponent("checkpoint-many-results.mp4")
-            #expect(created(store, key: owner, media: media))
-            let working = try #require(store.attemptWorkingFileURL(for: owner))
+            #expect(created(initial, key: owner, media: media))
+            let working = try #require(initial.attemptWorkingFileURL(for: owner))
             try Data([1]).write(to: working)
-            let submissions = (1...140).map {
+            let gate = BlockFirstHeldIndexWrite()
+            let store = DownloadStore(baseDirectory: directory,
+                indexPersistence: .init { data, url in try gate.write(data, to: url) })
+            defer { gate.release.signal() }
+            // Hold the first prepared commit, before any worker can reserve the path. All
+            // 140 submissions must be admitted; a live checkpoint lease intentionally rejects
+            // competing submissions, which is unrelated to delayed-outcome retention.
+            var submissions = [store.submitStaticRangeCheckpointReset(for: owner, expectedBytes: 2)]
+            try #require(await signal(gate.started, timeout: 30))
+            submissions += (2...140).map {
                 store.submitStaticRangeCheckpointReset(for: owner, expectedBytes: $0 + 1)
             }
+            for submission in submissions {
+                guard case .accepted = submission else {
+                    Issue.record("retention fixture did not admit every checkpoint"); return
+                }
+            }
+            gate.release.signal()
             // This is retention correctness across 140 durable writes, not a five-second
             // disk throughput benchmark. Keep a bounded deadline below the hosted test's
             // 60-second watchdog while allowing concurrent native-build I/O contention.

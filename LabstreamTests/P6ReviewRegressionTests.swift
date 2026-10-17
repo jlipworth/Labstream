@@ -51,9 +51,9 @@ struct P6ReviewRegressionTests {
         }
         try #require(await journalEntered.wait())
         try #require(await hold.acknowledgement.wait())
-        let heartbeat = DispatchSemaphore(value: 0)
-        Task { @MainActor in heartbeat.signal() }
-        #expect(await p6Signal(heartbeat))
+        let heartbeat = P6HeldProgress()
+        Task { @MainActor in heartbeat.acknowledge(hold) }
+        #expect(await heartbeat.wait())
         #expect(store.isDeletionPending(for: key))
         hold.release.signal()
     }

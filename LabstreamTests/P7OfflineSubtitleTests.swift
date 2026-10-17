@@ -9,6 +9,7 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct P7OfflineSubtitleTests {
+    private let preferences = TestUserDefaults()
     private func asset() async throws -> (AVURLAsset, AVMediaSelectionGroup) {
         // Generated one-second black frame + tx3g, without server/media metadata.
         let file = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
@@ -25,7 +26,8 @@ struct P7OfflineSubtitleTests {
         let controller = PlaybackController(item: MediaItem(ratingKey: "fixture", title: "Fixture", type: "movie"),
             sessionSource: .offline(.init(fileURL: asset.url, textSubtitles: [
                 .init(id: 1, displayName: "Fixture sidecar", relativePath: "fixture.srt")])),
-            identity: identity, client: PlexClient(identity: identity), offlineSubtitleCueLoader: loader)
+            identity: identity, client: PlexClient(identity: identity), offlineSubtitleCueLoader: loader,
+            trackPreferenceDefaults: preferences.defaults)
         controller.player.replaceCurrentItem(with: AVPlayerItem(asset: asset))
         return controller
     }
@@ -46,8 +48,6 @@ struct P7OfflineSubtitleTests {
     }
 
     @Test func sidecarAndOffRevokeEmbeddedSelection() async throws {
-        let restore = preservePreferences()
-        defer { restore() }
         let (asset, group) = try await asset()
         let controller = controller(asset: asset, loader: { _ in
             [.init(startMs: 0, endMs: 1_000, text: "Fixture")]
@@ -68,8 +68,6 @@ struct P7OfflineSubtitleTests {
 
     @Test(arguments: [false, true])
     func embeddedSelectionInvalidatesPendingSidecarParse(fromDetail: Bool) async throws {
-        let restore = preservePreferences()
-        defer { restore() }
         let entered = P6Acknowledgement<Bool>()
         let release = P6Acknowledgement<Bool>()
         let (asset, group) = try await asset()
@@ -78,6 +76,7 @@ struct P7OfflineSubtitleTests {
             $0.offlineTextSubtitles = [.init(id: 1, displayName: "Fixture sidecar", relativePath: "fixture.srt")]
         }
         let controller = try await (fromDetail ? f.detailController() : f.libraryController())
+        controller.trackPreferenceDefaults = preferences.defaults
         controller.player.replaceCurrentItem(with: AVPlayerItem(asset: asset))
         controller.setOfflineSubtitleCueLoaderForP7Testing { _ in
             entered.signal(true)
@@ -100,17 +99,5 @@ struct P7OfflineSubtitleTests {
         await f.finish()
     }
 
-    private func preservePreferences() -> () -> Void {
-        let defaults = UserDefaults.standard
-        let keys = [PlaybackPreferences.Keys.subtitlesOff, PlaybackPreferences.Keys.preferredSubtitleLanguage,
-                    PlaybackPreferences.Keys.preferredSubtitleRole]
-        let saved = keys.map { ($0, defaults.object(forKey: $0)) }
-        return {
-            for (key, value) in saved {
-                if let value { defaults.set(value, forKey: key) }
-                else { defaults.removeObject(forKey: key) }
-            }
-        }
-    }
 }
 #endif

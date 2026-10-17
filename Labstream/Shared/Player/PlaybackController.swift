@@ -1004,6 +1004,9 @@ final class PlaybackController {
     /// How often (seconds) the periodic time observer fires.
     private let timelineIntervalSeconds: Double = 10
 
+    /// Track selections read and persist within the controller's preference domain.
+    @ObservationIgnored var trackPreferenceDefaults: UserDefaults
+
     // MARK: - Init
 
     /// Construct one controller from exactly one typed playback authority.
@@ -1017,7 +1020,9 @@ final class PlaybackController {
          initialAudioStreamIndex: Int? = nil,
          initialSubtitleStreamIndex: Int? = nil,
          offlineSubtitleCueLoader: @escaping OfflineSubtitleCueLoader = OfflineSubtitleCueLoading.live,
-         plexAudioStreamSelector: PlexAudioStreamSelector? = nil) {
+         plexAudioStreamSelector: PlexAudioStreamSelector? = nil,
+         trackPreferenceDefaults: UserDefaults = .standard) {
+        self.trackPreferenceDefaults = trackPreferenceDefaults
         self.item = item
         self.sessionSource = sessionSource
         self.identity = identity
@@ -1458,7 +1463,7 @@ final class PlaybackController {
     }
 
     private func persistOfflineSubtitlePreference(for track: OfflineTextSubtitleTrack?) {
-        let defaults = UserDefaults.standard
+        let defaults = trackPreferenceDefaults
         guard let track else {
             defaults.set(true, forKey: SubtitlePrefKey.off)
             defaults.removeObject(forKey: SubtitlePrefKey.language)
@@ -1487,7 +1492,7 @@ final class PlaybackController {
             ?? BackendSubtitleSelection.mediaBrowserWireValue(
                 MediaBrowserPlaybackPreferencePolicy.preferredSubtitleStreamIndex(
                     for: item,
-                    mediaIndex: mediaIndex))
+                    mediaIndex: mediaIndex, defaults: trackPreferenceDefaults))
             ?? .off
         let route: SubtitleDeliveryRoute = mediaBrowserSession?.backend == .emby
             ? .embyEncodedSelection : .jellyfinMetadata
@@ -1673,7 +1678,7 @@ final class PlaybackController {
     /// chosen track's language code (or the "Off" flag) — NOT the option itself, which is
     /// non-`Sendable` and item-specific. Called from the Subtitles tab via `selectSubtitle`.
     private func persistSubtitlePreference(for option: AVMediaSelectionOption?) {
-        let defaults = UserDefaults.standard
+        let defaults = trackPreferenceDefaults
         guard let option else {
             // User picked "Off": remember that and clear any language preference.
             defaults.set(true, forKey: SubtitlePrefKey.off)
@@ -1705,7 +1710,7 @@ final class PlaybackController {
                                                        itemGeneration: Int,
                                                        observedPlaybackGeneration: Int) async {
         guard !didApplySavedSubtitle else { return }
-        let defaults = UserDefaults.standard
+        let defaults = trackPreferenceDefaults
         let wantsOff = defaults.bool(forKey: SubtitlePrefKey.off)
         let savedLang = defaults.string(forKey: SubtitlePrefKey.language)
         let mode = SubtitleAutoSelectMode(rawValue: defaults.string(forKey: PlaybackPreferences.Keys.subtitleAutoSelectMode) ?? "")
@@ -1877,7 +1882,7 @@ final class PlaybackController {
 
     /// Persist a metadata-driven selection without exposing backend off sentinels to the picker.
     private func persistMetadataSubtitlePreference(_ selection: BackendSubtitleSelection) {
-        let defaults = UserDefaults.standard
+        let defaults = trackPreferenceDefaults
         guard case .stream(let streamIndex) = selection,
               let stream = streamingPart?.subtitleStreams.first(where: { $0.id == streamIndex }) else {
             defaults.set(true, forKey: SubtitlePrefKey.off)
@@ -1996,7 +2001,7 @@ final class PlaybackController {
         let code = MediaBrowserPlaybackPreferencePolicy.persistableLanguageCode(
             languageTag: option.extendedLanguageTag,
             languageCode: option.locale?.language.languageCode?.identifier)
-        let defaults = UserDefaults.standard
+        let defaults = trackPreferenceDefaults
         if let code {
             defaults.set(code, forKey: AudioPrefKey.language)
         } else {
@@ -2025,7 +2030,7 @@ final class PlaybackController {
             return
         }
         #endif
-        let savedLang = UserDefaults.standard.string(forKey: AudioPrefKey.language)
+        let savedLang = trackPreferenceDefaults.string(forKey: AudioPrefKey.language)
         // No preference saved: leave the HLS default and don't burn the one-shot gate yet, so a
         // future pick starts fresh.
         guard let savedLang, !savedLang.isEmpty else { return }
@@ -2043,7 +2048,7 @@ final class PlaybackController {
 
         // Select the first audible option whose language matches the saved code. No match →
         // leave the HLS default selection in place.
-        let desiredRole = UserDefaults.standard.string(forKey: AudioPrefKey.role)
+        let desiredRole = trackPreferenceDefaults.string(forKey: AudioPrefKey.role)
             .flatMap(AudioStreamRole.init(rawValue:)) ?? .main
         let match = group.options.first { option in
             Self.languageMatches(languageTag: option.extendedLanguageTag,
@@ -2067,11 +2072,11 @@ final class PlaybackController {
         BackendSubtitleSelection.mediaBrowserWireValue(
             MediaBrowserPlaybackPreferencePolicy.preferredSubtitleStreamIndex(
                 for: item,
-                mediaIndex: mediaIndex)) == .off
+                mediaIndex: mediaIndex, defaults: trackPreferenceDefaults)) == .off
     }
 
     private func selectedBurnSubtitleStreamIDForCurrentPreferences() -> Int? {
-        let defaults = UserDefaults.standard
+        let defaults = trackPreferenceDefaults
         let burnMode = SubtitleBurnMode(rawValue: defaults.string(forKey: PlaybackPreferences.Keys.subtitleBurnMode) ?? "")
             ?? .automatic
         guard burnMode != .automatic else { return nil }
@@ -2113,13 +2118,13 @@ final class PlaybackController {
     private func effectiveRemoteAudioStreamIndex() -> Int? {
         audioStreamIDOverride
             ?? MediaBrowserPlaybackPreferencePolicy.initialAudioStreamIndex(for: item,
-                                                                           mediaIndex: mediaIndex)
+                                                                           mediaIndex: mediaIndex, defaults: trackPreferenceDefaults)
     }
 
     private func effectiveRemoteSubtitleStreamIndex() -> Int? {
         subtitleSelectionOverride?.mediaBrowserWireValue
             ?? MediaBrowserPlaybackPreferencePolicy.preferredSubtitleStreamIndex(for: item,
-                                                                                 mediaIndex: mediaIndex)
+                                                                                 mediaIndex: mediaIndex, defaults: trackPreferenceDefaults)
     }
 
     private func sourcePartForCurrentMedia() -> Part? {
@@ -2208,7 +2213,7 @@ final class PlaybackController {
         // this shared prevents the checkmark from describing a different stream than PlaybackInfo.
         let candidateSelectedID = audioStreamIDOverride
             ?? MediaBrowserPlaybackPreferencePolicy.initialAudioStreamIndex(for: item,
-                                                                            mediaIndex: mediaIndex)
+                                                                            mediaIndex: mediaIndex, defaults: trackPreferenceDefaults)
         guard let selectedID = PlaybackTrackSelectionPolicy.resolvedMetadataAudioStreamID(
             candidate: candidateSelectedID,
             streams: streams) else { return nil }
@@ -2322,10 +2327,10 @@ final class PlaybackController {
         if let stream = part.audioStreams.first(where: { $0.id == streamID }),
            let lang = MediaBrowserPlaybackPreferencePolicy.persistableLanguageCode(
                languageTag: stream.languageTag, languageCode: stream.languageCode) {
-            UserDefaults.standard.set(lang, forKey: AudioPrefKey.language)
+            trackPreferenceDefaults.set(lang, forKey: AudioPrefKey.language)
         }
         if let stream = part.audioStreams.first(where: { $0.id == streamID }) {
-            UserDefaults.standard.set(stream.audioRole.rawValue, forKey: AudioPrefKey.role)
+            trackPreferenceDefaults.set(stream.audioRole.rawValue, forKey: AudioPrefKey.role)
         }
 
         // Restart/reopen where the viewer is — same UX as Quality reload. Plex persists the
@@ -2837,7 +2842,7 @@ final class PlaybackController {
         if audioStreamIDOverride == nil,
            let part = sourcePartForCurrentMedia(),
            let preferredAudioID = MediaBrowserPlaybackPreferencePolicy.preferredAudioStreamIndex(for: item,
-                                                                                                 mediaIndex: mediaIndex),
+                                                                                                 mediaIndex: mediaIndex, defaults: trackPreferenceDefaults),
            part.audioStreams.first(where: { $0.selected == true })?.id != preferredAudioID {
             do {
                 try await client.send(StreamSelectionRequest.selectAudioStream(server: server,

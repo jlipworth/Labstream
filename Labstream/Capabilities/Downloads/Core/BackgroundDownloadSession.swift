@@ -808,6 +808,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     func holdRangeIOForTesting() { rangeIOQueue.suspend() }
     func releaseRangeIOForTesting() { rangeIOQueue.resume() }
+    /// Join callbacks already enqueued on the serialized range queue without a settling poll.
+    func drainRangeIOForTesting() async {
+        await withCheckedContinuation { continuation in
+            rangeIOQueue.async { continuation.resume() }
+        }
+    }
 
     func claimedRangeBodiesForTesting() -> Set<URL> { lock.withLock { Set(claimedRangeBodyURLs.keys) } }
     func transportRetryCountForTesting(_ key: DownloadAttemptKey) -> Int {

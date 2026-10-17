@@ -6,9 +6,11 @@ import Testing
 final class TestLockedBox<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: Value
+    private let didChange: @Sendable () -> Void
 
-    init(_ value: Value) {
+    init(_ value: Value, didChange: @escaping @Sendable () -> Void = {}) {
         storage = value
+        self.didChange = didChange
     }
 
     var value: Value {
@@ -20,7 +22,7 @@ final class TestLockedBox<Value>: @unchecked Sendable {
     @discardableResult
     func withValue<Result>(_ body: (inout Value) throws -> Result) rethrows -> Result {
         lock.lock()
-        defer { lock.unlock() }
+        defer { lock.unlock(); didChange() }
         return try body(&storage)
     }
 }
@@ -70,6 +72,49 @@ func waitForObservedState(_ condition: @escaping @MainActor () -> Bool) async th
         guard await iterator.next() != nil else { break }
     }
     try #require(condition(), "Observed controller state did not transition before outer test guard")
+}
+
+/// Per-test event source. Subscribe before checking state so a completion cannot be lost
+/// between the check and suspension. The outer guard bounds a missing acknowledgement;
+/// it is not a throughput assertion or a poll interval.
+final class TestEvents: @unchecked Sendable {
+    private let streams = TestLockedBox<[UUID: AsyncStream<Void>.Continuation]>([:])
+
+    func signal() {
+        for stream in streams.value.values { stream.yield(()) }
+    }
+
+    @MainActor
+    func wait(until condition: () -> Bool) async -> Bool {
+        let id = UUID()
+        let events = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        streams.withValue { $0[id] = events.continuation }
+        let guardTask = Task {
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            events.continuation.finish()
+        }
+        defer {
+            guardTask.cancel()
+            streams.withValue { $0.removeValue(forKey: id) }
+            events.continuation.finish()
+        }
+        func ready() -> Bool {
+            withObservationTracking { condition() } onChange: { events.continuation.yield(()) }
+        }
+        if ready() { return true }
+        for await _ in events.stream {
+            if ready() { return true }
+        }
+        return condition()
+    }
+}
+
+/// Tests own their preference domain across awaits, including persistence assertions.
+final class TestUserDefaults {
+    let defaults: UserDefaults
+    private let suite = "test-preferences-\(UUID().uuidString)"
+    init() { defaults = UserDefaults(suiteName: suite)! }
+    deinit { defaults.removePersistentDomain(forName: suite) }
 }
 
 /// Monotonic manual nanosecond clock suitable for dependency closures.

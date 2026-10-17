@@ -234,7 +234,7 @@ struct DownloadCleanupOrderingTests {
                 backendUserID: "user-1",
                 playSessionID: "session-A",
                 resumeMode: .staticByteRange))
-        #expect(initial.createAttemptOwnedRecord(row, attemptID: key.attemptID) == .committed(key))
+        #expect(await initial.createAttemptOwnedRecordAsync(row, attemptID: key.attemptID) == .committed(key))
         try Data("published-main".utf8).write(to: mediaURL)
         let workingURL = try #require(initial.attemptWorkingFileURL(for: key))
         try Data("durable-partial".utf8).write(to: workingURL)
@@ -266,11 +266,9 @@ struct DownloadCleanupOrderingTests {
             cleanupIntentJournal: failedJournal,
             registerForBackgroundEvents: false)
 
-        for _ in 0..<100 {
-            if manager.startupRecoveryState == .ready,
-               manager.lastError[key.ratingKey] != nil { break }
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        try #require(await manager.awaitStartupRecoveryForTesting())
+        await manager.launchSweepJournaling?.value
+        try await waitForObservedState { manager.lastError[key.ratingKey] != nil }
 
         #expect(manager.startupRecoveryState == .ready)
         #expect(relaunched.isDeletionPending(for: key))
@@ -306,7 +304,7 @@ struct DownloadCleanupOrderingTests {
         let record = DownloadRecord(
             ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Keepalive",
             localURL: mediaURL, status: .downloading, metadata: metadata)
-        #expect(store.createAttemptOwnedRecord(record, attemptID: key.attemptID) == .committed(key))
+        #expect(await store.createAttemptOwnedRecordAsync(record, attemptID: key.attemptID) == .committed(key))
         try Data("main".utf8).write(to: mediaURL)
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         defer { session.invalidateInjectedSessionForTesting() }
@@ -318,14 +316,18 @@ struct DownloadCleanupOrderingTests {
             cleanupIntentJournal: DownloadCleanupIntentJournal(
                 directory: directory, persistence: failingJournalPersistence()),
             registerForBackgroundEvents: false)
-        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        try #require(await manager.awaitStartupRecoveryForTesting())
 
         let held = HeldManagerTask()
         manager.registerKeepaliveTaskForTesting(held.task(), for: key, backend: .jellyfin)
-        #expect(await waitUntil { held.started })
+        try #require(await held.events.wait { held.started })
         manager.delete(ratingKey: key.ratingKey)
 
-        #expect(await waitUntil { held.cancelled })
+        try #require(await held.events.wait { held.cancelled })
+        await manager.drainManagerOperationsForTesting()
+        // Cancellation precedes the async journal result. Join its published failure before
+        // teardown removes the directory still owned by that preparation task.
+        try await waitForObservedState { manager.lastError[key.ratingKey] != nil }
         #expect(store.isDeletionPending(for: key))
         #expect(store.metadata(for: key.ratingKey)?.playSessionID == "session-A")
         let pending = try #require(store.deletionPendingCleanupIntents(for: key))
@@ -349,7 +351,7 @@ struct DownloadCleanupOrderingTests {
         let record = DownloadRecord(
             ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Convert",
             localURL: mediaURL, status: .preparing, metadata: metadata)
-        #expect(store.createAttemptOwnedRecord(record, attemptID: key.attemptID) == .committed(key))
+        #expect(await store.createAttemptOwnedRecordAsync(record, attemptID: key.attemptID) == .committed(key))
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         defer { session.invalidateInjectedSessionForTesting() }
         let manager = DownloadManager(
@@ -360,7 +362,7 @@ struct DownloadCleanupOrderingTests {
             cleanupIntentJournal: DownloadCleanupIntentJournal(
                 directory: directory, persistence: failingJournalPersistence()),
             registerForBackgroundEvents: false)
-        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        try #require(await manager.awaitStartupRecoveryForTesting())
         manager.activeJobs.insert(key.ratingKey)
         manager.inFlightAttempts.acquire(key)
         let convertAttempt = manager.beginEmbyConvertAttempt(for: key)
@@ -368,11 +370,15 @@ struct DownloadCleanupOrderingTests {
             ratingKey: key.ratingKey, attemptID: convertAttempt, jobId: 42))
         let held = HeldManagerTask()
         manager.registerServerPrepPollerTask(held.task(), for: key)
-        #expect(await waitUntil { held.started })
+        try #require(await held.events.wait { held.started })
 
         manager.delete(ratingKey: key.ratingKey)
 
-        #expect(await waitUntil { held.cancelled })
+        try #require(await held.events.wait { held.cancelled })
+        await manager.drainManagerOperationsForTesting()
+        // Cancellation precedes the async journal result. Join its published failure before
+        // teardown removes the directory still owned by that preparation task.
+        try await waitForObservedState { manager.lastError[key.ratingKey] != nil }
         #expect(store.isDeletionPending(for: key))
         #expect(store.metadata(for: key.ratingKey)?.embyConvertJobID == 42)
         #expect(!manager.embyConvertAttemptIsCurrent(
@@ -420,7 +426,7 @@ struct DownloadCleanupOrderingTests {
             ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Convert",
             localURL: store.destinationURL(ratingKey: key.ratingKey, ext: "mp4"),
             status: .failed, metadata: metadata)
-        #expect(store.createAttemptOwnedRecord(record, attemptID: key.attemptID) == .committed(key))
+        #expect(await store.createAttemptOwnedRecordAsync(record, attemptID: key.attemptID) == .committed(key))
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         defer { session.invalidateInjectedSessionForTesting() }
         let journal = DownloadCleanupIntentJournal(directory: directory)
@@ -448,7 +454,10 @@ struct DownloadCleanupOrderingTests {
         manager.retry(ratingKey: key.ratingKey)
 
         // P4: the row action goes through admission, which opens after startup reattach.
-        #expect(await waitUntil { store.record(for: key)?.status == .preparing },
+        try await waitForObservedState {
+            manager.records.first { $0.ratingKey == key.ratingKey }?.status == .preparing
+        }
+        #expect(store.record(for: key)?.status == .preparing,
                 "lifecycle=\(String(describing: store.lifecycleState(for: key))) ready=\(manager.admission.recoveryComplete) proofs=\(manager.admissionPersistenceProofs.count) supervised=\(manager.admission.supervised.count)")
         #expect(store.metadata(for: key.ratingKey)?.embyConvertJobID == metadata.embyConvertJobID)
     }
@@ -465,7 +474,10 @@ struct DownloadCleanupOrderingTests {
             ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Convert",
             localURL: store.destinationURL(ratingKey: key.ratingKey, ext: "mp4"),
             status: .complete, metadata: FailedConvertAuthority.knownJob.metadata(for: key))
-        #expect(store.createAttemptOwnedRecord(record, attemptID: key.attemptID) == .committed(key))
+        #expect(await store.createAttemptOwnedRecordAsync(record, attemptID: key.attemptID) == .committed(key))
+        // A completed row must have a body through startup reconciliation; otherwise this
+        // cleanup-only fixture is changed to failed before the sweep can classify its job.
+        try Data("main".utf8).write(to: record.localURL)
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         defer { session.invalidateInjectedSessionForTesting() }
         let journal = DownloadCleanupIntentJournal(directory: directory)
@@ -474,7 +486,7 @@ struct DownloadCleanupOrderingTests {
                 clientIdentifier: "complete-convert"), activeBackend: .emby),
             store: store, session: session, cleanupIntentJournal: journal,
             registerForBackgroundEvents: false)
-        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        try #require(await manager.awaitStartupRecoveryForTesting())
 
         manager.teardownOrphanedEncodersOnLaunch()
         await manager.launchSweepJournaling?.value
@@ -538,7 +550,7 @@ struct DownloadCleanupOrderingTests {
         let record = DownloadRecord(
             ratingKey: key.ratingKey, attemptID: key.attemptID, title: metadata.title,
             localURL: mediaURL, status: .complete, metadata: metadata)
-        #expect(store.createAttemptOwnedRecord(record, attemptID: key.attemptID) == .committed(key))
+        #expect(await store.createAttemptOwnedRecordAsync(record, attemptID: key.attemptID) == .committed(key))
         try Data("main".utf8).write(to: mediaURL)
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         defer { session.invalidateInjectedSessionForTesting() }
@@ -548,28 +560,18 @@ struct DownloadCleanupOrderingTests {
             store: store, session: session,
             cleanupIntentJournal: DownloadCleanupIntentJournal(directory: directory),
             registerForBackgroundEvents: false)
-        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        try #require(await manager.awaitStartupRecoveryForTesting())
         #expect(manager.lastError[key.ratingKey] == nil)
 
         manager.delete(ratingKey: key.ratingKey)
 
-        #expect(await waitUntil { store.record(for: key.ratingKey) == nil })
-        // The row is gone but the disclosure must persist past `.removed`, not be cleared to nil.
-        #expect(await waitUntil {
-            manager.lastError[key.ratingKey] == .transferFailed(branch.disclosure)
-        })
-    }
-
-    @MainActor
-    private func waitUntil(
-        attempts: Int = 100,
-        _ predicate: @MainActor () -> Bool
-    ) async -> Bool {
-        for _ in 0..<attempts {
-            if predicate() { return true }
-            try? await Task.sleep(for: .milliseconds(20))
+        try await waitForObservedState {
+            !manager.records.contains { $0.ratingKey == key.ratingKey }
+                && manager.lastError[key.ratingKey] == .transferFailed(branch.disclosure)
         }
-        return predicate()
+        #expect(store.record(for: key.ratingKey) == nil)
+        // The row is gone but the disclosure must persist past `.removed`, not be cleared to nil.
+        #expect(manager.lastError[key.ratingKey] == .transferFailed(branch.disclosure))
     }
 
     private func makeTemporaryDirectory(_ label: String) throws -> URL {
@@ -743,6 +745,7 @@ private final class IndexWriteController: @unchecked Sendable {
 }
 
 private final class HeldManagerTask: @unchecked Sendable {
+    let events = TestEvents()
     private let lock = NSLock()
     private var didStart = false
     private var didCancel = false
@@ -753,10 +756,12 @@ private final class HeldManagerTask: @unchecked Sendable {
     func task() -> Task<Void, Never> {
         Task { [self] in
             lock.withLock { didStart = true }
+            events.signal()
             do {
                 try await Task.sleep(for: .seconds(60))
             } catch {
                 lock.withLock { didCancel = true }
+                events.signal()
             }
         }
     }

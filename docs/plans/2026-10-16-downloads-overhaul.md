@@ -216,6 +216,12 @@ A simplicity review removed about 690 net lines of dead or superseded code: rati
 mutations, the Emby tombstone producer (legacy consumption retained), compact captions, unused
 async-resolver overloads and test-only facades, with fixtures migrated to bounded submissions.
 
+A hosted-suite flake hunt reproduced 14 intermittently failing test functions (startup and
+heartbeat scheduling, checkpoint-admission timing, wake-clock overlap, shared subtitle/queue
+preferences). Fixtures now wait on explicit acknowledgements, events and isolated preference
+suites; no product race was demonstrated and no assertion or expiry pin was weakened. Five
+consecutive full parallel Mac hosted runs then passed.
+
 ## Verification checkpoint
 
 These are inherited journal results, not tests rerun by this documentation lane:
