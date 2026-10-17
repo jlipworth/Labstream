@@ -509,8 +509,22 @@ Acceptance is a phase's pins and inventory rows staying green.
     promotion keeping the reason.
   - **Delete could stash strikes.** Only Retry's `submitRemoveForRetry` stashes them. Clearing
     the stash is fenced by attempt.
-  - **Still open:** a deterministic pin for the reconcile race, and the session-level
-    crash/replay pin.
+  - **Still open:** a deterministic pin for the reconcile race (closed in round 3), and the
+    session-level crash/replay pin.
+- **2026-10-17 — P3a after-review, round 3: not ready, 2 findings (P2).** Round-2 responses 3 and 4
+  were confirmed by inspection.
+  - **Reconcile could still delete newly written bytes.** Range I/O writes files outside the
+    store lock, and progress keeps a failed row failed, so an owner-and-lifecycle check cannot
+    see a write. Reconcile now records each condemned file's identity (inode, size,
+    modification time) and deletes only a file that is unchanged. A file that is new, changed or
+    gone is left for the row's Retry or Delete. This exposure predates P3a, since Range I/O never
+    took the store lock. A deterministic pin writes through a DEBUG hook between the commit and
+    the deletion.
+  - **Background handler.** Under a pending background completion handler, a truncation verdict
+    is only admitted. The working body is now deleted only when the verdict was resolved without
+    a pending handler, which proves the commit. Otherwise the body is kept
+    (`downloads.truncated_body_kept_unproven`) for the failed row's Retry or Delete, and a
+    relaunch re-finalizes it if the verdict was lost.
 
 ## P2 detailed plan — cleanup foundation
 
