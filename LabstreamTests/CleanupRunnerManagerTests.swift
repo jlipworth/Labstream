@@ -231,6 +231,10 @@ struct CleanupRunnerManagerTests {
         let directory = try makeDirectory("active-origin")
         defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
         let store = DownloadStore(baseDirectory: directory)
+        let (manager, _, session) = makeManager(store: store, directory: directory)
+        defer { session.invalidateInjectedSessionForTesting() }
+        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        // Seed after startup reconcile, which would otherwise demote a task-less active row.
         let key = DownloadAttemptKey(
             ratingKey: "jellyfin:live", attemptID: DownloadAttemptID(uuid: UUID()))
         let record = DownloadRecord(
@@ -242,13 +246,7 @@ struct CleanupRunnerManagerTests {
                 backendBaseURLString: "https://jellyfin.example", backendServerID: "server-1",
                 backendUserID: "user-1", playSessionID: "session-A"))
         #expect(store.createAttemptOwnedRecord(record, attemptID: key.attemptID) == .committed(key))
-        let (manager, _, session) = makeManager(store: store, directory: directory)
-        defer { session.invalidateInjectedSessionForTesting() }
-        #expect(await waitUntil { manager.startupRecoveryState == .ready })
-        manager.appModel.jellyfinServerBaseURL = URL(string: "https://jellyfin.example")!
-        manager.appModel.jellyfinAccessToken = "token"
-        manager.appModel.jellyfinUserID = "user-1"
-        manager.appModel.jellyfinServerID = "server-1"
+        #expect(store.record(for: key)?.status == .downloading)
         // A producer whose journal write looked failed kept the encoder, yet the entry is visible.
         let server = try #require(DurableDownloadCleanupIntent.ServerIdentity(
             baseURL: URL(string: "https://jellyfin.example")!, serverID: "server-1", userID: "user-1"))
@@ -257,7 +255,9 @@ struct CleanupRunnerManagerTests {
             operation: .activeEncoding(playSessionID: "session-A"),
             provenance: .abandonment(originAttempt: key)))
 
-        #expect(await manager.executeCleanupIntent(intent) == .waiting)
+        let claimers = manager.claimingRecords(for: intent)
+        #expect(claimers.map(\.ratingKey) == [key.ratingKey])
+        #expect(claimers.first?.metadata?.playSessionID == "session-A")
     }
 
     @Test("An abandonment cannot cancel a job its failed-but-retryable origin row kept")
