@@ -4439,7 +4439,8 @@ public final class DownloadManager {
             }
             embyPlaySessionByAttempt.removeValue(forKey: attemptKey)
             // The journal now holds the stop; hand authority over by clearing the row's own
-            // reference, which is what lets the abandonment run (and only if this succeeds).
+            // reference. If this clear fails or is interrupted, the runner completes it after the
+            // stop once the row is no longer actively transferring.
             _ = store.clearPlaySessionID(for: attemptKey, expectedPlaySessionID: playSessionId)
             cleanupRunner?.kick(reason: "encoder_released")
         case .skip(let reason):
@@ -4481,7 +4482,8 @@ public final class DownloadManager {
             }
             jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
             // The journal now holds the stop; hand authority over by clearing the row's own
-            // reference, which is what lets the abandonment run (and only if this succeeds).
+            // reference. If this clear fails or is interrupted, the runner completes it after the
+            // stop once the row is no longer actively transferring.
             _ = store.clearPlaySessionID(for: attemptKey, expectedPlaySessionID: playSessionId)
             cleanupRunner?.kick(reason: "encoder_released")
         case .skip(let reason):
