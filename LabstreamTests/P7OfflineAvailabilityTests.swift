@@ -46,7 +46,7 @@ struct P7OfflineAvailabilityTests {
     }
 
     @Test func progressDoesNotRescanButForegroundDoes() async throws {
-        let f = try await P7PlaybackFixture(status: .complete)
+        let f = try await P7PlaybackFixture(status: .unverified)
         await f.manager.offlineAvailabilityCache.worker?.value
         let count = Mutex(0)
         f.manager.offlineFileExists = { _ in count.withLock { $0 += 1 }; return true }
@@ -56,9 +56,12 @@ struct P7OfflineAvailabilityTests {
         controller.recordLocalPlaybackPosition(70_000)
         await f.manager.drainManagerOperationsForTesting()
         #expect(count.withLock { $0 } == 1)
+        controller.observeTimeControlStatus(.playing)
+        await f.manager.drainManagerOperationsForTesting()
+        #expect(count.withLock { $0 } == 2) // Verification is an explicit terminal edge.
         f.manager.refreshOfflineAvailability(force: true)
         await f.manager.offlineAvailabilityCache.worker?.value
-        #expect(count.withLock { $0 } == 2)
+        #expect(count.withLock { $0 } == 3)
         await f.finish()
     }
 

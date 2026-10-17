@@ -34,6 +34,8 @@ final class OfflinePlayableAvailabilityCache {
     struct Candidate: Equatable, Sendable {
         let key: DownloadAttemptKey
         let url: URL
+        // A promotion/publication is a refresh edge even when the exact path is unchanged.
+        let terminalStatus: DownloadStatus
     }
     private(set) var value = OfflinePlayableAvailability(generation: 0, indexAccess: .readable, scan: .unresolved)
     @ObservationIgnored private var candidates: [Candidate] = []
@@ -48,7 +50,8 @@ final class OfflinePlayableAvailabilityCache {
                  force: Bool = false, fileExists: @escaping @Sendable (URL) -> Bool) {
         let next = records.filter(\.isComplete).compactMap { row -> Candidate? in
             guard let attemptID = row.attemptID else { return nil }
-            return .init(key: .init(ratingKey: row.ratingKey, attemptID: attemptID), url: row.localURL)
+            return .init(key: .init(ratingKey: row.ratingKey, attemptID: attemptID),
+                         url: row.localURL, terminalStatus: row.status)
         }.sorted { $0.key.ratingKey < $1.key.ratingKey }
         guard next != candidates || access != value.indexAccess || (force && worker == nil)
                 || value.scan == .unresolved && worker == nil else { return }

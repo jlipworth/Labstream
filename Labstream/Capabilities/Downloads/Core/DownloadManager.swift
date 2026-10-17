@@ -269,7 +269,9 @@ public final class DownloadManager {
     var offlineLibrarySnapshot: OfflineLibrarySnapshot = .empty
 
     var hasPlayableOfflineContent: Bool { offlineAvailabilityCache.hasPlayableFile }
-    var offlineAvailabilityIsResolving: Bool { offlineAvailabilityCache.value.scan == .unresolved }
+    var offlineAvailabilityIsResolving: Bool {
+        startupRecoveryState == .preparing || offlineAvailabilityCache.value.scan == .unresolved
+    }
     let offlineAvailabilityCache = OfflinePlayableAvailabilityCache()
     @ObservationIgnored var offlinePresentationGeneration: UInt64 = 0
     @ObservationIgnored var offlinePlaybackSinks: [DownloadAttemptKey: BoundOfflinePlaybackEventSink] = [:]
@@ -1010,6 +1012,8 @@ public final class DownloadManager {
     /// The `.ready` publication that ends a current-store activation.
     private func publishCurrentStoreReady() {
         startupRecoveryInFlight = false
+        records = store.records
+        refreshOfflineAvailability()
         startupRecoveryState = .ready
         startupRecoveryRetryTask?.cancel()
         startupRecoveryRetryTask = nil
