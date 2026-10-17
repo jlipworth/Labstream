@@ -586,10 +586,12 @@ public final class DownloadManager {
                 self.refreshRecords()
             }
         }
-        self.session.onRangeRequestNeeded = { [weak self] attemptKey, reason in
+        self.session.onRangeRequestNeeded = { [weak self] attemptKey, reason, currency in
             Task { @MainActor in
                 guard let self, self.store.ownsAttempt(attemptKey) else { return }
-                self.resumeStaticRangeWhenReady(ratingKey: attemptKey.ratingKey, reason: reason.rawValue)
+                self.session.withRangeRequestRebuild(currency) {
+                    self.resumeStaticRangeWhenReady(ratingKey: attemptKey.ratingKey, reason: reason.rawValue)
+                }
             }
         }
         // Finding 6: logout revokes the JF/Emby token server-side, so an in-flight remainder can
@@ -1586,6 +1588,7 @@ public final class DownloadManager {
     func startAttemptStillCurrent(_ handle: DownloadStartAttemptHandle,
                                   backend: String,
                                   phase: String) -> Bool {
+        guard session.rangeRequestRebuildIsCurrent(for: handle.ratingKey) else { return false }
         let row = store.record(for: handle.ratingKey)
         let verdict = DownloadStartGuardPolicy.verdict(
             tokenIsCurrent: startAttempts.isCurrent(handle.ratingKey, id: handle.attemptID),
@@ -1638,6 +1641,9 @@ public final class DownloadManager {
         )
         switch result {
         case .committed(let key) where key.attemptID == handle.attemptID:
+            guard session.advanceRangeRequestRebuild(to: key, replacing: handle.expectedPreviousOwner) else {
+                return false
+            }
             if let previousOwner = handle.expectedPreviousOwner,
                previousOwner != key.attemptID {
                 let previousKey = DownloadAttemptKey(
