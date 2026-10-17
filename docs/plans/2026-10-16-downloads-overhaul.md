@@ -833,6 +833,25 @@ Acceptance is a phase's pins and inventory rows staying green.
     - deferred: the rebuild primitive, `RangeAttemptState`, the owned-work snapshot, opaque
       removal, the DEBUG move, B06, B13 and the paused-finish item;
     - the lead owns the contracts and manager edits.
+- **2026-10-17 — P5 plan co-review, round 2: approve with changes (4 major, 1 minor).** The
+  changes amend revision 2 and were sent to the transport delegate while it worked:
+  1. **B03.** It covers both the tmp sweep and the durable-held sweep. Destinations are claimed
+     before either rename, the claim survives through manifest publication, and the claim check
+     and the deletion share one lock.
+  2. **Delayed retries.** Each carries a per-attempt delayed-retry generation that pause, cancel
+     and explicit restart invalidate. It is checked when the timer fires and again when
+     replacement work registers. The held operation ends only after the successor registers, or
+     after a suppressed return.
+  3. **Blob resume.** It returns a typed outcome. A storage refusal keeps the blob and its
+     watermark, reports `.storage`, and never falls back to a restart, on both the persisted
+     path and the transient path.
+  4. **B56 (lead, done).** An Emby static original or converted handoff persists the negotiated
+     MediaSource size as `sourcePartSize`. A remux keeps the negotiated size only as its estimate.
+  5. **B14.** Valid 64-bit box sizes are supported with checked bounds; only malformed or
+     truncated lengths stop the walk. HEVC is assigned to the delegate.
+  - **Also:** the append peak is the largest upcoming planned append. The B08 reset covers
+    ordinary and held appends, ignores zero-byte advances, and resets at start only for an
+    explicit user start or resume.
 
 ## P2 detailed plan — cleanup foundation
 
