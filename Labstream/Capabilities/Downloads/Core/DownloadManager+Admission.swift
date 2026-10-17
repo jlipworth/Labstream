@@ -102,8 +102,13 @@ extension DownloadManager {
             launchAdmittedStart(record, lane: grant.lane, origin: grant.origin)
         }
         let granted = Set(grants.map(\.id))
-        scheduleAdmissionWake(at: DownloadAdmissionPolicy.nextEligibleTime(
-            requests: requests.filter { !granted.contains($0.id) }, now: now))
+        // Wake at the earliest backoff, including deferred static resumes that wait as pending
+        // resumes rather than as waiting rows.
+        let backoffs = admission.requestStates.values.map(\.eligibleAt).filter { $0 > now }
+        let next = [DownloadAdmissionPolicy.nextEligibleTime(
+            requests: requests.filter { !granted.contains($0.id) }, now: now), backoffs.min()]
+            .compactMap { $0 }.min()
+        scheduleAdmissionWake(at: next)
         // Automatic static resumes keep a pending-resume marker while they wait for a lane; drain
         // them when the static lane has room after this pass's grants.
         if hasPendingStaticRangeResumes,
@@ -242,6 +247,17 @@ extension DownloadManager {
         }
     }
 
+    /// A metadata refresh that proves the item is gone (HTTP 404/410, no metadata item) is a
+    /// definitive outcome; anything else is treated as the server being unavailable.
+    static func isDefinitiveMissingItem(_ error: Error) -> Bool {
+        if case PlexError.http(let status) = error { return status == 404 || status == 410 }
+        if case MediaBrowserRequestError.httpStatus(let status) = error {
+            return status == 404 || status == 410
+        }
+        if let service = error as? PlexBrowseService.ServiceError { return service == .noMetadataItem }
+        return false
+    }
+
     /// A start that keeps failing transiently stops waiting after this many deferrals (about
     /// three minutes of backoff) and stays a visible, retryable failure.
     static let maximumTransientAdmissionDeferrals = 6
@@ -270,7 +286,7 @@ extension DownloadManager {
             guard applyLifecycleEvent(.admissionRequested(intent), for: key,
                                       context: "admission_requested") else { return false }
         }
-        if exemptFromQueuePause { admission.exempt(record.ratingKey) }
+        if exemptFromQueuePause { markRowResumedDuringQueuePause(record.ratingKey) }
         admission.noteRequest(record.ratingKey, origin: origin)
         scheduleAdmissionPump()
         return true
@@ -297,7 +313,7 @@ extension DownloadManager {
     func admitRowAction(_ record: DownloadRecord) {
         let exempt = isQueuePaused
         let lane = admissionLane(for: record)
-        if exempt { admission.exempt(record.ratingKey) }
+        if exempt { markRowResumedDuringQueuePause(record.ratingKey) }
         // A row paused while it waited for its first start goes back to `planned`, so it starts
         // through the refreshed, source-validated first-start path.
         if record.admissionIntent == .seasonPlanned || record.lifecycle == .planned {
@@ -402,11 +418,15 @@ extension DownloadManager {
     func resolveUnresolvedOriginalRoute(_ record: DownloadRecord, item: MediaItem,
                                         backend: DownloadBackendKind,
                                         planner: DownloadItemPlanner) async -> DownloadIntentChoice? {
+        let generation = admission.supervised[record.ratingKey]?.generation
         let options = await planner.options(
             for: item, preferredAudioLanguage: UserDefaults.standard.string(
                 forKey: PlaybackPreferences.Keys.preferredAudioLanguage),
             existingVersionDiscovery: .fetchOnce, backend: backend)
-        guard let key = attemptKey(for: record), store.attemptAdmitsWork(key) else { return nil }
+        // The probe suspended: a pause, delete or newer grant since then wins.
+        guard let key = attemptKey(for: record), store.attemptAdmitsWork(key),
+              let generation, admission.isCurrent(record.ratingKey, generation: generation),
+              store.lifecycleState(for: key)?.lifecycle == .admitted else { return nil }
         let choice: DownloadIntentChoice
         switch SeasonDownloadOriginalQualityPolicy.resolve(
             hasOriginal: options.original != nil,
