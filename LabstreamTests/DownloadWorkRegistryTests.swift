@@ -269,7 +269,7 @@ struct DownloadWorkRegistryTests {
         let gate = AsyncWorkGate()
         #expect(registry.startIfAbsent(for: old, kind: .finalizer) {
             await gate.wait()
-            _ = store.promoteValidatedAttempt(for: old, terminalStatus: .complete)
+            _ = await store.resolveValidatedPromotion(store.submitValidatedPromotion(for: old, terminalStatus: .complete), deadline: .after(30))
         } != nil)
         await gate.waitUntilEntered()
 

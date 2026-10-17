@@ -260,43 +260,6 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
-    /// Compatibility bridge for orchestration code that selects blocking versus bounded lifecycle
-    /// behavior from its execution context. Never call this from a pending background-session
-    /// delivery; that path must carry the ticket to `flushPersistence` instead.
-    func resolveSynchronously(
-        _ submission: AttemptMutationSubmission
-    ) -> AttemptMutationResult {
-        awaitAttemptMutationSubmission(submission)
-    }
-
-    func resolveSynchronously(
-        _ submission: AttemptResumeDataSubmission
-    ) -> AttemptResumeDataWriteResult {
-        switch submission {
-        case .staleOrMissing:
-            return .staleOrMissing
-        case .artifactWriteFailed(let errorType):
-            return .artifactWriteFailed(errorType: errorType)
-        case .accepted(let ticket):
-            switch artifactLifecycle.waitSynchronously(for: ticket) {
-            case .completed:
-                return .applied
-            case .failed(.persistence(let failure)):
-                return .persistenceFailed(failure)
-            case .failed(.artifact(let errorType)):
-                return .artifactWriteFailed(errorType: errorType)
-            case .timedOut:
-                preconditionFailure("an unbounded artifact lifecycle wait cannot time out")
-            }
-        }
-    }
-
-    func resolveArtifactSynchronously(
-        _ ticket: DownloadArtifactLifecycleCoordinator.Ticket
-    ) -> DownloadArtifactLifecycleCoordinator.FlushResult {
-        artifactLifecycle.waitSynchronously(for: ticket)
-    }
-
     func resolveArtifactSynchronouslyForTests(
         through watermark: DownloadArtifactLifecycleCoordinator.Watermark
     ) -> DownloadArtifactLifecycleCoordinator.FlushResult {
@@ -336,16 +299,6 @@ final class DownloadStore: @unchecked Sendable {
 
     enum AttemptArtifactMutationSubmission: Sendable, Equatable {
         case accepted(change: AttemptMutationChange, ticket: DownloadArtifactLifecycleCoordinator.Ticket)
-        case staleOrMissing
-    }
-
-    enum AttemptHeldRangeSegmentPersistResult: Sendable, Equatable {
-        case accepted(
-            previous: OfflineHeldRangeSegment?,
-            ticket: PersistenceTicket,
-            persistence: PersistenceFlushResult
-        )
-        case invalidSegment
         case staleOrMissing
     }
 
@@ -1210,17 +1163,6 @@ final class DownloadStore: @unchecked Sendable {
         attemptWorkingFileLayout(for: key)?.workingURL
     }
 
-    /// Publish a caller-validated body through the durable artifact queue. Validation remains the
-    /// caller's authority; this operation only publishes the already-validated exact-attempt file.
-    @discardableResult
-    func promoteValidatedAttempt(
-        for key: DownloadAttemptKey,
-        terminalStatus: DownloadStatus
-    ) -> AttemptValidatedPromotionResult {
-        resolveValidatedPromotionSynchronously(submitValidatedPromotion(
-            for: key, terminalStatus: terminalStatus))
-    }
-
     func submitValidatedPromotion(
         for key: DownloadAttemptKey,
         terminalStatus: DownloadStatus
@@ -1286,34 +1228,6 @@ final class DownloadStore: @unchecked Sendable {
         lock.unlock()
         scheduleArtifactLifecycle(ticket: ticket, intent: intent)
         return .accepted(ticket: ticket)
-    }
-
-    func resolveValidatedPromotionSynchronously(
-        _ submission: AttemptValidatedPromotionSubmission
-    ) -> AttemptValidatedPromotionResult {
-        switch submission {
-        case .immediate(let result): return result
-        case .accepted(let ticket):
-            let lifecycle = artifactLifecycle.waitSynchronously(for: ticket)
-            if let result = lock.withLock({ () -> AttemptValidatedPromotionResult? in
-                promotionAwaitingResultIDs.remove(ticket)
-                return promotionOutcomes.removeValue(forKey: ticket)
-            }) {
-                return result
-            }
-            switch lifecycle {
-            case .completed: return .staleOrMissingOwner
-            case .failed(.persistence(let failure)): return .persistenceFailed(ticket.key, failure)
-            case .failed(.artifact(let errorType)): return .renameFailed(errorType: errorType)
-            case .timedOut: return .staleOrMissingOwner
-            }
-        }
-    }
-
-    func resolveValidatedPromotion(
-        _ submission: AttemptValidatedPromotionSubmission
-    ) async -> AttemptValidatedPromotionResult {
-        await resolveValidatedPromotionDeadline(submission, deadline: .after(30))
     }
 
     private func recordPromotionOutcomeLocked(
@@ -1847,47 +1761,6 @@ final class DownloadStore: @unchecked Sendable {
     func heldRangeSegmentURL(relativePath: String) -> URL? {
         guard Self.isSafeOneLevelRelativePath(relativePath) else { return nil }
         return baseDirectory.appendingPathComponent(relativePath)
-    }
-
-    /// Attempt-owned counterpart. Ownership and manifest replacement share the store lock so a
-    /// delayed body from A cannot attach itself to replacement attempt B.
-    @discardableResult
-    func persistHeldRangeSegment(
-        for key: DownloadAttemptKey,
-        segment: OfflineHeldRangeSegment
-    ) -> AttemptHeldRangeSegmentPersistResult {
-        lock.lock()
-        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.deletionPending,
-              !Self.hasPendingRowDeletion(row),
-              row.pendingValidatedPromotionStatus == nil,
-              reservedHeldBodyDeletionPaths[segment.relativePath] == nil,
-              reservedArtifactDeletionPaths[segment.relativePath] == nil,
-              var metadata = row.metadata else {
-            lock.unlock()
-            return .staleOrMissing
-        }
-        guard Self.isSafeOneLevelRelativePath(segment.relativePath),
-              segment.offset >= 0, segment.length > 0 else {
-            lock.unlock()
-            return .invalidSegment
-        }
-        var segments = metadata.heldRangeSegments ?? []
-        let previous = segments.first { $0.offset == segment.offset }
-        segments.removeAll { $0.offset == segment.offset }
-        segments.append(segment)
-        metadata.heldRangeSegments = segments.sorted { $0.offset < $1.offset }
-        metadata.downloadAttemptID = key.attemptID.rawValue
-        row.metadata = metadata
-        setRowLocked(row, for: key.ratingKey)
-        let ticket = enqueueAttemptPersistenceLocked()
-        lock.unlock()
-        let persistence = waitForPersistence(through: ticket)
-        return .accepted(
-            previous: previous,
-            ticket: persistence.ticket,
-            persistence: persistence.result
-        )
     }
 
     func submitHeldRangeSegment(
@@ -3685,25 +3558,6 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
-    /// Write the artifact before recording its manifest, matching the legacy orphan-avoidance
-    /// ordering. The ownership check, artifact replacement, and in-memory manifest mutation are
-    /// serialized under the store lock so stale attempt A cannot overwrite B's resume blob.
-    @discardableResult
-    func setResumeData(
-        for key: DownloadAttemptKey,
-        _ data: Data,
-        displayBytes: Int? = nil
-    ) -> AttemptResumeDataWriteResult {
-        switch submitResumeData(for: key, data, displayBytes: displayBytes) {
-        case .staleOrMissing:
-            return .staleOrMissing
-        case .artifactWriteFailed(let errorType):
-            return .artifactWriteFailed(errorType: errorType)
-        case .accepted(let ticket):
-            return resolveSynchronously(.accepted(ticket: ticket))
-        }
-    }
-
     @discardableResult
     func submitResumeData(
         for key: DownloadAttemptKey,
@@ -4546,15 +4400,6 @@ final class DownloadStore: @unchecked Sendable {
             }
         }
         return startupIndexAdmission()
-    }
-
-    @discardableResult
-    func resetStaticRangeProgressToDurableCheckpoint(
-        for key: DownloadAttemptKey,
-        expectedBytes explicitExpectedBytes: Int? = nil
-    ) -> AttemptStaticRangeCheckpointResetResult {
-        resolveStaticCheckpointSynchronously(submitStaticRangeCheckpointReset(
-            for: key, expectedBytes: explicitExpectedBytes))
     }
 
     func submitStaticRangeCheckpointReset(

@@ -52,7 +52,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             if !completedWhileStatHeld {
                 try #require(await signal(reader.finished, timeout: 30))
             }
-            #expect(store.resolveStaticCheckpointSynchronously(.accepted(ticket: ticket))
+            #expect(await store.resolveStaticCheckpoint(.accepted(ticket: ticket), deadline: .after(30))
                 == .applied(bytes: 3))
             #expect(store.record(for: owner)?.bytes == 3)
         }
@@ -78,7 +78,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             }
             #expect(store.staticCheckpointOutcomeCountForTests() == 140)
             for submission in submissions {
-                switch store.resolveStaticCheckpointSynchronously(submission) {
+                switch await store.resolveStaticCheckpoint(submission, deadline: .after(30)) {
                 case .applied(bytes: 1), .unchanged(bytes: 1): break
                 default: Issue.record("typed checkpoint outcome was lost")
                 }
@@ -105,8 +105,8 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             let first = store.submitStaticRangeCheckpointReset(for: owner, expectedBytes: 10)
             let second = store.submitStaticRangeCheckpointReset(for: owner, expectedBytes: 20)
             #expect(await signal(gate.started, timeout: 1))
-            async let firstResult = store.resolveStaticCheckpoint(first)
-            async let secondResult = store.resolveStaticCheckpoint(second)
+            async let firstResult = store.resolveStaticCheckpoint(first, deadline: .after(30))
+            async let secondResult = store.resolveStaticCheckpoint(second, deadline: .after(30))
             gate.release.signal()
             gate.release.signal()
             #expect(await firstResult == .applied(bytes: 3))
@@ -147,7 +147,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 for: owner, terminalStatus: .complete)
             #expect(store.submitStaticRangeCheckpointReset(for: owner) == .staleOrMissing)
             gate.release.signal()
-            #expect(await store.resolveValidatedPromotion(promotion)
+            #expect(await store.resolveValidatedPromotion(promotion, deadline: .after(30))
                 == .promoted(owner, bytes: 2, status: .complete))
         }
     }
@@ -159,7 +159,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(created(initial, key: owner, media: stable))
             let working = try #require(initial.attemptWorkingFileURL(for: owner))
             try Data([4, 5, 6, 7]).write(to: working)
-            #expect(initial.promoteValidatedAttempt(for: owner, terminalStatus: .complete)
+            #expect(await initial.resolveValidatedPromotion(initial.submitValidatedPromotion(for: owner, terminalStatus: .complete), deadline: .after(30))
                 == .promoted(owner, bytes: 4, status: .complete))
 
             let gate = BlockCheckpointCopy(failAfterRelease: true)
@@ -222,32 +222,32 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
             let first = store.submitStaticRangeCheckpointReset(for: owner, expectedBytes: 10)
             guard case .persistenceFailed(bytes: 2, _) =
-                    store.resolveStaticCheckpointSynchronously(first) else {
+                    await store.resolveStaticCheckpoint(first, deadline: .after(30)) else {
                 Issue.record("expected terminal snapshot failure"); return
             }
             let successor = store.submitStaticRangeCheckpointReset(for: owner, expectedBytes: 20)
-            #expect(await store.resolveStaticCheckpoint(successor) == .applied(bytes: 2))
+            #expect(await store.resolveStaticCheckpoint(successor, deadline: .after(30)) == .applied(bytes: 2))
             #expect(store.record(for: owner)?.bytes == 2)
             #expect(store.record(for: owner)?.progress == 0.1)
         }
     }
 
-    @Test func copiedTerminalCheckpointReplaysAfterPreTerminalCommitCrash() throws {
-        try withStore { initial, directory in
+    @Test func copiedTerminalCheckpointReplaysAfterPreTerminalCommitCrash() async throws {
+        try await withStoreAsync { initial, directory in
             let owner = key("plex:checkpoint-post-copy-crash", "attempt-a")
             let stable = directory.appendingPathComponent("checkpoint-post-copy-crash.mp4")
             #expect(created(initial, key: owner, media: stable))
             let working = try #require(initial.attemptWorkingFileURL(for: owner))
             try Data([3, 4, 5]).write(to: working)
-            #expect(initial.promoteValidatedAttempt(for: owner, terminalStatus: .complete)
+            #expect(await initial.resolveValidatedPromotion(initial.submitValidatedPromotion(for: owner, terminalStatus: .complete), deadline: .after(30))
                 == .promoted(owner, bytes: 3, status: .complete))
             let writes = FailNthIndexWrite(2)
             let failing = DownloadStore(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
             guard case .persistenceFailed(bytes: 3, _) =
-                    failing.resetStaticRangeProgressToDurableCheckpoint(
-                        for: owner, expectedBytes: 10) else {
+                    await failing.resolveStaticCheckpoint(failing.submitStaticRangeCheckpointReset(
+                        for: owner, expectedBytes: 10), deadline: .after(30)) else {
                 Issue.record("expected post-copy terminal failure"); return
             }
             let reconstructed = try #require(
@@ -271,7 +271,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(created(initial, key: owner, media: stable))
             let working = try #require(initial.attemptWorkingFileURL(for: owner))
             try Data([6, 7, 8, 9]).write(to: working)
-            #expect(initial.promoteValidatedAttempt(for: owner, terminalStatus: .complete)
+            #expect(await initial.resolveValidatedPromotion(initial.submitValidatedPromotion(for: owner, terminalStatus: .complete), deadline: .after(30))
                 == .promoted(owner, bytes: 4, status: .complete))
             let gate = BlockAfterCheckpointCopy()
             let live = DownloadStaticCheckpointFilesystem.live
@@ -294,7 +294,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(relaunched.record(for: owner)?.bytes == 4)
             #expect(relaunched.record(for: owner)?.progress == 0.4)
             gate.release.signal()
-            switch await original.resolveStaticCheckpoint(submission) {
+            switch await original.resolveStaticCheckpoint(submission, deadline: .after(30)) {
             case .applied(bytes: 4), .unchanged(bytes: 4): break
             default: Issue.record("original worker did not retire idempotently")
             }
@@ -316,7 +316,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 for: owner, Data("resume-after-retry".utf8), displayBytes: 18) else {
                 Issue.record("resume submission rejected"); return
             }
-            guard case .failed(.persistence) = store.resolveArtifactSynchronously(failedResume) else {
+            guard case .failed(.persistence) = await store.resolveArtifact(failedResume, deadline: .after(30)) else {
                 Issue.record("expected prepared resume persistence failure"); return
             }
 
@@ -328,7 +328,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 for: owner, segment: segment) else {
                 Issue.record("held successor rejected"); return
             }
-            guard case .completed = store.resolveArtifactSynchronously(successor.ticket) else {
+            guard case .completed = await store.resolveArtifact(successor.ticket, deadline: .after(30)) else {
                 Issue.record("mixed queue did not drain after successor submission"); return
             }
             #expect(store.resumeData(for: owner) == Data("resume-after-retry".utf8))
@@ -344,9 +344,10 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             let old = OfflineHeldRangeSegment(
                 offset: 64, length: 2, relativePath: "held-terminal-old.body")
             try Data([1, 2]).write(to: directory.appendingPathComponent(old.relativePath))
-            guard case .accepted = initial.persistHeldRangeSegment(for: owner, segment: old) else {
+            guard case .accepted(let heldSeed1) = initial.submitHeldRangeSegment(for: owner, segment: old) else {
                 Issue.record("old seed failed"); return
             }
+            #expect(await initial.resolveArtifact(heldSeed1.ticket, deadline: .after(30)) == .completed)
 
             // R1 prepares the replacement; R2 is its terminal intent retirement and fails.
             let writes = FailNthIndexWrite(2)
@@ -360,7 +361,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 for: owner, segment: first) else {
                 Issue.record("first replacement rejected"); return
             }
-            guard case .failed(.persistence) = store.resolveArtifactSynchronously(failed.ticket) else {
+            guard case .failed(.persistence) = await store.resolveArtifact(failed.ticket, deadline: .after(30)) else {
                 Issue.record("expected terminal retirement persistence failure"); return
             }
 
@@ -374,7 +375,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 for: owner, segment: replanned) else {
                 Issue.record("replanned replacement rejected"); return
             }
-            guard case .completed = store.resolveArtifactSynchronously(successor.ticket) else {
+            guard case .completed = await store.resolveArtifact(successor.ticket, deadline: .after(30)) else {
                 Issue.record("terminal-failed held queue did not drain after replan"); return
             }
             #expect(store.record(for: owner)?.metadata?.heldRangeSegments == [replanned])
@@ -396,9 +397,10 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 offset: 64, length: 4, relativePath: "held-old.body")
             try Data([1, 2, 3, 4]).write(
                 to: directory.appendingPathComponent(old.relativePath))
-            guard case .accepted = initial.persistHeldRangeSegment(for: owner, segment: old) else {
+            guard case .accepted(let heldSeed2) = initial.submitHeldRangeSegment(for: owner, segment: old) else {
                 Issue.record("old seed failed"); return
             }
+            #expect(await initial.resolveArtifact(heldSeed2.ticket, deadline: .after(30)) == .completed)
             let gate = BlockFirstHeldIndexWrite()
             let store = DownloadStore(
                 baseDirectory: directory,
@@ -415,15 +417,15 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(FileManager.default.fileExists(
                 atPath: directory.appendingPathComponent(old.relativePath).path))
             gate.release.signal()
-            #expect(store.resolveArtifactSynchronously(submission.ticket) == .completed)
+            #expect(await store.resolveArtifact(submission.ticket, deadline: .after(30)) == .completed)
             #expect(!FileManager.default.fileExists(
                 atPath: directory.appendingPathComponent(old.relativePath).path))
             #expect(store.record(for: owner)?.metadata?.heldRangeSegments == [next])
             #expect(store.deferredHeldRangeBodyDeletionRelativePaths(for: owner)?.isEmpty == true)
         }
     }
-    @Test func staleAttemptCannotReadOrMutateReplacementCheckpointState() throws {
-        try withStore { store, directory in
+    @Test func staleAttemptCannotReadOrMutateReplacementCheckpointState() async throws {
+        try await withStoreAsync { store, directory in
             let a = key("plex:checkpoint", "attempt-a")
             let b = key("plex:checkpoint", "attempt-b")
             let media = directory.appendingPathComponent("checkpoint.mp4")
@@ -433,17 +435,17 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             let workingB = try #require(store.attemptWorkingFileURL(for: b))
             try Data(repeating: 8, count: 4).write(to: workingB)
 
-            #expect(store.setResumeData(for: b, Data("owner-b".utf8), displayBytes: 12)
+            #expect(await store.resolve(store.submitResumeData(for: b, Data("owner-b".utf8), displayBytes: 12), deadline: .after(30))
                     == .applied)
             #expect(store.setRangeValidator(for: b, "etag-b") == .applied)
             #expect(store.setSourcePartSize(for: b, 70) == .applied)
 
-            #expect(store.setResumeData(for: a, Data("stale-a".utf8)) == .staleOrMissing)
+            #expect(await store.resolve(store.submitResumeData(for: a, Data("stale-a".utf8)), deadline: .after(30)) == .staleOrMissing)
             #expect(store.clearResumeData(for: a) == .staleOrMissing)
             #expect(store.setRangeValidator(for: a, "etag-a") == .staleOrMissing)
             #expect(store.clearRangeValidator(for: a) == .staleOrMissing)
             #expect(store.setSourcePartSize(for: a, 999) == .staleOrMissing)
-            #expect(store.resetStaticRangeProgressToDurableCheckpoint(for: a)
+            #expect(await store.resolveStaticCheckpoint(store.submitStaticRangeCheckpointReset(for: a), deadline: .after(30))
                     == .staleOrMissing)
 
             #expect(store.resumeData(for: a) == nil)
@@ -464,8 +466,8 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
         }
     }
 
-    @Test func terminalStaticAuditReadsPublishedStableBodyAfterWorkingPathIsConsumed() throws {
-        try withStore { store, directory in
+    @Test func terminalStaticAuditReadsPublishedStableBodyAfterWorkingPathIsConsumed() async throws {
+        try await withStoreAsync { store, directory in
             let owner = key("plex:terminal-audit", "attempt-a")
             let stable = directory.appendingPathComponent("terminal-audit.mp4")
             #expect(created(store, key: owner, media: stable))
@@ -473,13 +475,13 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             let working = try #require(store.attemptWorkingFileURL(for: owner))
             try Data(repeating: 4, count: 4).write(to: working)
 
-            #expect(store.promoteValidatedAttempt(for: owner, terminalStatus: .complete)
+            #expect(await store.resolveValidatedPromotion(store.submitValidatedPromotion(for: owner, terminalStatus: .complete), deadline: .after(30))
                 == .promoted(owner, bytes: 4, status: .complete))
             #expect(store.attemptWorkingFileURL(for: owner) == nil)
             #expect(store.durableStaticRangeCheckpointSize(for: owner) == 4)
             #expect(store.sourceExactBytes(for: owner) == 10)
-            #expect(store.resetStaticRangeProgressToDurableCheckpoint(
-                for: owner, expectedBytes: 10) == .applied(bytes: 4))
+            #expect(await store.resolveStaticCheckpoint(store.submitStaticRangeCheckpointReset(
+                for: owner, expectedBytes: 10), deadline: .after(30)) == .applied(bytes: 4))
             #expect(store.setStatus(for: owner, .failed) == .applied)
             #expect(store.durableStaticRangeCheckpointSize(for: owner) == 4)
             #expect(FileManager.default.fileExists(atPath: stable.path))
@@ -513,8 +515,8 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
         }
     }
 
-    @Test func heldManifestOperationsAreExactAttemptScoped() throws {
-        try withStore { store, directory in
+    @Test func heldManifestOperationsAreExactAttemptScoped() async throws {
+        try await withStoreAsync { store, directory in
             let a = key("jellyfin:held", "attempt-a")
             let b = key("jellyfin:held", "attempt-b")
             let media = directory.appendingPathComponent("held.mkv")
@@ -524,12 +526,13 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 offset: 64, length: 4, relativePath: "held-owner-b.body")
             let body = directory.appendingPathComponent(segment.relativePath)
             try Data([1, 2, 3, 4]).write(to: body)
-            guard case .accepted = store.persistHeldRangeSegment(for: b, segment: segment) else {
+            guard case .accepted(let heldSeed3) = store.submitHeldRangeSegment(for: b, segment: segment) else {
                 Issue.record("Expected B manifest persist")
                 return
             }
+            #expect(await store.resolveArtifact(heldSeed3.ticket, deadline: .after(30)) == .completed)
 
-            #expect(store.persistHeldRangeSegment(for: a, segment: segment) == .staleOrMissing)
+            #expect(store.submitHeldRangeSegment(for: a, segment: segment) == .staleOrMissing)
             #expect(store.removeHeldRangeSegment(for: a, offset: segment.offset)
                     == .staleOrMissing)
             #expect(store.takeHeldRangeSegments(for: a) == .staleOrMissing)
@@ -576,8 +579,8 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
 
-            guard case .persistenceFailed = store.setResumeData(
-                for: owner, Data("resume".utf8), displayBytes: 6) else {
+            guard case .persistenceFailed = await store.resolve(store.submitResumeData(
+                for: owner, Data("resume".utf8), displayBytes: 6), deadline: .after(30)) else {
                 Issue.record("Expected observable resume manifest failure")
                 return
             }
@@ -601,8 +604,8 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
         }
     }
 
-    @Test func heldPurgeDoesNotDeleteBodyBeforeManifestCommit() throws {
-        try withStore { initial, directory in
+    @Test func heldPurgeDoesNotDeleteBodyBeforeManifestCommit() async throws {
+        try await withStoreAsync { initial, directory in
             let owner = key("plex:purge-fault", "attempt-a")
             let media = directory.appendingPathComponent("purge-fault.mp4")
             let segment = OfflineHeldRangeSegment(
@@ -610,11 +613,12 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             let body = directory.appendingPathComponent(segment.relativePath)
             #expect(created(initial, key: owner, media: media))
             try Data([4, 5, 6]).write(to: body)
-            guard case .accepted = initial.persistHeldRangeSegment(
+            guard case .accepted(let heldSeed4) = initial.submitHeldRangeSegment(
                 for: owner, segment: segment) else {
                 Issue.record("Expected initial manifest")
                 return
             }
+            #expect(await initial.resolveArtifact(heldSeed4.ticket, deadline: .after(30)) == .completed)
             let writes = FailFirstIndexWrite()
             let store = DownloadStore(
                 baseDirectory: directory,
@@ -652,8 +656,8 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
         }
     }
 
-    @Test func failedHeldPurgeBlocksReplacementUntilExactOwnerCleanupCompletes() throws {
-        try withStore { initial, directory in
+    @Test func failedHeldPurgeBlocksReplacementUntilExactOwnerCleanupCompletes() async throws {
+        try await withStoreAsync { initial, directory in
             let a = key("plex:held-replacement-race", "attempt-a")
             let b = key("plex:held-replacement-race", "attempt-b")
             let media = directory.appendingPathComponent("held-replacement-race.mp4")
@@ -662,9 +666,10 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             let bodyA = directory.appendingPathComponent(segment.relativePath)
             #expect(created(initial, key: a, media: media))
             try Data([1, 2, 3, 4]).write(to: bodyA)
-            guard case .accepted = initial.persistHeldRangeSegment(for: a, segment: segment) else {
+            guard case .accepted(let heldSeed5) = initial.submitHeldRangeSegment(for: a, segment: segment) else {
                 Issue.record("Expected A manifest"); return
             }
+            #expect(await initial.resolveArtifact(heldSeed5.ticket, deadline: .after(30)) == .completed)
 
             let writes = FailFirstIndexWrite()
             let store = DownloadStore(
@@ -700,17 +705,18 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             try Data([8, 8, 8, 8]).write(to: bodyB)
             let segmentB = OfflineHeldRangeSegment(
                 offset: 64, length: 4, relativePath: bodyB.lastPathComponent)
-            guard case .accepted = store.persistHeldRangeSegment(for: b, segment: segmentB) else {
+            guard case .accepted(let heldSeed6) = store.submitHeldRangeSegment(for: b, segment: segmentB) else {
                 Issue.record("Expected B manifest"); return
             }
+            #expect(await store.resolveArtifact(heldSeed6.ticket, deadline: .after(30)) == .completed)
             #expect(store.retryDeferredHeldRangeBodyDeletions(for: a) == .staleOrMissing)
             #expect(FileManager.default.fileExists(atPath: bodyB.path))
             #expect(store.record(for: b)?.metadata?.heldRangeSegments == [segmentB])
         }
     }
 
-    @Test func relaunchCompletesDurableHeldBodyDeletionIntentIdempotently() throws {
-        try withStore { store, directory in
+    @Test func relaunchCompletesDurableHeldBodyDeletionIntentIdempotently() async throws {
+        try await withStoreAsync { store, directory in
             let owner = key("jellyfin:held-crash", "attempt-a")
             let media = directory.appendingPathComponent("held-crash.mkv")
             let segment = OfflineHeldRangeSegment(
@@ -718,9 +724,10 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             let body = directory.appendingPathComponent(segment.relativePath)
             #expect(created(store, key: owner, media: media))
             try Data([7, 8, 9]).write(to: body)
-            guard case .accepted = store.persistHeldRangeSegment(for: owner, segment: segment) else {
+            guard case .accepted(let heldSeed7) = store.submitHeldRangeSegment(for: owner, segment: segment) else {
                 Issue.record("Expected manifest"); return
             }
+            #expect(await store.resolveArtifact(heldSeed7.ticket, deadline: .after(30)) == .completed)
 
             // Simulate death after the manifest-removal + deletion-intent snapshot commits but
             // before the process executes the filesystem half of the transaction.
@@ -747,8 +754,8 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
         }
     }
 
-    @Test func failedIntentClearReplaysMissingBodyCleanupAfterRelaunch() throws {
-        try withStore { initial, directory in
+    @Test func failedIntentClearReplaysMissingBodyCleanupAfterRelaunch() async throws {
+        try await withStoreAsync { initial, directory in
             let owner = key("emby:held-clear-crash", "attempt-a")
             let media = directory.appendingPathComponent("held-clear-crash.mkv")
             let segment = OfflineHeldRangeSegment(
@@ -756,9 +763,10 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             let body = directory.appendingPathComponent(segment.relativePath)
             #expect(created(initial, key: owner, media: media))
             try Data([4, 2]).write(to: body)
-            guard case .accepted = initial.persistHeldRangeSegment(for: owner, segment: segment) else {
+            guard case .accepted(let heldSeed8) = initial.submitHeldRangeSegment(for: owner, segment: segment) else {
                 Issue.record("Expected manifest"); return
             }
+            #expect(await initial.resolveArtifact(heldSeed8.ticket, deadline: .after(30)) == .completed)
 
             let writes = FailNthIndexWrite(2)
             let store = DownloadStore(
@@ -782,8 +790,8 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
         }
     }
 
-    @Test func deferredDeletionNeverTouchesBodyReferencedByAnotherRowManifest() throws {
-        try withStore { store, directory in
+    @Test func deferredDeletionNeverTouchesBodyReferencedByAnotherRowManifest() async throws {
+        try await withStoreAsync { store, directory in
             let a = key("plex:shared-held-a", "attempt-a")
             let b = key("plex:shared-held-b", "attempt-b")
             let mediaA = directory.appendingPathComponent("shared-held-a.mp4")
@@ -794,10 +802,12 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 offset: 64, length: 4, relativePath: "pathologically-shared-held.body")
             let body = directory.appendingPathComponent(shared.relativePath)
             try Data([3, 3, 3, 3]).write(to: body)
-            guard case .accepted = store.persistHeldRangeSegment(for: a, segment: shared),
-                  case .accepted = store.persistHeldRangeSegment(for: b, segment: shared) else {
+            guard case .accepted(let heldSeed9) = store.submitHeldRangeSegment(for: a, segment: shared),
+                  case .accepted(let heldSeed10) = store.submitHeldRangeSegment(for: b, segment: shared) else {
                 Issue.record("Expected both characterized manifests"); return
             }
+            #expect(await store.resolveArtifact(heldSeed10.ticket, deadline: .after(30)) == .completed)
+            #expect(await store.resolveArtifact(heldSeed9.ticket, deadline: .after(30)) == .completed)
 
             guard case .accepted(let staged) = store.removeHeldRangeSegments(
                 for: a, offsets: [shared.offset],
@@ -822,8 +832,8 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
         }
     }
 
-    @Test func delayedCommittedRemovalCannotPublishOrDeleteLaterFailedRemoval() throws {
-        try withStore { initial, directory in
+    @Test func delayedCommittedRemovalCannotPublishOrDeleteLaterFailedRemoval() async throws {
+        try await withStoreAsync { initial, directory in
             let owner = key("plex:held-revision-race", "attempt-a")
             let media = directory.appendingPathComponent("held-revision-race.mp4")
             #expect(created(initial, key: owner, media: media))
@@ -835,10 +845,12 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             let bodyY = directory.appendingPathComponent(y.relativePath)
             try Data([1, 1]).write(to: bodyX)
             try Data([2, 2]).write(to: bodyY)
-            guard case .accepted = initial.persistHeldRangeSegment(for: owner, segment: x),
-                  case .accepted = initial.persistHeldRangeSegment(for: owner, segment: y) else {
+            guard case .accepted(let heldSeed11) = initial.submitHeldRangeSegment(for: owner, segment: x),
+                  case .accepted(let heldSeed12) = initial.submitHeldRangeSegment(for: owner, segment: y) else {
                 Issue.record("Expected initial manifests"); return
             }
+            #expect(await initial.resolveArtifact(heldSeed12.ticket, deadline: .after(30)) == .completed)
+            #expect(await initial.resolveArtifact(heldSeed11.ticket, deadline: .after(30)) == .completed)
 
             let writes = FailNthIndexWrite(2)
             let store = DownloadStore(
@@ -875,8 +887,8 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
         }
     }
 
-    @Test func checkpointResetReportsFaultWithoutBlessingStaleOwner() throws {
-        try withStore { initial, directory in
+    @Test func checkpointResetReportsFaultWithoutBlessingStaleOwner() async throws {
+        try await withStoreAsync { initial, directory in
             let owner = key("plex:reset-fault", "attempt-a")
             let media = directory.appendingPathComponent("reset-fault.mp4")
             try Data([1, 2, 3]).write(to: media)
@@ -889,8 +901,8 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
 
             guard case .persistenceFailed(let bytes, _) =
-                    store.resetStaticRangeProgressToDurableCheckpoint(
-                        for: owner, expectedBytes: 100) else {
+                    await store.resolveStaticCheckpoint(store.submitStaticRangeCheckpointReset(
+                        for: owner, expectedBytes: 100), deadline: .after(30)) else {
                 Issue.record("Expected observable checkpoint reset failure")
                 return
             }
@@ -947,7 +959,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(relaunched.record(for: owner)?.status == .complete)
             #expect(relaunched.record(for: owner)?.bytes == 9)
             originalGate.release.signal()
-            _ = await original.resolveValidatedPromotion(submission)
+            _ = await original.resolveValidatedPromotion(submission, deadline: .after(30))
         }
     }
 
@@ -983,7 +995,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             let retry = key(owner.ratingKey, "attempt-b")
             #expect(created(relaunched, key: retry, media: stable, replacing: owner.attemptID))
             gate.release.signal()
-            _ = await original.resolveValidatedPromotion(submission)
+            _ = await original.resolveValidatedPromotion(submission, deadline: .after(30))
         }
     }
 

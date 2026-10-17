@@ -45,7 +45,7 @@ struct P6SessionPathLeaseTests {
         let initial = fixture.store()
         let key = try fixture.seed(initial)
         let working = try fixture.working(initial, key)
-        #expect(initial.resetStaticRangeProgressToDurableCheckpoint(for: key, expectedBytes: 10) == .applied(bytes: 3))
+        #expect(await initial.resolveStaticCheckpoint(initial.submitStaticRangeCheckpointReset(for: key, expectedBytes: 10), deadline: .after(30)) == .applied(bytes: 3))
         let hold = P6Hold()
         let live = DownloadStaticCheckpointFilesystem.live
         let store = fixture.store(checkpoint: .init(exists: live.exists, size: live.size,

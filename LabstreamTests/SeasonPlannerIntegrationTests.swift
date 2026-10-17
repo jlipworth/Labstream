@@ -311,7 +311,7 @@ struct SeasonPlannerIntegrationTests {
     @Test func aBlobResumeOverTheCapIsRefusedAndKeepsItsBlob() async throws {
         let h = try await makeHarness("blob-cap")
         let key = try seedPausedSizedRow("episode-1", bytes: 100, host: h.host, in: h.store)
-        #expect(h.store.setResumeData(for: key, Data("fixture-blob".utf8)) == .applied)
+        #expect(await h.store.resolve(h.store.submitResumeData(for: key, Data("fixture-blob".utf8)), deadline: .after(30)) == .applied)
         h.manager.refreshRecords()
         h.manager.storageLimitBytesOverrideForTesting = 500
         let record = try #require(h.store.record(for: "episode-1"))

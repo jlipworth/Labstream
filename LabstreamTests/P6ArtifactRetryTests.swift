@@ -7,7 +7,7 @@ import Testing
 
 struct P6ArtifactRetryTests {
     @Test("P6-pin-11 600 explicit failures of one durable head use bounded bookkeeping")
-    func failedHeadGrowth() throws {
+    func failedHeadGrowth() async throws {
         let fixture = try P6Fixture()
         let initial = fixture.store()
         let key = try fixture.seed(initial)
@@ -17,13 +17,13 @@ struct P6ArtifactRetryTests {
             removeItem: live.removeItem, fileExists: live.fileExists))
         let submission = store.submitResumeData(for: key, Data([1]))
         guard case .accepted(let first) = submission else { Issue.record("first head rejected"); return }
-        guard case .failed(.artifact) = store.resolveArtifactSynchronously(first) else { Issue.record("first head did not fail"); return }
+        guard case .failed(.artifact) = await store.resolveArtifact(first, deadline: .after(30)) else { Issue.record("first head did not fail"); return }
         // Every retry is the real recovery dispatcher for the SAME durable intent; no successor
         // is appended and the head never succeeds. Its prepared recipe remains on disk.
         for _ in 2...600 {
             let retry = try #require(store.recoverArtifactTicketsForP6Testing().first { $0.intentID == first.intentID })
             #expect(retry.intentID == first.intentID)
-            guard case .failed(.artifact) = store.resolveArtifactSynchronously(retry) else { Issue.record("retry did not fail"); return }
+            guard case .failed(.artifact) = await store.resolveArtifact(retry, deadline: .after(30)) else { Issue.record("retry did not fail"); return }
         }
         let counts = store.artifactEntryCountsForP6Testing
         #expect(counts.live <= 1)
@@ -72,7 +72,7 @@ struct P6ArtifactRetryTests {
             fileExists: DownloadArtifactFilesystem.live.fileExists)
         let store = DownloadStore(baseDirectory: fixture.directory, artifactFilesystem: filesystem)
         let submission = store.submitResumeData(for: key, Data([1]))
-        guard case .artifactWriteFailed = store.resolveSynchronously(submission) else { Issue.record("head did not fail"); return }
+        guard case .artifactWriteFailed = await store.resolve(submission, deadline: .after(30)) else { Issue.record("head did not fail"); return }
         let before = attempts.withLock { $0 }
         let other = fixture.record("other", status: .paused, ratingKey: "plex:other")
         _ = store.createAttemptOwnedRecord(other, attemptID: other.attemptID!)

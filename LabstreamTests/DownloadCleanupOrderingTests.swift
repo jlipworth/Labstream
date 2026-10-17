@@ -104,8 +104,8 @@ struct DownloadCleanupOrderingTests {
         }
     }
 
-    @Test func pendingDeletionHaltPreservesHeldManifestAndBodyUntilJournaledDeletion() throws {
-        try withDirectory { directory in
+    @Test func pendingDeletionHaltPreservesHeldManifestAndBodyUntilJournaledDeletion() async throws {
+        try await withDirectory { directory in
             let key = attemptKey("attempt-A")
             let store = DownloadStore(baseDirectory: directory)
             #expect(createRecord(store: store, key: key, persistedSession: "session-A"))
@@ -116,9 +116,10 @@ struct DownloadCleanupOrderingTests {
             try Data("ahead-range".utf8).write(to: heldURL)
             let manifest = OfflineHeldRangeSegment(
                 offset: 64, length: 11, relativePath: heldRelativePath)
-            guard case .accepted = store.persistHeldRangeSegment(for: key, segment: manifest) else {
+            guard case .accepted(let heldSeed1) = store.submitHeldRangeSegment(for: key, segment: manifest) else {
                 Issue.record("Expected held manifest persistence"); return
             }
+            #expect(await store.resolveArtifact(heldSeed1.ticket, deadline: .after(30)) == .completed)
             let candidate = try intent(key: key, session: "session-A")
             let failedJournal = DownloadCleanupIntentJournal(
                 directory: directory, persistence: failingJournalPersistence())
@@ -237,17 +238,18 @@ struct DownloadCleanupOrderingTests {
         try Data("published-main".utf8).write(to: mediaURL)
         let workingURL = try #require(initial.attemptWorkingFileURL(for: key))
         try Data("durable-partial".utf8).write(to: workingURL)
-        #expect(initial.setResumeData(
-            for: key, Data("resume-blob".utf8), displayBytes: 13) == .applied)
+        #expect(await initial.resolve(initial.submitResumeData(
+            for: key, Data("resume-blob".utf8), displayBytes: 13), deadline: .after(30)) == .applied)
         let resumeRelative = try #require(initial.metadata(for: key.ratingKey)?.resumeDataRelativePath)
         let resumeURL = directory.appendingPathComponent(resumeRelative)
         let held = OfflineHeldRangeSegment(
             offset: 26, length: 10, relativePath: "held-relaunch-A.body")
         let heldURL = directory.appendingPathComponent(held.relativePath)
         try Data("ahead-body".utf8).write(to: heldURL)
-        guard case .accepted = initial.persistHeldRangeSegment(for: key, segment: held) else {
+        guard case .accepted(let heldSeed2) = initial.submitHeldRangeSegment(for: key, segment: held) else {
             Issue.record("Expected held manifest persistence"); return
         }
+        #expect(await initial.resolveArtifact(heldSeed2.ticket, deadline: .after(30)) == .completed)
         let candidate = try intent(key: key, session: "session-A")
         #expect(initial.markDeletionPending(for: key, cleanupIntents: [candidate]) == .applied)
 
@@ -671,6 +673,14 @@ struct DownloadCleanupOrderingTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try body(directory)
+    }
+
+    private func withDirectory(_ body: (URL) async throws -> Void) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "download-cleanup-ordering-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try await body(directory)
     }
 
     private var liveRead: @Sendable (URL) throws -> Data? {

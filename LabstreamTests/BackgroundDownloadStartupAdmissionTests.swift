@@ -242,15 +242,16 @@ struct BackgroundDownloadStartupAdmissionTests {
             let working = try #require(store.attemptWorkingFileURL(for: key))
             let workingBytes = Data(repeating: 0xA5, count: 15)
             try workingBytes.write(to: working)
-            #expect(store.setResumeData(
-                for: key, Data("original-resume".utf8), displayBytes: 15) == .applied)
+            #expect(await store.resolve(store.submitResumeData(
+                for: key, Data("original-resume".utf8), displayBytes: 15), deadline: .after(30)) == .applied)
             let held = OfflineHeldRangeSegment(
                 offset: 30, length: 4, relativePath: "pending-held.body")
             let heldURL = directory.appendingPathComponent(held.relativePath)
             try Data([1, 2, 3, 4]).write(to: heldURL)
-            guard case .accepted = store.persistHeldRangeSegment(for: key, segment: held) else {
+            guard case .accepted(let heldSeed1) = store.submitHeldRangeSegment(for: key, segment: held) else {
                 Issue.record("Expected held manifest persistence"); return
             }
+            #expect(await store.resolveArtifact(heldSeed1.ticket, deadline: .after(30)) == .completed)
 
             try session.start(
                 ratingKey: key.ratingKey,
@@ -434,9 +435,10 @@ struct BackgroundDownloadStartupAdmissionTests {
                 offset: 64, length: 4, relativePath: "invalid-held-commit.body")
             let body = directory.appendingPathComponent(manifest.relativePath)
             try Data([1, 2, 3]).write(to: body) // length mismatch makes launch restoration discard
-            guard case .accepted = initial.persistHeldRangeSegment(for: key, segment: manifest) else {
+            guard case .accepted(let heldSeed2) = initial.submitHeldRangeSegment(for: key, segment: manifest) else {
                 Issue.record("Expected manifest"); return
             }
+            #expect(await initial.resolveArtifact(heldSeed2.ticket, deadline: .after(30)) == .completed)
 
             let writes = StartupFailFirstIndexWrite()
             let store = DownloadStore(
@@ -477,9 +479,10 @@ struct BackgroundDownloadStartupAdmissionTests {
                 offset: 64, length: 4, relativePath: "invalid-held-delete.body")
             let body = directory.appendingPathComponent(manifest.relativePath)
             try Data([9, 8, 7]).write(to: body)
-            guard case .accepted = initial.persistHeldRangeSegment(for: key, segment: manifest) else {
+            guard case .accepted(let heldSeed3) = initial.submitHeldRangeSegment(for: key, segment: manifest) else {
                 Issue.record("Expected manifest"); return
             }
+            #expect(await initial.resolveArtifact(heldSeed3.ticket, deadline: .after(30)) == .completed)
 
             let failingFiles = StartupSelectiveRemovalFailureFileManager(blockedPath: body.path)
             let store = DownloadStore(baseDirectory: directory, fileManager: failingFiles)

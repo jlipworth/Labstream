@@ -14,10 +14,11 @@ struct P6StoreInventoryTests {
         let held = ".attempt-stage-v1-" + String(repeating: "b", count: 64) + ".stage"
         try Data([6, 7]).write(to: fixture.directory.appendingPathComponent(held))
         let segment = OfflineHeldRangeSegment(offset: 3, length: 2, relativePath: held)
-        guard case .accepted = initial.persistHeldRangeSegment(for: key, segment: segment) else {
+        guard case .accepted(let heldSeed1) = initial.submitHeldRangeSegment(for: key, segment: segment) else {
             Issue.record("held seed failed"); return
         }
-        #expect(initial.setResumeData(for: key, Data([8])) == .applied)
+        #expect(await initial.resolveArtifact(heldSeed1.ticket, deadline: .after(30)) == .completed)
+        #expect(await initial.resolve(initial.submitResumeData(for: key, Data([8])), deadline: .after(30)) == .applied)
         let resume = try #require(initial.record(for: key)?.metadata?.resumeDataRelativePath)
         let temporary = ".index.json.commit-00000000-0000-0000-0000-000000000001"
         for name in [temporary, "foreign.bin"] {
@@ -49,7 +50,7 @@ struct P6StoreInventoryTests {
         #expect(OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename(held))
 
         hold.release.signal()
-        _ = await store.resolveValidatedPromotion(pending)
+        _ = await store.resolveValidatedPromotion(pending, deadline: .after(30))
     }
 }
 #endif

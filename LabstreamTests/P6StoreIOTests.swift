@@ -90,7 +90,7 @@ struct P6StoreIOTests {
         let initial = fixture.store()
         let owner = try fixture.seed(initial)
         let working = try fixture.working(initial, owner)
-        #expect(initial.setResumeData(for: owner, Data([8])) == .applied)
+        #expect(await initial.resolve(initial.submitResumeData(for: owner, Data([8])), deadline: .after(30)) == .applied)
         let hold = P6Hold()
         let operation: DownloadStoreFilesystem.Operation = switch scenario {
         case .blobRead: .read

@@ -43,7 +43,7 @@ struct P5SessionTransportTests {
         try await withSession { session, store, requests in
             let key = try seed(in: store, expected: total)
             let blob = try PropertyListSerialization.data(fromPropertyList: [:], format: .xml, options: 0)
-            _ = store.setResumeData(for: key, blob, displayBytes: 4096)
+            _ = await store.resolve(store.submitResumeData(for: key, blob, displayBytes: 4096), deadline: .after(30))
             session.availableStorageBytesForTesting = 0
             #expect(session.resumeRange(ratingKey: key.ratingKey, resumeData: blob,
                                        expectedBytes: total) == .storageRefused)
@@ -481,7 +481,7 @@ struct P5SessionTransportTests {
             let key = try seed(in: store, expected: 400)
             _ = store.updateMetadata(for: key) { $0.duration = 1_000 }
             let blob = try PropertyListSerialization.data(fromPropertyList: [:], format: .xml, options: 0)
-            _ = store.setResumeData(for: key, blob, displayBytes: 64)
+            _ = await store.resolve(store.submitResumeData(for: key, blob, displayBytes: 64), deadline: .after(30))
             session.availableStorageBytesForTesting = headroom + 800
             #expect(session.resumeRange(ratingKey: key.ratingKey, resumeData: blob,
                                        expectedBytes: 400) == .storageRefused)

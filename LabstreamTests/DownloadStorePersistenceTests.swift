@@ -474,7 +474,7 @@ struct DownloadStorePersistenceTests {
             #expect(await [firstOutcome, joinedOutcome] == [.removed(key), .removed(key)])
             if predecessorFails {
                 guard case .accepted(let ticket) = predecessor else { return }
-                guard case .failed(.artifact) = store.resolveArtifactSynchronously(ticket) else {
+                guard case .failed(.artifact) = await store.resolveArtifact(ticket, deadline: .after(30)) else {
                     Issue.record("expected predecessor artifact failure"); return
                 }
             }
@@ -590,7 +590,8 @@ struct DownloadStorePersistenceTests {
             #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
             let segment = OfflineHeldRangeSegment(offset: 0, length: 1,
                                                   relativePath: heldURL.lastPathComponent)
-            guard case .accepted = store.persistHeldRangeSegment(for: key, segment: segment) else { return }
+            guard case .accepted(let heldSeed1) = store.submitHeldRangeSegment(for: key, segment: segment) else { return }
+            #expect(await store.resolveArtifact(heldSeed1.ticket, deadline: .after(30)) == .completed)
             _ = store.submitHeldRangeSegmentsRemoval(for: key, offsets: nil)
             #expect(await waitForSignal(blocker.started, timeout: 1))
             let deletion = store.submitRemove(for: key)
@@ -599,8 +600,8 @@ struct DownloadStorePersistenceTests {
         }
     }
 
-    @Test func heldBodyDirectorySyncFailureRetainsIntentForRelaunch() throws {
-        try withTemporaryDirectory { directory in
+    @Test func heldBodyDirectorySyncFailureRetainsIntentForRelaunch() async throws {
+        try await withTemporaryDirectory { directory in
             let id = DownloadAttemptID(uuid: UUID())
             let key = DownloadAttemptKey(ratingKey: "plex:held-dir-sync", attemptID: id)
             let record = makeRecord(ratingKey: key.ratingKey, title: "Held sync", directory: directory,
@@ -616,7 +617,8 @@ struct DownloadStorePersistenceTests {
             #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
             let segment = OfflineHeldRangeSegment(offset: 0, length: 1,
                                                   relativePath: heldURL.lastPathComponent)
-            guard case .accepted = store.persistHeldRangeSegment(for: key, segment: segment) else { return }
+            guard case .accepted(let heldSeed2) = store.submitHeldRangeSegment(for: key, segment: segment) else { return }
+            #expect(await store.resolveArtifact(heldSeed2.ticket, deadline: .after(30)) == .completed)
             _ = store.submitHeldRangeSegmentsRemoval(for: key, offsets: nil)
             guard case .failed(.artifact) = store.resolveArtifactSynchronouslyForTests(
                 through: store.currentArtifactLifecycleWatermark()) else {
