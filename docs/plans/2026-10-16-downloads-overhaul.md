@@ -1158,71 +1158,84 @@ migration therefore means:
 - journaling dropped rows' obligations;
 - bumping the version.
 
-### P3b revision 4 (2026-10-17): upgrade in place through ordinary operations
+### P3b revision 5 (2026-10-17): retire before activation, keep partials
 
-The before-review of revision 3 asked for rework (10 findings). Most of them came from running a
-bespoke transaction beside the store: a receipt spanning several replacements, a drain that
-resets or activates, v4 recovery inside the migration, and reclaim lists that outlive their rows.
-Revision 4 removes the bespoke transaction. Where it conflicts with P3b.1, P3b.2 or revision 3,
-it wins.
+**Maintainer decision (2026-10-17, refining D1).** P3a made lifecycle authoritative inside v4, so
+the upgrade no longer has to reset everything that is not terminal. The maintainer chose "keep
+partials only":
 
-1. **v4 stays a current shape.**
-   - The codec decodes envelopes with version 4 or 5; the row shape is identical.
-   - The store records which version it loaded (`indexSchemaVersion`) and encodes every
-     snapshot with that version, captured with the snapshot at enqueue time. A v4 index is
-     therefore never published as v5 by accident.
-   - Probe: 4 or 5 is `.current`; 1–3 is `.unsupported` (reset); anything newer is unreadable
-     (the P1 guard). The existing malformed, duplicate and unreadable rules are unchanged.
-   - Every v4 recovery path (artifact intents, promotions, held deletions, capsules) runs at
-     startup exactly as today. That covers findings 3 and 6.
-2. **The upgrade is a manager startup phase.** If the store loaded v4, startup passes through
-   `StartupRecoveryState.upgradingSchema` before `.ready`.
-   - The background session activates normally. Its existing purge cancels any OS task whose
-     attempt the store does not own, and ownership is exact-attempt, so a dropped row's late
-     callbacks are rejected.
-   - No migration-specific drain exists (finding 2).
-   - While upgrading, admission stays closed: no new download, Retry, Resume or season
-     admission. No new row can enter the pre-upgrade set.
-3. **D1 through Delete.**
-   - Every row whose lifecycle is neither complete nor unverified is removed through the
-     ordinary user Delete path, `delete(record:)`.
-   - That path journals the row's server obligations with P2's `rowDeletion` provenance before
-     any local deletion. It retains a deletion-pending capsule if the journal is unavailable,
-     and deletes the files through the existing row-deletion artifact intents.
-   - An obligation it cannot represent (a legacy row with no persisted server identity) gets
-     the same disclosure a user Delete gives. Retaining an undeletable row would not repair it.
-   - This covers findings 7, 8 and 9. Reclaim is the existing artifact queue. Orphaned staging,
-     including P3a's renamed condemned bodies, falls to the ordinary startup sweep on the next
-     launch, because v4 probes `.current`.
-4. **Stamp v5.**
-   - Once no pre-upgrade row remains in a non-terminal, non-deletion-pending state,
-     `store.commitSchemaUpgrade()` does two things under the lock:
-     - sets `migratedUnknown` on unverified rows that have no reason;
-     - switches `indexSchemaVersion` to 5 and enqueues one ordinary index commit through the
-       existing committer (full fsync, rename, directory fsync).
-   - The rows are identical apart from that history fill, so there is no candidate, receipt or
-     digest protocol.
-   - A deletion-pending capsule may remain, because it is a valid v5 structure.
-   - Startup becomes `.ready` only after the stamp commits.
-5. **Crash anywhere** before the stamp commits leaves v4 on disk. The next launch repeats the
-   phase idempotently: rows already deleted are gone, and capsules are recovered by the normal
-   paths. A crash after the commit leaves v5. A failed stamp commit leaves the snapshot dirty;
-   startup stays `.upgradingSchema` with Retry Recovery, as for a blocked index. That covers
-   findings 1, 4 and 5.
-6. **Tests** (finding 10, written first):
-   - every lifecycle is kept or dropped as D1 says;
-   - kept bodies, metadata, history and existing unverified reasons are preserved, and
-     `migratedUnknown` is set only when the reason is absent;
-   - a pre-P3a v4 index upgrades directly;
-   - encoding keeps v4 until the stamp, with a delayed write that crosses the stamp boundary;
-   - a crash before the stamp, and after it, each recover;
-   - a dropped row with each obligation kind is journaled before its removal, including when
-     the journal fails (capsule kept, then a later stamp);
-   - admission is closed while upgrading, and a dropped row's late callback is rejected;
-   - v5 loads as current; 1–3 reset; 6 is unreadable;
-   - malformed, duplicate or invalid-owner v4 stays blocked.
-7. **Out of scope.** New artifact-intent cases (reconcile deletion intents, retired condemned
-   bodies) stay in P6. The downgrade-guard release ordering is unchanged.
+- **Kept:** `complete`, `unverified`, and every **paused static-range** row (a durable
+  checkpoint, even at zero bytes).
+- **Dropped:** every other row. That is planned (season) rows, admitted, serverPrep,
+  transferring, finalizing, failed, and paused rows on a non-static route.
+
+Revision 4's direction (no bespoke transaction, D1 through the Delete path's obligation
+journaling) was judged sound in the round-2 review. Revision 5 replaces revision 4's startup
+coordination. Where they conflict, revision 5 wins over P3b.1, P3b.2 and revision 4 below.
+
+1. **The codec and versioning are as in revision 4.**
+   - Envelopes with version 4 or 5 decode; 1–3 reset; anything newer is unreadable.
+   - The store encodes each snapshot with its version captured at enqueue, and that includes
+     the direct season-plan submission and its candidate encoding.
+   - `schemaUpgradeCommitted` is set only from a proven commit of a v5 snapshot. It is distinct
+     from the in-memory encoding version (finding 4).
+2. **The upgrade runs before session activation.** In `continueStartupRecovery`'s `.current`
+   case, if the store's committed schema is v4, the manager runs the upgrade in place of
+   immediate activation. Throughout:
+   - startup stays `.preparing`, and the background session stays dormant;
+   - no transport, reattach, server-prep resumption, queue work, cleanup runner or season
+     admission runs;
+   - each of those is gated on `.ready` or on activation today.
+3. **Classification boundary.**
+   - **Not touched:** a row with pending artifact intents, a legacy
+     `pendingValidatedPromotionStatus` or `deletionPending`. Its existing recovery runs after
+     activation, and it usually ends in a kept state (complete or unverified). There is no
+     recovery barrier (finding 1).
+   - **Kept:** the rows the maintainer decision keeps.
+   - **Retired:** every other row.
+4. **Retirement uses Delete's journal-first core.**
+   - It is extracted from `delete(record:)` into an async `retire(record:) -> RetireOutcome`.
+     It builds the same obligation intents, with the same provenance and identity rules, and
+     runs `DownloadCleanupOrdering.prepareForDestructiveDeletion`. Then it submits the
+     row-deletion artifact intent and awaits its outcome.
+   - **Outcomes** (finding 3):
+     - `removed`: the deletion committed;
+     - `capsule`: a durable deletion-pending reservation, kept when the journal is unavailable;
+       a capsule is a valid v5 structure and does not block the stamp;
+     - `failed(reason)`: index or artifact failure, which blocks with Retry Recovery.
+   - The user Delete keeps calling the same core in a detached task, so its behavior is
+     unchanged.
+   - **Session work:** there is none to cancel before activation. Once retirement has installed
+     its deletion barriers, the ordinary activation purge (`purgeInvalidCurrentTasks`) cancels
+     every OS task whose exact attempt the store no longer owns. Exact-attempt callback
+     rejection is unchanged (finding 2).
+5. **Stamp.** Once every retirement has an outcome other than `failed`, the stamp runs.
+   - Under the lock, `store.commitSchemaUpgrade()` does two things:
+     - fills `migratedUnknown` on unverified rows with no reason;
+     - enqueues one ordinary v5 commit and awaits it.
+   - **Proven** → `schemaUpgradeCommitted`, then normal activation.
+   - **Failed or timed out** → `blockDownloadStartup(reason: "schema_upgrade_failed")` with the
+     existing Retry Recovery. Retry re-runs the whole phase idempotently: retired rows are gone,
+     capsules stay capsules, and the stamp is recommitted.
+   - An interrupted replacement can leave a readable v4 or v5. Both are handled: v4 redoes the
+     phase, and v5 is current.
+6. **Disclosure** (finding 5). The upgrade persists a notice (UserDefaults) with two counts:
+   retired rows, and cleanup gaps where an obligation could not be represented (legacy, no
+   server identity). The Offline library shows it once, dismissibly, until acknowledged. A
+   representable obligation whose journaling fails stays on the capsule path, never the gap
+   path.
+7. **Season planner** (finding 6). Admission selection and continuation checks exclude
+   deletion-pending and retiring rows.
+8. **Tests** (written first; revision 4's list, plus the following):
+   - a kept/retired matrix that includes paused-static at zero bytes and paused-forward-only;
+   - a row with a legacy promotion or pending intent left untouched, and kept after recovery;
+   - every retire outcome, including journal failure (capsule, then stamp) and index failure
+     (blocked, then Retry, then stamp);
+   - an owned task of a retired row cancelled by the activation purge, with no further
+     callbacks;
+   - stamp failure before replacement, after replacement and during directory sync;
+   - the notice persisting across relaunch until acknowledged;
+   - season selection skipping capsules.
 
 ### P3b.1 Probe
 
