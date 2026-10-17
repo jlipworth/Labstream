@@ -412,6 +412,17 @@ Acceptance is a phase's pins and inventory rows staying green.
     - Session hydration covers backends that owe cleanup but have no intent journaled yet.
     - Only an unresolved Plex create can expire.
     - Launch-sweep journaling runs off the main actor.
+  - **After-review round 2** returned "not ready" with five findings. All were fixed and pinned:
+    - **Abandonment authority.** An abandonment runs only once its origin row no longer
+      references the resource in persisted metadata. Producers clear their own reference only
+      after the intent commits; encoder release now clears the persisted PlaySessionId this way.
+      So a write that looked failed (the row kept, and later parked, its job) can never cancel
+      the job. Row status was not proof of a handoff.
+    - **Runner deadlines.** Consumed deadlines are pruned, so a failed load cannot spin on an
+      expired one.
+    - **Migration barriers.** They run before every runner pass and keep a wake while
+      unfinished.
+    - **Hydration.** It also counts legacy quarantine files.
   - **Remaining deviation:** one-off producers (delete, expiry, abandonments) still commit their
     single intent on the main actor, as before P2. Moving them off-main changes their ordering
     contracts and belongs with the store-internals work in P6.

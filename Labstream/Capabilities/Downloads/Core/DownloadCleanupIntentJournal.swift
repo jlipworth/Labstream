@@ -310,6 +310,12 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
         var blocksAllPlex = false
     }
 
+    func hasLegacyQuarantineFiles(fileManager: FileManager = .default) -> Bool {
+        guard let names = try? fileManager.contentsOfDirectory(atPath: quarantineDirectory.path)
+        else { return true }
+        return names.contains { $0.hasPrefix(Self.legacyQuarantinePrefix) }
+    }
+
     /// Re-import only `plexOptimize` elements from legacy quarantine files, then rename each file
     /// to the imported prefix (the durable receipt). Elements that conflict with an existing ID or
     /// still do not decode stay in the renamed file as evidence. Run before the cleanup runner.

@@ -24,6 +24,8 @@ final class DownloadCleanupIntentRunner {
     }
 
     struct Dependencies {
+        /// Legacy migration barriers, run before every pass; false while unfinished.
+        var runBarriers: @MainActor () -> Bool = { true }
         var load: @Sendable () -> DownloadCleanupIntentJournal.LoadResult
         /// Durably replace the entry with the same id (legacy provenance classification).
         var replace: @Sendable (DurableDownloadCleanupIntent) -> Bool
@@ -111,16 +113,20 @@ final class DownloadCleanupIntentRunner {
     }
 
     private func pass() async {
+        let barriersComplete = dependencies.runBarriers()
         let load = dependencies.load
         let result = await Task.detached { load() }.value
         let now = dependencies.now()
+        // Consumed deadlines never reschedule a wake: only future deadlines survive a pass.
+        notBefore = notBefore.filter { $0.value > now }
+        waitingRecheckAt = nil
         guard case .loaded(let intents) = result else {
             loadRetryAt = now.addingTimeInterval(Self.loadFailureRetrySeconds)
             dependencies.diagnostic("downloads.cleanup_runner_load_failed", [:])
             return
         }
         loadRetryAt = nil
-        var hasWaiting = false
+        var hasWaiting = !barriersComplete
         let liveIDs = Set(intents.map(\.id))
         failureCounts = failureCounts.filter { liveIDs.contains($0.key) }
         notBefore = notBefore.filter { liveIDs.contains($0.key) }
