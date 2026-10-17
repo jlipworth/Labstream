@@ -330,16 +330,19 @@ struct P6BackgroundWakeTests {
         let clock = P6WakeClock()
         let registry = BackgroundDownloadCompletionRegistry(clockHooks: clock.hooks)
         let fired = Mutex(0)
-        registry.store(identifier: BackgroundDownloadSession.identifier) { fired.withLock { $0 += 1 } }
+        let delivered = DispatchSemaphore(value: 0)
+        let token = registry.store(identifier: BackgroundDownloadSession.identifier) {
+            fired.withLock { $0 += 1 }; delivered.signal()
+        }
+        // Cleanup is independent of callback scheduling and the bounded acknowledgement below.
+        defer { registry.fireCompletions(in: .init(identifier: BackgroundDownloadSession.identifier, tokens: [token])) }
         clock.advance(to: 10)
         let session = BackgroundDownloadSession(store: fixture.store(), protocolClasses: [], wakeClockHooks: clock.hooks,
             releaseBackgroundCompletion: { registry.fireCompletions(in: $0) })
         defer { session.invalidateInjectedSessionForTesting() }
         registry.register(session)
         clock.advance(to: 25)
-        for _ in 0..<100 where registry.hasPendingHandler(identifier: BackgroundDownloadSession.identifier) {
-            await Task.yield()
-        }
+        #expect(await p6Signal(delivered))
         #expect(fired.withLock { $0 } == 1)
         #expect(!registry.hasPendingHandler(identifier: BackgroundDownloadSession.identifier))
         #expect(clock.state.withLock { $0.acknowledgements.map(\.outcome) } == [.timedOut])
@@ -351,9 +354,13 @@ struct P6BackgroundWakeTests {
         let clock = P6WakeClock()
         let registry = BackgroundDownloadCompletionRegistry(clockHooks: clock.hooks)
         let fired = Mutex(0)
-        registry.store(identifier: "wake") { fired.withLock { $0 += 1 } }
+        let delivered = DispatchSemaphore(value: 0)
+        let token = registry.store(identifier: "wake") {
+            fired.withLock { $0 += 1 }; delivered.signal()
+        }
+        defer { registry.fireCompletions(in: .init(identifier: "wake", tokens: [token])) }
         clock.advance(to: 25)
-        for _ in 0..<100 where registry.hasPendingHandler(identifier: "wake") { await Task.yield() }
+        #expect(await p6Signal(delivered))
         #expect(fired.withLock { $0 } == 1)
         #expect(!registry.hasPendingHandler(identifier: "wake"))
     }
