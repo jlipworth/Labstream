@@ -166,11 +166,17 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
       preferences behave as configured.
 - [ ] Network loss or a starved stream shows buffering/reconnecting/failure status instead
       of a black surface with no explanation. Recovery never revives a superseded player.
-- [ ] Stats for Nerds reports source, decision/play method, rendered stream, bitrate, audio,
+- [ ] Stats reports source, decision/play method, rendered stream, bitrate, audio,
       and HDR facts without private server or media identifiers.
-- [ ] **visionOS playback explanation (#203):** open Stats for Nerds during each representative
-      lane below. Confirm the compact **Why** headline and at most two useful reasons agree with
-      the active result. The normal player must not show raw reason arrays, backend prose, URLs,
+- [ ] **Stats redesign (#331):** Stats opens on the compact summary, and See more / Show less
+      switch in place and are remembered across launches. The device node colors only the
+      streams the server converted; Buffer shows red only after a stall. At accessibility text
+      sizes, tiles stack instead of wrapping. VoiceOver reads the chain as one sentence and each
+      tile as label plus value. Copy diagnostics pastes without track titles. On tvOS, focus
+      reaches See more, the section picker, and Show less with the Siri Remote.
+- [ ] **visionOS playback explanation (#203):** open Stats during each representative
+      lane below. Confirm the reason line and the Video section's Decision rows (headline and at
+      most two useful reasons) agree with the active result. The normal player must not show raw reason arrays, backend prose, URLs,
       tokens, host/server names, titles, paths, item/media-source/play-session IDs, or client IDs.
 
 | Active lane (manual live-server validation) | Plex | Jellyfin | Emby |

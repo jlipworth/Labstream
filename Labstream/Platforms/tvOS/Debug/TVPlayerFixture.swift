@@ -58,10 +58,11 @@ struct TVPlayerFixtureView: View {
     @ViewBuilder
     private func fixturePlayer(url: URL) -> some View {
         let item = DebugPlayerFixtureMedia.item
-        if DebugUITestLaunchConfiguration.playerFixtureStartsBuffering {
+        if DebugUITestLaunchConfiguration.playerFixtureStartsBuffering || DebugStatsFixture.scenario != nil {
             // The buffering-review variant needs the controller instance so it can hold
             // `transportStatus` in `.buffering` against the KVO-driven transitions that would
-            // otherwise clear it as local playback primes instantly.
+            // otherwise clear it as local playback primes instantly. The Stats-scenario
+            // variant needs it to seed synthetic diagnostics (#331).
             let identity = PlatformClientIdentity.make(clientIdentifier: "offline")
             let client = PlexClient(identity: identity)
             CustomPlayerView(item: item,
@@ -71,7 +72,10 @@ struct TVPlayerFixtureView: View {
                                                                         OfflinePlaybackSession(fileURL: url)),
                                                                      identity: identity,
                                                                      client: client)
-                                 holdBufferingStatus(on: controller)
+                                 if DebugUITestLaunchConfiguration.playerFixtureStartsBuffering {
+                                     holdBufferingStatus(on: controller)
+                                 }
+                                 DebugStatsFixture.seedWhenReady(controller)
                                  return controller
                              },
                              onClose: { presentingPlayer = false })
@@ -94,6 +98,7 @@ struct TVPlayerFixtureView: View {
     }
 
     private func prepare() async {
+        DebugStatsFixture.prepareLaunch()
         do {
             let url = try await DebugPlayerFixtureMedia.ensureVideoFile()
             phase = .ready(url)

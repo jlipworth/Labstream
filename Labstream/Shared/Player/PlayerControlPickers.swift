@@ -802,17 +802,22 @@ struct AudioStreamsTabView: View {
     private var activeID: PlaybackAudioTrack.ID? { snapshot?.selectedID }
 }
 
-/// Stats menu (#6): the live "Stats for Nerds" diagnostics grid, rendered inline.
-/// No header row — the surrounding menu chrome already titles the panel.
+/// Stats menu (#6, redesigned #331): the compact signal-chain summary with an in-place
+/// expanded view. No header row — the surrounding menu chrome already titles the panel.
+/// Active track names come from the same loaders the Audio/Subtitles menus use.
 struct StatsTabView: View {
     let diagnostics: PlaybackDiagnostics
+    var loadTracks: () async -> PlaybackStatsSummary.Tracks = { .init() }
+
+    @State private var tracks = PlaybackStatsSummary.Tracks()
 
     var body: some View {
         ScrollView {
-            StatsForNerdsView(diagnostics: diagnostics, showsHeader: false)
+            PlaybackStatsView(diagnostics: diagnostics, tracks: tracks)
                 .padding(DS.Space.md)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .task { tracks = await loadTracks() }
     }
 }
 

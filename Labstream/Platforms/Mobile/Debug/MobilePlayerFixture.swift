@@ -62,6 +62,7 @@ struct MobilePlayerFixtureView: View {
                                     if DebugUITestLaunchConfiguration.playerFixtureStartsPaused {
                                         holdPaused(controller)
                                     }
+                                    DebugStatsFixture.seedWhenReady(controller)
                                     return controller
                                 },
                                 onClose: { presentingPlayer = false })
@@ -84,6 +85,7 @@ struct MobilePlayerFixtureView: View {
     }
 
     private func prepare() async {
+        DebugStatsFixture.prepareLaunch()
         do {
             let size = DebugUITestLaunchConfiguration.playerFixtureAspect.encodedSize
             let url = try await DebugPlayerFixtureMedia.ensureVideoFile(width: size.width,

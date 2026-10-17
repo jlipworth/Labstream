@@ -155,6 +155,30 @@ extension PlaybackController {
         }
     }
 
+    /// Active audio/subtitle names for the Stats panel (#331), read through the same loaders
+    /// the Audio and Subtitles menus use so the panel never names a different track than the
+    /// menu's checkmark. Read-only: nothing is selected or reopened.
+    func activeTrackNamesForStats() async -> PlaybackStatsSummary.Tracks {
+        #if DEBUG
+        if let fixtureTracks = DebugStatsFixture.tracks { return fixtureTracks }
+        #endif
+        let audio = supportsMetadataAudioSelection ? loadAudioStreamChoices() : await loadAudioTracks()
+        let audioName = audio.flatMap { snapshot in
+            snapshot.tracks.first { $0.id == snapshot.selectedID }?.displayName
+        }
+        guard let subtitles = try? await loadSubtitleTracks(),
+              let selected = subtitles.tracks.first(where: { $0.id == subtitles.selectedID }) else {
+            return .init(audioName: audioName)
+        }
+        let isOff = switch selected.id {
+        case .avFoundationOff, .plexOff, .mediaBrowserOff, .offlineOff: true
+        default: false
+        }
+        return .init(audioName: audioName,
+                     subtitleName: isOff ? nil : selected.displayName,
+                     subtitlesOff: isOff)
+    }
+
     static func errorDomainFamily(_ domain: String) -> String {
         DiagnosticRedactor.errorDomainFamily(domain)
     }

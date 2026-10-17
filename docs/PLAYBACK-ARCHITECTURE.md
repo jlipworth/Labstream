@@ -434,8 +434,20 @@ lease path. tvOS compiles neither `VideoNowPlayingCore` nor the visionOS
 
 ## Playback explanation
 
-Stats for Nerds shows a compact **Why** line from `PlaybackExplanation`: one lane headline and
-at most two useful reasons, with provenance (backend-reported, app-requested, or inferred).
+The player Stats panel (#331) opens on a compact summary: the path title and one reason line,
+then a signal chain from the server file to this device (video, HDR, audio), then Buffer,
+Bitrate, Connection, Audio, and Subtitles tiles. The path color means only how the server
+handles the stream (direct, copy, encode). A device-side value is drawn in that color only when
+the server converted it. Delivered values come from runtime facts
+(`AVPlayerItem.presentationSize` and the asset probe's codec and HDR), never from a guess, so an
+encode shows "—" until they arrive. Red is used only for real stalls. **See more** switches
+the same panel to Video / Audio / Network sections. These keep every diagnostic row, and the
+remembered compact/expanded choice persists. Copy writes a plain-text summary with no track
+titles. The player never shows the server host, only Local / Remote / Downloaded / Unknown.
+
+The reason line and the expanded Decision rows come from `PlaybackExplanation`: one lane
+headline and at most two useful reasons, with provenance (backend-reported, app-requested, or
+inferred).
 The normal player must not show raw backend reason arrays, IDs, or URLs. Emby Profile 5 is
 blocked rather than forced through a tone-map, so an Emby no-fallback DV open should refuse; it
 is not a requested tone-map explanation.

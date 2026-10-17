@@ -225,8 +225,9 @@ are backend-scoped and cross-backend.
 - `Labstream/Shared/Player/TimelineReporter.swift` serializes/coalesces Plex timeline and
   Jellyfin/Emby playback-progress traffic.
 - `Labstream/Shared/Player/PlaybackDiagnostics.swift`,
-  `PlaybackController+Diagnostics.swift`, `PlaybackHDRProbe.swift`, and
-  `StatsForNerdsView.swift` own runtime diagnostics surfaces.
+  `PlaybackController+Diagnostics.swift`, and `PlaybackHDRProbe.swift` own runtime
+  diagnostics. `PlaybackStatsSummary.swift` turns them into the Stats panel's signal chain,
+  tiles, and expanded sections, and `PlaybackStatsView.swift` renders that panel.
   `PMSKit/Sources/PMSKit/Models/PlaybackExplanation.swift` owns the compact Stats **Why**
   lane, at-most-two reasons, and provenance. `DolbyVisionGuard.swift` and
   `CaptionAppearance.swift` own the P5 safety gate and caption-profile preview.

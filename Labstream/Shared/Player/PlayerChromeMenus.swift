@@ -72,7 +72,7 @@ enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
         case .speed: CGSize(width: 230, height: 188)
         case .subtitles, .audio: CGSize(width: 290, height: 210)
         case .chapters: CGSize(width: 920, height: 210)
-        case .stats: CGSize(width: 420, height: 285)
+        case .stats: CGSize(width: 620, height: 360)
         }
         #elseif os(tvOS)
         // Heights sized for bordered 58-pt rows plus inter-row spacing; the short
@@ -82,9 +82,9 @@ enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
         case .speed: CGSize(width: 440, height: 460)
         case .subtitles, .audio: CGSize(width: 620, height: 560)
         case .chapters: CGSize(width: 1_460, height: 300)
-        // Stats is a fixed, unfocusable readout (no rows to scroll to on tvOS): it must be
-        // tall enough for its full ~16-row worst case.
-        case .stats: CGSize(width: 820, height: 700)
+        // Stats (#331) sizes for its compact summary — chain beside tiles — at TV type sizes.
+        // The expanded view scrolls as focus moves between the section picker and its buttons.
+        case .stats: CGSize(width: 1_180, height: 600)
         }
         #else
         switch self {
@@ -95,7 +95,9 @@ enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
         case .speed: CGSize(width: 300, height: 245)
         case .subtitles, .audio: CGSize(width: 390, height: 275)
         case .chapters: CGSize(width: 1_120, height: 228)
-        case .stats: CGSize(width: 470, height: 330)
+        // Wide enough for the compact Stats summary's two-column layout (#331); phones clamp
+        // it to the available width and fall back to one column.
+        case .stats: CGSize(width: 680, height: 380)
         }
         #endif
     }
@@ -312,7 +314,8 @@ struct CustomPlayerMenuPopover: View {
                 onClose()
             }
         case .stats:
-            StatsTabView(diagnostics: controller.diagnostics)
+            StatsTabView(diagnostics: controller.diagnostics,
+                         loadTracks: { await controller.activeTrackNamesForStats() })
         }
     }
 }

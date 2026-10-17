@@ -57,7 +57,7 @@ and backend. See the platform and backend status tables below for the current su
 - Custom AVFoundation player surface shared across visionOS, iOS/iPadOS, tvOS, and macOS.
 - Original (Direct Stream) attempts copy or direct-stream paths where viable.
 - Explicit quality rungs request capped server streams when needed.
-- Resume, seek, retry, subtitles, chapters, playback speed, buffering state, and Stats for Nerds.
+- Resume, seek, retry, subtitles, chapters, playback speed, buffering state, and playback Stats.
 - On visionOS, Cinema mode expands playback into an app-owned immersive surface with the same transport controls.
 - Watch progress, mark-watched behavior, Up Next, and episode autoplay.
 

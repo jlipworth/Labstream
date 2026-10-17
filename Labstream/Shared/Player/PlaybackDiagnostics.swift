@@ -34,6 +34,24 @@ final class PlaybackDiagnostics {
     var sourceHDRLabel: String?
     /// Source HDR format for tone-map inference; mirrors `sourceHDRLabel`. (#195)
     var sourceHDRFormat: VideoHDRFormat?
+    /// Structured source facts behind the Stats signal chain (#331). These mirror the string
+    /// rows above; they add no new source of truth.
+    var sourceWidth: Int?
+    var sourceHeight: Int?
+    var sourceHDR: VideoHDRMetadata?
+    var sourceAudioProfile: String?
+    var sourceAudioChannels: Int?
+    /// Plex's per-stream audio decision ("copy" / "transcode" / "directplay"), lowercased. Nil
+    /// on MediaBrowser lanes, where only the explanation's reasons describe audio work.
+    var plexAudioDecision: String?
+    /// The decoded picture size AVFoundation reports for the current item
+    /// (`AVPlayerItem.presentationSize`) — the delivered resolution, sampled with the other
+    /// dynamic numbers. Nil until the item has a non-zero size.
+    var deliveredWidth: Int?
+    var deliveredHeight: Int?
+    /// Runtime audio format of the delivered stream, when the asset probe could read it.
+    private(set) var runtimeAudioCodecFourCC: String?
+    private(set) var runtimeAudioChannels: Int?
     /// Runtime AVFoundation HDR facts, published only once the probe has seen real video
     /// format descriptions (#195/#196 panel rework). Before segments load HLS items expose
     /// nothing, and a premature "SDR" reading is exactly the confusion the old
@@ -50,6 +68,9 @@ final class PlaybackDiagnostics {
     private(set) var displayCurrentEDR: Double?
 
     func applyHDRDisplayEligibility(_ eligible: Bool) {
+        #if DEBUG
+        guard !isFixtureFrozen else { return }
+        #endif
         runtimeEligibleForHDR = eligible
     }
 
@@ -179,6 +200,13 @@ final class PlaybackDiagnostics {
     /// Seconds of media buffered ahead of the playhead (loaded time range).
     var bufferedAheadSeconds: Double = 0
 
+    #if DEBUG
+    /// UI-test fixtures seed synthetic Stats scenarios (#331); freezing keeps the 1 s sampler
+    /// and the asynchronous HDR/display probes from overwriting them with the local fixture
+    /// clip's facts.
+    var isFixtureFrozen = false
+    #endif
+
     /// Keep Observed active briefly between bursty HLS segment downloads. Without this, a player
     /// that fetches one segment every other sampling tick flips between a real bitrate and `idle`,
     /// even though the current access-log event is healthy and actively loading.
@@ -242,6 +270,7 @@ final class PlaybackDiagnostics {
         resetDynamicAccessLogFacts()
         isMediaBrowserLane = false
         applySourceSummary(PlaybackSourceSummary.plex(item: item, mediaIndex: mediaIndex))
+        plexAudioDecision = decision?.audioDecision?.lowercased()
         if let decision {
             if decision.playsWholeFileDirectly {
                 isTranscoding = false
@@ -289,6 +318,7 @@ final class PlaybackDiagnostics {
             applySourceSummary(summary, overwriteOnlyKnownValues: true)
         }
         isMediaBrowserLane = true
+        plexAudioDecision = nil
         switch playMethod {
         case .directPlay:
             isTranscoding = false
@@ -314,9 +344,16 @@ final class PlaybackDiagnostics {
     /// On a Jellyfin/Emby "transcode" session, a runtime codec matching the source proves
     /// the server is remuxing (video copy) — upgrade the Mode/Decision rows accordingly.
     func applyRuntimeHDRProbe(_ result: PlaybackHDRProbeResult) {
+        #if DEBUG
+        guard !isFixtureFrozen else { return }
+        #endif
         // A suspended asset probe must not overwrite a newer live display sample.
         if runtimeEligibleForHDR == nil {
             runtimeEligibleForHDR = result.eligibleForHDRPlayback
+        }
+        if let audioFourCC = result.audioCodecFourCC {
+            runtimeAudioCodecFourCC = audioFourCC
+            runtimeAudioChannels = result.audioChannels
         }
         guard result.sawVideoFormatDescriptions else { return }
         runtimeContainsHDR = result.containsHDRVideo
@@ -338,8 +375,12 @@ final class PlaybackDiagnostics {
                                     overwriteOnlyKnownValues: Bool = false) {
         if let resolution = summary.statsResolution {
             sourceResolution = resolution
+            sourceWidth = summary.width
+            sourceHeight = summary.height
         } else if !overwriteOnlyKnownValues {
             sourceResolution = "—"
+            sourceWidth = nil
+            sourceHeight = nil
         }
         if let videoCodec = summary.videoCodec, !videoCodec.isEmpty {
             self.videoCodec = videoCodec
@@ -368,15 +409,21 @@ final class PlaybackDiagnostics {
                                                            channels: summary.audioChannels,
                                                            profile: summary.audioProfile) {
             audioFormatText = audioText
+            sourceAudioProfile = summary.audioProfile
+            sourceAudioChannels = summary.audioChannels
         } else if !overwriteOnlyKnownValues {
             audioFormatText = "—"
+            sourceAudioProfile = nil
+            sourceAudioChannels = nil
         }
         if let hdr = summary.hdr {
             sourceHDRLabel = hdr.displayLabel
             sourceHDRFormat = hdr.format
+            sourceHDR = hdr
         } else if !overwriteOnlyKnownValues {
             sourceHDRLabel = nil
             sourceHDRFormat = nil
+            sourceHDR = nil
         }
     }
 
@@ -418,6 +465,10 @@ final class PlaybackDiagnostics {
         runtimeTransferFunction = nil
         runtimeVideoCodecFourCC = nil
         runtimeEligibleForHDR = nil
+        runtimeAudioCodecFourCC = nil
+        runtimeAudioChannels = nil
+        deliveredWidth = nil
+        deliveredHeight = nil
         observedBitrateKbps = 0
         observedBitrateState = .unavailable
         indicatedBitrateKbps = 0
@@ -446,8 +497,16 @@ final class PlaybackDiagnostics {
     /// Scrape the dynamic numbers from the current player item (call ~1s).
     func sample(player: AVPlayer) {
         guard let item = player.currentItem else { return }
+        #if DEBUG
+        guard !isFixtureFrozen else { return }
+        #endif
         let sampleUptime = ProcessInfo.processInfo.systemUptime
         likelyToKeepUp = item.isPlaybackLikelyToKeepUp
+        let presentation = item.presentationSize
+        if presentation.width > 0, presentation.height > 0 {
+            deliveredWidth = Int(presentation.width.rounded())
+            deliveredHeight = Int(presentation.height.rounded())
+        }
 
         if let range = item.loadedTimeRanges.first?.timeRangeValue {
             let bufferedEnd = (range.start + range.duration).seconds

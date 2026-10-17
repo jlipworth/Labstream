@@ -22,6 +22,10 @@ struct PlaybackHDRProbeResult: Equatable {
     /// have loaded. Codec-family agreement with the source supports a copy/remux inference on
     /// Jellyfin/Emby "transcode" sessions, but is not encoder proof (#196/#203).
     var videoCodecFourCC: String?
+    /// FourCC and channel count of the first audio format description (e.g. "aac ", "ec-3"),
+    /// when segments have loaded. Feeds the delivered-audio value in Stats (#331).
+    var audioCodecFourCC: String? = nil
+    var audioChannels: Int? = nil
 }
 
 enum PlaybackHDRProbe {
@@ -55,11 +59,26 @@ enum PlaybackHDRProbe {
             if transfer != nil { break }
         }
 
+        var audioFourCC: String?
+        var audioChannels: Int?
+        let audioTracks = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
+        for track in audioTracks {
+            guard let format = (try? await track.load(.formatDescriptions))?.first else { continue }
+            audioFourCC = fourCCString(CMFormatDescriptionGetMediaSubType(format))
+            if let description = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee,
+               description.mChannelsPerFrame > 0 {
+                audioChannels = Int(description.mChannelsPerFrame)
+            }
+            break
+        }
+
         return PlaybackHDRProbeResult(containsHDRVideo: !hdrTracks.isEmpty,
                                       transferFunction: transfer,
                                       eligibleForHDRPlayback: eligibleForHDRPlayback,
                                       sawVideoFormatDescriptions: sawFormats,
-                                      videoCodecFourCC: codecFourCC)
+                                      videoCodecFourCC: codecFourCC,
+                                      audioCodecFourCC: audioFourCC,
+                                      audioChannels: audioChannels)
     }
 
     private static func fourCCString(_ code: FourCharCode) -> String? {
