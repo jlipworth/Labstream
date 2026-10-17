@@ -611,8 +611,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // Keep the background session itself permissive and stamp the cellular policy onto
         // each freshly-created URLRequest. That lets new tasks observe the Settings toggle
         // (defaulting off/Wi-Fi-only) without invalidating/recreating a background session
-        // with the same identifier; resume-data tasks keep the OS-archived policy.
+        // with the same identifier; resume-data tasks keep the OS-archived policy. D5: the same
+        // permissive-session / per-request rule covers constrained and expensive networks.
         config.allowsCellularAccess = true
+        config.allowsConstrainedNetworkAccess = true
+        config.allowsExpensiveNetworkAccess = true
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }
 
@@ -625,8 +628,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// forward-only downloads terminally before the 90s stall watchdog could act.
     /// (`downloadTask(withResumeData:)` sites inherit the archived original request's stamps.)
     private func requestApplyingTaskPolicies(_ request: URLRequest) -> URLRequest {
-        var policyRequest = request
-        policyRequest.allowsCellularAccess = PlaybackPreferences.allowsCellularDownloads()
+        // D5: the cellular toggle also governs Low Data Mode and expensive networks.
+        var policyRequest = DownloadNetworkAccessPolicy.applying(
+            allowsCostlyNetworks: PlaybackPreferences.allowsCellularDownloads(), to: request)
         #if targetEnvironment(simulator)
         policyRequest.timeoutInterval = 3600
         #endif

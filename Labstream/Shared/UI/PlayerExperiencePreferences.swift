@@ -79,7 +79,8 @@ enum PlaybackPreferences {
             Keys.prioritizeQuickDownloads, default: defaultPrioritizeQuickDownloads))
     }
 
-    /// Whether new background/download URLSession tasks may use cellular data.
+    /// Whether new background/download URLSession tasks may use cellular data. D5: the same
+    /// setting governs constrained (Low Data Mode) and expensive networks.
     ///
     /// Existing active/resume-data tasks keep the policy archived when they were created;
     /// `BackgroundDownloadSession` stamps this setting onto each fresh URLRequest task.

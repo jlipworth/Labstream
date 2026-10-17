@@ -218,9 +218,12 @@ User-facing expectations worth setting (the "downloads disclaimer"):
   system-owned transfers while the OS allows it, but they are not durable
   byte-range checkpoints and can require retry/restart after interruption.
 - Cellular downloads are off by default where cellular data is available.
-  Settings ▸ Downloads ▸ **Use cellular data for downloads** applies to newly
-  created request-based transfer tasks; active tasks and tasks resumed from OS
-  resume data keep the policy they were created with.
+  Settings ▸ Downloads ▸ **Use cellular data for downloads** also governs
+  constrained networks (Low Data Mode) and expensive networks such as a personal
+  hotspot: while it is off, downloads wait for an unconstrained, inexpensive
+  network. It applies to newly created request-based transfer tasks and side-asset
+  fetches; active tasks and tasks resumed from OS resume data keep the policy
+  they were created with.
 
 ## Module ownership
 
