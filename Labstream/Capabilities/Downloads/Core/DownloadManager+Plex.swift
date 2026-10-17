@@ -163,12 +163,9 @@ extension DownloadManager {
                     releaseInFlight(for: attemptKey)
                     return
                 }
-                // B41 (P5): check the storage cap before asking the server to render.
-                if rejectIfOverStorageLimit(
-                    ratingKey: ratingKey, backend: "Plex",
-                    expectedBytes: estimatedBytes(for: item, choice: .optimize(targetName: fallback),
-                                                  mediaIndex: mediaIndex, partIndex: partIndex,
-                                                  backend: .plex)) {
+                if rejectOptimizeFallbackOverStorageLimit(
+                    ratingKey: ratingKey, item: item, target: fallback,
+                    mediaIndex: mediaIndex, partIndex: partIndex) {
                     releaseInFlight(for: attemptKey)
                     return
                 }
@@ -321,12 +318,9 @@ extension DownloadManager {
         guard admissionMayEnterServerPrep(ratingKey) else { return }
         let item = metadata.makeMediaItem()
         let target = Self.originalFallbackOptimizeTarget()
-        // B41 (P5): check the storage cap before asking the server to render.
-        if rejectIfOverStorageLimit(
-            ratingKey: ratingKey, backend: "Plex",
-            expectedBytes: estimatedBytes(for: item, choice: .optimize(targetName: target),
-                                          mediaIndex: metadata.mediaIndex ?? 0,
-                                          partIndex: metadata.partIndex ?? 0, backend: .plex)) {
+        if rejectOptimizeFallbackOverStorageLimit(
+            ratingKey: ratingKey, item: item, target: target,
+            mediaIndex: metadata.mediaIndex ?? 0, partIndex: metadata.partIndex ?? 0) {
             return
         }
         recordDownloadDiagnostic("downloads.original_validation_fallback", fields: [
@@ -339,6 +333,17 @@ extension DownloadManager {
         await triggerOptimizeAndDownload(item: item, targetName: target,
                                          metadata: metadata, session: backendSession,
                                          attemptKey: attemptKey)
+    }
+
+    /// B41 (P5): both original → optimize fallbacks check the storage cap with the optimize
+    /// estimate before asking the server to render.
+    func rejectOptimizeFallbackOverStorageLimit(ratingKey: String, item: MediaItem, target: String,
+                                                mediaIndex: Int, partIndex: Int) -> Bool {
+        rejectIfOverStorageLimit(
+            ratingKey: ratingKey, backend: "Plex",
+            expectedBytes: estimatedBytes(for: item, choice: .optimize(targetName: target),
+                                          mediaIndex: mediaIndex, partIndex: partIndex,
+                                          backend: .plex))
     }
 
     static func originalFallbackOptimizeTarget(defaults: UserDefaults = .standard) -> String {
