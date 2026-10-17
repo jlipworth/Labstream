@@ -1910,29 +1910,18 @@ public final class DownloadManager {
                                            ratingKey: String,
                                            playSessionID: String?,
                                            backendKind: DownloadBackendKind,
-                                           backendSession: BackendSession) {
+                                           backendSession: BackendSession) async {
         guard let playSessionID, !playSessionID.isEmpty else { return }
         recordDownloadDiagnostic("downloads.superseded_encoder_teardown", fields: [
             "download_id": .identifier(ratingKey),
             "backend": .label(backendKind.rawValue),
         ])
-        // P2.4: journal the stop from the session the negotiation captured; the runner executes
-        // it. If that fails, keep today's unrecorded best-effort stop (a documented residual
-        // window).
-        guard backendKind != .plex,
-              !journalCleanupAbandonment(
-                .activeEncoding(playSessionID: playSessionID), originAttempt: attemptKey,
-                session: backendSession, reason: "superseded_encoder") else { return }
-        switch backendKind {
-        case .jellyfin:
-            let service = JellyfinBrowseService(appModel: appModel)
-            Task { _ = await service.stopActiveEncoding(playSessionId: playSessionID, session: backendSession) }
-        case .emby:
-            let service = EmbyBrowseService(appModel: appModel)
-            Task { _ = await service.stopActiveEncoding(playSessionId: playSessionID, session: backendSession) }
-        case .plex:
-            break
-        }
+        guard backendKind != .plex else { return }
+        // The durable runner owns teardown and rechecks exact resource claims and captured
+        // server/account identity. Failed/expired observations leave cleanup for recovery.
+        _ = await journalCleanupAbandonment(
+            .activeEncoding(playSessionID: playSessionID), originAttempt: attemptKey,
+            session: backendSession, reason: "superseded_encoder")
     }
 
     /// Pause one visible download row. Active URLSession transfers are cancelled with resume data
@@ -3528,22 +3517,25 @@ public final class DownloadManager {
                 guard let expired = Self.makeEmbyConvertCleanupIntent(
                         attemptKey: key, metadata: metadata,
                         provenance: .abandonment(originAttempt: key)),
-                      case .committed = cleanupIntentJournal.ensure(expired) else {
+                      await journalCleanupAbandonments([expired], reason: "convert_recovery_expired") else {
                     recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
                         "download_id": .identifier(record.ratingKey),
                         "reason": .label("expiry_intent_not_durable"),
                     ])
                     continue
                 }
-                cleanupRunner?.kick(reason: "convert_recovery_expired")
+                guard mediaBrowserSessionIsCurrent(session),
+                      currentEmbyRecoveryCandidate(record, fence: fence) != nil else { continue }
                 guard await clearEmbyConvertRecoveryIfExact(
                     for: key, expected: metadata),
-                      managerContinuationIsCurrent(key, fence: fence) else { continue }
+                      managerContinuationIsCurrent(key, fence: fence),
+                      mediaBrowserSessionIsCurrent(session) else { continue }
                 lastError[record.ratingKey] = .transferFailed(
                     "Server conversion could not be recovered; retry to create a new conversion.")
                 let failureFence = managerActionGenerations[key.ratingKey, default: 0]
                 _ = await applyServerPrepFailure(.server, for: key, context: "emby_convert_expired")
-                guard !Task.isCancelled, managerActionGenerations[key.ratingKey, default: 0] == failureFence, store.ownsAttempt(key) else { continue }
+                guard !Task.isCancelled, managerActionGenerations[key.ratingKey, default: 0] == failureFence,
+                      store.ownsAttempt(key), mediaBrowserSessionIsCurrent(session) else { continue }
                 clearOptimizeProgress(ratingKey: record.ratingKey)
                 releaseInFlight(for: key)
             }

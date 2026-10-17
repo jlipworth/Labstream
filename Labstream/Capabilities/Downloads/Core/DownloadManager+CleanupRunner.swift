@@ -111,7 +111,7 @@ extension DownloadManager {
 
     /// Journal that `originAttempt` abandons a server resource and kick the runner. Identity
     /// comes from the session the abandoning work captured, so it needs no surviving row.
-    /// Returns false when the intent could not be made durable; each caller decides its fallback.
+    /// Returns false without authorizing cleanup when durability could not be observed.
     @discardableResult
     func journalCleanupAbandonment(
         _ operation: DurableDownloadCleanupIntent.Operation,
@@ -119,23 +119,42 @@ extension DownloadManager {
         session: BackendSession,
         plexCreate: DurableDownloadCleanupIntent.PlexCreateEvidence? = nil,
         reason: String
-    ) -> Bool {
+    ) async -> Bool {
+        guard let intent = Self.cleanupAbandonmentIntent(operation, originAttempt: originAttempt,
+                session: session, plexCreate: plexCreate) else { return false }
+        return await journalCleanupAbandonments([intent], reason: reason)
+    }
+
+    nonisolated static func cleanupAbandonmentIntent(
+        _ operation: DurableDownloadCleanupIntent.Operation,
+        originAttempt: DownloadAttemptKey, session: BackendSession,
+        plexCreate: DurableDownloadCleanupIntent.PlexCreateEvidence? = nil
+    ) -> DurableDownloadCleanupIntent? {
         guard let server = DurableDownloadCleanupIntent.ServerIdentity(
-                baseURL: session.baseURL, serverID: session.serverID,
-                userID: session.kind == .plex ? nil : session.userID),
-              let intent = DurableDownloadCleanupIntent(
-                attemptKey: originAttempt, backend: session.kind, server: server,
-                operation: operation, provenance: .abandonment(originAttempt: originAttempt),
-                plexCreate: plexCreate, recordedAtEpochSeconds: Date().timeIntervalSince1970),
-              case .committed = cleanupIntentJournal.ensure(intent) else {
+            baseURL: session.baseURL, serverID: session.serverID,
+            userID: session.kind == .plex ? nil : session.userID) else { return nil }
+        return DurableDownloadCleanupIntent(
+            attemptKey: originAttempt, backend: session.kind, server: server,
+            operation: operation, provenance: .abandonment(originAttempt: originAttempt),
+            plexCreate: plexCreate, recordedAtEpochSeconds: Date().timeIntervalSince1970)
+    }
+
+    /// Submission is cheap; a bounded observation is the only durability receipt. Late completion
+    /// remains replayable by the runner and never authorizes a caller's speculative DELETE.
+    func journalCleanupAbandonments(_ intents: [DurableDownloadCleanupIntent], reason: String) async -> Bool {
+        guard !intents.isEmpty else { return true }
+        let work = DownloadStoreWork { [cleanupIntentJournal] in cleanupIntentJournal.ensureAll(intents) }
+        guard await work.resolve(deadline: .after(30), timedOut: { false }) else {
             recordDownloadDiagnostic("downloads.cleanup_abandonment_not_durable", fields: [
-                "download_id": .identifier(originAttempt.ratingKey),
-                "operation": .label(Self.cleanupOperationLabel(operation)),
-                "reason": .label(reason),
+                "count": .int(intents.count), "reason": .label(reason),
             ])
             return false
         }
-        cleanupRunner?.kick(reason: reason)
+        // Recheck the captured server/account after suspension. Row ownership is re-evaluated by
+        // the runner immediately before cleanup, including newly adopted/replaced resources.
+        if !Task.isCancelled, intents.contains(where: { intent in
+            appModel.backendSession(for: intent.backend).map { intent.matches(session: $0) } == true
+        }) { cleanupRunner?.kick(reason: reason) }
         return true
     }
 

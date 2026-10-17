@@ -381,16 +381,13 @@ extension DownloadManager {
             case .leaveToCurrentOwner:
                 break
             case .cancel:
-                // B50: the job has no row authority any more; journal its cancel. If that fails,
-                // fall back to today's unrecorded best-effort DELETE (a documented residual window).
+                // Only a durable captured intent may authorize cleanup. The runner rechecks
+                // current row claims and server/account identity after this suspension.
                 let session = cleanupSession(kind: .emby, server: server, token: token,
                                              userID: userId)
-                if !journalCleanupAbandonment(
+                _ = await journalCleanupAbandonment(
                     .embyConvert(.knownJob(jobID: job.id)), originAttempt: storeAttemptKey,
-                    session: session, reason: "convert_stale_create") {
-                    cancelEmbyConvertJob(jobId: job.id, ratingKey: ratingKey,
-                                         server: server, token: token, identity: identity)
-                }
+                    session: session, reason: "convert_stale_create")
             }
             refreshRecords()
             return
@@ -542,6 +539,7 @@ extension DownloadManager {
         // B45: the real source id (persisted on the row), never the synthesized `Media.id`.
         let primaryMediaSourceId = EmbyConvertedSourcePolicy.primaryMediaSourceID(
             persisted: primaryMediaSourceID, item: item)
+        let reuseSession = cleanupSession(kind: .emby, server: server, token: token, userID: userId)
         let resumedReusableSource = await refreshAndPollReusableEmbyConvertedSource(
             server: server, token: token, identity: identity, userId: userId, itemId: item.ratingKey,
             ratingKey: ratingKey, requestedHeight: requestedHeight,
@@ -557,10 +555,12 @@ extension DownloadManager {
            // DELETE /Sync/Jobs/{id} never deletes an already-converted file. If the cancel cannot
            // be journaled, skip the whole handoff and keep polling the job this row still owns:
            // a duplicate render is preferable to an unrecorded leak.
-           journalCleanupAbandonment(
+           await journalCleanupAbandonment(
             .embyConvert(.knownJob(jobID: jobId)), originAttempt: storeAttemptKey,
-            session: cleanupSession(kind: .emby, server: server, token: token, userID: userId),
-            reason: "convert_reuse_duplicate") {
+            session: reuseSession, reason: "convert_reuse_duplicate"),
+           mediaBrowserSessionIsCurrent(reuseSession),
+           embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                       targetName: targetName, jobId: jobId) {
             recordDownloadDiagnostic("downloads.convert_reuse", fields: [
                 "download_id": .identifier(ratingKey),
                 "target": .label(targetName),

@@ -170,7 +170,7 @@ struct CleanupRunnerManagerTests {
             kind: .jellyfin, baseURL: URL(string: "https://jellyfin.example")!, token: "token",
             userID: "user-1", serverID: "server-1")
 
-        manager.stopSupersededMediaBrowserEncoder(
+        await manager.stopSupersededMediaBrowserEncoder(
             attemptKey: key, ratingKey: key.ratingKey, playSessionID: "minted-1",
             backendKind: .jellyfin, backendSession: captured)
 

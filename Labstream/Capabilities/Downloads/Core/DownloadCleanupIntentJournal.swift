@@ -116,6 +116,30 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
         return appendLocked(proposed, to: &values)
     }
 
+    /// One locked read/encode/commit for a discovery sweep. Existing semantic operations retain
+    /// their durable UUID; a failed transaction grants no cleanup authority to the caller.
+    func ensureAll(_ proposed: [DurableDownloadCleanupIntent]) -> Bool {
+        guard !proposed.isEmpty else { return true }
+        lock.lock(); defer { lock.unlock() }
+        guard case .loaded(var values) = readLocked() else { return false }
+        var changed = false
+        for intent in proposed {
+            if values.contains(where: {
+                $0.attemptKey == intent.attemptKey && $0.backend == intent.backend
+                    && $0.server == intent.server && $0.operation == intent.operation
+            }) { continue }
+            guard !values.contains(where: { $0.id == intent.id }) else { return false }
+            values.append(intent)
+            changed = true
+        }
+        guard changed else {
+            do { try persistence.syncDirectory(fileURL); return true }
+            catch { return false }
+        }
+        guard let data = try? persistence.encode(values) else { return false }
+        return DurableJournalCommit.commit(data, to: fileURL, using: persistence.commit) == nil
+    }
+
     @discardableResult
     func add(_ intent: DurableDownloadCleanupIntent) -> AddResult {
         lock.lock(); defer { lock.unlock() }

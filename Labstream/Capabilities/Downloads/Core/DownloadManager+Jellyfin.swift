@@ -267,7 +267,7 @@ extension DownloadManager {
               startAttemptStillCurrent(startAttempt, backend: "Jellyfin",
                                            phase: "post_negotiation") else {
                 jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
-                stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
+                await stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                                   playSessionID: mintedPlaySessionId,
                                                   backendKind: .jellyfin,
                                                   backendSession: backendSession)
@@ -276,7 +276,7 @@ extension DownloadManager {
         } catch {
             guard mediaBrowserSessionIsCurrent(backendSession), store.ownsAttempt(attemptKey) else {
                 jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
-                stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
+                await stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                                   playSessionID: mintedPlaySessionId,
                                                   backendKind: .jellyfin,
                                                   backendSession: backendSession)
@@ -320,11 +320,12 @@ extension DownloadManager {
               mediaBrowserSessionIsCurrent(backendSession),
               startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "publish_committed") else {
             jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
-            stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
+            await stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                               playSessionID: mintedPlaySessionId,
                                               backendKind: .jellyfin,
                                               backendSession: backendSession)
-            if startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "failure_cleanup") {
+            if mediaBrowserSessionIsCurrent(backendSession),
+               startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "failure_cleanup") {
                 let failureFence = managerActionGenerations[attemptKey.ratingKey, default: 0]
                 _ = await applyLifecycleEvent(
                     .transferFailed(.internalError), for: attemptKey, context: "jellyfin_publish")
@@ -342,11 +343,12 @@ extension DownloadManager {
                   mediaBrowserSessionIsCurrent(backendSession),
                   startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "play_session_committed") else {
                 jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
-                stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
+                await stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                                   playSessionID: mintedPlaySessionId,
                                                   backendKind: .jellyfin,
                                                   backendSession: backendSession)
-                if startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "failure_cleanup") {
+                if mediaBrowserSessionIsCurrent(backendSession),
+                   startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "failure_cleanup") {
                     let failureFence = managerActionGenerations[attemptKey.ratingKey, default: 0]
                     _ = await applyLifecycleEvent(.transferFailed(.internalError),
                                             for: attemptKey, context: "jellyfin_play_session")

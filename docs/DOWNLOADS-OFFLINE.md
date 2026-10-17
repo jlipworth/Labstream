@@ -395,8 +395,11 @@ One race is accepted: a render that completes between the queue read and the DEL
 deleted, because PMS has no conditional cancel. The delete confirmation therefore says
 in-progress preparation is cancelled "where possible".
 
-Two fallbacks remain unrecorded. If a superseded-encoder stop or an Emby stale-create cancel
-cannot be journaled, it falls back to the earlier best-effort call and records a diagnostic.
+Abandonment producers submit journal I/O to a worker and await a bounded durability result.
+A stale Plex title sweep commits its discoveries in one transaction. A failed or expired
+observation does not authorize a superseded-encoder stop or an Emby stale-create cancel;
+late durable intents remain replayable by the cleanup runner. Producers recheck captured
+server identity and exact row authority after suspension before dependent handoffs.
 Sign-out pauses rows rather than deleting them. Active encoders still need a journaled release
 captured before credential revocation; see [Local playback and row presentation](#local-playback-and-row-presentation).
 

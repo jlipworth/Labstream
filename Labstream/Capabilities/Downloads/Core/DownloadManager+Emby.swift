@@ -177,7 +177,7 @@ extension DownloadManager {
         guard mediaBrowserSessionIsCurrent(backendSession),
               startAttemptStillCurrent(startAttempt, backend: "Emby",
                                        phase: "playback_info") else {
-            stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
+            await stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                               playSessionID: decision.playSessionId,
                                               backendKind: .emby,
                                               backendSession: backendSession)
@@ -192,10 +192,12 @@ extension DownloadManager {
             explicitOverride: mediaSourceIDOverride,
             decidedMediaSourceID: decision.mediaSourceId
         ) else {
-            stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
+            await stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                               playSessionID: decision.playSessionId,
                                               backendKind: .emby,
                                               backendSession: backendSession)
+            guard mediaBrowserSessionIsCurrent(backendSession),
+                  startAttemptStillCurrent(startAttempt, backend: "Emby", phase: "cleanup_handoff") else { return }
             recordDownloadDiagnostic("downloads.start_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "backend": .label("Emby"),
