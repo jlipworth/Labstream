@@ -353,7 +353,8 @@ struct DownloadLifecycleStoreTests {
             #expect(store.lifecycleFacts(for: key).checkpoint == .none)
             // Every same-attempt reader sees no body: no checkpoint, no recovery evidence, no
             // promotion source.
-            #expect(store.durableStaticRangeCheckpointSize(for: key) == nil)
+            // An empty usable checkpoint (not a missing owner), so backend-ready resume restarts.
+            #expect(store.durableStaticRangeCheckpointSize(for: key) == 0)
             #expect(store.attemptWorkingFileURL(for: key) == nil)
             #expect(store.attemptWorkingFileLayout(for: key) == nil)
             // A deferred Retry still gets a usable answer: an empty checkpoint, applied to the
