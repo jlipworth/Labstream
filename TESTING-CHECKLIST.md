@@ -54,6 +54,7 @@ skipping them.
 | Saved session restores through the neutral Connecting screen without flashing login | [ ] | [ ] | [ ] |
 | Invalid/revoked credentials return to a clear sign-in state | [ ] | [ ] | [ ] |
 | Disconnected cold launch with a completed local file opens restricted Offline mode and plays without a server request | [ ] | [ ] | [ ] |
+| A revoked (401) or refused (403) saved session at cold launch shows sign-in, not Offline, even with a completed local file | [ ] | [ ] | [ ] |
 | Explicit sign-out clears the active runtime lane and stops stale music | [ ] | [ ] | [ ] |
 | Reauthentication to the same server refreshes browse state and navigation identity | [ ] | [ ] | [ ] |
 
@@ -67,6 +68,9 @@ skipping them.
 - [ ] Emby credentials and Connect PIN both handle success, cancellation, timeout, and bad
       credentials. If Connect returns multiple servers, only the chosen server is exchanged
       and applied.
+- [ ] Jellyfin and Emby username/password sign-in with a wrong password says "Invalid … username
+      or password"; with a disabled account or one not allowed remote access (HTTP 403) it says
+      the account isn't allowed to sign in instead.
 - [ ] Switching to a backend with saved credentials restores it without bouncing an already
       mounted browse UI to Home/login; switching to an unconfigured backend presents login.
 - [ ] Switch repeatedly among all configured backends. Online navigation/search/music state
