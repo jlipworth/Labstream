@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import Testing
 @testable import PMSKit
 
@@ -12,8 +15,10 @@ struct DownloadNetworkAccessPolicyTests {
         let request = DownloadNetworkAccessPolicy.applying(
             allowsCostlyNetworks: allowsCostlyNetworks, to: base)
         #expect(request.allowsCellularAccess == allowsCostlyNetworks)
+        #if canImport(Darwin)
         #expect(request.allowsConstrainedNetworkAccess == allowsCostlyNetworks)
         #expect(request.allowsExpensiveNetworkAccess == allowsCostlyNetworks)
+        #endif
         #expect(request.url == base.url)
     }
 }

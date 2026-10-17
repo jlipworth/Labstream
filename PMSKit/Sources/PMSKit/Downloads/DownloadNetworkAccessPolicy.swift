@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Network-cost policy for download data-plane requests (D5).
 ///
@@ -11,8 +14,11 @@ public enum DownloadNetworkAccessPolicy {
     public static func applying(allowsCostlyNetworks: Bool, to request: URLRequest) -> URLRequest {
         var policyRequest = request
         policyRequest.allowsCellularAccess = allowsCostlyNetworks
+        #if canImport(Darwin)
+        // Network-class flags exist only on Apple platforms; the Linux CI build only type-checks.
         policyRequest.allowsConstrainedNetworkAccess = allowsCostlyNetworks
         policyRequest.allowsExpensiveNetworkAccess = allowsCostlyNetworks
+        #endif
         return policyRequest
     }
 }
