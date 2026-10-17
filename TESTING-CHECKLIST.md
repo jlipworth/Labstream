@@ -333,8 +333,13 @@ background-session registration, or migration/recovery work.
       with an episode that already has a converted/optimized version and a directly playable
       original. While the conversion is still preparing, the static episodes are admitted and
       transfer (at most two static, one server-prep, three total). A waiting row reads
-      **Queued…** in both the offline list and the download sheet, never "Downloading
-      optimized…" with a spinner.
+      **Waiting for a download slot…** in the offline list (**Queued…** in the download sheet),
+      never "Downloading optimized…" with a spinner.
+- [ ] Admission (P4): with five paused rows, Resume All starts at most the caps and the rest read
+      **Waiting for a download slot…** until a lane frees. A tap while every lane is busy waits and
+      survives relaunch. During Pause All, one row's Resume starts only that row; the next Pause
+      All parks it again. Start a season while the server is unreachable: rows wait and start once
+      it is back, instead of failing.
 - [ ] Server-side encoders/optimizer/Convert jobs are stopped or reconciled when their row
       completes, fails, is canceled, or is recovered after relaunch.
 - [ ] Fail an Emby Convert row while its server job is still converting (for example, stay
