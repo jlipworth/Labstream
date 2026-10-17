@@ -94,6 +94,15 @@ final class BackgroundDownloadWakeCoordinator: @unchecked Sendable {
         return drain
     }
 
+    func finishAllAwaitingEvents() -> Drain {
+        lock.lock()
+        let wasPending = completionGate.hasPendingHandler
+        let batches = completionGate.finishAllAwaitingEvents()
+        let drain = drainLocked(wasPending: wasPending, batches: batches)
+        lock.unlock()
+        return drain
+    }
+
     func abortAwaitingHandlers() -> Drain {
         lock.lock()
         let wasPending = completionGate.hasPendingHandler
@@ -104,6 +113,14 @@ final class BackgroundDownloadWakeCoordinator: @unchecked Sendable {
         let drain = drainLocked(wasPending: wasPending, batches: batches)
         lock.unlock()
         return drain
+    }
+
+    /// B00: true while any attempt of the row holds a rebuild grace, i.e. the manager has been asked to
+    /// mint a replacement request and no task exists yet. The stale-row self-heal must not restart it.
+    func hasGrace(forRatingKey ratingKey: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return graceGenerations.keys.contains { $0.ratingKey == ratingKey }
     }
 
     /// Re-arming advances the timer generation but retains one gate operation for the key.

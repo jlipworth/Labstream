@@ -22,6 +22,36 @@ struct BackgroundDownloadStartupAdmissionTests {
             hasCurrentMarker: true, taskKey: healthy, ownsAttempt: true))
     }
 
+    /// B07: after an activation fails once the URLSession is built, the live session's callbacks
+    /// for healthy current-attempt tasks must not be cancelled and have their bodies deleted while
+    /// the manager waits to retry. Non-owned callbacks are still rejected.
+    @Test func failedPostConstructionActivationStillAdmitsOnlyOwnedCallbacks() throws {
+        let healthy = DownloadAttemptKey(
+            ratingKey: "plex:healthy",
+            attemptID: try #require(DownloadAttemptID(rawValue: "healthy-attempt")))
+        #expect(BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: false, isPurging: false, isPermanentlyRejected: false,
+            hasCurrentMarker: true, taskKey: healthy, ownsAttempt: true,
+            isDormantAfterFailedActivation: true))
+        #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: false, isPurging: false, isPermanentlyRejected: false,
+            hasCurrentMarker: true, taskKey: healthy, ownsAttempt: false,
+            isDormantAfterFailedActivation: true))
+        #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: false, isPurging: false, isPermanentlyRejected: false,
+            hasCurrentMarker: false, taskKey: healthy, ownsAttempt: true,
+            isDormantAfterFailedActivation: true))
+        #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: false, isPurging: false, isPermanentlyRejected: true,
+            hasCurrentMarker: true, taskKey: healthy, ownsAttempt: true,
+            isDormantAfterFailedActivation: true))
+        // A never-activated dormant session keeps rejecting everything.
+        #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: false, isPurging: false, isPermanentlyRejected: false,
+            hasCurrentMarker: true, taskKey: healthy, ownsAttempt: true,
+            isDormantAfterFailedActivation: false))
+    }
+
     @Test func dormantSessionRejectsStartWithoutCreatingWork() throws {
         try withTemporaryDirectory { directory in
             let store = DownloadStore(baseDirectory: directory)
@@ -62,6 +92,42 @@ struct BackgroundDownloadStartupAdmissionTests {
         }
     }
 
+    /// B05: a runtime block (for example an indeterminate season persist) must not abort the
+    /// ACTIVE session's background-completion gate; only a dormant session has no finish-events
+    /// callback to wait for.
+    @Test func startupFailureReleaseKeepsActiveSessionWakeOwnership() async throws {
+        try await withTemporaryDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let session = BackgroundDownloadSession(
+                store: store, protocolClasses: [], releaseBackgroundCompletion: { _ in })
+            defer { session.invalidateInjectedSessionForTesting() }
+            #expect(await activate(session) == .activated(cancelledTaskCount: 0))
+            session.noteBackgroundCompletionHandlerStored(
+                identifier: BackgroundDownloadSession.identifier)
+
+            session.releaseBackgroundCompletionAfterStartupFailure()
+
+            #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false)
+                .backgroundCompletionHandlerCount == 1)
+        }
+    }
+
+    @Test func startupFailureReleaseDrainsDormantSessionWake() throws {
+        try withTemporaryDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let session = BackgroundDownloadSession(
+                store: store, protocolClasses: [], releaseBackgroundCompletion: { _ in })
+            defer { session.invalidateInjectedSessionForTesting() }
+            session.noteBackgroundCompletionHandlerStored(
+                identifier: BackgroundDownloadSession.identifier)
+
+            session.releaseBackgroundCompletionAfterStartupFailure()
+
+            #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false)
+                .backgroundCompletionHandlerCount == 0)
+        }
+    }
+
     @Test func activeStaticTransferCheckpointsOnlyInAttemptWorkingFile() async throws {
         try await withTemporaryDirectory { directory in
             let store = DownloadStore(baseDirectory: directory)
@@ -94,6 +160,54 @@ struct BackgroundDownloadStartupAdmissionTests {
             #expect((try Data(contentsOf: stable)) == Data("previous-published-body".utf8))
             #expect(store.record(for: key)?.localURL == stable)
             session.cancel(ratingKey: ratingKey)
+        }
+    }
+
+    /// B54 containment: the second consecutive truncation parks a forward-only row `.unverified`
+    /// and keeps its bytes. The kept body must be published at the row's stable path through the
+    /// validated-promotion path, exactly as a probe-miss `.unverified` is, not left in staging.
+    @Test func truncatedSecondStrikeParkPublishesBodyAtStablePath() async throws {
+        try await withTemporaryDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let session = BackgroundDownloadSession(
+                store: store, protocolClasses: [],
+                playbackValidator: { _, _ in
+                    BackgroundDownloadSession.PlaybackValidation(
+                        played: true, reason: "played", durationMs: 60_000, detail: nil)
+                })
+            defer { session.invalidateInjectedSessionForTesting() }
+            #expect(await activate(session) == .activated(cancelledTaskCount: 0))
+            session.onFinalizerRequest = { [weak session] request in
+                Task { await session?.executeFinalizerRequest(request) }
+            }
+
+            let attemptID = try #require(DownloadAttemptID(rawValue: "truncated-park-a"))
+            let key = DownloadAttemptKey(ratingKey: "jellyfin:truncated-park", attemptID: attemptID)
+            let stable = store.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
+            let record = DownloadRecord(
+                ratingKey: key.ratingKey, attemptID: attemptID, title: "Truncated",
+                localURL: stable, status: .downloading,
+                metadata: OfflineMetadata(
+                    ratingKey: key.ratingKey, title: "Truncated", type: "movie",
+                    duration: 3_600_000,
+                    backendKind: .jellyfin,
+                    resumeMode: .liveForwardOnly))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: attemptID) == .committed(key))
+            let working = try #require(store.attemptWorkingFileURL(for: key))
+            let body = Data(repeating: 0x5A, count: 4_096)
+            try body.write(to: working)
+            // The first strike already happened in this process.
+            session.seedTruncationFailureCountForTesting(1, ratingKey: key.ratingKey)
+
+            #expect(session.finalizeCompletedStaticRangeFile(
+                ratingKey: key.ratingKey, validationLabel: "test"))
+            for _ in 0..<500 where store.record(for: key)?.status != .unverified {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+
+            #expect(store.record(for: key)?.status == .unverified)
+            #expect((try? Data(contentsOf: stable)) == body)
+            #expect(!FileManager.default.fileExists(atPath: working.path))
         }
     }
 
@@ -537,6 +651,8 @@ struct BackgroundDownloadStartupAdmissionTests {
         case malformedCurrentRow
         /// Bytes that are not JSON at all.
         case notJSON
+        /// A newer schema written by a later app version, then downgraded: keep it, never reset.
+        case newerSchema
 
         func bytes() throws -> Data {
             switch self {
@@ -547,11 +663,16 @@ struct BackgroundDownloadStartupAdmissionTests {
                 ])
             case .notJSON:
                 return Data("not-json".utf8)
+            case .newerSchema:
+                return try JSONSerialization.data(withJSONObject: [
+                    "schemaVersion": DownloadIndexCoding.currentSchemaVersion + 1,
+                    "rows": [],
+                ])
             }
         }
     }
 
-    @Test(arguments: [UnreadableIndex.malformedCurrentRow, .notJSON])
+    @Test(arguments: [UnreadableIndex.malformedCurrentRow, .notJSON, .newerSchema])
     func unreadableIndexFailsClosedUntouchedAndCannotRequestDestructiveReset(
         _ input: UnreadableIndex
     ) throws {

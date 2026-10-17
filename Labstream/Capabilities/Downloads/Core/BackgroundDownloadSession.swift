@@ -249,6 +249,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Destructive schema reset has no trustworthy row ownership. Unlike a current-schema purge,
     /// every callback is rejected until the daemon task list reaches an empty fixed point.
     private var startupRejectsAllCallbacks = false
+    /// B07: activation failed after the URLSession was constructed and returned admission to
+    /// `.dormant` while the session stays live. Owned current-attempt callbacks are still admitted
+    /// (as in the purge window) so healthy work is not cancelled and its bodies deleted while the
+    /// manager waits to retry; only non-owned callbacks are rejected.
+    private var startupFailedAfterSessionConstruction = false
     /// Cancellation completion can race a late body/progress callback. Once purge claims an ID it
     /// is rejected for the rest of this session object's life, even after admission opens.
     private var permanentlyRejectedTaskIdentifiers: Set<Int> = []
@@ -283,6 +288,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// blob adoption). If their delegate completions race in after
     /// cancellation, ignore their temp bytes.
     private var supersededRangeTaskIdentifiers: Set<Int> = []
+    /// B00 containment: per-row count of session-owned static-range work that is queued but has no
+    /// `rangeInflight` entry — a finished body's append hop on `rangeIOQueue`, or a delayed range
+    /// retry/rehydration on `rangeRetryQueue`. The manager's stale queued/downloading detector must
+    /// not treat those windows as abandoned residue and start a duplicate train.
+    private var pendingStaticRangeWorkCounts: [String: Int] = [:]
     /// #227: bounded per-row budget for re-resuming a failed continuous remainder from the resume
     /// data the OS handed back. Cleared with the other retry counters once durable bytes append.
     private var rangeBlobResumeCounts: [DownloadAttemptKey: Int] = [:]
@@ -488,6 +498,44 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             || rangeInflight.values.contains { $0.ratingKey == ratingKey }
     }
 
+    /// B00: true while the session still owns static-range work for the row even though no
+    /// URLSession task is tracked — a live task, a queued body append, a delayed range retry, a
+    /// rebuild grace awaiting the manager's replacement request, or a claimed finalizer. Used by the stale queued/downloading self-heal, which may restart only rows
+    /// the session has genuinely abandoned.
+    ///
+    /// Every handoff acquires its successor before releasing its predecessor. Live tasks and pending
+    /// work share `lock`, so they are read together; grace and finalizer ownership live behind other
+    /// locks, and grace can hand back to a live task, so the locked pair is re-read after them.
+    func ownsInProgressStaticRangeWork(ratingKey: String) -> Bool {
+        if ownsLiveOrPendingStaticRangeWork(ratingKey: ratingKey) { return true }
+        if backgroundWakeCoordinator.hasGrace(forRatingKey: ratingKey) { return true }
+        let finalizing = finalizationStateQueue.sync {
+            finalizerRequestIDsByAttempt.keys.contains { $0.ratingKey == ratingKey }
+        }
+        if finalizing { return true }
+        return ownsLiveOrPendingStaticRangeWork(ratingKey: ratingKey)
+    }
+
+    private func ownsLiveOrPendingStaticRangeWork(ratingKey: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return inflight.values.contains { $0.ratingKey == ratingKey }
+            || rangeInflight.values.contains { $0.ratingKey == ratingKey }
+            || (pendingStaticRangeWorkCounts[ratingKey] ?? 0) > 0
+    }
+
+    private func beginPendingStaticRangeWork(ratingKey: String) {
+        lock.lock()
+        pendingStaticRangeWorkCounts[ratingKey, default: 0] += 1
+        lock.unlock()
+    }
+
+    private func endPendingStaticRangeWork(ratingKey: String) {
+        lock.lock()
+        let remaining = (pendingStaticRangeWorkCounts[ratingKey] ?? 1) - 1
+        pendingStaticRangeWorkCounts[ratingKey] = remaining > 0 ? remaining : nil
+        lock.unlock()
+    }
+
     /// Counter-only callers can omit filesystem inspection; omitted temp bytes are zero.
     func diagnosticSnapshot(includePendingTempCleanupBytes: Bool = true) -> BackgroundDownloadSessionDiagnosticSnapshot {
         lock.lock()
@@ -573,8 +621,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // Keep the background session itself permissive and stamp the cellular policy onto
         // each freshly-created URLRequest. That lets new tasks observe the Settings toggle
         // (defaulting off/Wi-Fi-only) without invalidating/recreating a background session
-        // with the same identifier; resume-data tasks keep the OS-archived policy.
+        // with the same identifier; resume-data tasks keep the OS-archived policy. D5: the same
+        // permissive-session / per-request rule covers constrained and expensive networks.
         config.allowsCellularAccess = true
+        config.allowsConstrainedNetworkAccess = true
+        config.allowsExpensiveNetworkAccess = true
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }
 
@@ -587,8 +638,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// forward-only downloads terminally before the 90s stall watchdog could act.
     /// (`downloadTask(withResumeData:)` sites inherit the archived original request's stamps.)
     private func requestApplyingTaskPolicies(_ request: URLRequest) -> URLRequest {
-        var policyRequest = request
-        policyRequest.allowsCellularAccess = PlaybackPreferences.allowsCellularDownloads()
+        // D5: the cellular toggle also governs Low Data Mode and expensive networks.
+        var policyRequest = DownloadNetworkAccessPolicy.applying(
+            allowsCostlyNetworks: PlaybackPreferences.allowsCellularDownloads(), to: request)
         #if targetEnvironment(simulator)
         policyRequest.timeoutInterval = 3600
         #endif
@@ -656,6 +708,18 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     #if DEBUG
+    /// B00 regression seam: invoked on the delegate queue at the instant a finished or errored Range
+    /// task leaves live tracking, before its disposition runs.
+    var rangeTrackingDroppedForTesting: ((String) -> Void)?
+
+    func beginBackgroundCompletionOperationForTesting() {
+        beginPendingBackgroundCompletionOperation()
+    }
+
+    func endBackgroundCompletionOperationForTesting() {
+        endPendingBackgroundCompletionOperation()
+    }
+
     func finishBackgroundEventsForTesting(identifier: String) {
         fireBackgroundCompletionWhenFinalizationIsSafe(identifier: identifier)
     }
@@ -700,12 +764,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             segmentLength: segmentLength, responseStatus: 206, bodyBytesWritten: 0,
             remainderReason: nil)
         beginPendingBackgroundCompletionOperation()
+        beginPendingStaticRangeWork(ratingKey: entry.ratingKey)
         rangeIOQueue.async { [self] in
             applyFinishedRangeBody(entry: entry, write: .append, stash: stash,
                                    validator: nil, contentRangeStart: contentRangeStart,
                                    contentRangeTotal: nil,
                                    responseContentLength: segmentLength,
                                    bodyTrainEpoch: 0)
+            endPendingStaticRangeWork(ratingKey: entry.ratingKey)
             endPendingBackgroundCompletionOperation()
             onApplied?()
         }
@@ -876,6 +942,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.lock()
         startupAdmissionState = .dormant
         startupRejectsAllCallbacks = false
+        // Both activation paths enumerate `urlSession` before they can fail, so it is live now.
+        startupFailedAfterSessionConstruction = true
         lock.unlock()
         AppDiagnostics.record(.downloads, "downloads.startup_admission_failed", fields: [
             "reason": .label(reason),
@@ -888,6 +956,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let state = startupAdmissionState
         let rejected = permanentlyRejectedTaskIdentifiers.contains(task.taskIdentifier)
         let rejectsAll = startupRejectsAllCallbacks
+        let failedAfterConstruction = startupFailedAfterSessionConstruction
         lock.unlock()
         guard !rejectsAll else { return false }
         let key = BackgroundDownloadTaskIdentity.attemptIdentity(
@@ -903,7 +972,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             hasCurrentMarker: BackgroundDownloadTaskIdentity.markerVersion(
                 taskDescription: task.taskDescription).isCurrent,
             taskKey: key,
-            ownsAttempt: key.map(store.ownsAttempt) ?? false
+            ownsAttempt: key.map(store.ownsAttempt) ?? false,
+            isDormantAfterFailedActivation: state == .dormant && failedAfterConstruction
         )
     }
 
@@ -913,10 +983,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         isPermanentlyRejected: Bool,
         hasCurrentMarker: Bool,
         taskKey: DownloadAttemptKey?,
-        ownsAttempt: Bool
+        ownsAttempt: Bool,
+        isDormantAfterFailedActivation: Bool = false
     ) -> Bool {
         guard !isPermanentlyRejected else { return false }
-        guard isActive || isPurging else { return false }
+        guard isActive || isPurging || isDormantAfterFailedActivation else { return false }
         return hasCurrentMarker && taskKey != nil && ownsAttempt
     }
 
@@ -1114,6 +1185,26 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// finish-events callback cannot be awaited. The failure has already been observed by the
     /// manager; release the OS wake explicitly and leave admission dormant.
     func releaseBackgroundCompletionAfterStartupFailure() {
+        // B05: only a dormant session lacks a guaranteed finish-events callback. A runtime block
+        // (for example an indeterminate season persist) while admission is active or purging must
+        // not abort live gate operations and grace ownership mid-append; the normal finish-events
+        // path, or a later failed activation's own block, releases the wake.
+        let (isDormant, transportIsLive) = lock.withLock {
+            (startupAdmissionState == .dormant, startupFailedAfterSessionConstruction)
+        }
+        guard isDormant else {
+            AppDiagnostics.record(.downloads, "downloads.startup_failure_release_skipped", fields: [
+                "reason": .label("session_not_dormant"),
+            ])
+            return
+        }
+        // B07: a failed activation leaves the transport live and still admits owned callbacks, so
+        // an append or finalizer may hold the gate. Keep those holds and graces; release the stored
+        // wakes as if events had finished, after the operations drain and the persistence barrier.
+        if transportIsLive {
+            applyBackgroundWakeDrain(backgroundWakeCoordinator.finishAllAwaitingEvents())
+            return
+        }
         let drain = backgroundWakeCoordinator.abortAwaitingHandlers()
         if !drain.deferredRevalidationKeys.isEmpty {
             onBackgroundCompletionGateDrained?(drain.deferredRevalidationKeys)
@@ -1366,6 +1457,35 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     ])
                     continue
                 }
+                // B02: a pause/cancel/supersede in flight still lists its task until the async
+                // cancel lands. Never adopt or rebuild it, and never resurrect a paused row.
+                switch BackgroundReattachTaskGatePolicy.disposition(
+                    isSuperseded: self.supersededRangeTaskIdentifiers.contains(task.taskIdentifier),
+                    isCanceling: task.state == .canceling,
+                    isAttemptHalted: record?.attemptID.map {
+                        self.rangeHaltKinds[DownloadAttemptKey(ratingKey: ratingKey, attemptID: $0)] != nil
+                    } ?? false,
+                    rowStatus: record?.status
+                ) {
+                case .leaveAlone:
+                    AppDiagnostics.record(.downloads, "downloads.reattach_task_skipped", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "task_id": .int(task.taskIdentifier),
+                        "reason": .label("teardown_in_flight"),
+                    ])
+                    continue
+                case .cancelForPausedRow:
+                    self.supersededRangeTaskIdentifiers.insert(task.taskIdentifier)
+                    rangeTaskIdentifiersToCancel.append(task.taskIdentifier)
+                    AppDiagnostics.record(.downloads, "downloads.reattach_task_skipped", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "task_id": .int(task.taskIdentifier),
+                        "reason": .label("row_paused"),
+                    ])
+                    continue
+                case .classify:
+                    break
+                }
                 guard let record, let rowAttemptID = record.attemptID,
                       let workingLayout = self.store.attemptWorkingFileLayout(
                         for: DownloadAttemptKey(ratingKey: ratingKey, attemptID: rowAttemptID)) else {
@@ -1580,6 +1700,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 let expectedBytes = recordsByKey[ratingKey].flatMap {
                     BackgroundDownloadProgressPolicy.derivedExpectedBytes($0)
                 }
+                // B02: re-read at write time; a pause may have landed after classification.
+                guard BackgroundReattachTaskGatePolicy.mayWriteActiveStatus(
+                    currentStatus: self.store.record(for: attemptKey)?.status,
+                    isAttemptHalted: self.isRangeHalted(for: attemptKey)) else { continue }
                 _ = self.store.resetStaticRangeProgressToDurableCheckpoint(
                     for: attemptKey,
                     expectedBytes: expectedBytes
@@ -1590,9 +1714,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
             for ratingKey in adoptedRangeKeys {
                 guard let attemptID = recordsByKey[ratingKey]?.attemptID else { continue }
-                _ = self.store.setStatus(
-                    for: DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID),
-                    .downloading)
+                let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+                // B02: never force `.downloading` over a pause that landed after classification.
+                guard BackgroundReattachTaskGatePolicy.mayWriteActiveStatus(
+                    currentStatus: self.store.record(for: attemptKey)?.status,
+                    isAttemptHalted: self.isRangeHalted(for: attemptKey)) else { continue }
+                _ = self.store.setStatus(for: attemptKey, .downloading)
             }
             for (ratingKey, count) in adoptedSegmentCounts {
                 AppDiagnostics.record(.downloads, "downloads.range_segment_train_adopted", fields: [
@@ -1861,9 +1988,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // Pre-flight storage check: refuse if free space can't plausibly hold the
         // file. Sized against the expected bytes (plus headroom for the OS and the
         // temp-then-move copy) when known, so a 5 GB download with 600 MB free fails
-        // here rather than mid-transfer.
-        let headroom: Int64 = 500_000_000
-        let required = max(headroom, Int64(expectedBytes ?? 0) + headroom)
+        // here rather than mid-transfer. B01: a static byte-range resume needs only the bytes
+        // remaining past its durable working-file checkpoint, like the continuation preflight.
+        let durableCheckpointBytes = byteRangeCheckpoint ? fileSize(at: workingDestination) : nil
+        let required = DownloadDiskSpacePolicy.requiredFreeBytesToStart(
+            expectedBytes: expectedBytes, durableCheckpointBytes: durableCheckpointBytes)
         if let measured = availableStorageMeasurement(), measured.bytes < required {
             AppDiagnostics.record(.downloads, "downloads.transfer_start_failed", fields: [
                 "download_id": .identifier(ratingKey),
@@ -3131,12 +3260,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             try? fileManager.removeItem(at: entry.workingURL)
             try fileManager.moveItem(at: location, to: entry.workingURL)
         } catch {
+            // B26: a full volume is storage-full, with the same reason the range lane surfaces.
+            let outOfSpace = DownloadDiskSpacePolicy.isOutOfSpace(error)
             AppDiagnostics.record(.downloads, "downloads.move_failed", fields: [
                 "download_id": .identifier(entry.ratingKey),
                 "error": .error(error),
+                "storage_full": .bool(outOfSpace),
             ])
             setFailedPurgingHeldSegments(for: entry.attemptKey)
-            onError?(entry.ratingKey, .transferFailed(
+            onError?(entry.ratingKey, outOfSpace ? .storageFull : .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer")))
             onChange?()
             return
@@ -3320,11 +3452,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
         lock.lock()
         rangeInflight.removeValue(forKey: taskIdentifier)
+        // B00: take a finish hold in the same critical section that drops live tracking, so the
+        // stale-row self-heal never sees this body as abandoned while it is stashed and handed to
+        // its append/finalize/retry successor (each acquires its own hold before this one ends).
+        pendingStaticRangeWorkCounts[entry.ratingKey, default: 0] += 1
         loggedProgressMilestones.removeValue(forKey: taskIdentifier)
         lastRangeProgressDiagnostic.removeValue(forKey: taskIdentifier)
         let haltKind = rangeHaltKinds[entry.attemptKey]
         let bodyTrainEpoch = rangeTrainEpochs[entry.attemptKey] ?? 0
         lock.unlock()
+        defer { endPendingStaticRangeWork(ratingKey: entry.ratingKey) }
+        #if DEBUG
+        rangeTrackingDroppedForTesting?(entry.ratingKey)
+        #endif
 
         // The row was cancelled or paused while this remainder was finishing. A hard cancel/delete must
         // still discard the temp (the caller may be deleting the partial), but a user/system PAUSE
@@ -3505,8 +3645,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     // holding the background-completion gate across the hop (mirrors the
                     // append/replace dispatch below).
                     beginPendingBackgroundCompletionOperation()
+                    beginPendingStaticRangeWork(ratingKey: effectiveEntry.ratingKey)
                     rangeIOQueue.async { [self] in
-                        defer { endPendingBackgroundCompletionOperation() }
+                        defer {
+                            endPendingStaticRangeWork(ratingKey: effectiveEntry.ratingKey)
+                            endPendingBackgroundCompletionOperation()
+                        }
                         restartRangeFromChangedResource(entry: effectiveEntry)
                     }
                 }
@@ -3524,8 +3668,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             let contentRangeTotal = RangeTransferHTTPPolicy.contentRangeTotal(from: http)
             let contentLength = (http?.expectedContentLength).flatMap { $0 > 0 ? Int($0) : nil }
             beginPendingBackgroundCompletionOperation()
+            beginPendingStaticRangeWork(ratingKey: entry.ratingKey)
             rangeIOQueue.async { [self] in
-                defer { endPendingBackgroundCompletionOperation() }
+                defer {
+                    endPendingStaticRangeWork(ratingKey: entry.ratingKey)
+                    endPendingBackgroundCompletionOperation()
+                }
                 applyFinishedRangeBody(entry: entry, write: write, stash: stash,
                                    validator: validator, contentRangeStart: contentRangeStart,
                                    contentRangeTotal: contentRangeTotal,
@@ -5130,7 +5278,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "delay_ms": .int(Int(delay * 1000)),
         ])
         _ = resolveLifecycleSubmission(store.submitStatus(for: entry.attemptKey, .queued))
+        beginPendingStaticRangeWork(ratingKey: entry.ratingKey)
         rangeRetryQueue.asyncAfter(deadline: .now() + delay) { [self] in
+            defer { endPendingStaticRangeWork(ratingKey: entry.ratingKey) }
             do {
                 try startRangeRemainder(ratingKey: entry.ratingKey,
                                     with: request,
@@ -5357,7 +5507,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         guard let truncationFailures else { return }
         let finalizationResult = BackgroundFinalizationResultPolicy.result(
             for: outcome,
-            consecutiveTruncationFailures: truncationFailures)
+            consecutiveTruncationFailures: truncationFailures,
+            revalidatingPublishedFile: !publishesWorkingFile)
         let finalizationDurationMs = max(0, Int(Date().timeIntervalSince(finalizeStarted) * 1000))
         guard !Task.isCancelled else { return }
         switch outcome {
@@ -5432,10 +5583,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ])
             guard !Task.isCancelled else { return }
             clearRetryCount(for: attemptKey)
-            guard acceptedAttemptSubmission(
-                resolveLifecycleSubmission(store.submitStatus(for: attemptKey, finalizationResult.status)),
-                key: attemptKey, phase: "finalize_truncated_status"
-            ) else { return }
+            if finalizationResult.status == .unverified, publishesWorkingFile {
+                // B54 containment: the repeated-truncation park keeps playable bytes. Publish them
+                // at the stable path through the same validated promotion as a probe-miss
+                // `.unverified`, instead of leaving the body in attempt staging.
+                guard await promoteValidatedWorkingFile(
+                    for: attemptKey, status: .unverified,
+                    phase: "finalize_truncated_park_promote") else { return }
+            } else {
+                guard acceptedAttemptSubmission(
+                    resolveLifecycleSubmission(store.submitStatus(for: attemptKey, finalizationResult.status)),
+                    key: attemptKey, phase: "finalize_truncated_status"
+                ) else { return }
+            }
             if finalizationResult.shouldDeleteFile,
                !Task.isCancelled,
                stillOwnsAttempt(attemptKey, phase: "finalize_truncated_delete") {
@@ -5740,10 +5900,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let superseded = supersededRangeTaskIdentifiers.remove(task.taskIdentifier) != nil
         let rangeEntry = superseded ? nil : rangeInflight.removeValue(forKey: task.taskIdentifier)
         let entry = (rangeEntry == nil && !superseded) ? inflight.removeValue(forKey: task.taskIdentifier) : nil
+        // B00: an errored Range task keeps session ownership until its disposition (park, blob
+        // resume, delayed retry, rehydration grace, or failure) has taken over.
+        if let rangeEntry { pendingStaticRangeWorkCounts[rangeEntry.ratingKey, default: 0] += 1 }
         loggedExpectation.remove(task.taskIdentifier)
         loggedProgressMilestones.removeValue(forKey: task.taskIdentifier)
         lastRangeProgressDiagnostic.removeValue(forKey: task.taskIdentifier)
         lock.unlock()
+        defer { if let rangeEntry { endPendingStaticRangeWork(ratingKey: rangeEntry.ratingKey) } }
+        #if DEBUG
+        if let rangeEntry { rangeTrackingDroppedForTesting?(rangeEntry.ratingKey) }
+        #endif
         if superseded {
             AppDiagnostics.record(.downloads, "downloads.range_superseded_complete_ignored", fields: [
                 "task_id": .int(task.taskIdentifier),
@@ -5759,13 +5926,57 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // purge held bodies, replace resume data, change status, or start replacement tasks.
             guard stillOwnsAttempt(
                 rangeEntry.attemptKey, phase: "range_error_completion") else { return }
+            // B09: an OS-initiated -999 is an interruption. App pause/cancel/supersede removed
+            // this entry (and installed a halt) before cancelling, so it never reaches here as one.
+            let isSystemInitiatedCancel = error.map(
+                BackgroundSystemCancellationPolicy.isSystemInitiatedCancel) == true
+                && !isRangeHalted(for: rangeEntry.attemptKey)
             let rangeDisposition = BackgroundRangeCompletionPolicy.disposition(
                 hasError: error != nil,
                 errorCode: error.map { ($0 as NSError).code },
-                hasRequest: rangeEntry.request != nil
+                hasRequest: rangeEntry.request != nil,
+                isSystemInitiatedCancel: isSystemInitiatedCancel
             )
             guard let error else { return } // success already handled in finishRangeRemainder
             let nsError = error as NSError
+            if case .parkSystemInterrupted = rangeDisposition {
+                // Park at the durable checkpoint without an immediate blob/transient retry: the
+                // system just refused background work, so re-issuing now would be cancelled again.
+                // Park the whole train, as a user pause does: a `.pause` halt suppresses queued
+                // retries and refills, superseding stops sibling progress from re-promoting the
+                // row to Downloading, and a sibling body already finishing is still appended.
+                lock.lock()
+                if rangeHaltKinds[rangeEntry.attemptKey] != .cancel {
+                    rangeHaltKinds[rangeEntry.attemptKey] = .pause
+                }
+                let parkedSiblings = supersedeRangeTasksLocked(ratingKey: rangeEntry.ratingKey)
+                lock.unlock()
+                for identifier in parkedSiblings {
+                    cancelURLSessionTask(identifier: identifier)
+                }
+                endRangeRequestRebuildGrace(for: rangeEntry.attemptKey, reason: "system_cancel_park")
+                let rangeResumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data
+                if rangeEntry.segmentLength == nil, let rangeResumeData, !rangeResumeData.isEmpty {
+                    let displayBytes = rangeEntry.baseOffset
+                        + max(rangeEntry.bodyBytesWritten, Int(max(task.countOfBytesReceived, 0)))
+                    resolveLifecycleSubmission(store.submitResumeData(
+                        for: rangeEntry.attemptKey, rangeResumeData, displayBytes: displayBytes))
+                }
+                guard let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
+                    for: rangeEntry.attemptKey, expectedBytes: rangeEntry.expectedBytes,
+                    context: "system_cancel_park"
+                ) else { return }
+                AppDiagnostics.record(.downloads, "downloads.range_system_cancel_parked", fields: [
+                    "download_id": .identifier(rangeEntry.ratingKey),
+                    "cancel_reason": .int(
+                        (nsError.userInfo[NSURLErrorBackgroundTaskCancelledReasonKey] as? Int) ?? -1),
+                    "bytes": .bytes(durableBytes),
+                ])
+                _ = resolveLifecycleSubmission(store.submitStatus(for: rangeEntry.attemptKey, .paused))
+                onError?(rangeEntry.ratingKey, .interruptedResumable)
+                onChange?()
+                return
+            }
             if case .cancelled = rangeDisposition {
                 downloadLog.info("range-cancelled ratingKey=\(rangeEntry.ratingKey, privacy: .public) bytes=\(rangeEntry.totalBytes, privacy: .public)")
                 AppDiagnostics.record(.downloads, "downloads.range_cancelled", fields: [
@@ -5892,7 +6103,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let opaqueDisposition = BackgroundOpaqueCompletionPolicy.disposition(
             errorCode: nsError.code,
             hasResumeData: hasResumeData,
-            supportsPersistedResumeData: supportsResumeData
+            supportsPersistedResumeData: supportsResumeData,
+            // B09: app cancels remove the inflight entry first; an OS cancel arrives still tracked.
+            isSystemInitiatedCancel: BackgroundSystemCancellationPolicy.isSystemInitiatedCancel(nsError),
+            // B26: classify a full disk before resume-data/transient handling can re-drive it.
+            isOutOfSpace: DownloadDiskSpacePolicy.isOutOfSpace(nsError)
         )
         // A cancel is not a failure. Any other error keeps a `.failed` row (D3) with a
         // surfaced reason, rather than silently erasing it so the UI can offer retry.
@@ -5903,6 +6118,34 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             AppDiagnostics.record(.downloads, "downloads.cancelled", fields: [
                 "download_id": .identifier(entry.ratingKey),
             ])
+        case .failStorageFull:
+            var fields: [String: DiagnosticFieldValue] = [
+                "download_id": .identifier(entry.ratingKey),
+                "context": .label("task_completion"),
+                "bytes_received": .bytes(Int(task.countOfBytesReceived)),
+            ]
+            if let measured = availableStorageMeasurement() {
+                fields["free_bytes"] = .bytes(Int(measured.bytes))
+                fields["free_bytes_exact"] = .int(Int(measured.bytes))
+                fields["free_space_source"] = .label(measured.source.rawValue)
+            }
+            AppDiagnostics.record(.downloads, "downloads.transfer_storage_full", fields: fields)
+            clearRetryCount(for: entry.attemptKey)
+            setFailedPurgingHeldSegments(for: entry.attemptKey)
+            onError?(entry.ratingKey, .storageFull)
+        case .failSystemInterrupted:
+            // B09: the system stopped a forward-only transfer. Fail retryable with the real reason
+            // instead of a silent cancel that leaves the row `.downloading` with no task.
+            AppDiagnostics.record(.downloads, "downloads.transfer_system_cancelled", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "cancel_reason": .int(
+                    (nsError.userInfo[NSURLErrorBackgroundTaskCancelledReasonKey] as? Int) ?? -1),
+                "bytes_received": .bytes(Int(task.countOfBytesReceived)),
+            ])
+            clearRetryCount(for: entry.attemptKey)
+            setFailedPurgingHeldSegments(for: entry.attemptKey)
+            onError?(entry.ratingKey, .transferFailed(
+                "The system stopped this download in the background. Retry will restart it from the beginning."))
         case .pauseWithResumeData, .failNonResumableStream, .fail:
             if retryTransientFailure(nsError, task: task, entry: entry) {
                 return
@@ -6429,7 +6672,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // completion handler across the delayed rebuild (#212).
         beginRangeRequestRebuildGrace(for: entry.attemptKey)
         _ = resolveLifecycleSubmission(store.submitStatus(for: entry.attemptKey, .queued))
+        beginPendingStaticRangeWork(ratingKey: entry.ratingKey)
         rangeRetryQueue.asyncAfter(deadline: .now() + delay) { [self] in
+            endPendingStaticRangeWork(ratingKey: entry.ratingKey)
             onRangeRequestNeeded?(entry.ratingKey, .serverAuthorizationRejected)
             onChange?()
         }
@@ -6470,7 +6715,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "delay_ms": .int(Int(delay * 1000)),
         ])
 
+        beginPendingStaticRangeWork(ratingKey: entry.ratingKey)
         rangeRetryQueue.asyncAfter(deadline: .now() + delay) { [self] in
+            defer { endPendingStaticRangeWork(ratingKey: entry.ratingKey) }
             do {
                 try startRangeRemainder(ratingKey: entry.ratingKey,
                                     with: request,

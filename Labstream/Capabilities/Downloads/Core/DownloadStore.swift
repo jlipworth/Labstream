@@ -22,7 +22,14 @@ final class DownloadStore: @unchecked Sendable {
         label: "org.labstream.Labstream.download-unsupported-root-cleanup", qos: .utility)
 
     struct IndexPersistence: Sendable {
+        let read: @Sendable (URL) throws -> Data
         let atomicWrite: @Sendable (Data, URL) throws -> Void
+
+        init(read: @escaping @Sendable (URL) throws -> Data = { try Data(contentsOf: $0) },
+             atomicWrite: @escaping @Sendable (Data, URL) throws -> Void) {
+            self.read = read
+            self.atomicWrite = atomicWrite
+        }
 
         static let live = IndexPersistence { data, url in
             try DownloadIndexFileCommitter().commit(data, to: url)
@@ -656,7 +663,7 @@ final class DownloadStore: @unchecked Sendable {
         var startupIndexData: Data?
         if fileManager.fileExists(atPath: indexURL.path) {
             do {
-                let data = try Data(contentsOf: indexURL)
+                let data = try indexPersistence.read(indexURL)
                 startupIndexData = data
                 startupProbe = DownloadIndexCoding.startupProbe(data: data)
             } catch {
@@ -723,7 +730,9 @@ final class DownloadStore: @unchecked Sendable {
         try? DownloadArtifactFileCommitter.cleanupAbandonedResumeTemps(
             in: dir,
             fileManager: fileManager)
-        load()
+        // B15: decode the exact bytes the probe classified. A second read could fail transiently
+        // and admit an empty `.current` store whose next snapshot overwrites the real index.
+        load(indexData: startupProbe == .current ? startupIndexData : nil)
         startupArtifactCleanupIntentIDs = Set(
             rows.values.flatMap { $0.pendingArtifactIntents.map(\.id) })
         stageHeldBodyDeletionJobs()
@@ -5150,9 +5159,9 @@ final class DownloadStore: @unchecked Sendable {
 
     // MARK: - Persistence
 
-    private func load() {
+    private func load(indexData: Data?) {
         lock.lock(); defer { lock.unlock() }
-        guard let data = try? Data(contentsOf: indexURL) else { return }
+        guard let data = indexData else { return }
         // #135 H8: decode the index row-by-row so a single corrupt/forward-incompatible
         // row can't drop the user's whole offline library (the old all-or-nothing
         // `decode([Row].self)` did exactly that). A non-zero skip is logged rather than

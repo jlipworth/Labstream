@@ -322,6 +322,18 @@ background-session registration, or migration/recovery work.
       optimized…" with a spinner.
 - [ ] Server-side encoders/optimizer/Convert jobs are stopped or reconciled when their row
       completes, fails, is canceled, or is recovered after relaunch.
+- [ ] Fail an Emby Convert row while its server job is still converting (for example, stay
+      offline past the poll-health budget), relaunch or switch backends, then tap Retry. The job is
+      not deleted by the launch sweep: Retry resumes polling the same job instead of starting a new
+      conversion.
+- [ ] Resume a large static download from a mostly complete partial with free space for the
+      remaining bytes but not the whole file. It resumes instead of reporting storage full.
+- [ ] Retry a failed Plex optimize row. It re-renders at the profile originally requested, not
+      the default preset.
+- [ ] With **Use cellular data for downloads** off, a new download on a Low Data Mode or personal
+      hotspot network waits; it starts once an unconstrained, inexpensive network is available.
+- [ ] Planning an Emby season shows "Planning episode N of M…" and finishes without a per-episode
+      server refresh delay.
 
 ### Static segment train
 

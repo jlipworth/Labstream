@@ -53,20 +53,41 @@ public enum OptimizeRequest {
                     headers: PlexHeaders.standard(identity: identity, token: token))
     }
 
+    public enum CreateError: Error, Equatable, Sendable {
+        /// Neither a library source URI nor the server's machine identifier was available, so
+        /// there is no `Item[Location][uri]` PMS could resolve.
+        case missingSourceLocation
+    }
+
     /// `POST {backgroundProcessingKey}` — enqueue an optimize job using the nested `Item[...]`
     /// grammar python-plexapi sends. `targetTagID` is the SERVER-RESOLVED id (from the targets
     /// list), NOT a hardcoded enum default. SERVER-SPECIFIC: the accepted key + grammar are
     /// confirmed by Phase 0.
+    ///
+    /// `sourceURI` is the preferred `library://<section uuid>/item/...` location. Without it the
+    /// fallback is `server://<serverMachineIdentifier>/...`, which must name the SERVER (its
+    /// machine identifier), never this client. With neither, this throws
+    /// `CreateError.missingSourceLocation` rather than sending a URI PMS cannot resolve.
     public static func createOnPlaylist(server: URL, token: String, identity: ClientIdentity,
                                         backgroundProcessingKey: String,
                                         ratingKey: String,
                                         sourceURI: String? = nil,
+                                        serverMachineIdentifier: String? = nil,
                                         locationID: Int = -1,
                                         title: String,
                                         targetTagID: Int?,
                                         targetName: String? = nil,
                                         deviceProfile: String? = nil,
-                                        mediaSettings: MediaSettings) -> PlexRequest {
+                                        mediaSettings: MediaSettings) throws -> PlexRequest {
+        let locationURI: String
+        if let sourceURI, !sourceURI.isEmpty {
+            locationURI = sourceURI
+        } else if let machine = serverMachineIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !machine.isEmpty {
+            locationURI = PlayQueue.itemURI(machineIdentifier: machine, ratingKey: ratingKey)
+        } else {
+            throw CreateError.missingSourceLocation
+        }
         let trimmed = backgroundProcessingKey.hasPrefix("/")
             ? String(backgroundProcessingKey.dropFirst()) : backgroundProcessingKey
         let url = server.appendingPathComponent(trimmed)
@@ -75,8 +96,7 @@ public enum OptimizeRequest {
             .init(name: "Item[title]", value: title),
             .init(name: "Item[target]", value: targetName ?? ""),
             .init(name: "Item[targetTagID]", value: targetTagID.map(String.init) ?? ""),
-            .init(name: "Item[Location][uri]",
-                  value: sourceURI ?? "server://\(identity.clientIdentifier)/com.plexapp.plugins.library/library/metadata/\(ratingKey)"),
+            .init(name: "Item[Location][uri]", value: locationURI),
             .init(name: "Item[locationID]", value: String(locationID)),
             .init(name: "Item[Policy][scope]", value: "all"),
             .init(name: "Item[Policy][value]", value: "0"),
@@ -253,7 +273,7 @@ public struct BackgroundProcessingItems: Decodable, Sendable, Equatable {
     /// PMS states that mean the job finished. Deleting a completed background-processing item
     /// also deletes the rendered optimized version on the server, so the download pipeline must
     /// preserve these until the client has positively downloaded or explicitly removed them.
-    static let completedStates: Set<String> = ["complete", "completed", "successful", "success", "done"]
+    static let completedStates: Set<String> = PlexOptimizeCompletionPolicy.completedStates
 
     /// IDs of items that are SAFE to delete: those whose title carries `marker` (i.e. this
     /// client created them), whose title is NOT in `protectedTitles` (a currently-active

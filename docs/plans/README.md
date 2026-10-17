@@ -23,6 +23,8 @@ When a plan is complete or superseded:
 
 ## Active plans
 
+- [Downloads manager overhaul](2026-10-16-downloads-overhaul.md) — edge-case inventory,
+  bug list and phased simplification design; awaiting the design checkpoint.
 - [Licensed demo screenshots and review notes](2026-09-15-store-demo-capture.md) —
   provenance and capture contract recorded; final images, credits, age suitability and
   exact-candidate reviewer journeys remain open.

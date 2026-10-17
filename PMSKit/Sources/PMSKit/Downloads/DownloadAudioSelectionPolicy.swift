@@ -34,10 +34,10 @@ public enum DownloadAudioSelectionPolicy {
                                           preferredRole: AudioStreamRole = .main) -> DownloadAudioTrackSelection? {
         let streams = part?.audioStreams ?? []
         if let overrideStreamIndex, overrideStreamIndex >= 0 {
-            let match = streams.first { stream in
-                stream.id == overrideStreamIndex || stream.index == overrideStreamIndex
-            }
-            return makeSelection(streamIndex: overrideStreamIndex, stream: match, position: nil)
+            let match = matchedAudioStream(part: part, streamIdentifier: overrideStreamIndex)
+            // The selection carries the matched stream's `Stream.id` (what Plex's audioStreamID
+            // expects), even when the override matched by container index.
+            return makeSelection(streamIndex: match?.id ?? overrideStreamIndex, stream: match, position: nil)
         }
 
         let preferred = preferredLanguage.flatMap { language in
@@ -57,6 +57,15 @@ public enum DownloadAudioSelectionPolicy {
         }
         let position = streams.firstIndex(where: { $0.id == selected.id }).map { $0 + 1 }
         return makeSelection(streamIndex: selected.id, stream: selected, position: position)
+    }
+
+    /// The audio stream an override value names: an exact `Stream.id` match first, then a
+    /// container `Stream.index` match. Callers sending the selection to Plex must send the
+    /// returned stream's `id`, never the raw override value.
+    public static func matchedAudioStream(part: Part?, streamIdentifier: Int) -> Stream? {
+        let streams = part?.audioStreams ?? []
+        return streams.first { $0.id == streamIdentifier }
+            ?? streams.first { $0.index == streamIdentifier }
     }
 
     private static func best(in streams: [Stream]) -> Stream? {

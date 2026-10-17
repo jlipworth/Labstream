@@ -53,6 +53,7 @@ struct DownloadItemPlanner {
                  audioStreamIndexOverride: Int? = nil,
                  preferredAudioLanguage: String? = nil,
                  preferredAudioRole: AudioStreamRole = .main,
+                 existingVersionDiscovery: DownloadExistingVersionDiscoveryMode = .refreshAndPoll,
                  backend: DownloadBackendKind) async -> DownloadItemPlanningOptions {
         let selection = DownloadMediaSelectionPolicy.selection(
             item: item, mediaIndex: mediaIndex, partIndex: partIndex)
@@ -69,7 +70,8 @@ struct DownloadItemPlanner {
                                          audioStreamIndex: audioStreamIndex)
         case .emby:
             return await embyOptions(for: item, mediaIndex: mediaIndex, partIndex: partIndex,
-                                     audioStreamIndex: audioStreamIndex)
+                                     audioStreamIndex: audioStreamIndex,
+                                     existingVersionDiscovery: existingVersionDiscovery)
         }
     }
 
@@ -139,7 +141,8 @@ struct DownloadItemPlanner {
                     try Self.requireSuccess(response)
                     let info = try JellyfinPlaybackInfoResponse.decode(from: data)
                     let decision = try JellyfinPlayback.downloadDecision(
-                        response: info, preferredMediaSourceId: selection.mediaSourceID)
+                        response: info, preferredMediaSourceId: selection.mediaSourceID,
+                        audioStreamIndex: audioStreamIndex)
                     let eligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
                         videoCodec: decision.videoCodec, audioCodec: decision.audioCodec,
                         sourceContainer: decision.container)
@@ -170,7 +173,9 @@ struct DownloadItemPlanner {
     }
 
     private func embyOptions(for item: MediaItem, mediaIndex: Int, partIndex: Int,
-                             audioStreamIndex: Int?) async -> DownloadItemPlanningOptions {
+                             audioStreamIndex: Int?,
+                             existingVersionDiscovery: DownloadExistingVersionDiscoveryMode)
+        async -> DownloadItemPlanningOptions {
         let selection = DownloadMediaSelectionPolicy.selection(
             item: item, mediaIndex: mediaIndex, partIndex: partIndex)
         let media = selection.media
@@ -230,7 +235,8 @@ struct DownloadItemPlanner {
         }
         let existing = (try? await embyExistingVersions(
             session: session, identity: identity, userID: userID, item: item,
-            selectedMediaSourceID: selection.mediaSourceID)) ?? []
+            selectedMediaSourceID: selection.mediaSourceID,
+            mode: existingVersionDiscovery)) ?? []
         return .init(item: item, original: original, compatibleRemux: remux, presets: presets,
                      probeFailed: failed,
                      originalStreamableButOfflineUnsupported: !failed && direct && original == nil && remux == nil,
@@ -239,7 +245,8 @@ struct DownloadItemPlanner {
 
     private func embyExistingVersions(session: BackendSession, identity: EmbyClientIdentity,
                                       userID: String, item: MediaItem,
-                                      selectedMediaSourceID: String?) async throws
+                                      selectedMediaSourceID: String?,
+                                      mode: DownloadExistingVersionDiscoveryMode) async throws
         -> [DownloadExistingVersionOption] {
         func fetch() async throws -> [DownloadExistingVersionOption] {
             let request = try EmbyPlayback.downloadPlaybackInfoRequest(
@@ -255,19 +262,18 @@ struct DownloadItemPlanner {
                 response: info, primaryMediaSourceId: primary,
                 durationMilliseconds: item.duration)
         }
-        let initial = try await fetch()
-        if !initial.isEmpty { return initial }
-        let refresh = try EmbyConvertRequest.itemRefreshRequest(
-            server: session.baseURL, token: session.token, identity: identity,
-            userId: userID, itemId: item.ratingKey)
-        let (_, response) = try await requestExecutor.data(for: refresh)
-        try Self.requireSuccess(response)
-        for attempt in 0..<2 {
-            let versions = try await fetch()
-            if !versions.isEmpty { return versions }
-            if attempt == 0 { try? await Task.sleep(for: .seconds(5)) }
-        }
-        return []
+        // B68: season planning passes `.fetchOnce`; only the single-item sheet refreshes and polls.
+        return try await DownloadExistingVersionDiscovery.discover(
+            mode: mode,
+            fetch: fetch,
+            refresh: {
+                let refresh = try EmbyConvertRequest.itemRefreshRequest(
+                    server: session.baseURL, token: session.token, identity: identity,
+                    userId: userID, itemId: item.ratingKey)
+                let (_, response) = try await requestExecutor.data(for: refresh)
+                try Self.requireSuccess(response)
+            },
+            sleep: { delay in try? await Task.sleep(for: delay) })
     }
 
     private static func requireSuccess(_ response: URLResponse) throws {

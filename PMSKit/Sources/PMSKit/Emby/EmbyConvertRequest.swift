@@ -6,14 +6,27 @@ import FoundationNetworking
 /// Status of an Emby "Convert Media" Sync job (`GET /Sync/Jobs/{id}` → `Status`).
 ///
 /// The observed server strings (Emby 4.9.3) are `Queued` → `Converting`/`Transferring` →
-/// `Completed` / `Failed` / `Cancelled`. An unrecognized/absent string decodes to `.unknown`
-/// rather than throwing, so a forward-incompatible server value never crashes polling — it is
-/// simply treated as non-terminal (keep polling).
+/// `Completed` / `Failed` / `Cancelled`. Emby's `SyncJobStatus` also defines `ReadyToTransfer` and
+/// `CompletedWithError`, which have not been observed live on the Convert lane (B48):
+/// - `ReadyToTransfer` sits between conversion and the transfer step, so it is modelled as
+///   NON-terminal (keep polling until `Completed`).
+/// - `CompletedWithError` means the job ended but its item failed. It is modelled as a TERMINAL
+///   FAILURE. Decoding it to `.unknown` kept the job non-terminal, and every healthy 200 reset the
+///   poll budget, so the row polled forever. As a failure it clears the job id, so Retry creates a
+///   fresh job (and the reuse preflight still adopts any file the server did produce).
+/// Both assumptions come from the server enum, not from a live capture, and still need live
+/// verification against a server that emits them.
+///
+/// An unrecognized/absent string decodes to `.unknown` rather than throwing, so a
+/// forward-incompatible server value never crashes polling — it is simply treated as non-terminal
+/// (keep polling).
 public enum EmbyConvertJobStatus: String, Decodable, Sendable, Equatable {
     case queued = "Queued"
     case converting = "Converting"
+    case readyToTransfer = "ReadyToTransfer"
     case transferring = "Transferring"
     case completed = "Completed"
+    case completedWithError = "CompletedWithError"
     case failed = "Failed"
     case cancelled = "Cancelled"
     /// Any server string we don't recognize (forward-compat). Never terminal.
@@ -27,9 +40,9 @@ public enum EmbyConvertJobStatus: String, Decodable, Sendable, Equatable {
     /// True once the job has reached a final state (success OR failure/cancel) — stop polling.
     public var isTerminal: Bool {
         switch self {
-        case .completed, .failed, .cancelled:
+        case .completed, .completedWithError, .failed, .cancelled:
             return true
-        case .queued, .converting, .transferring, .unknown:
+        case .queued, .converting, .readyToTransfer, .transferring, .unknown:
             return false
         }
     }
@@ -37,6 +50,18 @@ public enum EmbyConvertJobStatus: String, Decodable, Sendable, Equatable {
     /// True only when the job finished and produced the converted file.
     public var didSucceed: Bool {
         self == .completed
+    }
+
+    /// User-facing phrase for a terminal failure ("Server conversion <phrase>."). Nil for
+    /// non-terminal and successful statuses.
+    public var terminalFailureDescription: String? {
+        switch self {
+        case .failed: return "failed"
+        case .cancelled: return "was cancelled"
+        case .completedWithError: return "finished with an error"
+        case .queued, .converting, .readyToTransfer, .transferring, .completed, .unknown:
+            return nil
+        }
     }
 }
 
@@ -399,17 +424,58 @@ public enum EmbyConvertRecoveryPolicy {
         return .preserveForRecovery
     }
 
+    /// What a convert chain does with the job its create POST returned once that chain is no longer
+    /// the current attempt (B47).
+    public enum StaleCreateDisposition: Equatable, Sendable {
+        /// The row this attempt created is still there but parked (paused/failed) with no job id:
+        /// persist the job id onto it, keep it parked, so Resume polls that exact job.
+        case adoptOntoParkedRow
+        /// The row is owned and either already holds this job, or a newer server-prep chain (e.g.
+        /// pause → resume re-entering crash-window recovery) owns the dispatch evidence and will
+        /// adopt the job itself. Do nothing, so neither chain cancels or races the other.
+        case leaveToCurrentOwner
+        /// Nothing owns the job (row deleted or replaced, or it holds a different job): cancel it.
+        case cancel
+    }
+
+    /// Decide the post-create disposition for a stale convert chain. `rowOwnedByAttempt` is true
+    /// when the store row still belongs to the exact attempt that dispatched POST, is not pending
+    /// deletion, and still carries this preset. Pausing during POST used to cancel the new job while
+    /// the paused row kept its dispatchAmbiguous identity, so Resume found zero matches and failed.
+    public static func staleCreateDisposition(rowOwnedByAttempt: Bool,
+                                              rowStatus: DownloadStatus?,
+                                              persistedJobID: Int?,
+                                              createdJobID: Int) -> StaleCreateDisposition {
+        guard rowOwnedByAttempt, let rowStatus else { return .cancel }
+        if let persistedJobID {
+            return persistedJobID == createdJobID ? .leaveToCurrentOwner : .cancel
+        }
+        switch rowStatus {
+        case .paused, .failed:
+            return .adoptOntoParkedRow
+        case .preparing:
+            return .leaveToCurrentOwner
+        case .queued, .downloading, .complete, .unverified:
+            return .cancel
+        }
+    }
+
     /// Recovery/cancellation must run under the same public Emby user that created the job. The
     /// Sync-list `UserId` is an incomparable internal integer, so ownership is enforced against the
     /// two public ids we control and persist locally instead.
+    ///
+    /// Equality is GUID-format-insensitive (`MediaBrowserUserIdentity.sameUser`), the same rule
+    /// `BackendSession.matchesPersistedServer` applies (B52): Emby may reformat the same user GUID
+    /// across re-logins, and a raw compare would skip recovery and cleanup forever.
     public static func publicUserMatches(currentSessionUserID: String?,
                                          persistedBackendUserID: String?,
                                          fingerprintUserID: String?) -> Bool {
-        let values = [currentSessionUserID, persistedBackendUserID, fingerprintUserID].map {
+        let values = [currentSessionUserID, persistedBackendUserID, fingerprintUserID].compactMap {
             $0?.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        guard values.allSatisfy({ $0?.isEmpty == false }) else { return false }
-        return values[0] == values[1] && values[1] == values[2]
+        }.filter { !$0.isEmpty }
+        guard values.count == 3 else { return false }
+        return MediaBrowserUserIdentity.sameUser(values[0], values[1])
+            && MediaBrowserUserIdentity.sameUser(values[1], values[2])
     }
 
     /// Durable cleanup entries are attempt-scoped by UUID, not rating key. Re-downloading and

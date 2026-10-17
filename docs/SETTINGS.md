@@ -63,7 +63,7 @@ Apple TV is streaming-only, so this section does not appear there.
 | --- | --- | --- | --- |
 | **Default Quality** | Quality preselected for new downloads: Original when available, Original video quality, or a fixed preset from 4K 40 Mbps down to 480p 1.5 Mbps. Original is offered only when the server can provide it. | 1080p 8 Mbps | Vision, iOS, Mac |
 | **Storage Limit** | Maximum space downloads may use: Unlimited, 10 GB, 25 GB, 50 GB, 100 GB, or 250 GB. A new download that would exceed the limit is refused; existing downloads are never deleted automatically. | Unlimited | Vision, iOS, Mac |
-| **Use cellular data for downloads** | Allows new downloads to use cellular data on devices that have it. Transfers already in progress keep their previous setting. | Off | Vision, iOS, Mac |
+| **Use cellular data for downloads** | Allows new downloads to use cellular data, Low Data Mode networks and expensive networks such as a personal hotspot. Transfers already in progress keep their previous setting. | Off | Vision, iOS, Mac |
 | **Queue Order** | **Respect server queue order** or **Prioritize quick downloads**. Prioritizing moves a new Plex server-side conversion ahead of other waiting conversions (never ahead of the one already running), when your Plex account is allowed to. Jellyfin and Emby are unaffected. | Respect server queue order | Vision, iOS, Mac |
 | **Items** / **Storage used** | Shows how many downloads are on this device and how much space they use. | — | Vision, iOS, Mac |
 | **Remove completed downloads** | Deletes finished downloads from this device (after confirmation). | — | Vision, iOS, Mac |

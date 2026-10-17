@@ -17,6 +17,7 @@ struct SeasonDownloadPlannerSheet: View {
     @State private var scope: SeasonDownloadEpisodeScope = .all
     @State private var selectedQuality = DownloadPresetPolicy.compatibleOriginalQualityName
     @State private var resolving = false
+    @State private var planningProgress: (done: Int, total: Int) = (0, 0)
     @State private var resolvedOptions: [DownloadItemPlanningOptions] = []
     @State private var useExistingVersions = false
     @State private var showingConfirmation = false
@@ -25,7 +26,15 @@ struct SeasonDownloadPlannerSheet: View {
     @State private var planningTask: Task<Void, Never>?
     @State private var commitTask: Task<Void, Never>?
 
-    private var backend: DownloadBackendKind { appModel.activeBackend }
+    /// B70: captured once at presentation (like `DownloadOptionsSheet`'s explicit backend). The
+    /// browse UI stays mounted through a backend switch, so reading the live `activeBackend` could
+    /// mint rows for this season's items under another backend's identity.
+    @State private var backend: DownloadBackendKind
+
+    init(season: MediaItem, backend: DownloadBackendKind) {
+        self.season = season
+        _backend = State(initialValue: backend)
+    }
     private var watchedSummary: SeasonDownloadSelectionSummary {
         SeasonDownloadSelectionPolicy.select(
             states: episodes.map { SeasonEpisodeWatchedState(viewCount: $0.viewCount, backend: backend) },
@@ -59,7 +68,10 @@ struct SeasonDownloadPlannerSheet: View {
                     scopeSection
                     qualitySection
                     if resolving {
-                        SwiftUI.Section { ProgressView("Planning each episode…") }
+                        SwiftUI.Section {
+                            ProgressView(SeasonDownloadPlannerSheet.planningProgressText(
+                                done: planningProgress.done, total: planningProgress.total))
+                        }
                     } else if !resolvedOptions.isEmpty {
                         existingVersionSection
                         summarySection
@@ -182,10 +194,25 @@ struct SeasonDownloadPlannerSheet: View {
     private var selectedOptions: [DownloadItemPlanningOptions] { resolvedOptions }
 
     private var rowDispositions: [String: SeasonPlannerRowDisposition] {
-        Dictionary(uniqueKeysWithValues: selectedOptions.map {
+        Self.firstEntryPerKey(selectedOptions.map {
             ($0.item.ratingKey, downloadManager.seasonPlannerRowDisposition(
                 itemID: $0.item.ratingKey, backend: backend))
         })
+    }
+
+    /// B71: `Dictionary(uniqueKeysWithValues:)` trapped in a computed view property when a server
+    /// payload returned the same item id twice. Keep the first entry instead.
+    nonisolated static func firstEntryPerKey<Value>(_ pairs: [(String, Value)]) -> [String: Value] {
+        Dictionary(pairs, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// B71: one plan row per rating key (first wins). Duplicate keys would otherwise make the
+    /// atomic season commit reject the whole plan as stale on every review.
+    nonisolated static func firstOptionPerRatingKey(
+        _ options: [DownloadItemPlanningOptions]
+    ) -> [DownloadItemPlanningOptions] {
+        var seen = Set<String>()
+        return options.filter { seen.insert($0.item.ratingKey).inserted }
     }
 
     private var rowActions: [String: SeasonDownloadExistingRowAction] {
@@ -200,7 +227,7 @@ struct SeasonDownloadPlannerSheet: View {
     }
 
     private var nearestExistingSelections: [String: Int?] {
-        Dictionary(uniqueKeysWithValues: selectedOptions.map { option in
+        Self.firstEntryPerKey(selectedOptions.map { option in
             let source = option.item.media?.first
             let requested = requestedQualityPoint(source: source)
             let candidates = option.existingVersions.map {
@@ -387,16 +414,29 @@ struct SeasonDownloadPlannerSheet: View {
             .flatMap(AudioStreamRole.init(rawValue:)) ?? .main
         // Deliberately bounded at one: probing may mint/refresh backend state, while actual work is
         // admitted later by the separate lane-aware window.
+        let indices = selectedEpisodeIndices
+        planningProgress = (0, indices.count)
         let results = await SeasonPlanResolutionSequence.map(
-            indices: selectedEpisodeIndices, elements: episodes) { child in
+            indices: indices, elements: episodes) { child in
             let item = (try? await planner.refreshedItem(child, backend: backend)) ?? child
-            return await planner.options(
+            // B68: fetch existing versions once per episode; the per-item refresh plus poll
+            // belongs to the single-item sheet.
+            let options = await planner.options(
                 for: item, preferredAudioLanguage: preferred,
-                preferredAudioRole: preferredRole, backend: backend)
+                preferredAudioRole: preferredRole,
+                existingVersionDiscovery: .fetchOnce, backend: backend)
+            planningProgress.done += 1
+            return options
         }
         guard let results, !Task.isCancelled else { return }
-        resolvedOptions = results
+        resolvedOptions = Self.firstOptionPerRatingKey(results)
         useExistingVersions = false
+    }
+
+    /// B68: the planning state shows which episode is being resolved, e.g. "Planning episode 3 of 22…".
+    static func planningProgressText(done: Int, total: Int) -> String {
+        guard total > 0 else { return "Planning each episode…" }
+        return "Planning episode \(min(done + 1, total)) of \(total)…"
     }
 
     private func cancelPlanningAndDismiss() {
