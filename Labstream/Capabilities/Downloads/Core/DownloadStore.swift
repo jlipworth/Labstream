@@ -401,33 +401,11 @@ final class DownloadStore: @unchecked Sendable {
         case immediate(AttemptValidatedPromotionResult)
     }
 
-    struct HeldRangeSegmentRemovalResult: Sendable, Equatable {
-        let removed: OfflineHeldRangeSegment?
-        let ticket: PersistenceTicket
-        let persistence: PersistenceFlushResult
-
-        var committed: Bool {
-            guard case .committed(let revision) = persistence else { return false }
-            return revision >= ticket.revision
-        }
-    }
-
     struct HeldRangeSegmentsRemovalResult: Sendable, Equatable {
         let removed: [OfflineHeldRangeSegment]
         /// Every exact-attempt held body whose deletion is part of the same durable snapshot as
         /// the manifest removal. These paths remain in the row until filesystem deletion succeeds.
         let deferredRelativePaths: [String]
-        let ticket: PersistenceTicket
-        let persistence: PersistenceFlushResult
-
-        var committed: Bool {
-            guard case .committed(let revision) = persistence else { return false }
-            return revision >= ticket.revision
-        }
-    }
-
-    struct HeldRangeSegmentsTakeResult: Sendable, Equatable {
-        let removed: [OfflineHeldRangeSegment]
         let ticket: PersistenceTicket
         let persistence: PersistenceFlushResult
 
@@ -1888,46 +1866,6 @@ final class DownloadStore: @unchecked Sendable {
         return baseDirectory.appendingPathComponent(relativePath)
     }
 
-    /// Replace the manifest entry at an offset. `persisted` means the in-memory row accepted the
-    /// replacement; only `committed` permits the caller to delete the previous body. A failed
-    /// attempt remains dirty and may commit on a later mutation/flush.
-    @discardableResult
-    func persistHeldRangeSegment(ratingKey: String,
-                                 segment: OfflineHeldRangeSegment)
-        -> (persisted: Bool, committed: Bool, previous: OfflineHeldRangeSegment?) {
-        guard Self.isSafeOneLevelRelativePath(segment.relativePath),
-              segment.offset >= 0, segment.length > 0 else { return (false, false, nil) }
-        lock.lock()
-        guard var row = rows[ratingKey], !Self.hasPendingRowDeletion(row),
-              var metadata = row.metadata else {
-            lock.unlock()
-            return (false, false, nil)
-        }
-        guard reservedHeldBodyDeletionPaths[segment.relativePath] == nil else {
-            lock.unlock()
-            return (false, false, nil)
-        }
-        guard reservedArtifactDeletionPaths[segment.relativePath] == nil else {
-            lock.unlock(); return (false, false, nil)
-        }
-        var segments = metadata.heldRangeSegments ?? []
-        let previous = segments.first { $0.offset == segment.offset }
-        segments.removeAll { $0.offset == segment.offset }
-        segments.append(segment)
-        metadata.heldRangeSegments = segments.sorted { $0.offset < $1.offset }
-        row.metadata = metadata
-        setRowLocked(row, for: ratingKey)
-        lock.unlock()
-        let attempt = persist()
-        let committed: Bool
-        if case .committed(let revision) = attempt.result {
-            committed = revision >= attempt.ticket.revision
-        } else {
-            committed = false
-        }
-        return (true, committed, previous)
-    }
-
     /// Attempt-owned counterpart. Ownership and manifest replacement share the store lock so a
     /// delayed body from A cannot attach itself to replacement attempt B.
     @discardableResult
@@ -2255,51 +2193,6 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     @discardableResult
-    func removeHeldRangeSegment(ratingKey: String, offset: Int) -> HeldRangeSegmentRemovalResult {
-        let batch = removeHeldRangeSegments(ratingKey: ratingKey, offsets: [offset])
-        return HeldRangeSegmentRemovalResult(
-            removed: batch.removed.first,
-            ticket: batch.ticket,
-            persistence: batch.persistence
-        )
-    }
-
-    /// Batch variant: remove several manifest entries with one index persist while returning the
-    /// exact durability outcome. A no-op still proves/retries a dirty prior removal.
-    @discardableResult
-    func removeHeldRangeSegments(
-        ratingKey: String,
-        offsets: [Int]
-    ) -> HeldRangeSegmentsRemovalResult {
-        let offsetSet = Set(offsets)
-        lock.lock()
-        var removed: [OfflineHeldRangeSegment] = []
-        if !offsetSet.isEmpty,
-           var row = rows[ratingKey],
-           !Self.hasPendingRowDeletion(row),
-           var metadata = row.metadata,
-           let segments = metadata.heldRangeSegments {
-            removed = segments.filter { offsetSet.contains($0.offset) }
-            if !removed.isEmpty {
-                let remaining = segments.filter { !offsetSet.contains($0.offset) }
-                metadata.heldRangeSegments = remaining.isEmpty ? nil : remaining
-                row.metadata = metadata
-                setRowLocked(row, for: ratingKey)
-            }
-        }
-        lock.unlock()
-        // Even a no-op must prove the current full snapshot: a prior failed removal already
-        // changed memory, so absence alone is not proof that the durable manifest was cleared.
-        let attempt = removed.isEmpty ? proveCleanupNoOpDurable() : persist()
-        return HeldRangeSegmentsRemovalResult(
-            removed: removed,
-            deferredRelativePaths: [],
-            ticket: attempt.ticket,
-            persistence: attempt.result
-        )
-    }
-
-    @discardableResult
     func removeHeldRangeSegment(
         for key: DownloadAttemptKey,
         offset: Int
@@ -2352,29 +2245,6 @@ final class DownloadStore: @unchecked Sendable {
             ticket: persistence.ticket,
             persistence: persistence.result
         ))
-    }
-
-    @discardableResult
-    func takeHeldRangeSegments(ratingKey: String) -> HeldRangeSegmentsTakeResult {
-        lock.lock()
-        var removed: [OfflineHeldRangeSegment] = []
-        if var row = rows[ratingKey], !Self.hasPendingRowDeletion(row),
-           var metadata = row.metadata {
-            removed = metadata.heldRangeSegments ?? []
-            if !removed.isEmpty {
-                metadata.heldRangeSegments = nil
-                row.metadata = metadata
-                setRowLocked(row, for: ratingKey)
-            }
-        }
-        lock.unlock()
-        // As above, retry a dirty prior take even when this call sees no in-memory manifests.
-        let attempt = removed.isEmpty ? proveCleanupNoOpDurable() : persist()
-        return HeldRangeSegmentsTakeResult(
-            removed: removed,
-            ticket: attempt.ticket,
-            persistence: attempt.result
-        )
     }
 
     @discardableResult
@@ -3832,42 +3702,6 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
-    /// #95: persist a URLSession resume blob for a recoverably-interrupted download and record
-    /// its relative path on the row's metadata, so a manual Resume (even after relaunch) can
-    /// continue from the byte offset via `downloadTask(withResumeData:)`. The blob is written as
-    /// a sibling `.resume` file (it can be large). No-op if the row/metadata is gone.
-    func setResumeData(ratingKey: String, _ data: Data, displayBytes: Int? = nil) {
-        // H9: `updateMetadata` is a no-op when a row carries no metadata snapshot (a
-        // legacy pre-D5 row). Writing the blob first and only then discovering the path
-        // can't be recorded would orphan a potentially large `.resume` file on disk. Bail
-        // BEFORE writing when there's nothing to record it on — resume was already
-        // unavailable for such a row, so this only avoids the leak, it changes no behavior.
-        lock.lock()
-        let canRecordPath = rows[ratingKey].map {
-            $0.metadata != nil && !Self.hasPendingRowDeletion($0)
-        } ?? false
-        lock.unlock()
-        guard canRecordPath else {
-            NSLog("DownloadStore: skipping resume-data persist for %@ — row has no metadata to record its path on",
-                  ratingKey)
-            return
-        }
-        let url = resumeDataDestinationURL(ratingKey: ratingKey)
-        do {
-            try CredentialArtifactStorage.writeAuthArtifact(data, to: url, fileManager: fileManager)
-        } catch {
-            NSLog("DownloadStore: failed to persist resume data for %@ (%@)",
-                  ratingKey, DiagnosticRedactor.safeErrorSummary(error))
-            return
-        }
-        updateMetadata(ratingKey: ratingKey) {
-            $0.resumeDataRelativePath = url.lastPathComponent
-            if let displayBytes, displayBytes > 0 {
-                $0.resumeDisplayBytes = max(displayBytes, $0.resumeDisplayBytes ?? 0)
-            }
-        }
-    }
-
     /// Write the artifact before recording its manifest, matching the legacy orphan-avoidance
     /// ordering. The ownership check, artifact replacement, and in-memory manifest mutation are
     /// serialized under the store lock so stale attempt A cannot overwrite B's resume blob.
@@ -4729,55 +4563,6 @@ final class DownloadStore: @unchecked Sendable {
             }
         }
         return startupIndexAdmission()
-    }
-
-    /// #169: reset persisted static byte-range progress to the bytes that are actually durable in
-    /// the partial file. The current in-flight static Range task body lives in an OS temp
-    /// until `didFinishDownloadingTo`; progress callbacks may have published those optimistic bytes
-    /// for UI smoothness, but pause/error/reconcile paths must checkpoint from this file size only.
-    @discardableResult
-    func resetStaticRangeProgressToDurableCheckpoint(ratingKey: String,
-                                                     expectedBytes explicitExpectedBytes: Int? = nil) -> Int {
-        lock.lock()
-        guard var row = rows[ratingKey] else { lock.unlock(); return 0 }
-        let backend = row.metadata?.resolvedBackendKind(ratingKey: row.ratingKey)
-            ?? DownloadBackendKind(ratingKeyPrefix: row.ratingKey)
-        let mode = row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey)
-            ?? DownloadResumeMode.resolved(
-                backend: backend,
-                lane: row.metadata?.resolvedDownloadLane() ?? .original)
-        guard mode == .staticByteRange else {
-            let bytes = row.bytes
-            lock.unlock()
-            return bytes
-        }
-        let durableBytes = fileSize(relativePath: row.relativePath) ?? 0
-        let expectedBytes = explicitExpectedBytes ?? Self.expectedBytesEstimate(row: row)
-        let progress = Self.progressForDurableBytes(durableBytes, expectedBytes: expectedBytes)
-        var changed = false
-        // The resume display watermark represents temp bytes owned by a URLSession resume blob.
-        // Once no blob remains (durable fallback discarded it, adoption rejected it as stale, or a
-        // restart never produced one), those temp bytes are gone — keeping the watermark would
-        // over-report progress until live bytes caught back up. The pause path persists the blob
-        // BEFORE resetting, so legitimate watermarks survive this.
-        if row.metadata?.resumeDisplayBytes != nil,
-           (row.metadata?.resumeDataRelativePath ?? "").isEmpty {
-            row.metadata?.resumeDisplayBytes = nil
-            changed = true
-        }
-        if row.bytes != durableBytes || abs(row.progress - progress) > 0.000_001 {
-            row.bytes = durableBytes
-            row.progress = progress
-            changed = true
-        }
-        guard changed else {
-            lock.unlock()
-            return durableBytes
-        }
-        setRowLocked(row, for: ratingKey)
-        lock.unlock()
-        persist()
-        return durableBytes
     }
 
     @discardableResult
@@ -6354,21 +6139,6 @@ final class DownloadStore: @unchecked Sendable {
             recoverPendingArtifactIntents(explicit: false)
         }
         return attempt
-    }
-
-    /// A cleanup repeated after its failed write sees no manifest in memory, but the absence is
-    /// durable only once that dirty full snapshot commits. Avoid a redundant write for an already
-    /// committed no-op; otherwise submit a new full snapshot so the call returns real proof.
-    private func proveCleanupNoOpDurable() -> PersistenceAttempt {
-        let ticket = currentPersistenceTicket()
-        let state = indexWriter.state
-        if state.dirtyRevision == nil, state.committedRevision >= ticket.revision {
-            return PersistenceAttempt(
-                ticket: ticket,
-                result: .committed(revision: state.committedRevision)
-            )
-        }
-        return persist()
     }
 
     func flushPersistence(
