@@ -742,6 +742,30 @@ Acceptance is a phase's pins and inventory rows staying green.
   Pure policy tests also cover metadata-inspection gating, tier/playability/source exclusion,
   persisted grace and stale Emby poller removal. Admission wiring and live/device gates remain
   with their respective owners.
+- **2026-10-17 — P4 implemented (admission half, lead).**
+  - **Coordinator.** `DownloadAdmissionPolicy` (PMSKit) and `DownloadAdmissionCoordinator` plus
+    `DownloadManager+Admission`. Occupancy is observed from lifecycle plus live work (slot, prep
+    poller, session transfer); residue without live work frees its lane (amendment 5 met by the
+    occupancy rule rather than a separate normalization pass). Starts are supervised by generation
+    until their async work finishes (`retry(record:)` now returns its spawned Task), then
+    classified: started, deferred with backoff, refused, or superseded.
+  - **Paths.** Season rows and over-capacity taps are `planned` seeds that start through
+    `startPlannedRecord`. Resume All, a capacity-delayed row Resume or Retry, static auto-resume
+    and the stalled-stream restart wait as paused or failed rows with a `retryRequested` intent,
+    so retry keeps routing from facts (amendment 2 met without reducer changes to retry).
+  - **Pause.** A planned or task-less admitted row parks synchronously; Pause withdraws a waiting
+    retry and keeps a first-start intent. Pause and delete end supervision.
+  - **Flag.** The legacy flag is absorbed on load and on insert; season rollback restores intents
+    conditionally.
+  - **B69.** A failed probe plans the episode instead of failing it as unsupported.
+  - **pu-33.** Waiting rows read "Waiting for a download slot…" or "Waiting — downloads paused".
+  - **Pins (red by construction against the old code, not executed against it):** Resume All
+    caps (B63), the scanner skips planned rows (B62), refresh outage defers (B67), a tap over
+    capacity waits and starts, pause while waiting resumes to planned (B65), plus coordinator
+    units (stale generation, invalidation, backoff, exemptions) and reducer/policy units. B64 and
+    B72 are covered by the ported season integration tests.
+  - **Not yet pinned:** the Pause All exemption end to end, a lane-full reroute, relaunch
+    grandfathering over the caps, and a finalizing row freeing its lane (policy-level only).
 
 ## P2 detailed plan — cleanup foundation
 
