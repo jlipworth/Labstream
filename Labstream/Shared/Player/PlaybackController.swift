@@ -1170,7 +1170,7 @@ final class PlaybackController {
         audioSession.deactivate()
     }
 
-    private func recordLocalPlaybackPosition(_ positionMs: Int? = nil) {
+    func recordLocalPlaybackPosition(_ positionMs: Int? = nil) {
         guard let localPlaybackProgress else { return }
         localPlaybackProgress(positionMs ?? currentResumeMs, item.duration)
     }
@@ -4210,8 +4210,7 @@ final class PlaybackController {
                       self.isCurrentObservedItem(playerItem,
                                                  itemGeneration: itemGeneration,
                                                  observedPlaybackGeneration: observedPlaybackGeneration) else { return }
-                self.handleTimeControlTransport(status: status)
-                self.handleTimeControlBuffering(status: status)
+                self.observeTimeControlStatus(status)
             }
         })
 
@@ -4257,6 +4256,13 @@ final class PlaybackController {
                 }
             }
         })
+    }
+
+    /// Current-item status delivery after the observer's generation fences. Callable by
+    /// deterministic local-player pins without depending on AVFoundation's scheduling.
+    func observeTimeControlStatus(_ status: AVPlayer.TimeControlStatus) {
+        handleTimeControlTransport(status: status)
+        handleTimeControlBuffering(status: status)
     }
 
     /// Transport/diagnostics half of the merged `\.timeControlStatus` observation. Runs

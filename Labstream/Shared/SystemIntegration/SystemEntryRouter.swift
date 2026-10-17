@@ -75,7 +75,7 @@ final class SystemEntryRouter {
     /// (cold launch from an intent while the restore splash is still up).
     var pending: Route?
 
-    #if os(visionOS)
+    #if !os(tvOS)
     /// One offline-return request from Cinema exit (#87): land on the Offline tab and focus
     /// the identified download with NO server fetch. Kept separate from `pending` because the
     /// online route's consumer is hard-wired to Home + online metadata, which is exactly what an
@@ -163,6 +163,9 @@ final class SystemEntryRouter {
         pending = Route(target: .item(item), autoPlay: autoPlay, originTab: tab)
     }
 
+    #endif
+
+    #if !os(tvOS)
     /// Cinema exit from an offline download (#87): return to the Offline tab and focus the
     /// download. No server fetch, no Home tab.
     func openOffline(ratingKey: String) {

@@ -356,6 +356,38 @@ Acceptance is a phase's pins and inventory rows staying green.
 
 ## Progress journal
 
+- **2026-10-17 — P7.1 contracts and red fixtures** on `t3/p7-offline-playback-contracts`,
+  based on integrated P6 `6bc8f59a`. Frozen ephemeral launch/factory, attempt/session-bound event
+  sink and generation-tagged availability contracts; admission-blocked readable rows are distinct
+  from unreadable/unsupported indices. Presentation-request generation is separate from the
+  playback-session generation. The interfaces document final post-orientation admission, bounded
+  pending samples, terminal-close retention and typed persistence failure. No persisted field,
+  lifecycle value, player/factory/sink integration or MediaBrowser consolidation was added.
+  Behaviour-preserving extractions expose the actual Detail/library player factories, orientation
+  continuations, sheet adapters, subtitle-repair selector and optional-side-work deliveries to
+  deterministic tests. The offline-return payload is available on download-capable hosts so its
+  existing restricted focus adapter can be exercised without Cinema or a simulator.
+  Red fixtures cover pins 01–15, independent subtitle-origin coding, old-session close after a held
+  commit, both orientation surfaces, superseded presentation requests and pin 14's fetch-entry
+  Resume/Cancel races. Pin 15 is intentionally the static P7.7 release gate; P7.1 does not bump the
+  version. Existing selected-source/audio, subtitle parse fencing, P6 persistence/lease/deadline,
+  network policy and v5 controls remain inherited coverage. Broader integrated surface assertions,
+  live negotiation and hardware acceptance remain with their implementing lanes and P7.6.
+  **Retained rather than red:** amendment 1's readable admission block versus opaque index gate,
+  the near-end Detail/library reset companion, existing retry extension stability and unknown/
+  unplayable-first container policy. Each actual red assertion uses `P7 red pin: <id>` known-issue
+  scope; setup and retained assertions remain outside it. Validation: hermetic PMSKit passed
+  **1,620 tests** with **9 expected known issues**. The full Mac hosted lane passed **932 test
+  functions** (**866 Swift Testing + 66 XCTest**), with **42 expected known issues**, no unexpected
+  failures and no skips. The matrix used its normal manifest plus a worktree-local copy adding
+  `-parallel-testing-enabled NO`, under the required exclusive Xcode lock. Concurrent runs exposed
+  the existing unsupported-root quarantine-cleanup deadline at
+  `BackgroundDownloadStartupAdmissionTests.swift:608`; the serialized full lane is green.
+  The blocked-admission fixture restores the production queue-pause preference synchronously
+  before yielding, avoiding cross-fixture admission changes. Hygiene passed **386 tooling tests**,
+  public redaction, strict MkDocs, rendered links and Mermaid checks. `Generic`, v5 and the
+  persisted metadata schema are unchanged. No simulator, push, PR or merge was performed.
+
 - **2026-10-17 — P6 round-1 session rework** on `downloads/p6-rework-session` fixes findings
   2, 3, 5 and 6a. Every session checkpoint caller submits and resolves against a deadline;
   continuations return to the range queue and recheck attempt, train, halt and manual generation.
@@ -2879,7 +2911,7 @@ for every abandoned working-body deletion.
 
 ## P7 detailed plan — MediaBrowser, offline playback and row UX
 
-**Design snapshot:** 2026-10-17, `downloads/p6-store` at `b0e2413d01f50ae5cb42d54746214e9b89116184` (P5 plus the P6 plan/frozen P6.1 contract). Line references below are to this snapshot; refresh them after P6 integration.
+**Design snapshot:** 2026-10-17; P7.1 refreshed the code-map references against integrated P6 head `6bc8f59a` on `downloads/p7-mediabrowser-ux`. The original design used `b0e2413d`; references below describe the integrated input head, before the P7.1 test-seam extractions.
 
 **Shape:** one PR, with reviewable commits and one combined acceptance gate. Speed to the maintainer's stack merge and TestFlight run is the priority. No performance baseline, architecture rewrite, new simulator lane, or expanded feature programme. This document is a read-only design deliverable: no tracked files, branches, commits, simulators, builds, live services, or release state were changed to produce it. Pins below are proposed red tests inferred from inspected production paths, not executed test results.
 
@@ -2903,24 +2935,24 @@ Paths in this map are repository-relative. `Core/` means `Labstream/Capabilities
 | --- | --- |
 | `Core/OfflineLibraryView.swift:185`, `:423`, `:785`, `:801` | Builds a player from a record; progress closure passes only rating key. The row resolves exact identity/file presence before Play, but that identity is lost by the callback. Library reconstruction does not apply resume rewind. |
 | `Labstream/Shared/UI/DetailView.swift:715`, `:974`, `:1008`, `:1563` | Separate local request/player path; no progress sink. Captures local URL separately from a later record lookup, chooses previews from rating-key prefix, and duplicates factory inputs. Detail already applies resume rewind. |
-| `Core/DownloadManager.swift:4110` | Looks up whichever attempt is current on each callback; positive position promotes unverified before saving. P6 changes the persistence scheduling here, not the semantics. |
-| `Core/DownloadStore.swift:2690`, `:3588`, `:5036`, `:5283`, `:5410` | Exact-key lifecycle/history lookup, position policy, metadata submission, lifecycle submission, and current promotion helper. Reuse P6's submit/async-resolve paths; do not edit these internals in parallel. |
-| `Core/DownloadStoreAsyncContract.swift:1` | Frozen deadline/exact-work contract. Compatibility adapters at this head are not yet bounded implementations. Await P6 implementation before relying on them. |
+| `Core/DownloadManager.swift:4356` | Looks up whichever attempt is current on each callback; positive position promotes unverified before saving. P6 changes the persistence scheduling here, not the semantics. |
+| `Core/DownloadStore.swift:2775`, `:3716`, `:5251`, `:5502`, `:5648` | Exact-key lifecycle/history lookup, position policy, metadata submission, lifecycle submission, and current promotion helper. Reuse P6's submit/async-resolve paths; do not edit these internals in parallel. |
+| `Core/DownloadStoreAsyncContract.swift:1` | Integrated deadline/exact-work contract with bounded async resolvers; P7 uses exact-key submissions and typed resolution. |
 | `Downloads/DownloadLifecycleReducer.swift:415` | `.localPlaybackProgressed` promotes every unverified state, including a persisted truncation warning. The reducer must reject promotion for `.truncatedRepeated`. |
 | `Downloads/OfflineDownloadModels.swift:278`, `:305`, `:389`, `:486`, `:506`, `:1042`, `:1054` | Existing clamp/near-end policy, local-vs-captured offset, sidecars, selected source, metadata backend and item reconstruction. These stay authoritative. |
 | `Labstream/Shared/Player/PlaybackSessionSource.swift:23`; `Labstream/Shared/Player/CustomPlayerView.swift:96` | Immutable offline authority and optional progress callback. Add a separate observed-playback callback, propagated through the view/session into the controller. |
-| `Labstream/Shared/Player/PlaybackController.swift:1173`, `:3070`, `:4156`, `:4284`, `:4319` | Position reporting on stop/heartbeat/pause/play and existing generation-fenced actual-playing signal. Saved/resume position before playback can reach the progress callback. |
-| `Labstream/Shared/Player/PlaybackController.swift:1278`, `:1358`, `:1709`; `Labstream/Shared/Player/PlaybackTrackSelection.swift:22` | Early sidecar-only subtitle menu hides the AVFoundation legible group. Existing typed subtitle mechanisms and sidecar selection authority are reusable. |
-| `Core/DownloadManager.swift:256`; `Downloads/OfflineLaunchAvailability.swift:5`; `Labstream/Shared/App/ContentView.swift:244` | `hasPlayableOfflineContent` scans/stats terminal files during body-derived gate evaluation. Cache derived availability outside the body, preserving auth admission. |
+| `Labstream/Shared/Player/PlaybackController.swift:1173`, `:3055`, `:4156`, `:4265`, `:4307` | Position reporting on stop/heartbeat/pause/play and existing generation-fenced actual-playing signal. Saved/resume position before playback can reach the progress callback. |
+| `Labstream/Shared/Player/PlaybackController.swift:1280`, `:1359`, `:1711`; `Labstream/Shared/Player/PlaybackTrackSelection.swift:22` | Early sidecar-only subtitle menu hides the AVFoundation legible group. Existing typed subtitle mechanisms and sidecar selection authority are reusable. |
+| `Core/DownloadManager.swift:273`; `Downloads/OfflineLaunchAvailability.swift:5`; `Labstream/Shared/App/ContentView.swift:244` | `hasPlayableOfflineContent` scans/stats terminal files during body-derived gate evaluation. Cache derived availability outside the body, preserving auth admission. |
 | `Labstream/Shared/App/ContentView.swift:134`, `:164`, `:225`; `Labstream/Shared/UI/OfflineLaunchView.swift:65`, `:118` | Launch/backend-ready download recovery and restricted Offline/Reconnect. Reconnect restores auth; avoid adding a competing recovery scheduler. |
 | `Labstream/Shared/SystemIntegration/SystemEntryRouter.swift:87`, `:168`; `Labstream/Shared/UI/RootView.swift:41`; `Labstream/Shared/UI/RootNavigationCoordinator.swift:159` | Root consumes/clears an Offline Cinema return. Restricted Offline has a constant-nil focus binding and no consumer, so a route can survive until Reconnect. |
 | `Labstream/Platforms/visionOS/Player/CustomCinemaMode.swift:468` | Already dispatches Offline Cinema returns through `openOffline`; fix the consuming surface, preserve immersive teardown and online return routing. |
 | `Core/DownloadManager+Jellyfin.swift:138`, `:208`, `:277`, `:362`, `:392` | Duplicate PlaybackInfo POST/decode/verdict blocks, followed by currency checks, resolved-source persistence/reprobe and sidecache dispatch. Preserve server-minted PlaySessionId and selected audio. |
 | `Core/DownloadManager+Emby.swift:112`, `:166`, `:180`, `:299`, `:378`, `:407` | Separate download negotiation and strict override validation. Subtitle source comes from the in-memory selected Part, which is absent after lean retry/relaunch. |
 | `Core/DownloadManager+EmbyConvert.swift:980` | Shared reuse/completion handoff into the static lane; preserve atomic prep-to-static ownership, queue pause and exact source. Carry subtitle-origin identity here. |
-| `Core/DownloadManager+SideCache.swift:201`, `:249`, `:287`, `:425`, `:762` | Repairs use positional media/part lookup and the downloaded source ID, losing the original Emby subtitle source. P6 owns writer/lease/publication internals; P7 changes only source selection/inputs after integration. |
-| `Labstream/Shared/Player/SideAssetFetchCoordinator.swift:328`, `:712`, `:718` | Actor owns parked owners, but bridge sends park/unpark/cancel through independent Tasks. Make bridge ordering explicit per exact owner (B32), without changing P6 disk publication. |
-| `Core/DownloadKeepaliveCoordinator.swift:12`, `:66`, `:106`, `:253` | Two task maps/loop implementations. Transfer gate, generation removal and credential quarantine already exist; consolidate lifecycle while retaining backend request policy. |
+| `Core/DownloadManager+SideCache.swift:201`, `:249`, `:270`, `:423`, `:470` | Repairs use positional media/part lookup and the downloaded source ID, losing the original Emby subtitle source. P6 owns writer/lease/publication internals; P7 changes only source selection/inputs after integration. |
+| `Labstream/Shared/Player/SideAssetFetchCoordinator.swift:328`, `:693`, `:715`, `:721` | Actor owns parked owners, but bridge sends park/unpark/cancel through independent Tasks. Make bridge ordering explicit per exact owner (B32), without changing P6 disk publication. |
+| `Core/DownloadKeepaliveCoordinator.swift:12`, `:66`, `:102`, `:254` | Two task maps/loop implementations. Transfer gate, generation removal and credential quarantine already exist; consolidate lifecycle while retaining backend request policy. |
 | `PMSKit/Sources/PMSKit/Jellyfin/JellyfinLibrary.swift:290`; `Downloads/DownloadMediaSelectionPolicy.swift:53`; `Downloads/OfflineDownloadDecision.swift:11` | Static request extension, destination extension and eligibility do not consistently split comma-list containers. |
 | `PMSKit/Sources/PMSKit/Jellyfin/JellyfinPlayback.swift:232`, `:265`; `PMSKit/Sources/PMSKit/Emby/EmbyLibrary.swift:299` | Negotiated Jellyfin decisions already split the first container; Emby static requests also split. Keep the same rule across remaining consumers. |
 | `Core/OfflineLibraryView.swift:231`, `:486`, `:663`, `:753`, `:811`; `UI/DownloadOptionsSheet.swift:273`, `:822`, `:994` | List has richer snapshots/actions than either sheet; Mac lacks live phase/progress parity. Context can wrap; route orange conflates processing with warnings; sheet deletion omits D2. |
@@ -3169,11 +3201,11 @@ These amendments are binding. Where they conflict with the sections above, they 
      - the recovery banner stays and mutations are disabled.
    - This preserves target design §6 and the P3 rule.
    - **New pin:** a credential-free gate test that proves the distinction.
-2. **Final admission after orientation (P7.1/P7.2).** Both launch surfaces await orientation before they present (`DetailView.swift` ~1542, `OfflineLibraryView.swift` ~426).
+2. **Final admission after orientation (P7.1/P7.2).** Both launch surfaces await orientation before they present (`DetailView.swift:1540`, `OfflineLibraryView.swift:423`).
    - The exact-attempt and file admission happens after orientation and before presentation.
    - A presentation-request generation rejects superseded tasks.
    - **New latch pin:** suspend orientation for A, replace A with B, release; A never starts.
-3. **B32 includes the fetch-entry park path (P7.3.7, pin 14).** `SideAssetFetchCoordinator.swift` ~693 awaits `setParked(true)` inside `fetchOptionalSideAsset`.
+3. **B32 includes the fetch-entry park path (P7.3.7, pin 14).** `SideAssetFetchCoordinator.swift:693` awaits `setParked(true)` inside `fetchOptionalSideAsset`.
    - Fetch-entry state sync and registration join the same owner sequencing and fencing as the wrapper Tasks.
    - Admission and control operations are ordered without serializing the network fetch behind them.
    - **Pin 14 extended:** suspend the fetch-entry path, then Resume or Cancel, then release.

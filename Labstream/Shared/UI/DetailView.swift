@@ -713,16 +713,11 @@ struct DetailView: View {
 
     @ViewBuilder
     private func localPlayerView(for request: LocalPlaybackRequest) -> some View {
-        CustomPlayerView(localFile: request.url,
-                         item: request.item,
-                         trickPlayProvider: localTrickPlayProvider(kind: request.trickPlayKind,
-                                                                   url: request.trickPlayURL,
-                                                                   chapterImageURLs: request.chapterImageURLs,
-                                                                   offlineChapters: request.offlineChapters),
-                         offlineArtworkSource: request.artworkSource,
-                         offlineTextSubtitles: request.offlineTextSubtitles,
-                         offlineChapterImageURLs: request.chapterImageURLs,
-                         onClose: { localPlaybackRequest = nil })
+        Self.makeLocalPlayer(request: request,
+                             trickPlayProvider: localTrickPlayProvider(kind: request.trickPlayKind,
+                                 url: request.trickPlayURL, chapterImageURLs: request.chapterImageURLs,
+                                 offlineChapters: request.offlineChapters),
+                             onClose: { localPlaybackRequest = nil })
         #if os(iOS)
         .withMobileOrientationCoordinator(mobilePlayerOrientationCoordinator)
         #endif
@@ -731,6 +726,19 @@ struct DetailView: View {
         #endif
     }
 
+
+    /// Production local player assembly; no SwiftUI environment is needed to exercise callbacks.
+    static func makeLocalPlayer(request: LocalPlaybackRequest,
+                                trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
+                                onClose: @escaping () -> Void) -> CustomPlayerView {
+        CustomPlayerView(localFile: request.url,
+                         item: request.item,
+                         trickPlayProvider: trickPlayProvider,
+                         offlineArtworkSource: request.artworkSource,
+                         offlineTextSubtitles: request.offlineTextSubtitles,
+                         offlineChapterImageURLs: request.chapterImageURLs,
+                         onClose: onClose)
+    }
 
     // MARK: - Backdrop
 
@@ -1542,10 +1550,20 @@ struct DetailView: View {
 
     @MainActor
     private func presentLocalPlayer(_ request: LocalPlaybackRequest) async {
-        #if os(iOS)
-        await mobilePlayerOrientationCoordinator.enterLandscapeBeforePresentationIfNeeded()
-        #endif
-        localPlaybackRequest = request
+        await Self.presentLocalRequest(request, orientation: {
+            #if os(iOS)
+            await mobilePlayerOrientationCoordinator.enterLandscapeBeforePresentationIfNeeded()
+            #endif
+        }, present: { localPlaybackRequest = $0 })
+    }
+
+    /// Executes the local presentation continuation with the real orientation suspension point.
+    @MainActor
+    static func presentLocalRequest(_ request: LocalPlaybackRequest,
+                                    orientation: () async -> Void,
+                                    present: (LocalPlaybackRequest) -> Void) async {
+        await orientation()
+        present(request)
     }
 
     // MARK: - Derived state
@@ -1558,13 +1576,13 @@ struct DetailView: View {
         return appModel.activeStreamingQualityKbps
     }
 
-    private enum LocalTrickPlayKind {
+    enum LocalTrickPlayKind {
         case plexBIF
         case jellyfinTiles
         case embyBIF
     }
 
-    private struct LocalPlaybackRequest: Identifiable {
+    struct LocalPlaybackRequest: Identifiable {
         let id = UUID()
         let url: URL
         let item: MediaItem

@@ -65,7 +65,7 @@ struct OfflineLaunchView: View {
     private var offlineNavigation: some View {
         NavigationStack {
             #if os(visionOS)
-            OfflineLibraryView(manager: downloadManager, focusedRatingKey: .constant(nil))
+            OfflineLibraryView(manager: downloadManager, focusedRatingKey: Self.offlineFocusBinding(router: SystemEntryRouter.shared))
                 .toolbar { launchToolbar }
             #else
             OfflineLibraryView(manager: downloadManager)
@@ -75,6 +75,11 @@ struct OfflineLaunchView: View {
         .safeAreaInset(edge: .top) {
             offlineStatusBanner
         }
+    }
+
+    /// Restricted surface's current focus adapter, callable on the host without immersive UI.
+    static func offlineFocusBinding(router: SystemEntryRouter) -> Binding<String?> {
+        .constant(nil)
     }
 
     private var offlineStatusBanner: some View {

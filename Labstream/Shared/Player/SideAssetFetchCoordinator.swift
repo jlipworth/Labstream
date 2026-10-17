@@ -375,6 +375,8 @@ actor SideAssetFetchCoordinator {
     }
 
 #if DEBUG
+    func isParkedForP7Testing(_ owner: SideAssetOwner) -> Bool { parkedOwners.contains(owner) }
+
     func activeCountForTesting(origin: SideAssetOrigin) -> Int {
         origins[origin]?.activeCount ?? 0
     }
@@ -675,6 +677,8 @@ enum SideAssetFetchError: Error, Equatable, Sendable {
 }
 
 #if !os(tvOS)
+enum OptionalSideAssetControl: Equatable, Sendable { case park(Bool), cancel }
+
 extension DownloadManager {
     nonisolated static func sideAssetOwner(for key: DownloadAttemptKey) -> SideAssetOwner {
         SideAssetOwner(rawValue: "\(key.ratingKey)\u{0}\(key.attemptID.rawValue)")
@@ -690,7 +694,7 @@ extension DownloadManager {
                                 kind: DownloadSideAssetKind,
                                 resource: String? = nil) async throws -> Data {
         let owner = Self.sideAssetOwner(for: key)
-        if isQueuePaused { await sideAssetFetchCoordinator.setParked(true, for: owner) }
+        if isQueuePaused { await deliverOptionalSideAssetControl(.park(true), owner: owner, fetchEntry: true) }
 
         let policyRequest = Self.sideAssetRequest(applyingCellularPolicy: request)
         return try await sideAssetFetchCoordinator.fetch(
@@ -709,16 +713,26 @@ extension DownloadManager {
             })
     }
 
+    /// Delivery injection observes the real bridge immediately before its actor hop. Shipping
+    /// scheduling is unchanged; P7.3 replaces this unordered delivery with owner sequencing.
+    func deliverOptionalSideAssetControl(_ command: OptionalSideAssetControl, owner: SideAssetOwner,
+                                         fetchEntry: Bool) async {
+        await optionalSideAssetControlWillDeliver?(command, owner, fetchEntry)
+        switch command {
+        case .park(let parked): await sideAssetFetchCoordinator.setParked(parked, for: owner)
+        case .cancel: await sideAssetFetchCoordinator.cancel(owner: owner)
+        }
+        optionalSideAssetControlDidDeliver?(command, owner, fetchEntry)
+    }
+
     func setOptionalSideAssetHydrationParked(_ parked: Bool, for key: DownloadAttemptKey) {
-        let coordinator = sideAssetFetchCoordinator
         let owner = Self.sideAssetOwner(for: key)
-        Task { await coordinator.setParked(parked, for: owner) }
+        Task { await self.deliverOptionalSideAssetControl(.park(parked), owner: owner, fetchEntry: false) }
     }
 
     func cancelOptionalSideAssetHydration(for key: DownloadAttemptKey) {
-        let coordinator = sideAssetFetchCoordinator
         let owner = Self.sideAssetOwner(for: key)
-        Task { await coordinator.cancel(owner: owner) }
+        Task { await self.deliverOptionalSideAssetControl(.cancel, owner: owner, fetchEntry: false) }
     }
 }
 #endif

@@ -183,9 +183,22 @@ public struct OfflineLibraryView: View {
     }
 
     private func offlinePlayerView(for record: DownloadRecord) -> some View {
+        Self.makeOfflinePlayer(record: record, manager: manager, trickPlayProvider: localTrickPlayProvider(for: record), onClose: { playing = nil })
+        #if os(iOS)
+        .withMobileOrientationCoordinator(mobilePlayerOrientationCoordinator)
+        #endif
+        #if os(visionOS)
+        .withCinemaOrigin(.offline(ratingKey: record.ratingKey))
+        #endif
+    }
+
+    /// Production construction seam shared by the row presentation and headless contract pins.
+    static func makeOfflinePlayer(record: DownloadRecord, manager: DownloadManager,
+                                  trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
+                                  onClose: @escaping () -> Void) -> CustomPlayerView {
         CustomPlayerView(localFile: record.localURL,
-                         item: offlineItem(from: record),
-                         trickPlayProvider: localTrickPlayProvider(for: record),
+                         item: Self.offlineItem(from: record),
+                         trickPlayProvider: trickPlayProvider,
                          offlineArtworkSource: OfflineArtworkSource(fileURL: record.posterURL,
                                                                     metadata: record.metadata,
                                                                     ratingKey: record.ratingKey),
@@ -196,13 +209,7 @@ public struct OfflineLibraryView: View {
                                                                  positionMs: positionMs,
                                                                  durationMs: durationMs)
                          },
-                         onClose: { playing = nil })
-        #if os(iOS)
-        .withMobileOrientationCoordinator(mobilePlayerOrientationCoordinator)
-        #endif
-        #if os(visionOS)
-        .withCinemaOrigin(.offline(ratingKey: record.ratingKey))
-        #endif
+                         onClose: onClose)
     }
 
     #if os(macOS)
@@ -423,12 +430,22 @@ public struct OfflineLibraryView: View {
     private func presentOfflinePlayer(_ record: DownloadRecord) {
         #if os(iOS)
         Task { @MainActor in
-            await mobilePlayerOrientationCoordinator.enterLandscapeBeforePresentationIfNeeded()
-            playing = record
+            await Self.presentOfflineRecord(record, orientation: {
+                await mobilePlayerOrientationCoordinator.enterLandscapeBeforePresentationIfNeeded()
+            }, present: { playing = $0 })
         }
         #else
         playing = record
         #endif
+    }
+
+    /// Executes the mobile presentation continuation with an injectable orientation boundary.
+    @MainActor
+    static func presentOfflineRecord(_ record: DownloadRecord,
+                                     orientation: () async -> Void,
+                                     present: (DownloadRecord) -> Void) async {
+        await orientation()
+        present(record)
     }
 
     private func localTrickPlayProvider(for record: DownloadRecord) -> (any TrickPlayThumbnailProviding)? {
@@ -798,7 +815,7 @@ public struct OfflineLibraryView: View {
     /// Reconstruct a faithful `MediaItem` from the persisted snapshot (D5) so the
     /// offline file flows through the same `CustomPlayerView` path with real title/metadata.
     /// Rows persisted before D5 fall back to a minimal movie.
-    private func offlineItem(from record: DownloadRecord) -> MediaItem {
+    static func offlineItem(from record: DownloadRecord) -> MediaItem {
         record.metadata?.makeMediaItem()
             ?? MediaItem(ratingKey: record.ratingKey, title: record.title, type: "movie")
     }

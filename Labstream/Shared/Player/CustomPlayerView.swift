@@ -142,6 +142,12 @@ struct CustomPlayerView: View {
     }
     #endif
 
+    #if DEBUG
+    /// Exercises the same controller factory used when the player mounts, without presenting UI.
+    @MainActor
+    func makeControllerForP7Testing() -> PlaybackController { controllerFactory() }
+    #endif
+
     var body: some View {
         #if os(visionOS)
         let isDetachedToCinema = cinemaSession.presentationState != .closed

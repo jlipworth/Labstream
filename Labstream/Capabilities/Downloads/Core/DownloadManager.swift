@@ -271,8 +271,18 @@ public final class DownloadManager {
     /// True only when a terminal row still owns a present local media file. A durable row by
     /// itself is not enough to bypass the launch login gate.
     var hasPlayableOfflineContent: Bool {
-        OfflineLaunchAvailability.hasPlayableDownload(records: records)
+        OfflineLaunchAvailability.hasPlayableDownload(records: records, fileExists: offlineFileExists)
     }
+
+    /// Countable filesystem boundary; availability currently invokes it on every gate read.
+    @ObservationIgnored var offlineFileExists: (URL) -> Bool = {
+        FileManager.default.fileExists(atPath: $0.path)
+    }
+
+    @ObservationIgnored var optionalSideAssetControlWillDeliver:
+        ((OptionalSideAssetControl, SideAssetOwner, Bool) async -> Void)?
+    @ObservationIgnored var optionalSideAssetControlDidDeliver:
+        ((OptionalSideAssetControl, SideAssetOwner, Bool) -> Void)?
 
     /// ratingKeys with an active (optimize or transfer) job in flight.
     public internal(set) var activeJobs: Set<String> = []

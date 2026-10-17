@@ -219,8 +219,7 @@ extension DownloadManager {
                           let currentRecord = self.store.record(for: attemptKey),
                           currentRecord.metadata?.sideAssetSourceIdentity
                             == metadata.sideAssetSourceIdentity,
-                          let part = currentItem.media?[safe: metadata.mediaIndex ?? 0]?
-                            .part[safe: metadata.partIndex ?? 0] else { return }
+                          let part = Self.subtitleRepairPart(item: currentItem, metadata: metadata) else { return }
                     self.cacheJellyfinTextSubtitles(
                         for: attemptKey, itemId: itemID,
                         mediaSourceId: metadata.mediaSourceID, part: part,
@@ -267,8 +266,7 @@ extension DownloadManager {
                           let currentRecord = self.store.record(for: attemptKey),
                           currentRecord.metadata?.sideAssetSourceIdentity
                             == metadata.sideAssetSourceIdentity,
-                          let part = currentItem.media?[safe: metadata.mediaIndex ?? 0]?
-                            .part[safe: metadata.partIndex ?? 0] else { return }
+                          let part = Self.subtitleRepairPart(item: currentItem, metadata: metadata) else { return }
                     self.cacheEmbyTextSubtitles(
                         for: attemptKey, itemId: metadata.ratingKey,
                         mediaSourceId: metadata.mediaSourceID, part: part,
@@ -277,6 +275,11 @@ extension DownloadManager {
             }
         }
         return true
+    }
+
+    /// Production subtitle-repair selection shared by the MediaBrowser repair branches.
+    nonisolated static func subtitleRepairPart(item: MediaItem, metadata: OfflineMetadata) -> Part? {
+        item.media?[safe: metadata.mediaIndex ?? 0]?.part[safe: metadata.partIndex ?? 0]
     }
 
     /// Lens 4 F2: side assets (posters, text subtitles, chapter images, Plex/Emby BIF, JF trickplay)

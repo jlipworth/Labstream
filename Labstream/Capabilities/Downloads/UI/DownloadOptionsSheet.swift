@@ -269,16 +269,19 @@ struct DownloadOptionsSheet: View {
         }
     }
 
+    /// Actual Mac sheet status adapter; kept callable for semantic parity pins.
+    static func macExistingStatusText(_ record: DownloadRecord) -> String {
+        if record.isComplete { return record.isUnverified ? "Downloaded; playback not verified" : "Downloaded for offline viewing" }
+        if record.status == .failed { return "Download failed" }
+        if record.status == .paused { return "Download paused" }
+        if record.status == .preparing { return "Preparing on server…" }
+        return "Download already exists"
+    }
+
     @ViewBuilder
     private func macExistingContent(_ record: DownloadRecord) -> some View {
         macSelectionSection(title: "Current download", footer: nil) {
-            let statusText: String = {
-                if record.isComplete { return record.isUnverified ? "Downloaded; playback not verified" : "Downloaded for offline viewing" }
-                if record.status == .failed { return "Download failed" }
-                if record.status == .paused { return "Download paused" }
-                if record.status == .preparing { return "Preparing on server…" }
-                return "Download already exists"
-            }()
+            let statusText = Self.macExistingStatusText(record)
             Label(statusText, systemImage: record.isComplete ? "checkmark.circle.fill" : "arrow.down.circle")
                 .font(.body.weight(.medium))
             if record.bytes > 0 {
@@ -992,14 +995,23 @@ struct DownloadOptionsSheet: View {
     }
 
     private var existingDownloadRemovalMessage: String {
-        if existingRecord?.isComplete == true {
+        Self.removalMessage(for: existingRecord)
+    }
+
+    static func removalMessage(for record: DownloadRecord?) -> String {
+        if record?.isComplete == true {
             return "This removes the offline copy from this device. You can download it again later."
         }
         return "This stops the transfer and removes any partial file from this device."
     }
 
     private func deleteExistingDownload() {
-        downloadManager.delete(ratingKey: DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: sheetBackend))
+        Self.deleteExistingDownload(ratingKey: DownloadRecordIdentity.recordKey(
+            for: item.ratingKey, backend: sheetBackend), manager: downloadManager)
+    }
+
+    static func deleteExistingDownload(ratingKey: String, manager: DownloadManager) {
+        manager.delete(ratingKey: ratingKey)
     }
 
     private func retryDownload() {
