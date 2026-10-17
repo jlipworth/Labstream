@@ -1276,6 +1276,9 @@ final class AuthManager {
         appModel.clearResolvedPlexBrowseSession()
     }
 
+    /// Maximum candidate servers whose connections are probed at once during discovery.
+    static let plexServerProbeWindow = 4
+
     /// Performs all suspension-prone Plex work without touching runtime or secure state.
     /// Callers can generation-check the result and then commit synchronously on MainActor.
     private func discoverPlexSession(token accountToken: String,
@@ -1300,25 +1303,29 @@ final class AuthManager {
             candidates = servers
         }
 
-        for server in candidates {
-            guard isPlexAuthorityCurrent(attemptID: attemptID, token: accountToken,
-                                         sessionGeneration: sessionGeneration) else { throw CancellationError() }
-            let serverToken = server.accessToken ?? accountToken
+        // Resolve candidate servers concurrently (a few at a time, in preference order, so a
+        // large shared-server list does not open every server's connections at once) and
+        // keep preference order: the preferred server still wins whenever it is reachable,
+        // and an unreachable preferred server no longer costs a full probe timeout before the
+        // next is tried. Servers past the window are never contacted once one is decided.
+        let winner = await PreferredProbe.firstSuccess(count: candidates.count,
+                                                       maxConcurrent: Self.plexServerProbeWindow) { [weak self] index in
+            let server = candidates[index]
             let ranked = ResourceDiscovery.rankedConnections(server.connections)
-            if let connection = await resolvePlexConnection(ranked,
-                                                             token: serverToken,
-                                                             expectedMachineIdentifier: server.clientIdentifier) {
-                guard isPlexAuthorityCurrent(attemptID: attemptID, token: accountToken,
-                                             sessionGeneration: sessionGeneration) else { throw CancellationError() }
-                return PlexSessionDiscovery(servers: servers,
-                                            selectedServer: server,
-                                            serverToken: serverToken,
-                                            baseURL: connection.url,
-                                            isLocal: connection.isLocal,
-                                            accountProfile: nil)
-            }
+            return await self?.resolvePlexConnection(ranked,
+                                                     token: server.accessToken ?? accountToken,
+                                                     expectedMachineIdentifier: server.clientIdentifier)
         }
-        throw PlexError.serverUnreachable
+        guard isPlexAuthorityCurrent(attemptID: attemptID, token: accountToken,
+                                     sessionGeneration: sessionGeneration) else { throw CancellationError() }
+        guard let winner else { throw PlexError.serverUnreachable }
+        let server = candidates[winner.index]
+        return PlexSessionDiscovery(servers: servers,
+                                    selectedServer: server,
+                                    serverToken: server.accessToken ?? accountToken,
+                                    baseURL: winner.value.url,
+                                    isLocal: winner.value.isLocal,
+                                    accountProfile: nil)
     }
 
     private func loadPlexSessionDiscovery(token: String,
@@ -1419,39 +1426,35 @@ final class AuthManager {
     /// is supplied, the identity payload must also identify that exact Plex
     /// server; this prevents selecting a stale/reverse-proxy URL that answers as
     /// some other server and then browsing the wrong libraries. Returns nil if
-    /// no candidate matches.
+    /// no candidate matches. The answer is returned as soon as it is decided and
+    /// the remaining probes are cancelled, so an unreachable lower-priority
+    /// interface no longer holds a preferred success behind its probe timeout.
     private func firstReachable(_ ranked: [PlexConnection],
                                 token: String,
                                 expectedMachineIdentifier: String?) async -> (url: URL, isLocal: Bool)? {
-        await withTaskGroup(of: (Int, URL, Bool)?.self) { group in
-            for (index, conn) in ranked.enumerated() {
-                guard let base = URL(string: conn.uri) else { continue }
-                let isLocal = conn.local
-                group.addTask {
-                    var req = URLRequest(url: base.appendingPathComponent("identity"))
-                    req.setValue(token, forHTTPHeaderField: "X-Plex-Token")
-                    req.setValue("application/json", forHTTPHeaderField: "Accept")
-                    do {
-                        let (data, resp) = try await Self.probeSession.data(for: req)
-                        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                            return nil
-                        }
-                        if let expectedMachineIdentifier,
-                           Self.plexMachineIdentifier(in: data) != expectedMachineIdentifier {
-                            return nil
-                        }
-                        return (index, base, isLocal)
-                    } catch { /* unreachable / timed out */ }
+        let candidates: [(base: URL, isLocal: Bool)] = ranked.compactMap { conn in
+            URL(string: conn.uri).map { ($0, conn.local) }
+        }
+        let winner = await PreferredProbe.firstSuccess(count: candidates.count) { index -> (URL, Bool)? in
+            let (base, isLocal) = candidates[index]
+            var req = URLRequest(url: base.appendingPathComponent("identity"))
+            req.setValue(token, forHTTPHeaderField: "X-Plex-Token")
+            req.setValue("application/json", forHTTPHeaderField: "Accept")
+            do {
+                let (data, resp) = try await Self.probeSession.data(for: req)
+                guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                     return nil
                 }
-            }
-            var best: (Int, URL, Bool)?
-            for await result in group {
-                if let r = result, best == nil || r.0 < best!.0 { best = r }
-            }
-            guard let best else { return nil }
-            return (best.1, best.2)
+                if let expectedMachineIdentifier,
+                   Self.plexMachineIdentifier(in: data) != expectedMachineIdentifier {
+                    return nil
+                }
+                return (base, isLocal)
+            } catch { /* unreachable / timed out / cancelled */ }
+            return nil
         }
+        guard let winner else { return nil }
+        return (winner.value.0, winner.value.1)
     }
 
     private func resolvePlexConnection(_ ranked: [PlexConnection],

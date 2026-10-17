@@ -297,7 +297,10 @@ struct LibraryPagingModelTests {
                 reportedTotal: 6
             )
         )
+        // Later pages are requested through a window, so page 4 may already be in flight;
+        // wait for page 2's publication itself rather than for page 4's request.
         await probe.waitUntilStarted(start: 4)
+        await Self.waitUntil { model.total == 3 }
         #expect(model.slots.count == 3)
         #expect(model.slots.allSatisfy { $0 != nil })
         #expect(model.slots.compactMap { $0 }.map(\.ratingKey) == ["alpha-4k", "bravo", "charlie"])
@@ -578,6 +581,201 @@ struct LibraryPagingModelTests {
             },
             fetchAlphabetCounts: { [] }
         )
+    }
+
+    @Test func collapsingLaterPagesOverlapInBoundedWindowAndIngestInOrder() async {
+        // 1 + 10 pages of distinct movies, each later page taking 50 ms. A serial walk costs
+        // about 10 × 50 ms; the window overlaps the round trips without exceeding its bound.
+        let pageSize = 2
+        let laterPages = 10
+        var inFlight = 0
+        var maxInFlight = 0
+        func page(_ start: Int) -> LibraryPagingPage {
+            LibraryPagingPage(
+                items: (start..<(start + pageSize)).map {
+                    Self.movie("m\($0)", title: String(format: "Title %03d", $0), year: 2000)
+                },
+                reportedTotal: pageSize * (laterPages + 1))
+        }
+        let source = LibraryPagingSource(
+            title: "Movies",
+            identity: "collapse-window",
+            backendLabel: "Test",
+            pageSize: pageSize,
+            cacheEmptyFirstPage: true,
+            collapsesMovieVersions: true,
+            fetchPage: { start, _ in
+                if start == 0 { return page(0) }
+                inFlight += 1
+                maxInFlight = max(maxInFlight, inFlight)
+                defer { inFlight -= 1 }
+                // Later offsets answer faster, so completion order differs from offset order.
+                try await Task.sleep(for: .milliseconds(50 - start))
+                return page(start)
+            },
+            fetchAlphabetCounts: { [] }
+        )
+        let model = LibraryPagingModel()
+        let clock = ContinuousClock()
+        let elapsed = await clock.measure { await model.load(source: source) { true } }
+        print("perf.collapsing_window elapsed_ms=\(elapsed.components.attoseconds / 1_000_000_000_000_000 + elapsed.components.seconds * 1000) later_pages=\(laterPages) max_in_flight=\(maxInFlight)")
+
+        #expect(maxInFlight == LibraryPagingModel.collapsingPageWindow)
+        #expect(model.slots.compactMap { $0 }.map(\.ratingKey)
+            == (0..<(pageSize * (laterPages + 1))).map { "m\($0)" })
+        #expect(model.alphabetBuckets.map(\.display) == ["T"])
+    }
+
+    @Test func collapsingEmptyLaterPageStopsIngestionAtThatPage() async {
+        var requested: [Int] = []
+        let source = LibraryPagingSource(
+            title: "Movies",
+            identity: "collapse-empty-stop",
+            backendLabel: "Test",
+            pageSize: 2,
+            cacheEmptyFirstPage: true,
+            collapsesMovieVersions: true,
+            fetchPage: { start, _ in
+                requested.append(start)
+                switch start {
+                case 0:
+                    return LibraryPagingPage(
+                        items: [Self.movie("alpha", title: "Alpha", year: 2020),
+                                Self.movie("bravo", title: "Bravo", year: 2021)],
+                        reportedTotal: 10)
+                case 2:
+                    return LibraryPagingPage(items: [], reportedTotal: 10)
+                default:
+                    // Pages past the empty one may be requested by the window but must never
+                    // be ingested.
+                    return LibraryPagingPage(
+                        items: [Self.movie("late-\(start)", title: "Zulu \(start)", year: 2022)],
+                        reportedTotal: 10)
+                }
+            },
+            fetchAlphabetCounts: { [] }
+        )
+        let model = LibraryPagingModel()
+        await model.load(source: source) { true }
+        #expect(model.slots.compactMap { $0 }.map(\.ratingKey) == ["alpha", "bravo"])
+        #expect(model.alphabetBuckets.map(\.display) == ["A", "B"])
+        #expect(requested.count <= 1 + LibraryPagingModel.collapsingPageWindow)
+    }
+
+    @Test func collapsingFailurePastEmptyPageIsIgnoredLikeASerialWalk() async {
+        // Page 4 fails before page 2 answers empty. A serial walk stops at the empty page and
+        // never asks for page 4, so the load must still complete (rail published).
+        struct PageFailure: Error {}
+        let source = LibraryPagingSource(
+            title: "Movies",
+            identity: "collapse-failure-past-empty",
+            backendLabel: "Test",
+            pageSize: 2,
+            cacheEmptyFirstPage: true,
+            collapsesMovieVersions: true,
+            fetchPage: { start, _ in
+                switch start {
+                case 0:
+                    return LibraryPagingPage(
+                        items: [Self.movie("alpha", title: "Alpha", year: 2020),
+                                Self.movie("bravo", title: "Bravo", year: 2021)],
+                        reportedTotal: 10)
+                case 2:
+                    try await Task.sleep(for: .milliseconds(30))
+                    return LibraryPagingPage(items: [], reportedTotal: 10)
+                default:
+                    throw PageFailure()
+                }
+            },
+            fetchAlphabetCounts: { [] }
+        )
+        let model = LibraryPagingModel()
+        await model.load(source: source) { true }
+        #expect(model.slots.compactMap { $0 }.map(\.ratingKey) == ["alpha", "bravo"])
+        #expect(model.alphabetBuckets.map(\.display) == ["A", "B"])
+    }
+
+    @Test func collapsingFastLaterFailureStillIngestsEarlierPages() async {
+        // Page 4 fails immediately while page 2 is still in flight. Page 2 must be ingested
+        // before the failure ends the load, as in a serial walk; the load stays incomplete.
+        struct PageFailure: Error {}
+        let source = LibraryPagingSource(
+            title: "Movies",
+            identity: "collapse-fast-later-failure",
+            backendLabel: "Test",
+            pageSize: 2,
+            cacheEmptyFirstPage: true,
+            collapsesMovieVersions: true,
+            fetchPage: { start, _ in
+                switch start {
+                case 0:
+                    return LibraryPagingPage(
+                        items: [Self.movie("alpha", title: "Alpha", year: 2020),
+                                Self.movie("bravo", title: "Bravo", year: 2021)],
+                        reportedTotal: 6)
+                case 2:
+                    try await Task.sleep(for: .milliseconds(30))
+                    return LibraryPagingPage(
+                        items: [Self.movie("charlie", title: "Charlie", year: 2022),
+                                Self.movie("delta", title: "Delta", year: 2023)],
+                        reportedTotal: 6)
+                default:
+                    throw PageFailure()
+                }
+            },
+            fetchAlphabetCounts: { [] }
+        )
+        let model = LibraryPagingModel()
+        await model.load(source: source) { true }
+        #expect(model.loadState == .loaded)
+        #expect(model.slots.compactMap { $0 }.map(\.ratingKey) == ["alpha", "bravo", "charlie", "delta"])
+        #expect(model.alphabetBuckets.isEmpty)
+    }
+
+    @Test func collapsingLoadSupersededWhileDrainingDoesNotPublishCompletion() async {
+        // Load A stops at an empty page 2 but must wait for its cancelled page-4 fetch, which
+        // ignores cancellation. Load B starts during that wait. When A finally resumes it
+        // must not publish a completed rail built from B's partial state.
+        let probeA = ControlledCollapsingFetch(
+            first: LibraryPagingPage(
+                items: [Self.movie("alpha", title: "Alpha", year: 2020),
+                        Self.movie("bravo", title: "Bravo", year: 2021)],
+                reportedTotal: 6))
+        let probeB = ControlledCollapsingFetch(
+            first: LibraryPagingPage(
+                items: [Self.movie("charlie", title: "Charlie", year: 2022),
+                        Self.movie("delta", title: "Delta", year: 2023)],
+                reportedTotal: 4))
+        let model = LibraryPagingModel()
+        let loadA = Task { await model.load(source: collapsingSource(identity: "drain-a", probe: probeA)) { true } }
+        await probeA.waitUntilStarted(start: 2)
+        await probeA.waitUntilStarted(start: 4)
+        await probeA.succeed(start: 2, page: LibraryPagingPage(items: [], reportedTotal: 6))
+        for _ in 0..<200 { await Task.yield() }
+
+        let loadB = Task { await model.load(source: collapsingSource(identity: "drain-b", probe: probeB)) { true } }
+        await probeB.waitUntilStarted(start: 2)
+        await probeA.succeed(start: 4, page: LibraryPagingPage(items: [], reportedTotal: 6))
+        await loadA.value
+        #expect(model.alphabetBuckets.isEmpty)
+        #expect(model.slots.compactMap { $0 }.map(\.ratingKey) == ["charlie", "delta"])
+
+        await probeB.succeed(
+            start: 2,
+            page: LibraryPagingPage(
+                items: [Self.movie("echo", title: "Echo", year: 2024),
+                        Self.movie("foxtrot", title: "Foxtrot", year: 2025)],
+                reportedTotal: 4))
+        await loadB.value
+        #expect(model.alphabetBuckets.map(\.display) == ["C", "D", "E", "F"])
+    }
+
+    /// Yields until `condition` holds, bounded so a regression fails instead of hanging.
+    private static func waitUntil(_ condition: @MainActor () -> Bool) async {
+        for _ in 0..<1_000 where !condition() {
+            await Task.yield()
+        }
+        #expect(condition())
     }
 
     private func collapsingSource(identity: String,

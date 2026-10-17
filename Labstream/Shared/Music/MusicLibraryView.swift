@@ -324,6 +324,9 @@ private struct MusicHomePivot: View {
             return
         }
         loadState = .loading
+        // The history rail is independent of the hubs; start it now so first paint pays one
+        // round trip instead of two. Its result is simply discarded when the hubs fail.
+        async let pendingHistoryTracks = loadHistoryTracks(service: service)
         do {
             // Rung 1 — server hubs, rendered generically. v1 keeps artist/album hub
             // items only (track rows need play affordances first — v2); empty hubs drop.
@@ -340,7 +343,7 @@ private struct MusicHomePivot: View {
                            size: items.count, metadata: items)
             }
 
-            let freshHistoryTracks = await loadHistoryTracks(service: service)
+            let freshHistoryTracks = await pendingHistoryTracks
             guard generation == loadGeneration, !Task.isCancelled else { return }
             historyTracks = freshHistoryTracks
             fallbackAlbums = []

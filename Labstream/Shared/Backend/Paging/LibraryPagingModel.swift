@@ -175,6 +175,15 @@ final class LibraryPagingModel {
 
     // MARK: - Collapsing (load-all, incremental dedup) path — #108
 
+    /// Later collapsing pages kept in flight at once. Small, so a large Jellyfin/Emby movie
+    /// library overlaps its round trips without flooding the server with recursive queries.
+    nonisolated static let collapsingPageWindow = 3
+
+    private struct CollapsingPageResult: Sendable {
+        let offset: Int
+        let outcome: Result<LibraryPagingPage, any Error>
+    }
+
     /// Load EVERY page of a collapsing movie source up front, ingesting each into the
     /// collapser and re-projecting the dense deduped `slots` after every page so movies
     /// appear progressively. `total` only ever grows (it tracks the distinct movies known so
@@ -223,24 +232,67 @@ final class LibraryPagingModel {
             ])
 
             var loadedPages = 1
-            var start = source.pageSize
             var serverTotal = first.total
             var lastPageWasEmpty = first.items.isEmpty
-            // Keep paging until we've covered the reported total (or hit an empty page).
-            while !lastPageWasEmpty, start < serverTotal {
-                let page = try await source.fetchPage(start, source.pageSize)
-                guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
-                    completeSpan.end(result: "superseded")
-                    span.end(result: "stale")
-                    return
+            let pageSize = source.pageSize
+            let fetchPage = source.fetchPage
+            // Keep paging until we've covered the reported total (or hit an empty page). Later
+            // pages are requested through a small window so the remaining round trips overlap,
+            // but they are ingested strictly in offset order, so the collapser sees exactly the
+            // same page sequence (and first-seen representative order) as a serial walk. A
+            // fetch failure is likewise surfaced only when ingestion reaches its offset, so a
+            // failed page past an empty page is ignored exactly as a serial walk never asks.
+            let superseded = try await withThrowingTaskGroup(of: CollapsingPageResult.self) { group in
+                var nextRequest = pageSize
+                var nextIngest = pageSize
+                var arrived: [Int: Result<LibraryPagingPage, any Error>] = [:]
+
+                func requestAvailablePages() {
+                    while !lastPageWasEmpty, nextRequest < serverTotal,
+                          nextRequest - nextIngest < Self.collapsingPageWindow * pageSize {
+                        let offset = nextRequest
+                        group.addTask {
+                            do {
+                                return CollapsingPageResult(offset: offset,
+                                                            outcome: .success(try await fetchPage(offset, pageSize)))
+                            } catch {
+                                return CollapsingPageResult(offset: offset, outcome: .failure(error))
+                            }
+                        }
+                        nextRequest += pageSize
+                    }
                 }
-                ingestCollapsed(page.items)
-                loadedPages += 1
-                lastPageWasEmpty = page.items.isEmpty
-                // The server total can only be trusted to grow; never let a later page's
-                // smaller `total` cut the loop short before all items are fetched.
-                serverTotal = max(serverTotal, page.total)
-                start += source.pageSize
+
+                requestAvailablePages()
+                while !lastPageWasEmpty, nextIngest < serverTotal, let result = try await group.next() {
+                    arrived[result.offset] = result.outcome
+                    while !lastPageWasEmpty, let outcome = arrived.removeValue(forKey: nextIngest) {
+                        guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
+                            group.cancelAll()
+                            return true
+                        }
+                        let page = try outcome.get()
+                        ingestCollapsed(page.items)
+                        loadedPages += 1
+                        lastPageWasEmpty = page.items.isEmpty
+                        // The server total can only be trusted to grow; never let a later page's
+                        // smaller `total` cut the loop short before all items are fetched.
+                        serverTotal = max(serverTotal, page.total)
+                        nextIngest += pageSize
+                    }
+                    requestAvailablePages()
+                }
+                // Pages requested past an empty page are never ingested.
+                group.cancelAll()
+                return false
+            }
+            // Leaving the group waits for any cancelled speculative fetches to finish; a newer
+            // load can start during that wait, so re-check before publishing completion.
+            guard !superseded,
+                  isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
+                completeSpan.end(result: "superseded")
+                span.end(result: "stale")
+                return
             }
 
             // Full load complete → it is now safe to latch the fully-loaded identity so
