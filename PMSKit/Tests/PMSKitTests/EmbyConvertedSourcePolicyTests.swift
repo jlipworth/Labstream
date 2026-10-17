@@ -126,8 +126,64 @@ struct EmbyConvertedSourcePolicyTests {
         """#)
         #expect(EmbyConvertedSourcePolicy.newConvertedSource(sources,
                                                              excludingSnapshotIDs: ["1", "7"])?.id == "8")
+        // B46: once every visible source was in the pre-conversion snapshot, nothing is new, so the
+        // fallback must not adopt a pre-existing sibling.
         #expect(EmbyConvertedSourcePolicy.completedSourceFallback(sources,
-                                                                  excludingSnapshotIDs: ["1", "7", "8"])?.id == "8")
+                                                                  excludingSnapshotIDs: ["1", "7", "8"]) == nil)
+    }
+
+    // B46: the second fallback tier ignored the snapshot, so an older converted sibling, or an
+    // h264/mp4 original (which "looks converted"), was adopted as this job's output.
+    @Test("Completed-source fallback never adopts a snapshot sibling or the original")
+    func completedSourceFallbackExcludesSnapshotAndOriginal() throws {
+        let sources = try mediaSources(#"""
+        { "Id": "1", "Protocol": "File", "Container": "mp4", "VideoCodec": "h264",
+          "Width": 3840, "Height": 2160 },
+        { "Id": "6", "Protocol": "File", "Container": "mp4", "Width": 1280, "Height": 720 }
+        """#)
+        // Snapshot holds the h264/mp4 4K original and an older 720p sibling: no new output yet.
+        #expect(EmbyConvertedSourcePolicy.completedSourceFallback(
+            sources, excludingSnapshotIDs: ["1", "6"], requestedHeight: 1080,
+            primaryMediaSourceID: "1") == nil)
+        // Even with an empty (legacy) snapshot, the original is never this job's output.
+        #expect(EmbyConvertedSourcePolicy.completedSourceFallback(
+            sources, excludingSnapshotIDs: [], requestedHeight: 2160,
+            primaryMediaSourceID: "1")?.id != "1")
+        #expect(EmbyConvertedSourcePolicy.newConvertedSource(
+            sources, excludingSnapshotIDs: [], requestedHeight: 2160,
+            primaryMediaSourceID: "1")?.id != "1")
+        // A genuinely new source still wins.
+        let withNew = try mediaSources(#"""
+        { "Id": "1", "Protocol": "File", "Container": "mp4", "VideoCodec": "h264",
+          "Width": 3840, "Height": 2160 },
+        { "Id": "6", "Protocol": "File", "Container": "mp4", "Width": 1280, "Height": 720 },
+        { "Id": "11", "Protocol": "File", "Container": "mkv", "Width": 1920, "Height": 1080 }
+        """#)
+        #expect(EmbyConvertedSourcePolicy.completedSourceFallback(
+            withNew, excludingSnapshotIDs: ["1", "6"], requestedHeight: 1080,
+            primaryMediaSourceID: "1")?.id == "11")
+    }
+
+    // B46: `embyFileSources` returns [] on error, so a transient failure persisted an EMPTY snapshot
+    // and the strict pickup could select the original right after Completed. A failed or empty
+    // fetch must fail the create closed (retryable) instead of becoming the snapshot.
+    @Test("Pre-conversion snapshot fails closed on a failed or empty fetch and always holds the original")
+    func preConversionSnapshotFailsClosed() throws {
+        #expect(EmbyConvertedSourcePolicy.preConversionSnapshotIDs(
+            fetched: nil, primaryMediaSourceID: "1") == nil)
+        #expect(EmbyConvertedSourcePolicy.preConversionSnapshotIDs(
+            fetched: [], primaryMediaSourceID: "1") == nil)
+        let sources = try mediaSources(#"""
+        { "Id": "1", "Protocol": "File", "Container": "mkv" },
+        { "Id": "6", "Protocol": "File", "Container": "mp4" }
+        """#)
+        #expect(EmbyConvertedSourcePolicy.preConversionSnapshotIDs(
+            fetched: sources, primaryMediaSourceID: "1") == ["1", "6"])
+        // The original is excluded even when PlaybackInfo listed it under another id set.
+        #expect(EmbyConvertedSourcePolicy.preConversionSnapshotIDs(
+            fetched: Array(sources.suffix(1)), primaryMediaSourceID: "1") == ["1", "6"])
+        #expect(EmbyConvertedSourcePolicy.preConversionSnapshotIDs(
+            fetched: sources, primaryMediaSourceID: nil) == ["1", "6"])
     }
 
     // Post-completion pickup sanity: a fresh source with KNOWN dimensions far below what this job
@@ -145,12 +201,13 @@ struct EmbyConvertedSourcePolicyTests {
                                                              excludingSnapshotIDs: ["1"],
                                                              requestedHeight: 1080,
                                                              primaryMediaSourceID: "1")?.id == "9")
-        // The bounded fallback applies the same gate: with the 1080p output already in the
-        // snapshot it prefers the most-recent SANE converted source over the fresh 480p foreigner.
+        // The bounded fallback applies the same gate: with the 1080p source in the snapshot, the
+        // only new source is the 480p foreigner, which is rejected; the snapshot sibling is never
+        // adopted either (B46).
         #expect(EmbyConvertedSourcePolicy.completedSourceFallback(sources,
                                                                   excludingSnapshotIDs: ["1", "9"],
                                                                   requestedHeight: 1080,
-                                                                  primaryMediaSourceID: "1")?.id == "9")
+                                                                  primaryMediaSourceID: "1") == nil)
         // Unknown dimensions pass the gate — the freshly indexed output may not be probed yet.
         let unprobed = try mediaSources(#"""
         { "Id": "1", "Protocol": "File", "Container": "mkv", "Width": 3840, "Height": 2160 },

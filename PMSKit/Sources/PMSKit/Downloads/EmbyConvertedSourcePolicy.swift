@@ -46,16 +46,32 @@ public enum EmbyConvertedSourcePolicy {
         return DownloadMediaSelectionPolicy.mediaSourceID(media: media, part: media?.part.first)
     }
 
+    /// The pre-conversion File-source id set persisted before a Convert job is created, or nil when
+    /// the create must fail closed (retryable). A failed PlaybackInfo fetch (`fetched == nil`) or an
+    /// empty File-source list cannot be a real snapshot: persisting it empty let pickup adopt the
+    /// original or an older sibling as this job's output (B46). The primary source id is always
+    /// included, because the original is never the converted output.
+    public static func preConversionSnapshotIDs(fetched: [EmbyMediaSourceInfo]?,
+                                                primaryMediaSourceID: String?) -> Set<String>? {
+        guard let fetched else { return nil }
+        var ids = Set(fetched.compactMap { $0.id }.filter { !$0.isEmpty })
+        guard !ids.isEmpty else { return nil }
+        if let primaryMediaSourceID, !primaryMediaSourceID.isEmpty { ids.insert(primaryMediaSourceID) }
+        return ids
+    }
+
     /// Strict fresh-output detector used while polling after a Convert job completes. A source must
-    /// be outside the pre-conversion snapshot, shaped like a converted output, and (where the request
-    /// tier is known) not implausibly far below the tier this job could have rendered — a foreign
-    /// low-res sibling that slipped past the snapshot must not be adopted as our output.
+    /// be outside the pre-conversion snapshot, not the original, shaped like a converted output,
+    /// and (where the request tier is known) not implausibly far below the tier this job could have
+    /// rendered — a foreign low-res sibling that slipped past the snapshot must not be adopted as
+    /// our output.
     public static func newConvertedSource(_ sources: [EmbyMediaSourceInfo],
                                           excludingSnapshotIDs snapshotIDs: Set<String>,
                                           requestedHeight: Int? = nil,
                                           primaryMediaSourceID: String? = nil) -> EmbyMediaSourceInfo? {
         mostRecent(sources.filter { source in
-            guard !snapshotIDs.contains(source.id ?? "") else { return false }
+            guard isNewOutputCandidate(source, snapshotIDs: snapshotIDs,
+                                       primaryMediaSourceID: primaryMediaSourceID) else { return false }
             guard looksConverted(source) else { return false }
             return convertOutputTierIsSane(source, sources: sources,
                                            requestedHeight: requestedHeight,
@@ -63,22 +79,33 @@ public enum EmbyConvertedSourcePolicy {
         })
     }
 
-    /// Final fallback once the bounded post-completion poll has expired: prefer any new file source,
-    /// then the most-recent converted-looking source visible in PlaybackInfo. The same output-tier
-    /// sanity gate as `newConvertedSource` applies — this fallback is even more exposed to adopting
-    /// a foreign sibling because it drops the `looksConverted` requirement on new sources.
+    /// Final fallback once the bounded post-completion poll has expired: the most-recent NEW file
+    /// source, without the `looksConverted` requirement. Every tier excludes the pre-conversion
+    /// snapshot and the original (B46): an older converted sibling, or an h264/mp4 original that
+    /// "looks converted", is never this job's output. The same output-tier sanity gate as
+    /// `newConvertedSource` applies.
     public static func completedSourceFallback(_ sources: [EmbyMediaSourceInfo],
                                                excludingSnapshotIDs snapshotIDs: Set<String>,
                                                requestedHeight: Int? = nil,
                                                primaryMediaSourceID: String? = nil) -> EmbyMediaSourceInfo? {
-        func tierSane(_ source: EmbyMediaSourceInfo) -> Bool {
-            convertOutputTierIsSane(source, sources: sources,
-                                    requestedHeight: requestedHeight,
-                                    primaryMediaSourceID: primaryMediaSourceID)
+        mostRecent(sources.filter { source in
+            isNewOutputCandidate(source, snapshotIDs: snapshotIDs,
+                                 primaryMediaSourceID: primaryMediaSourceID)
+                && convertOutputTierIsSane(source, sources: sources,
+                                           requestedHeight: requestedHeight,
+                                           primaryMediaSourceID: primaryMediaSourceID)
+        })
+    }
+
+    private static func isNewOutputCandidate(_ source: EmbyMediaSourceInfo,
+                                             snapshotIDs: Set<String>,
+                                             primaryMediaSourceID: String?) -> Bool {
+        let id = source.id ?? ""
+        if snapshotIDs.contains(id) { return false }
+        if let primaryMediaSourceID, !primaryMediaSourceID.isEmpty, id == primaryMediaSourceID {
+            return false
         }
-        let notInSnapshot = sources.filter { !snapshotIDs.contains($0.id ?? "") && tierSane($0) }
-        return mostRecent(notInSnapshot)
-            ?? mostRecent(sources.filter { looksConverted($0) && tierSane($0) })
+        return true
     }
 
     /// Pick an already-existing server-prepared `File` source to reuse for a Convert request.
