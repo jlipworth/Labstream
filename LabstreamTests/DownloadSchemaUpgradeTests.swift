@@ -76,6 +76,71 @@ struct DownloadSchemaUpgradeTests {
         }
     }
 
+    @Test("A row-deletion barrier or a capsule admits no work; a healthy owner does")
+    func deletingRowsAdmitNoWork() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let healthy = try seed("plex:ok", status: .downloading, in: store)
+            #expect(store.attemptAdmitsWork(healthy))
+
+            let capsule = try seed("plex:capsule", status: .downloading, in: store)
+            let server = try #require(DurableDownloadCleanupIntent.ServerIdentity(
+                baseURL: URL(string: "https://emby.example")!,
+                serverID: "server-1", userID: "user-1"))
+            let cleanup = try #require(DurableDownloadCleanupIntent(
+                id: UUID(), attemptKey: capsule, backend: .emby, server: server,
+                operation: .activeEncoding(playSessionID: "session-1")))
+            #expect(store.markDeletionPending(for: capsule, cleanupIntents: [cleanup]) == .applied)
+            #expect(store.ownsAttempt(capsule), "a capsule keeps row and file authority")
+            #expect(!store.attemptAdmitsWork(capsule))
+
+            let barriered = try seed("plex:barrier", status: .downloading, in: store)
+            guard case .accepted = store.submitRemove(for: barriered) else {
+                Issue.record("Expected the removal to be accepted"); return
+            }
+            #expect(!store.attemptAdmitsWork(barriered))
+        }
+    }
+
+    @Test("Start-chain admission accepts fresh starts and A-to-B replacement, never a deleting row")
+    func startChainAdmissionIsPhaseAware() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let minted = DownloadAttemptID(uuid: UUID())
+            // Fresh start: the key is empty before the seed.
+            #expect(store.startChainAdmits(ratingKey: "plex:fresh", attemptID: minted,
+                                           expectedPreviousOwner: nil))
+
+            // Replacement: before the seed the expected previous owner holds the key...
+            let previous = try seed("plex:replace", status: .failed, in: store)
+            let next = DownloadAttemptID(uuid: UUID())
+            #expect(store.startChainAdmits(ratingKey: "plex:replace", attemptID: next,
+                                           expectedPreviousOwner: previous.attemptID))
+            // ...but an unexpected owner is refused.
+            #expect(!store.startChainAdmits(ratingKey: "plex:replace", attemptID: next,
+                                            expectedPreviousOwner: DownloadAttemptID(uuid: UUID())))
+            // After the seed the exact attempt must admit work.
+            let seeded = DownloadAttemptKey(ratingKey: "plex:replace", attemptID: next)
+            #expect(store.createAttemptOwnedRecord(
+                DownloadRecord(ratingKey: "plex:replace", attemptID: next, title: "Item",
+                               localURL: URL(fileURLWithPath: "/dev/null"), status: .queued,
+                               metadata: OfflineMetadata(ratingKey: "plex:replace",
+                                                         title: "Item", type: "movie")),
+                attemptID: next, replacing: previous.attemptID) == .committed(seeded))
+            #expect(store.startChainAdmits(ratingKey: "plex:replace", attemptID: next,
+                                           expectedPreviousOwner: previous.attemptID))
+
+            // A previous owner that is being deleted never seeds a replacement.
+            let deleting = try seed("plex:deleting", status: .failed, in: store)
+            guard case .accepted = store.submitRemove(for: deleting) else {
+                Issue.record("Expected the removal to be accepted"); return
+            }
+            #expect(!store.startChainAdmits(ratingKey: "plex:deleting",
+                                            attemptID: DownloadAttemptID(uuid: UUID()),
+                                            expectedPreviousOwner: deleting.attemptID))
+        }
+    }
+
     // MARK: - Fixtures
 
     private func seed(_ ratingKey: String, status: DownloadStatus,
