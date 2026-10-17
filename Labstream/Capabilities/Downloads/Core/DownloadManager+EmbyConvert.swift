@@ -744,7 +744,7 @@ extension DownloadManager {
         guard store.ownsAttempt(key) else { return }
         lastError[key.ratingKey] = .transferFailed(
             "Download preparation could not be saved. Free storage if needed, then retry.")
-        _ = store.setStatus(for: key, .failed)
+        _ = applyServerPrepFailure(.internalError, for: key, context: "emby_convert_persistence")
         clearOptimizeProgress(ratingKey: key.ratingKey)
         releaseInFlight(for: key)
         recordDownloadDiagnostic("downloads.convert_persistence_failed", fields: [
@@ -762,7 +762,8 @@ extension DownloadManager {
         // Retry re-enters recovery rather than creating and orphaning another server job. The
         // definitive pre-dispatch/non-2xx create branch clears explicitly; exact adoption clears
         // atomically with persisting the recovered job id.
-        _ = setEmbyAttemptStatus(.failed, for: key, context: "convert_failure")
+        _ = applyServerPrepFailure(
+            Self.lifecycleFailureReason(for: error), for: key, context: "emby_convert_failure")
         clearOptimizeProgress(ratingKey: key.ratingKey)
         releaseInFlight(for: key)
         refreshRecords()

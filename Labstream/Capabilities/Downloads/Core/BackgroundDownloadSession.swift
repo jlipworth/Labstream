@@ -197,6 +197,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// keying preservation on the store status silently discarded bodies finishing inside that
     /// window. A cancel never downgrades to a pause (the row may be mid-delete).
     private var rangeHaltKinds: [DownloadAttemptKey: StaticRangeHaltKind] = [:]
+    /// P3a: who installed a `.pause` halt (user, system cancel, deferred session wait), so the
+    /// paths that settle a halted lane record the right `DownloadPauseCause`. Guarded by `lock`;
+    /// set and cleared alongside `rangeHaltKinds`.
+    private var rangeHaltPauseCauses: [DownloadAttemptKey: DownloadPauseCause] = [:]
     /// Range-specific retry counters that must not be reset by URLSession progress callbacks. They
     /// bound validator-change restart loops and misaligned `Content-Range` retries until an actual
     /// durable append proves forward progress.
@@ -205,14 +209,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var loggedExpectation: Set<Int> = []
     /// Retry count by exact attempt for transient URLSession drops that provide resume data.
     private var retryCounts: [DownloadAttemptKey: Int] = [:]
-    /// JF-F2 loop guard: consecutive `.truncated` finalize outcomes per attempt. Deliberately NOT
-    /// reset by `start`/`clearRetryCount` (a retry that truncates again must keep counting toward
-    /// the parking budget); reset only on a `.complete` finalize. Only touched inside
-    /// `finalizeTransferredFile`, guarded by `finalizationStateQueue` (async context — no NSLock).
-    /// Consecutive truncation failures belong to the visible download, not a disposable attempt.
-    /// Retry intentionally mints a new attempt; keying this budget by attempt made parking
-    /// unreachable for a repeatedly truncated server response.
-    private var truncationFailureCounts: [String: Int] = [:]
     /// Bounded per-row backend/request rehydrations after auth/forbidden HTTP responses on static
     /// Range tasks. This is intentionally separate from transient retry counts: 403 should not blindly
     /// replay the same URL, but one fresh backend negotiation may mint a usable request.
@@ -735,11 +731,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// unit test), so expose read/seed access — guarded by the same `finalizationStateQueue` — to
     /// prove `halt()` clears the count when the row is cancelled/deleted.
     func truncationFailureCountForTesting(ratingKey: String) -> Int {
-        finalizationStateQueue.sync { truncationFailureCounts[ratingKey] ?? 0 }
+        guard let attemptID = currentAttemptIdentity(ratingKey: ratingKey) else { return 0 }
+        return store.truncationStrikes(
+            for: DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID))
     }
 
     func seedTruncationFailureCountForTesting(_ count: Int, ratingKey: String) {
-        finalizationStateQueue.sync { truncationFailureCounts[ratingKey] = count }
+        guard let attemptID = currentAttemptIdentity(ratingKey: ratingKey) else { return }
+        let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+        for index in 0..<count {
+            _ = store.recordTruncationStrike(for: key, outcomeID: "seed-\(index)")
+        }
     }
 
     /// #212 regression seam: run the production off-head finished-body flow — the caller's
@@ -1104,6 +1106,141 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         return submission
     }
 
+    /// P3a: submit a lifecycle reducer event for the exact attempt and adapt the result to the
+    /// `AttemptMutationSubmission` shape the `resolveLifecycleSubmission` /
+    /// `acceptedAttemptSubmission` fences expect.
+    ///
+    /// - `.accepted` → `.accepted(change: .applied, ticket:)`.
+    /// - `.rejected` → `.accepted(change: .noChange, ticket: nil)`: the reducer refused the
+    ///   transition in the row's current lifecycle (for example a rebuild intent over a finalizing
+    ///   body, or a system-cancel park over a row that is already paused). The legacy status write
+    ///   it replaces was either a no-op there or would have erased lifecycle detail; nothing is
+    ///   persisted, the owner still holds the row, so control flow continues exactly as for the old
+    ///   unchanged-status write. The rejection is recorded for diagnostics.
+    /// - `.staleOrMissing` → `.staleOrMissing`.
+    @discardableResult
+    private func submitLifecycleEvent(
+        _ event: DownloadLifecycleEvent,
+        for key: DownloadAttemptKey,
+        liveTask: Bool = false,
+        phase: String
+    ) -> DownloadStore.AttemptMutationSubmission {
+        switch store.submitLifecycleEvent(event, for: key, liveTask: liveTask) {
+        case .accepted(_, let ticket):
+            return .accepted(change: .applied, ticket: ticket)
+        case .rejected(let rejection):
+            AppDiagnostics.record(.downloads, "downloads.lifecycle_event_rejected", fields: [
+                "download_id": .identifier(key.ratingKey),
+                "phase": .label(phase),
+                "rejection": .label(rejection == .replayed ? "replayed" : "illegal"),
+                "lifecycle": .label(store.lifecycleState(for: key)?.lifecycle.rawValue ?? "missing"),
+            ])
+            return .accepted(change: .noChange, ticket: nil)
+        case .staleOrMissing:
+            return .staleOrMissing
+        }
+    }
+
+    /// The pause cause for a lane settled behind a `.pause` halt. A halt installed without a
+    /// recorded cause can only be the user's (the original halt source).
+    private func haltPauseCause(for key: DownloadAttemptKey) -> DownloadPauseCause {
+        lock.lock(); defer { lock.unlock() }
+        return rangeHaltPauseCauses[key] ?? .user
+    }
+
+    /// Install a `.pause` halt with its cause. Caller holds `lock`. A pause never downgrades an
+    /// existing cancel halt.
+    private func installPauseHaltLocked(for key: DownloadAttemptKey, cause: DownloadPauseCause) {
+        guard rangeHaltKinds[key] != .cancel else { return }
+        rangeHaltKinds[key] = .pause
+        rangeHaltPauseCauses[key] = cause
+    }
+
+    /// Bounded failure category for a terminal HTTP status on a static Range response.
+    private static func failureReason(httpStatus code: Int) -> DownloadFailureReason {
+        switch code {
+        case 401, 403: return .auth
+        case 404, 410: return .sourceMissing
+        default: return .server
+        }
+    }
+
+    /// Names one finished body: the same attempt re-finalizing the same bytes after a relaunch
+    /// is the same outcome.
+    static func finalizeOutcomeID(for key: DownloadAttemptKey, bytes: Int) -> String {
+        "\(key.attemptID.rawValue)#body-\(bytes)"
+    }
+
+    private static func finalizeOutcome(
+        _ outcome: DownloadCompletionValidation.CompletionOutcome
+    ) -> DownloadFinalizeOutcome {
+        switch outcome {
+        case .complete: return .complete
+        case .unverified(let reason): return .unverified(reason: reason)
+        case .truncated: return .truncated
+        case .incompleteBytes: return .incompleteBytes
+        case .emptyFile: return .emptyFile
+        }
+    }
+
+    /// The reducer event for a finalize verdict's status write, or nil when no event expresses it
+    /// from the row's current lifecycle.
+    ///
+    /// - Publishing a working body (`publishesWorkingFile`) from `.finalizing`: `finalizeOutcome`.
+    ///   A truncation reaches here only when its `finalizeOutcome` was a replay (counted before a
+    ///   relaunch) while the row stayed finalizing; it is written as `transferFailed(.truncated)`.
+    /// - Revalidating a published body from `.complete`/`.unverified`: `publishedBodyRevalidated`.
+    /// - Otherwise a failing verdict on a non-terminal row is `transferFailed(.validation)`.
+    private func finalizeVerdictEvent(
+        for key: DownloadAttemptKey,
+        outcome: DownloadFinalizeOutcome,
+        status: DownloadStatus,
+        outcomeID: String,
+        publishesWorkingFile: Bool
+    ) -> DownloadLifecycleEvent? {
+        let lifecycle = store.lifecycleState(for: key)?.lifecycle
+        if publishesWorkingFile, lifecycle == .finalizing {
+            if case .truncated = outcome { return .transferFailed(.truncated) }
+            return .finalizeOutcome(
+                id: outcomeID, outcome: outcome,
+                source: DownloadSourceKey(server: nil, account: nil, backend: nil,
+                                          item: key.ratingKey, source: nil, profile: nil))
+        }
+        if !publishesWorkingFile, lifecycle == .complete || lifecycle == .unverified {
+            return .publishedBodyRevalidated(id: outcomeID, outcome: outcome)
+        }
+        if status == .failed, let lifecycle, !lifecycle.isTerminal || lifecycle == .failed {
+            if case .truncated = outcome { return .transferFailed(.truncated) }
+            return .transferFailed(.validation)
+        }
+        return nil
+    }
+
+    private func submitFinalizeVerdictStatus(
+        for key: DownloadAttemptKey,
+        outcome: DownloadFinalizeOutcome,
+        status: DownloadStatus,
+        outcomeID: String,
+        publishesWorkingFile: Bool,
+        phase: String
+    ) -> DownloadStore.AttemptMutationSubmission {
+        guard let event = finalizeVerdictEvent(
+            for: key, outcome: outcome, status: status, outcomeID: outcomeID,
+            publishesWorkingFile: publishesWorkingFile) else {
+            // The row left the lifecycle this verdict was computed for (publishing a body always
+            // enters `.finalizing` first, from any non-terminal state). Overwriting it would undo
+            // that later decision, so the verdict is dropped and recorded.
+            AppDiagnostics.record(.downloads, "downloads.lifecycle_event_rejected", fields: [
+                "download_id": .identifier(key.ratingKey),
+                "phase": .label(phase),
+                "verdict": .label(status.rawValue),
+                "lifecycle": .label(store.lifecycleState(for: key)?.lifecycle.rawValue ?? "missing"),
+            ])
+            return .accepted(change: .noChange, ticket: nil)
+        }
+        return submitLifecycleEvent(event, for: key, phase: phase)
+    }
+
     @discardableResult
     private func resolveLifecycleSubmission(
         _ submission: DownloadStore.AttemptResumeDataSubmission
@@ -1308,11 +1445,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "reason": .label(reason),
         ])
         applyBackgroundWakeDrain(end.drain)
+        // P3a: a rebuild intent keeps the row `transferring` (Appendix C.2, `transferRebuilding`),
+        // so the expiry reads lifecycle rather than the legacy `.queued` marker. `admitted` covers
+        // a row whose rebuild began before its first task existed.
         if reason == "timeout",
            !isTrackingTransfer(ratingKey: ratingKey),
            let record = store.record(for: key),
-           record.status == .queued {
-            // A queued static row without a URLSession owner is not active work. Park it at the
+           let lifecycle = store.lifecycleState(for: key)?.lifecycle,
+           lifecycle == .transferring || lifecycle == .admitted {
+            // An active static row without a URLSession owner is not active work. Park it at the
             // durable checkpoint instead of leaving a spinner that only Pause -> Resume can kick.
             let reset = store.resetStaticRangeProgressToDurableCheckpoint(
                 for: key,
@@ -1324,7 +1465,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             case .staleOrMissing, .persistenceFailed:
                 return
             }
-            _ = resolveLifecycleSubmission(store.submitStatus(for: key, .paused))
+            _ = resolveLifecycleSubmission(
+                submitLifecycleEvent(.rebuildExpired, for: key, phase: "rebuild_grace_expired"))
             AppDiagnostics.record(.downloads, "downloads.range_request_rebuild_parked", fields: [
                 "download_id": .identifier(ratingKey),
                 "checkpoint_bytes": .int(checkpointBytes),
@@ -1709,7 +1851,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     expectedBytes: expectedBytes
                 )
                 self.beginRangeRequestRebuildGrace(for: attemptKey)
-                _ = self.resolveLifecycleSubmission(self.store.submitStatus(for: attemptKey, .queued))
+                _ = self.resolveLifecycleSubmission(self.submitLifecycleEvent(
+                    .transferRebuilding, for: attemptKey, phase: "reattach_request_needed"))
                 self.onRangeRequestNeeded?(ratingKey, reason)
             }
             for ratingKey in adoptedRangeKeys {
@@ -1719,7 +1862,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 guard BackgroundReattachTaskGatePolicy.mayWriteActiveStatus(
                     currentStatus: self.store.record(for: attemptKey)?.status,
                     isAttemptHalted: self.isRangeHalted(for: attemptKey)) else { continue }
-                _ = self.store.setStatus(for: attemptKey, .downloading)
+                // Same commit-before-return contract as the legacy blocking `setStatus`.
+                _ = self.store.resolveSynchronously(self.submitLifecycleEvent(
+                    .taskAdopted, for: attemptKey, liveTask: true, phase: "reattach_adopted"))
             }
             for (ratingKey, count) in adoptedSegmentCounts {
                 AppDiagnostics.record(.downloads, "downloads.range_segment_train_adopted", fields: [
@@ -2013,6 +2158,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // and resets the validator-change restart bound so a user-driven retry starts with a clean count.
         lock.lock()
         rangeHaltKinds.removeValue(forKey: attemptKey)
+        rangeHaltPauseCauses.removeValue(forKey: attemptKey)
         if resetRangeRestartCounters {
             staticRangeRetryBudget.reset(key: staticRangeRetryKey(for: attemptKey))
             rangeHTTPRehydrateCounts.removeValue(forKey: attemptKey)
@@ -2269,7 +2415,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             for identifier in superseded {
                 cancelURLSessionTask(identifier: identifier)
             }
-            _ = resolveLifecycleSubmission(store.submitStatus(for: candidate.attemptKey, .downloading))
+            _ = resolveLifecycleSubmission(submitLifecycleEvent(
+                .transferStarted, for: candidate.attemptKey, liveTask: true,
+                phase: "duplicate_start_suppressed"))
             onChange?()
             AppDiagnostics.record(.downloads, "downloads.range_duplicate_start_suppressed", fields: [
                 "download_id": .identifier(ratingKey),
@@ -2333,7 +2481,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 for identifier in superseded {
                     cancelURLSessionTask(identifier: identifier)
                 }
-                _ = resolveLifecycleSubmission(store.submitStatus(for: candidate.attemptKey, .downloading))
+                _ = resolveLifecycleSubmission(submitLifecycleEvent(
+                    .transferStarted, for: candidate.attemptKey, liveTask: true,
+                    phase: "duplicate_start_suppressed"))
                 onChange?()
                 AppDiagnostics.record(.downloads, "downloads.range_duplicate_start_suppressed", fields: [
                     "download_id": .identifier(ratingKey),
@@ -2478,7 +2628,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             fields["free_space_source"] = .label(measured.source.rawValue)
         }
         AppDiagnostics.record(.downloads, "downloads.range_storage_full", fields: fields)
-        setFailedPurgingHeldSegments(for: key)
+        setFailedPurgingHeldSegments(for: key, reason: .storage)
         onError?(ratingKey, .storageFull)
         onChange?()
         return true
@@ -2565,7 +2715,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // racing this insert is preserved by the writeThenPause path, so no bytes are lost.
         // A pause never downgrades an existing cancel halt: the cancel's caller may already be
         // deleting the partial, and preserving a body onto it would resurrect deleted bytes.
-        if rangeHaltKinds[attemptKey] != .cancel { rangeHaltKinds[attemptKey] = .pause }
+        installPauseHaltLocked(for: attemptKey, cause: .user)
         lock.unlock()
         // Capture transfer shape before cancellation mutates the live set. Closed trains clear any
         // stale blob authority; the single open-ended fallback retains resumable OS-temp progress.
@@ -2576,7 +2726,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             if pauseContext.isTrain {
                 _ = resolveLifecycleSubmission(store.submitClearResumeData(for: attemptKey))
             }
-            _ = resolveLifecycleSubmission(store.submitStatus(for: attemptKey, .paused))
+            _ = resolveLifecycleSubmission(submitLifecycleEvent(
+                .pause(.user), for: attemptKey, phase: "user_pause"))
             onError?(ratingKey, .interruptedResumable)
             onChange?()
         }
@@ -2639,7 +2790,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     "range_task_ids": .int(rangeIds.count),
                 ])
                 if self.pauseStillApplies(for: attemptKey) {
-                    self.resolveLifecycleSubmission(self.store.submitStatus(for: attemptKey, .paused))
+                    self.resolveLifecycleSubmission(self.submitLifecycleEvent(
+                        .pause(.user), for: attemptKey, phase: "user_pause_no_task"))
                     self.onChange?()
                 }
             }
@@ -2662,7 +2814,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         if entry != nil {
             supersededRangeTaskIdentifiers.insert(task.taskIdentifier)
         }
-        if rangeHaltKinds[key] != .cancel { rangeHaltKinds[key] = .pause }
+        installPauseHaltLocked(for: key, cause: .user)
         lock.unlock()
 
         // Closed segment blobs are unsafe because CFNetwork may replay past their requested end.
@@ -2769,7 +2921,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func markPausedAfterUserPause(for key: DownloadAttemptKey) {
         let ratingKey = key.ratingKey
         guard pauseStillApplies(for: key) else { return }
-        _ = resolveLifecycleSubmission(store.submitStatus(for: key, .paused))
+        _ = resolveLifecycleSubmission(submitLifecycleEvent(
+            .pause(.user), for: key, phase: "user_pause_task_cancelled"))
         onError?(ratingKey, .interruptedResumable)
         onChange?()
     }
@@ -2817,7 +2970,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // Clear it here for the same M-7 reason: the row is being cancelled/deleted, so a
         // re-download of the same item must start clean instead of inheriting a stale truncation
         // count that would park it immediately. `.complete` is the only other clear site.
-        finalizationStateQueue.sync { _ = truncationFailureCounts.removeValue(forKey: ratingKey) }
+        store.clearTruncationStrikes(for: attemptKey)
         endRangeRequestRebuildGrace(for: attemptKey, reason: "cancelled")
         // Keep the durable owner on the row. Delete removes the whole row immediately; restart
         // paths need the old owner so the replacement can perform an exact A → B compare/swap.
@@ -2908,7 +3061,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     context: "closed_range_oversized"
                 ) != nil else { return }
                 beginRangeRequestRebuildGrace(for: rangeEntry.attemptKey)
-                _ = resolveLifecycleSubmission(store.submitStatus(for: rangeEntry.attemptKey, .queued))
+                _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferRebuilding, for: rangeEntry.attemptKey, phase: "closed_range_oversized"))
                 AppDiagnostics.record(.downloads, "downloads.range_closed_body_oversized", fields: [
                     "download_id": .identifier(rangeEntry.ratingKey),
                     "task_id": .int(downloadTask.taskIdentifier),
@@ -2968,7 +3121,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 // Hold the background completion handler across the main-actor request rebuild
                 // (#212): releasing it here lets the OS suspend us before the next task exists.
                 beginRangeRequestRebuildGrace(for: rangeEntry.attemptKey)
-                _ = resolveLifecycleSubmission(store.submitStatus(for: rangeEntry.attemptKey, .queued))
+                _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferRebuilding, for: rangeEntry.attemptKey, phase: "counter_reset_rebuild"))
                 AppDiagnostics.record(.downloads, "downloads.range_counter_reset_rebuild", fields: [
                     "download_id": .identifier(rangeEntry.ratingKey),
                     "task_id": .int(downloadTask.taskIdentifier),
@@ -3208,7 +3361,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // Helper: a finished transfer that isn't actually a usable video must NOT be
         // left in place as "complete" (D1). Record a `.failed` row + surface why, and
         // delete the bad file so a retry starts clean.
-        func fail(_ reason: String) {
+        func fail(_ reason: String, failure: DownloadFailureReason) {
             downloadLog.error("invalid-download ratingKey=\(entry.ratingKey, privacy: .public) reason=\(reason, privacy: .public)")
             AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [
                 "download_id": .identifier(entry.ratingKey),
@@ -3216,7 +3369,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ])
             try? fileManager.removeItem(at: entry.workingURL)
             clearRetryCount(for: entry.attemptKey)
-            setFailedPurgingHeldSegments(for: entry.attemptKey)
+            setFailedPurgingHeldSegments(for: entry.attemptKey, reason: failure)
             onError?(entry.ratingKey, .invalidDownload(reason))
             onChange?()
         }
@@ -3241,7 +3394,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 let reqShape = DiagnosticRedactor.urlShape(downloadTask.originalRequest?.url)
                 let bodyBucket = bodyBytes.map(DiagnosticRedactor.byteBucket) ?? "unknown"
                 downloadLog.error("download-http-error ratingKey=\(entry.ratingKey, privacy: .public) http=\(http.statusCode, privacy: .public) req_shape=\(reqShape, privacy: .public) body_bytes=\(bodyBucket, privacy: .public)")
-                fail("Server returned HTTP \(http.statusCode).")
+                fail("Server returned HTTP \(http.statusCode).",
+                     failure: Self.failureReason(httpStatus: http.statusCode))
                 return
             }
             // 2. MIME type — an HTML/JSON body is a Plex error page, not a container.
@@ -3249,7 +3403,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             if let mime = http.mimeType?.lowercased(),
                mime.hasPrefix("text/") || mime.contains("application/json")
                 || mime.contains("application/xml") {
-                fail("Server returned a \(mime) page, not a video.")
+                fail("Server returned a \(mime) page, not a video.", failure: .server)
                 return
             }
         }
@@ -3259,6 +3413,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         do {
             try? fileManager.removeItem(at: entry.workingURL)
             try fileManager.moveItem(at: location, to: entry.workingURL)
+            // P3a.6: make the rename durable before `bodyAtWorking` records it, so a recorded
+            // finalizing row never points at a body a power loss un-moved.
+            try? DownloadPromotionFilesystem.live.syncParentDirectory(entry.workingURL)
         } catch {
             // B26: a full volume is storage-full, with the same reason the range lane surfaces.
             let outOfSpace = DownloadDiskSpacePolicy.isOutOfSpace(error)
@@ -3267,7 +3424,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "error": .error(error),
                 "storage_full": .bool(outOfSpace),
             ])
-            setFailedPurgingHeldSegments(for: entry.attemptKey)
+            setFailedPurgingHeldSegments(for: entry.attemptKey, reason: outOfSpace ? .storage : .internalError)
             onError?(entry.ratingKey, outOfSpace ? .storageFull : .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer")))
             onChange?()
@@ -3576,7 +3733,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "status_code": .int(code),
                 "bytes": .bytes(durableBytes),
             ])
-            setFailedPurgingHeldSegments(for: entry.attemptKey)
+            setFailedPurgingHeldSegments(for: entry.attemptKey, reason: Self.failureReason(httpStatus: code))
             onError?(entry.ratingKey, .transferFailed("Server returned HTTP \(code)."))
             onChange?()
 
@@ -3633,7 +3790,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         // the checkpoint offset. Bound the retries (offset-mismatch budget) and
                         // then fail retryable, KEEPING the durable partial as the checkpoint,
                         // instead of either looping 416s or finalizing a truncated file.
-                        setFailedPurgingHeldSegments(for: entry.attemptKey)
+                        setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .server)
                         onError?(entry.ratingKey, .transferFailed(
                             "Server no longer serves this download's range. Retry to continue."))
                         onChange?()
@@ -3818,7 +3975,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                             serverOffset: nil) {
                     return
                 }
-                setFailedPurgingHeldSegments(for: entry.attemptKey)
+                setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .server)
                 onError?(entry.ratingKey, .transferFailed(
                     "Server returned an incomplete full-file response for a ranged request."))
                 onChange?()
@@ -3868,7 +4025,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     "partial_bytes": .int(bytes),
                     "write": .label("replaceWhole"),
                 ])
-                _ = resolveLifecycleSubmission(store.submitStatus(for: entry.attemptKey, .paused))
+                _ = resolveLifecycleSubmission(submitLifecycleEvent(.pause(haltPauseCause(for: entry.attemptKey)), for: entry.attemptKey, phase: "halted_replace_whole_pause"))
                 onChange?()
                 return
             }
@@ -3947,7 +4104,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         if retryRangeOffsetMismatch(entry: entry, durableBytes: durableBytes, serverOffset: contentRangeStart) {
                             return
                         }
-                        setFailedPurgingHeldSegments(for: entry.attemptKey)
+                        setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .server)
                         onError?(entry.ratingKey, .transferFailed("Server returned a misaligned byte range."))
                         onChange?()
                         return
@@ -4086,7 +4243,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                             serverOffset: contentRangeStart) {
                     return
                 }
-                setFailedPurgingHeldSegments(for: entry.attemptKey)
+                setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .server)
                 onError?(entry.ratingKey, .transferFailed("Download checkpoint no longer matches the finished byte range."))
                 onChange?()
                 return
@@ -4158,7 +4315,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 if retryRangeOffsetMismatch(entry: entry, durableBytes: durableBytes, serverOffset: contentRangeStart) {
                     return
                 }
-                setFailedPurgingHeldSegments(for: entry.attemptKey)
+                setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .server)
                 onError?(entry.ratingKey, .transferFailed("Server returned a misaligned byte range."))
                 onChange?()
                 return
@@ -4262,7 +4419,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 // `updateProgress` promotes paused rows to `.downloading` because a normal append is
                 // live work. This append, however, is the tail of a pause race: preserve the bytes but
                 // do not start the next request behind the user's/system's pause.
-                _ = resolveLifecycleSubmission(store.submitStatus(for: entry.attemptKey, .paused))
+                _ = resolveLifecycleSubmission(submitLifecycleEvent(.pause(haltPauseCause(for: entry.attemptKey)), for: entry.attemptKey, phase: "halted_append_pause"))
                 onChange?()
                 return
             }
@@ -4278,7 +4435,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     "bytes": .bytes(partialSize),
                     "expected_bytes": .bytes(entry.expectedBytes),
                 ])
-                setFailedPurgingHeldSegments(for: entry.attemptKey)
+                setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .stalled)
                 onError?(entry.ratingKey, .transferFailed("Download stalled with no progress."))
                 onChange?()
             case .continueFrom:
@@ -4309,7 +4466,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         guard halted, !hasLiveTask else { return }
         let status = store.record(for: key)?.status
         guard status == .downloading || status == .queued else { return }
-        guard acceptedAttemptSubmission(resolveLifecycleSubmission(store.submitStatus(for: key, .paused)),
+        guard acceptedAttemptSubmission(resolveLifecycleSubmission(submitLifecycleEvent(.pause(haltPauseCause(for: key)), for: key, phase: "halt_stranded_pause")),
                                       key: key, phase: "halt_stranded_pause") else { return }
         onChange?()
     }
@@ -4541,7 +4698,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                         ? min(1, Double(durableBytes) / Double(expectedBytes!)) : 0)),
                 key: key, phase: "held_drain_halt_progress") else { return }
         }
-        guard acceptedAttemptSubmission(resolveLifecycleSubmission(store.submitStatus(for: key, .paused)),
+        guard acceptedAttemptSubmission(resolveLifecycleSubmission(submitLifecycleEvent(.pause(haltPauseCause(for: key)), for: key, phase: "held_drain_halt_pause")),
                                       key: key, phase: "held_drain_halt_status") else { return }
         AppDiagnostics.record(.downloads, "downloads.range_held_drain_halted", fields: [
             "download_id": .identifier(ratingKey),
@@ -4556,7 +4713,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// already purges). Without this, up to a full train of ahead-of-checkpoint stashes stayed
     /// pinned in `tmp/` — protected from the orphan sweep and invisible to the storage cap — for
     /// the rest of the app run. No-op for rows with no held segments (including the opaque lane).
-    private func setFailedPurgingHeldSegments(for key: DownloadAttemptKey) {
+    ///
+    /// P3a: the `.failed` write is the reducer's `transferFailed(reason)` with a bounded
+    /// `DownloadFailureReason`. Callers revalidating an already-published body pass `event`
+    /// (`publishedBodyRevalidated`), because `transferFailed` is illegal from complete/unverified.
+    private func setFailedPurgingHeldSegments(
+        for key: DownloadAttemptKey,
+        reason: DownloadFailureReason,
+        event: DownloadLifecycleEvent? = nil
+    ) {
         let ratingKey = key.ratingKey
         purgeHeldRangeSegments(for: key)
         // A terminal failure must tear the rest of the train down BEFORE the `.failed` write: up
@@ -4586,8 +4751,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "reason": .label("terminal_failed"),
             ])
         }
-        _ = acceptedAttemptSubmission(resolveLifecycleSubmission(store.submitStatus(for: key, .failed)),
-                                    key: key, phase: "terminal_failed")
+        _ = acceptedAttemptSubmission(
+            resolveLifecycleSubmission(submitLifecycleEvent(
+                event ?? .transferFailed(reason), for: key, phase: "terminal_failed")),
+            key: key, phase: "terminal_failed")
     }
 
     /// Finding 2: manager-driven terminal teardown for a static-Range remainder whose post-logout auth
@@ -4603,7 +4770,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// this key and the teardown must no-op — a fresh attempt owns the row, leave it alone.
     func failStaticRangeAuthTerminal(attemptKey: DownloadAttemptKey) {
         guard store.ownsAttempt(attemptKey) else { return }
-        setFailedPurgingHeldSegments(for: attemptKey)
+        setFailedPurgingHeldSegments(for: attemptKey, reason: .auth)
     }
 
     /// Finding 2: manager-driven quiescence for a static-Range remainder the manager is parking as
@@ -4624,7 +4791,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let ratingKey = attemptKey.ratingKey
         var superseded: [Int] = []
         lock.lock()
-        if rangeHaltKinds[attemptKey] != .cancel { rangeHaltKinds[attemptKey] = .pause }
+        installPauseHaltLocked(for: attemptKey, cause: .awaitingSession)
         superseded = supersedeRangeTasksLocked(ratingKey: ratingKey)
         rangeTrainEpochs[attemptKey] = (rangeTrainEpochs[attemptKey] ?? 0) + 1
         lock.unlock()
@@ -4702,7 +4869,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // gate hits zero the moment the append returns, the handler fires, and the OS suspends
             // the app before the next task is created — the decisive half of the off-head stall.
             beginRangeRequestRebuildGrace(for: entry.attemptKey)
-            _ = resolveLifecycleSubmission(store.submitStatus(for: entry.attemptKey, .queued))
+            _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferRebuilding, for: entry.attemptKey, phase: "continue_request_needed"))
             onRangeRequestNeeded?(entry.ratingKey, reason)
             return
         case .startInSession:
@@ -4723,7 +4890,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                                context: "continue_remainder") {
                     return
                 }
-                _ = resolveLifecycleSubmission(store.submitStatus(for: entry.attemptKey, .paused))
+                _ = resolveLifecycleSubmission(submitLifecycleEvent(.pause(.deferredResume), for: entry.attemptKey, phase: "continue_start_failed"))
                 onError?(entry.ratingKey, .interruptedResumable)
                 onChange?()
             }
@@ -4789,7 +4956,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // #212: hold the background completion handler across the main-actor rebuild (mirrors the
             // counter-reset rebuild site); `startRangeRemainder` releases it once the task exists.
             beginRangeRequestRebuildGrace(for: entry.attemptKey)
-            _ = resolveLifecycleSubmission(store.submitStatus(for: entry.attemptKey, .queued))
+            _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferRebuilding, for: entry.attemptKey, phase: "offset_mismatch_rebuild"))
             onRangeRequestNeeded?(entry.ratingKey, reason)
             onChange?()
             return true
@@ -4892,7 +5059,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "download_id": .identifier(entry.ratingKey),
                 "restart_count": .int(retryAttempt.attempt),
             ])
-            setFailedPurgingHeldSegments(for: entry.attemptKey)
+            setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .server)
             onError?(entry.ratingKey, .transferFailed("The source file kept changing during download."))
             onChange?()
         case .requestNeeded(let reason):
@@ -4902,7 +5069,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // #212: hold the background completion handler across the main-actor rebuild (mirrors the
             // counter-reset rebuild site); `startRangeRemainder` releases it once the task exists.
             beginRangeRequestRebuildGrace(for: entry.attemptKey)
-            _ = resolveLifecycleSubmission(store.submitStatus(for: entry.attemptKey, .queued))
+            _ = resolveLifecycleSubmission(submitLifecycleEvent(.resourceChanged, for: entry.attemptKey, phase: "changed_resource_rebuild"))
             onRangeRequestNeeded?(entry.ratingKey, reason)
         case .startInSession:
             guard let request = entry.request else { return }
@@ -4924,7 +5091,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                                context: "validator_restart") {
                     return
                 }
-                _ = resolveLifecycleSubmission(store.submitStatus(for: entry.attemptKey, .paused))
+                _ = resolveLifecycleSubmission(submitLifecycleEvent(.pause(.deferredResume), for: entry.attemptKey, phase: "changed_resource_start_failed"))
                 onError?(entry.ratingKey, .interruptedResumable)
                 onChange?()
             }
@@ -5089,7 +5256,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ])
             try? fileManager.removeItem(at: destination)
             clearRetryCount(for: key)
-            setFailedPurgingHeldSegments(for: key)
+            setFailedPurgingHeldSegments(
+                for: key, reason: .validation,
+                event: finalizeVerdictEvent(
+                    for: key, outcome: .emptyFile, status: .failed,
+                    outcomeID: "\(attemptID.rawValue)-\(validationLabel)-precheck",
+                    publishesWorkingFile: false))
             recordFinalizeFinished(ratingKey: ratingKey,
                                    result: "failed_empty",
                                    validationLabel: validationLabel,
@@ -5118,7 +5290,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             _ = store.resetStaticRangeProgressToDurableCheckpoint(
                 for: key, expectedBytes: expectedExactBytes)
             clearRetryCount(for: key)
-            setFailedPurgingHeldSegments(for: key)
+            setFailedPurgingHeldSegments(
+                for: key, reason: .validation,
+                event: finalizeVerdictEvent(
+                    for: key, outcome: .incompleteBytes, status: .failed,
+                    outcomeID: "\(attemptID.rawValue)-\(validationLabel)-precheck",
+                    publishesWorkingFile: false))
             recordFinalizeFinished(ratingKey: ratingKey,
                                    result: "failed_incomplete_bytes",
                                    validationLabel: validationLabel,
@@ -5181,6 +5358,32 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         guard acceptedAttemptSubmission(
             resolveLifecycleSubmission(store.submitProgress(for: key, bytes: bytes, progress: 1.0)),
             key: key, phase: "publish_finalizing") else { return false }
+        // P3a/B10: the body is complete at the attempt working path; persist `finalizing` before
+        // validation starts so a relaunch re-finalizes it instead of deleting it. The working
+        // path is attempt-unique (`attemptStagingRelativePath`) and named by the row, so it is
+        // also the capture path of P3a.6. A terminal row (revalidation) rejects the event and
+        // keeps its state; a stale owner stops here.
+        switch store.submitLifecycleEvent(
+            .bodyAtWorking, for: key, facts: DownloadRowFacts(route: .staticRange,
+                                                              body: .workingComplete)) {
+        case .staleOrMissing:
+            return false
+        case .rejected:
+            // Only a published body being revalidated may proceed without entering finalizing.
+            // Anything else (notably a condemned body) stops before probing or publication.
+            let lifecycle = store.lifecycleState(for: key)?.lifecycle
+            guard lifecycle == .complete || lifecycle == .unverified else {
+                AppDiagnostics.record(.downloads, "downloads.finalize_refused", fields: [
+                    "download_id": .identifier(key.ratingKey),
+                    "lifecycle": .label(lifecycle?.rawValue ?? "missing"),
+                ])
+                return false
+            }
+        case .accepted(_, let ticket):
+            guard acceptedAttemptSubmission(
+                .accepted(change: .applied, ticket: ticket),
+                key: key, phase: "publish_finalizing_lifecycle") else { return false }
+        }
         onChange?()
         return true
     }
@@ -5202,7 +5405,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "error": .error(error),
                 "bytes": .bytes(durableBytes),
             ])
-            setFailedPurgingHeldSegments(for: entry.attemptKey)
+            setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .storage)
             onError?(entry.ratingKey, .storageFull)
             onChange?()
             return
@@ -5220,7 +5423,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "error": .error(error),
             "bytes": .bytes(durableBytes),
         ])
-        setFailedPurgingHeldSegments(for: entry.attemptKey)
+        setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .internalError)
         onError?(entry.ratingKey, .transferFailed(
             DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer")))
         onChange?()
@@ -5256,7 +5459,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     "bytes": .bytes(durableBytes),
                     "reason": .label("missing_request"),
                 ])
-                _ = resolveLifecycleSubmission(store.submitStatus(for: entry.attemptKey, .queued))
+                _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferRebuilding, for: entry.attemptKey, phase: "move_rehydrate"))
                 onRangeRequestNeeded?(entry.ratingKey, .requestRebuildNeeded)
                 onChange?()
                 return true
@@ -5277,7 +5480,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "bytes": .bytes(durableBytes),
             "delay_ms": .int(Int(delay * 1000)),
         ])
-        _ = resolveLifecycleSubmission(store.submitStatus(for: entry.attemptKey, .queued))
+        _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferRebuilding, for: entry.attemptKey, phase: "move_retry"))
         beginPendingStaticRangeWork(ratingKey: entry.ratingKey)
         rangeRetryQueue.asyncAfter(deadline: .now() + delay) { [self] in
             defer { endPendingStaticRangeWork(ratingKey: entry.ratingKey) }
@@ -5306,7 +5509,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     "attempt": .int(nextAttempt),
                     "error": .error(error),
                 ])
-                setFailedPurgingHeldSegments(for: entry.attemptKey)
+                setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .internalError)
                 onError?(entry.ratingKey, .transferFailed("Retry after a missing download range body failed."))
                 onChange?()
             }
@@ -5490,21 +5693,74 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                                            expectedExactBytes: expectedExactBytes,
                                                            forwardOnly: forwardOnly)
         guard !Task.isCancelled else { return }
-        let truncationFailures: Int? = finalizationStateQueue.sync {
-            guard !Task.isCancelled else { return nil }
-            switch outcome {
-            case .truncated:
-                let next = truncationFailureCounts[attemptKey.ratingKey, default: 0] + 1
-                truncationFailureCounts[attemptKey.ratingKey] = next
-                return next
-            case .complete:
-                truncationFailureCounts.removeValue(forKey: attemptKey.ratingKey)
-                return 0
-            default:
-                return truncationFailureCounts[attemptKey.ratingKey] ?? 0
+        // P3a/B54: strikes are persisted attempt history, inherited by a Retry of the same
+        // source. The outcome ID names the body (attempt + byte count), not this finalizer run,
+        // so a relaunch that re-finalizes the same body replays its outcome instead of counting a
+        // second strike.
+        guard !Task.isCancelled else { return }
+        let outcomeID = Self.finalizeOutcomeID(for: attemptKey, bytes: bytes)
+        // A working body still finalizing takes its verdict from the reducer: the strike, the
+        // unverified reason and the lifecycle commit in one revision.
+        let verdictThroughReducer = publishesWorkingFile
+            && store.lifecycleState(for: attemptKey)?.lifecycle == .finalizing
+        var truncationVerdictCommitted = false
+        // A failing truncation verdict persists `bodyCondemned` in its own revision. The body is
+        // renamed off its working path as soon as that verdict applies in memory, before any wait
+        // for persistence, so neither a failed nor a wedged commit leaves it there; the renamed
+        // file is deleted once the verdict's ticket commits (or after a bounded wait).
+        func condemnBody(afterCommitOf ticket: DownloadStore.PersistenceTicket?) {
+            guard store.lifecycleState(for: attemptKey)?.history.isBodyCondemned == true,
+                  let condemned = store.condemnWorkingBody(at: destination, for: attemptKey)
+            else { return }
+            // Deletion is scheduled now, so a failed verdict wait below cannot orphan the file.
+            let store = self.store
+            Task.detached(priority: .utility) {
+                if await !store.deleteCondemnedBody(at: condemned, afterCommitOf: ticket) {
+                    AppDiagnostics.record(.downloads, "downloads.truncated_verdict_unproven", fields: [
+                        "download_id": .identifier(attemptKey.ratingKey),
+                    ])
+                }
             }
         }
-        guard let truncationFailures else { return }
+        let truncationFailures: Int
+        switch outcome {
+        case .truncated where verdictThroughReducer:
+            guard let source = store.truncationSourceKey(for: attemptKey) else { return }
+            let verdict = submitLifecycleEvent(
+                .finalizeOutcome(id: outcomeID, outcome: .truncated, source: source),
+                for: attemptKey, phase: "finalize_truncated_verdict")
+            switch verdict {
+            case .staleOrMissing:
+                return
+            case .accepted(let change, let ticket):
+                // `.noChange` is a replay: this body's outcome committed before a relaunch.
+                guard change == .applied else { break }
+                condemnBody(afterCommitOf: ticket)
+                guard acceptedAttemptSubmission(
+                    verdict, key: attemptKey, phase: "finalize_truncated_verdict") else { return }
+                truncationVerdictCommitted = true
+            }
+            truncationFailures = store.truncationStrikes(for: attemptKey)
+        case .truncated:
+            guard let strikes = store.recordTruncationStrike(
+                for: attemptKey, outcomeID: outcomeID) else { return }
+            truncationFailures = strikes
+        case .complete:
+            store.clearTruncationStrikes(for: attemptKey)
+            truncationFailures = 0
+        case .unverified(let reason) where verdictThroughReducer:
+            // Records the probe-miss reason; lifecycle stays finalizing until promotion commits.
+            _ = submitLifecycleEvent(
+                .finalizeOutcome(id: outcomeID, outcome: .unverified(reason: reason),
+                                 source: store.truncationSourceKey(for: attemptKey)
+                                    ?? DownloadSourceKey(server: nil, account: nil, backend: nil,
+                                                         item: attemptKey.ratingKey,
+                                                         source: nil, profile: nil)),
+                for: attemptKey, phase: "finalize_unverified_reason")
+            truncationFailures = store.truncationStrikes(for: attemptKey)
+        default:
+            truncationFailures = store.truncationStrikes(for: attemptKey)
+        }
         let finalizationResult = BackgroundFinalizationResultPolicy.result(
             for: outcome,
             consecutiveTruncationFailures: truncationFailures,
@@ -5523,7 +5779,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             guard !Task.isCancelled else { return }
             clearRetryCount(for: attemptKey)
             guard acceptedAttemptSubmission(
-                resolveLifecycleSubmission(store.submitStatus(for: attemptKey, finalizationResult.status)),
+                resolveLifecycleSubmission(submitFinalizeVerdictStatus(
+                    for: attemptKey, outcome: Self.finalizeOutcome(outcome),
+                    status: finalizationResult.status, outcomeID: outcomeID,
+                    publishesWorkingFile: publishesWorkingFile, phase: "finalize_verdict")),
                 key: attemptKey, phase: "finalize_empty_status"
             ) else { return }
             if finalizationResult.shouldDeleteFile,
@@ -5554,7 +5813,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             guard !Task.isCancelled else { return }
             clearRetryCount(for: attemptKey)
             guard acceptedAttemptSubmission(
-                resolveLifecycleSubmission(store.submitStatus(for: attemptKey, finalizationResult.status)),
+                resolveLifecycleSubmission(submitFinalizeVerdictStatus(
+                    for: attemptKey, outcome: Self.finalizeOutcome(outcome),
+                    status: finalizationResult.status, outcomeID: outcomeID,
+                    publishesWorkingFile: publishesWorkingFile, phase: "finalize_verdict")),
                 key: attemptKey, phase: "finalize_incomplete_status"
             ) else { return }
             if !Task.isCancelled,
@@ -5590,16 +5852,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 guard await promoteValidatedWorkingFile(
                     for: attemptKey, status: .unverified,
                     phase: "finalize_truncated_park_promote") else { return }
-            } else {
+            } else if !truncationVerdictCommitted {
+                let verdict = submitFinalizeVerdictStatus(
+                    for: attemptKey, outcome: Self.finalizeOutcome(outcome),
+                    status: finalizationResult.status, outcomeID: outcomeID,
+                    publishesWorkingFile: publishesWorkingFile, phase: "finalize_verdict")
+                if case .accepted(.applied, let ticket) = verdict {
+                    condemnBody(afterCommitOf: ticket)
+                }
                 guard acceptedAttemptSubmission(
-                    resolveLifecycleSubmission(store.submitStatus(for: attemptKey, finalizationResult.status)),
-                    key: attemptKey, phase: "finalize_truncated_status"
-                ) else { return }
-            }
-            if finalizationResult.shouldDeleteFile,
-               !Task.isCancelled,
-               stillOwnsAttempt(attemptKey, phase: "finalize_truncated_delete") {
-                try? fileManager.removeItem(at: destination)
+                    verdict, key: attemptKey, phase: "finalize_truncated_status") else { return }
             }
             guard !Task.isCancelled,
                   stillOwnsAttempt(attemptKey, phase: "finalize_truncated_publish") else { return }
@@ -5628,7 +5890,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     resolveLifecycleSubmission(store.submitProgress(for: attemptKey, bytes: bytes, progress: 1)),
                     key: attemptKey, phase: "revalidate_complete_progress"
                 ), acceptedAttemptSubmission(
-                    resolveLifecycleSubmission(store.submitStatus(for: attemptKey, finalizationResult.status)),
+                    resolveLifecycleSubmission(submitFinalizeVerdictStatus(
+                    for: attemptKey, outcome: Self.finalizeOutcome(outcome),
+                    status: finalizationResult.status, outcomeID: outcomeID,
+                    publishesWorkingFile: publishesWorkingFile, phase: "finalize_verdict")),
                     key: attemptKey, phase: "revalidate_complete_status"
                 ) else { return }
             }
@@ -5660,7 +5925,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     phase: "finalize_unverified_promote") else { return }
             } else {
                 guard acceptedAttemptSubmission(
-                    resolveLifecycleSubmission(store.submitStatus(for: attemptKey, finalizationResult.status)),
+                    resolveLifecycleSubmission(submitFinalizeVerdictStatus(
+                    for: attemptKey, outcome: Self.finalizeOutcome(outcome),
+                    status: finalizationResult.status, outcomeID: outcomeID,
+                    publishesWorkingFile: publishesWorkingFile, phase: "finalize_verdict")),
                     key: attemptKey, phase: "revalidate_unverified_status"
                 ) else { return }
             }
@@ -5719,7 +5987,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "persistence": .label(String(describing: persistence))])
         }
         if shouldSurfaceFailure {
-            if shouldMarkFailed { _ = resolveLifecycleSubmission(store.submitStatus(for: key, .failed)) }
+            if shouldMarkFailed {
+                // P3a: a finalizing body whose promotion was refused is `promotionAbandoned`; a row
+                // that never reached finalizing (its `bodyAtWorking` was refused) fails directly.
+                let abandoned: DownloadLifecycleEvent =
+                    store.lifecycleState(for: key)?.lifecycle == .finalizing
+                        ? .promotionAbandoned : .transferFailed(.internalError)
+                _ = resolveLifecycleSubmission(submitLifecycleEvent(
+                    abandoned, for: key, phase: "promotion_rejected"))
+            }
             onError?(key.ratingKey, .transferFailed(
                 "Downloaded file was verified but could not be published. Retry the download."))
             onChange?()
@@ -5946,9 +6222,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 // retries and refills, superseding stops sibling progress from re-promoting the
                 // row to Downloading, and a sibling body already finishing is still appended.
                 lock.lock()
-                if rangeHaltKinds[rangeEntry.attemptKey] != .cancel {
-                    rangeHaltKinds[rangeEntry.attemptKey] = .pause
-                }
+                installPauseHaltLocked(for: rangeEntry.attemptKey, cause: .systemInterrupted)
                 let parkedSiblings = supersedeRangeTasksLocked(ratingKey: rangeEntry.ratingKey)
                 lock.unlock()
                 for identifier in parkedSiblings {
@@ -5972,7 +6246,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         (nsError.userInfo[NSURLErrorBackgroundTaskCancelledReasonKey] as? Int) ?? -1),
                     "bytes": .bytes(durableBytes),
                 ])
-                _ = resolveLifecycleSubmission(store.submitStatus(for: rangeEntry.attemptKey, .paused))
+                _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferInterrupted(.cancelledBySystem), for: rangeEntry.attemptKey, phase: "system_cancel_park"))
                 onError?(rangeEntry.ratingKey, .interruptedResumable)
                 onChange?()
                 return
@@ -6005,7 +6279,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     fields["free_space_source"] = .label(measured.source.rawValue)
                 }
                 AppDiagnostics.record(.downloads, "downloads.range_storage_full", fields: fields)
-                setFailedPurgingHeldSegments(for: rangeEntry.attemptKey)
+                setFailedPurgingHeldSegments(for: rangeEntry.attemptKey, reason: .storage)
                 onError?(rangeEntry.ratingKey, .storageFull)
                 onChange?()
                 return
@@ -6084,11 +6358,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 // Hold the background completion handler across the main-actor request rebuild
                 // (#212): releasing it here lets the OS suspend us before the next task exists.
                 beginRangeRequestRebuildGrace(for: rangeEntry.attemptKey)
-                _ = resolveLifecycleSubmission(store.submitStatus(for: rangeEntry.attemptKey, .queued))
+                _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferRebuilding, for: rangeEntry.attemptKey, phase: "adopted_failed_remainder"))
                 onRangeRequestNeeded?(rangeEntry.ratingKey, reason)
                 return
             }
-            _ = resolveLifecycleSubmission(store.submitStatus(for: rangeEntry.attemptKey, .paused))
+            _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferInterrupted(.network), for: rangeEntry.attemptKey, phase: "range_interrupted_pause"))
             onError?(rangeEntry.ratingKey, .interruptedResumable)
             onChange?()
             return
@@ -6131,7 +6405,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
             AppDiagnostics.record(.downloads, "downloads.transfer_storage_full", fields: fields)
             clearRetryCount(for: entry.attemptKey)
-            setFailedPurgingHeldSegments(for: entry.attemptKey)
+            setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .storage)
             onError?(entry.ratingKey, .storageFull)
         case .failSystemInterrupted:
             // B09: the system stopped a forward-only transfer. Fail retryable with the real reason
@@ -6143,7 +6417,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "bytes_received": .bytes(Int(task.countOfBytesReceived)),
             ])
             clearRetryCount(for: entry.attemptKey)
-            setFailedPurgingHeldSegments(for: entry.attemptKey)
+            setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .cancelledBySystem)
             onError?(entry.ratingKey, .transferFailed(
                 "The system stopped this download in the background. Retry will restart it from the beginning."))
         case .pauseWithResumeData, .failNonResumableStream, .fail:
@@ -6166,7 +6440,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     "resume_data_present": .bool(true),
                 ])
                 clearRetryCount(for: entry.attemptKey)
-                setFailedPurgingHeldSegments(for: entry.attemptKey)
+                setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .network)
                 onError?(entry.ratingKey, .transferFailed("Download interrupted; this transcoded stream can’t resume from its byte offset. Retry will restart from the beginning."))
                 onChange?()
                 return
@@ -6182,7 +6456,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 ])
                 resolveLifecycleSubmission(store.submitResumeData(for: entry.attemptKey, resumeData, displayBytes: displayBytes))
                 clearRetryCount(for: entry.attemptKey)
-                _ = resolveLifecycleSubmission(store.submitStatus(for: entry.attemptKey, .paused))
+                _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferInterrupted(.network), for: entry.attemptKey, phase: "opaque_interrupted_blob"))
                 onError?(entry.ratingKey, .interruptedResumable)
                 onChange?()
                 return
@@ -6195,7 +6469,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "bytes_received": .bytes(Int(task.countOfBytesReceived)),
             ])
             clearRetryCount(for: entry.attemptKey)
-            setFailedPurgingHeldSegments(for: entry.attemptKey)
+            setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .network)
             onError?(entry.ratingKey, .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer")))
         }
@@ -6462,7 +6736,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
         guard let request = entry.request else {
             beginRangeRequestRebuildGrace(for: entry.attemptKey)
-            _ = resolveLifecycleSubmission(store.submitStatus(for: entry.attemptKey, .queued))
+            _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferRebuilding, for: entry.attemptKey, phase: "resume_data_fallback_rebuild"))
             onRangeRequestNeeded?(entry.ratingKey, .requestRebuildNeeded)
             return true
         }
@@ -6587,7 +6861,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 cancelURLSessionTask(identifier: identifier)
             }
             endRangeRequestRebuildGrace(for: attemptKey, reason: "blob_resumed")
-            guard acceptedAttemptSubmission(resolveLifecycleSubmission(store.submitStatus(for: entry.attemptKey, .downloading)),
+            guard acceptedAttemptSubmission(resolveLifecycleSubmission(submitLifecycleEvent(.taskAdopted, for: entry.attemptKey, liveTask: true, phase: "blob_resume_status")),
                                           key: entry.attemptKey,
                                           phase: "blob_resume_status") else {
                 task.cancel()
@@ -6622,6 +6896,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         guard store.ownsAttempt(attemptKey) else { return false }
         lock.lock()
         rangeHaltKinds.removeValue(forKey: attemptKey)
+        rangeHaltPauseCauses.removeValue(forKey: attemptKey)
         // Mirror `start()`'s user-initiated reset: a manual Resume clears ALL restart budgets,
         // not just the blob counter — otherwise a row resumed via persisted blob keeps the prior
         // attempt's rehydrate/validator budgets while a plain Retry would have cleared them.
@@ -6671,7 +6946,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // a queued static-range row with its durable partial as the checkpoint. Hold the background
         // completion handler across the delayed rebuild (#212).
         beginRangeRequestRebuildGrace(for: entry.attemptKey)
-        _ = resolveLifecycleSubmission(store.submitStatus(for: entry.attemptKey, .queued))
+        _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferRebuilding, for: entry.attemptKey, phase: "auth_rehydrate"))
         beginPendingStaticRangeWork(ratingKey: entry.ratingKey)
         rangeRetryQueue.asyncAfter(deadline: .now() + delay) { [self] in
             endPendingStaticRangeWork(ratingKey: entry.ratingKey)
@@ -6744,7 +7019,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     "status_code": .int(statusCode),
                     "error": .error(error),
                 ])
-                setFailedPurgingHeldSegments(for: entry.attemptKey)
+                setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .internalError)
                 onError?(entry.ratingKey, .transferFailed("Retry after HTTP \(statusCode) failed."))
                 onChange?()
             }

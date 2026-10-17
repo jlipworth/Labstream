@@ -112,6 +112,11 @@ The download index is currently a schema-v4 versioned envelope. Schemas 1–3 ar
 migrated: startup probes without mutating the root, drains every old OS task, moves the opaque
 root to a durable quarantine, installs a protected empty schema-v4 root, and only then opens
 admission. Unreadable or malformed current data fails closed rather than being guessed or reset.
+A schema newer than the binary (after a downgrade) is also kept and fails closed. Rows carry an
+authoritative `lifecycle` and attempt `history` as additive schema-v4 fields, and the derived
+`status` is still written. An older binary that drops the new fields leaves rows whose lifecycle
+is re-derived from status on the next load; only truncation strikes and recorded reasons are lost
+that way.
 Active rows carry a typed
 `DownloadAttemptID`; asynchronous tasks, artifact reservations, and cleanup compare the
 full rating-key/attempt key so stale work cannot mutate a retry or re-download of the same
