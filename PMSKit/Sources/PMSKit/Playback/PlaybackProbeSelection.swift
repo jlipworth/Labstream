@@ -8,12 +8,6 @@ public enum PlaybackProbeSelection {
         return actual == expected
     }
 
-    public static func uniqueExactIndex(titles: [String], query: String) -> Int? {
-        let matches = titles.indices.filter {
-            titles[$0].localizedCaseInsensitiveCompare(query) == .orderedSame
-        }
-        return matches.count == 1 ? matches[0] : nil
-    }
     /// An explicitly bound item may disambiguate duplicate titles, never a fuzzy title.
     /// Missing bindings retain the original unique-title requirement.
     public static func mediaBrowserItemIndex(items: [MediaItem], query: String,

@@ -106,7 +106,7 @@ public enum CredentialArtifactStorage {
         #endif
     }
 
-    public static func writingOptions(for protection: FileProtectionType) -> Data.WritingOptions {
+    private static func writingOptions(for protection: FileProtectionType) -> Data.WritingOptions {
         guard supportsFileProtectionAttributes else { return [.atomic] }
         if protection == .complete { return [.atomic, .completeFileProtection] }
         if protection == .completeUnlessOpen { return [.atomic, .completeFileProtectionUnlessOpen] }

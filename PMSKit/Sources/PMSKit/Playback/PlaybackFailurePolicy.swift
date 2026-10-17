@@ -5,7 +5,6 @@ import Foundation
 public enum PlaybackFailureSource: String, Sendable, Equatable {
     case itemStatusFailed = "item_status_failed"
     case failedToPlayToEnd = "failed_to_play_to_end"
-    case stallWatchdog = "stall_watchdog"
     case playerFailure = "player_failure"
 }
 

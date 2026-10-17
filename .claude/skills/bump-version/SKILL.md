@@ -1,6 +1,6 @@
 ---
 name: bump-version
-description: Bump Labstream app marketing versions or build numbers for visionOS, iOS/iPadOS, macOS, tvOS, or a coordinated release. Use when the user asks to update, increment, set, release, upload, or change MARKETING_VERSION/CURRENT_PROJECT_VERSION. Covers platform release trains, PMSKit fallback-version policy, annotated Git tags, and required verification.
+description: Bump Labstream app marketing versions or build numbers for visionOS, iOS/iPadOS, macOS, tvOS, or a coordinated release. Use when the user asks to update, increment, set, release, upload, or change MARKETING_VERSION/CURRENT_PROJECT_VERSION. Covers platform release trains, annotated Git tags, and required verification.
 ---
 
 # Bumping Labstream versions
@@ -27,7 +27,6 @@ If the user does not specify the scope, ask before editing. Valid scopes:
 - `macos`: change only `LabstreamMac`.
 - `tvos`: change only `LabstreamTV`.
 - `all`: change all four app targets together.
-- `toolkit`: change only `PMSKit.version` + its sanity test, when deliberately updating the shared library fallback version.
 
 Typical policy:
 
@@ -35,7 +34,7 @@ Typical policy:
 - Headset-only release: `visionos`.
 - Mac-only internal milestone or explicitly approved release: `macos`.
 - Apple TV-only internal milestone or explicitly approved release: `tvos`.
-- Coordinated codebase milestone: `all` plus `toolkit` unless the user explicitly keeps the fallback version independent.
+- Coordinated codebase milestone: `all`.
 - Re-uploading another binary for an existing App Store Connect version: bump `CURRENT_PROJECT_VERSION` for that scope only; leave `MARKETING_VERSION` unchanged.
 
 ## Files and settings
@@ -44,7 +43,6 @@ Inspect before and after:
 
 ```sh
 rg -n 'MARKETING_VERSION|CURRENT_PROJECT_VERSION' Labstream.xcodeproj/project.pbxproj
-rg -n 'static let version|PMSKit.version ==' PMSKit/Sources PMSKit/Tests
 ```
 
 Expected target settings in `Labstream.xcodeproj/project.pbxproj`:
@@ -69,19 +67,6 @@ Set only `CURRENT_PROJECT_VERSION` for the selected scope. On-demand TestFlight 
 this: `scripts/testflight-release.py ship` stamps `--build-number auto` (the commit count) at
 archive time. Once such builds exist for a version, a committed build number must exceed them. This is `CFBundleVersion`, not the user-visible version. Each upload under the same marketing version must have a higher build number than previous uploads for that same platform/version. Never decrease it.
 
-### PMSKit fallback version
-
-`PMSKit/Sources/PMSKit/PMSKit.swift` contains `PMSKit.version`; `PMSKit/Tests/PMSKitTests/SanityTests.swift` pins it.
-
-The app normally passes `Bundle.main`'s `CFBundleShortVersionString` into `ClientIdentity`, so App Store-visible app headers track the target's `MARKETING_VERSION` even when `PMSKit.version` differs.
-
-Update `PMSKit.version` only when:
-
-- scope is `all` and the user expects the shared fallback to match the coordinated app version, or
-- scope is explicitly `toolkit` / shared library.
-
-Do **not** blindly sync `PMSKit.version` during a single-platform bump unless the user asks.
-
 ## Do NOT touch
 
 - `Labstream/Platforms/visionOS/App/Labstream.swift`, `Labstream/Platforms/Mobile/App/LabstreamMobile.swift`, `Labstream/Shared/App/PlatformClientIdentity.swift`, or player code just to change versions; they read bundle versions automatically.
@@ -97,7 +82,6 @@ Use scoped tags when release trains diverge:
 - `macos-vX.Y.Z` for explicitly approved `LabstreamMac` releases or named pre-release milestones.
 - `tvos-vX.Y.Z` for explicitly approved `LabstreamTV` releases or named pre-release milestones.
 - `vX.Y.Z` only for synchronized `all` releases or coordinated codebase milestones.
-- `pmskit-vX.Y.Z` only for an intentional toolkit/fallback release.
 
 Every completed marketing-version release or named milestone bump needs its corresponding annotated tag. Check
 both local and remote tags before committing. Create the tag only after the version-bump commit

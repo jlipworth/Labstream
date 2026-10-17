@@ -9,7 +9,6 @@ Scenarios:
   launch-home-passive        Build/install/launch visionOS app, capture video/screenshots/logs/run.json.
   launch-fixture-home-passive
                              Same evidence loop with credential-free synthetic browse content.
-  click-login-jellyfin-tab   Launch, click the Jellyfin tab on the login panel, verify UI pixels changed.
 
 Options:
   --skip-build               Reuse the newest Debug-xrsimulator Labstream.app.
@@ -54,7 +53,7 @@ done
 }
 
 case "$scenario" in
-  launch-home-passive|launch-fixture-home-passive|click-login-jellyfin-tab) ;;
+  launch-home-passive|launch-fixture-home-passive) ;;
   *) echo "unknown scenario: $scenario" >&2; usage >&2; exit 2 ;;
 esac
 
@@ -73,14 +72,6 @@ human_assist="false"
 video_pid=""
 app=""
 launch_exit_code=""
-click_name=""
-click_device_x=""
-click_device_y=""
-click_screen_x=""
-click_screen_y=""
-click_before_sha=""
-click_after_sha=""
-click_changed="false"
 
 log_note() { printf '%s\n' "$*" | tee -a "$notes"; }
 
@@ -116,16 +107,6 @@ write_run_json() {
   "shutdownOnExit": $([ "$shutdown_on_exit" -eq 1 ] && echo true || echo false),
   "appPath": $(json_string "$app"),
   "launchExitCode": $(json_value_or_null "$launch_exit_code"),
-  "click": {
-    "name": $(json_string "$click_name"),
-    "deviceX": $(json_value_or_null "$click_device_x"),
-    "deviceY": $(json_value_or_null "$click_device_y"),
-    "screenX": $(json_value_or_null "$click_screen_x"),
-    "screenY": $(json_value_or_null "$click_screen_y"),
-    "beforeSHA256": $(json_string "$click_before_sha"),
-    "afterSHA256": $(json_string "$click_after_sha"),
-    "screenshotChanged": ${click_changed}
-  },
   "artifacts": {
     "notes": "${notes}",
     "screenStart": "${outdir}/screen-start.png",
@@ -171,71 +152,6 @@ cleanup() {
   write_run_json "$ec"
 }
 trap cleanup EXIT
-
-compile_click_helper() {
-  if ! command -v swiftc >/dev/null 2>&1; then
-    log_note "swiftc unavailable, cannot compile click helper."
-    status="blocked"
-    exit 2
-  fi
-  swiftc -O scripts/simclick.swift -o "$outdir/simclick"
-}
-
-simulator_window_frame() {
-  # simctl can boot/headlessly record the device without opening a clickable Simulator window.
-  # Synthetic clicks need the Simulator app window, so explicitly open/activate it first.
-  open -a Simulator >/dev/null 2>&1 || true
-  sleep 1
-  osascript -e 'tell application "Simulator" to activate' >/dev/null 2>&1 || true
-  sleep 0.5
-  osascript -e 'tell application "System Events" to tell process "Simulator" to get {position, size} of window 1' 2>/dev/null || true
-}
-
-screen_point_for_device_point() {
-  local frame="$1" device_x="$2" device_y="$3"
-  printf '%s\n' "$frame" | tr -d '{}' | tr ',' ' ' | awk -v dx="$device_x" -v dy="$device_y" '{
-    winX=$1; winY=$2; winW=$3; winH=$4;
-    scale=winW/3840.0;
-    contentTop=winY + (winH - 2160.0*scale);
-    printf "%d %d\n", int(winX + dx*scale), int(contentTop + dy*scale);
-  }'
-}
-
-perform_device_click() {
-  local name="$1" device_x="$2" device_y="$3" frame
-  click_name="$name"
-  click_device_x="$device_x"
-  click_device_y="$device_y"
-  compile_click_helper
-  frame=$(simulator_window_frame)
-  printf '%s\n' "$frame" > "$outdir/simulator-window-frame.txt"
-  if [ -z "$frame" ]; then
-    log_note "Could not read Simulator window frame; user should open the Simulator window or fix local UI automation permissions."
-    human_assist="true"
-    status="blocked"
-    exit 3
-  fi
-  read -r click_screen_x click_screen_y < <(screen_point_for_device_point "$frame" "$device_x" "$device_y")
-  log_note "Clicking $name at device ${device_x},${device_y} -> screen ${click_screen_x},${click_screen_y}; window frame: $frame."
-  xcrun simctl io "$simid" screenshot "$outdir/click-before.png" >>"$outdir/screenshot.log" 2>&1 || true
-  click_before_sha=$(shasum -a 256 "$outdir/click-before.png" | awk '{print $1}')
-  "$outdir/simclick" "$click_screen_x" "$click_screen_y" >>"$outdir/click.log" 2>&1 || {
-    log_note "Click helper failed."
-    status="failed"
-    exit 1
-  }
-  sleep 2
-  xcrun simctl io "$simid" screenshot "$outdir/click-after.png" >>"$outdir/screenshot.log" 2>&1 || true
-  click_after_sha=$(shasum -a 256 "$outdir/click-after.png" | awk '{print $1}')
-  if [ "$click_before_sha" = "$click_after_sha" ]; then
-    click_changed="false"
-    log_note "Click produced no screenshot delta; treating as a failed synthetic-click probe."
-    status="failed"
-    exit 1
-  fi
-  click_changed="true"
-  log_note "Click changed the screenshot (${click_before_sha} -> ${click_after_sha})."
-}
 
 log_note "# Agent simulator run: $scenario"
 log_note "- simulator: $simid"
@@ -317,13 +233,6 @@ log_note "Starting video recording..."
 xcrun simctl io "$simid" recordVideo "$outdir/screen-recording.mp4" >>"$outdir/record-video.log" 2>&1 &
 video_pid=$!
 sleep 1
-
-if [ "$scenario" = "click-login-jellyfin-tab" ]; then
-  # Device-space center of the Jellyfin tab in the unauthenticated login panel at 3840x2160.
-  # If the simulator is signed in or otherwise not on the login panel, this probe should fail
-  # with artifacts instead of claiming useful UI-driving evidence.
-  perform_device_click "login-jellyfin-tab" 1920 1245
-fi
 
 sleep "$duration"
 stop_recording

@@ -213,38 +213,6 @@ enum DebugPlaybackProbeSupport {
         throw ProbeError.timeout("hold_sample_limit")
     }
 
-    /// Logs the video format descriptions AVPlayer actually engaged (codec fourCC + transfer
-    /// function). This is the runtime truth for whether DV signalling was accepted: a `dvh1`
-    /// or `dvhe` subtype means the Dolby Vision decode path is active, `hvc1`/`hev1` means
-    /// the player fell back to the plain HEVC/HDR10 representation.
-    static func logActiveVideoFormat(_ controller: PlaybackController, phase: String, log: Logger) async {
-        guard let item = controller.player.currentItem else {
-            log.notice("probe.video_format phase=\(phase, privacy: .public) status=no_item")
-            return
-        }
-        var logged = 0
-        for track in item.tracks {
-            guard let assetTrack = track.assetTrack,
-                  let descriptions = try? await assetTrack.load(.formatDescriptions) else { continue }
-            for description in descriptions where CMFormatDescriptionGetMediaType(description) == kCMMediaType_Video {
-                let codec = fourCC(CMFormatDescriptionGetMediaSubType(description))
-                let transfer = (CMFormatDescriptionGetExtension(description, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String) ?? "unknown"
-                log.notice("probe.video_format phase=\(phase, privacy: .public) codec=\(codec, privacy: .public) transfer=\(transfer, privacy: .public) enabled=\(track.isEnabled, privacy: .public)")
-                logged += 1
-            }
-        }
-        if logged == 0 {
-            log.notice("probe.video_format phase=\(phase, privacy: .public) status=no_video_format_descriptions")
-        }
-    }
-
-    private static func fourCC(_ code: FourCharCode) -> String {
-        let bytes = [UInt8((code >> 24) & 0xFF), UInt8((code >> 16) & 0xFF),
-                     UInt8((code >> 8) & 0xFF), UInt8(code & 0xFF)]
-        let text = String(bytes: bytes, encoding: .ascii) ?? ""
-        return text.allSatisfy { $0.isASCII && !$0.isNewline } && !text.isEmpty ? text : String(code)
-    }
-
     /// The argument immediately following `flag`, or nil if `flag` is absent or last.
     static func value(after flag: String, in arguments: [String]) -> String? {
         guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
@@ -254,12 +222,6 @@ enum DebugPlaybackProbeSupport {
     /// `value(after:in:)` parsed as an `Int`, or nil.
     static func intValue(after flag: String, in arguments: [String]) -> Int? {
         value(after: flag, in: arguments).flatMap(Int.init)
-    }
-
-    private static func rawPlayerPositionMs(_ controller: PlaybackController) -> Int {
-        let seconds = controller.player.currentTime().seconds
-        guard seconds.isFinite, seconds >= 0 else { return 0 }
-        return Int(seconds * 1000)
     }
 
     enum ProbeError: Error, CustomStringConvertible {

@@ -511,7 +511,7 @@ struct MiniPlayerBar: View {
                       systemImage: "shuffle")
             }
             Button { player.cycleRepeatMode() } label: {
-                Label(repeatMenuTitle, systemImage: repeatMenuIcon)
+                Label(repeatMenuTitle, systemImage: player.repeatMode.symbolName)
             }
             if player.queue.count > 1 {
                 Button { player.clearUpcoming() } label: {
@@ -539,10 +539,6 @@ struct MiniPlayerBar: View {
         case .all: "Repeat All"
         case .one: "Repeat One"
         }
-    }
-
-    private var repeatMenuIcon: String {
-        player.repeatMode == .one ? "repeat.1" : "repeat"
     }
 
     private func artistItem(for track: MediaItem) -> MediaItem? {

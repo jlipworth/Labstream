@@ -273,7 +273,8 @@ final class WatchTogetherCoordinator {
 
     func startWithReadyParticipants(acknowledgeUnresolved: Bool) {
         guard resolvedItem != nil, let payload = activePayload else { return }
-        guard acknowledgeUnresolved || !requiresStartAcknowledgement else { return }
+        let readiness = SharePlayReadinessSummary(statuses: Array(participantStatuses.values))
+        guard readiness.canStart(acknowledgingUnresolved: acknowledgeUnresolved) else { return }
         sessionStarted = true
         state = .active(context(for: payload))
         launchResolvedItem()

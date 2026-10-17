@@ -140,7 +140,7 @@ struct LiveJellyfinBrowseTimelineProbeTests {
         let views2xx = (200..<300).contains(viewsStatus)
         #expect(views2xx, "Jellyfin views expected 2xx")
         guard views2xx else { throw ProbeFailure.badHTTP }
-        let views = try JSONDecoder().decode(JellyfinUserViewsResponse.self, from: viewsData)
+        let views = try JSONDecoder().decode(MediaBrowserUserViewsResponse<JellyfinFlavor>.self, from: viewsData)
         let hasViews = !views.items.isEmpty
         #expect(hasViews, "Jellyfin test account should expose at least one user view")
         guard hasViews else { throw ProbeFailure.invalidFixture }

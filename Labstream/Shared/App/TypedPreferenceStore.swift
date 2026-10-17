@@ -36,10 +36,6 @@ struct PreferenceKey<Value> {
 /// Single typed access boundary for app preferences. Shipped raw keys and defaults remain owned by
 /// their feature namespaces; this store removes repeated object/type/default branching.
 struct TypedPreferenceStore {
-    /// User preferences are durable UX state, not transfer/recovery authority. UserDefaults may
-    /// coalesce its own writes, so this boundary is explicitly best-effort.
-    static let durability: PersistenceDurabilityTier = .bestEffort
-
     let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {

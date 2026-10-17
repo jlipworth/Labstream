@@ -36,7 +36,6 @@ struct PlaybackLifecycleCallbackSinkTests {
         let sink = PlaybackLifecycleCallbackSink<UInt64> { $0 == currentGeneration.value }
         var elapsed = 0.0
         var playing = false
-        var artwork = "new-art"
         var audioResumed = false
         var reports = ["stopped"]
 
@@ -47,9 +46,6 @@ struct PlaybackLifecycleCallbackSinkTests {
                 reports.append("playing")
             }
         }
-        let queuedArtwork = {
-            sink.perform(.musicArtwork, generation: 10) { artwork = "old-art" }
-        }
         let queuedAudio = {
             sink.perform(.musicAudioSession, generation: 10) { audioResumed = true }
         }
@@ -57,12 +53,10 @@ struct PlaybackLifecycleCallbackSinkTests {
         currentGeneration.value = 11
         _ = queuedTick()
         _ = queuedStatus()
-        _ = queuedArtwork()
         _ = queuedAudio()
 
         #expect(elapsed == 0)
         #expect(!playing)
-        #expect(artwork == "new-art")
         #expect(!audioResumed)
         #expect(reports == ["stopped"])
     }

@@ -1,4 +1,3 @@
-import importlib.util
 import csv
 import pathlib
 import subprocess
@@ -7,12 +6,10 @@ import tempfile
 import unittest
 import plistlib
 from unittest import mock
+from _script_loader import load_script
 
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "compile-audit.py"
-spec = importlib.util.spec_from_file_location("compile_audit", SCRIPT)
-audit = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = audit
-spec.loader.exec_module(audit)
+audit = load_script("compile_audit", SCRIPT)
 
 
 class CompileAuditTests(unittest.TestCase):

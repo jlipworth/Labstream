@@ -1,8 +1,5 @@
 import Foundation
 
-// Audio/subtitle preference key strings now live in `PlaybackPreferences.Keys`
-// (see UI/PlayerExperiencePreferences.swift) so all defaults keys share one namespace.
-
 enum SubtitleAutoSelectMode: String, CaseIterable, Identifiable {
     case manual
     case foreignAudio

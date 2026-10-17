@@ -103,8 +103,4 @@ public enum EmbyAuth {
         applyAuth(to: &req, identity: identity, userId: userId, token: token)
         return req
     }
-
-    static func quote(_ value: String) -> String {
-        MediaBrowserAuth.quote(value)
-    }
 }

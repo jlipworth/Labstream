@@ -3050,41 +3050,6 @@ final class PlaybackController {
         load(playerItem, resumeOffsetMs: resumeMs)
     }
 
-    #if DEBUG
-    /// DEBUG-only decision logger for the "Original (Direct Stream)" path. When PMS agrees
-    /// to direct-play, we commit `directPlayStartM3U8URL()`; this records WHY, so a Debug
-    /// build can distinguish whole-file direct play (`mde=1000`) from Direct Stream (`video=copy`,
-    /// copy video / transcode audio) at a glance, alongside the production verdict we would
-    /// otherwise have transcoded on. Logged as `gen= mde= part= video= audio= saves=`. Only the
-    /// probe-commit branch reaches here, so it fires solely for titles PMS agreed to direct-play.
-    /// No token, host, or URL is ever logged — only decision codes and the decision enums.
-    ///
-    /// History: this began as a one-shot probe to chase a phantom "start.m3u8 → HTTP 400" (round 2
-    /// proved start.m3u8 returns 200 for every profile-extra variant and direct play works); the
-    /// decision fields stayed useful, so the URL-status dissection was removed and this kept.
-    private func logDirectPlayDecision(transcode: TranscodeRequest, probe: DecisionResponse) {
-        let client = self.client
-        Task {
-            func fields(_ d: DecisionResponse) -> String {
-                "gen=\(d.generalDecisionCode.map(String.init) ?? "-")"
-                    + " mde=\(d.mdeDecisionCode.map(String.init) ?? "-")"
-                    + " part=\(d.partDecision ?? "-")"
-                    + " video=\(d.videoDecision ?? "-")"
-                    + " audio=\(d.audioDecision ?? "-")"
-                    + " saves=\(d.savesVideoEncode)"
-            }
-            // probe is in hand; the production verdict we fetch fresh (its own params).
-            NSLog("PlaybackController[dp-diag]: probe-decision %@", fields(probe))
-            do {
-                let prod = try await client.send(transcode.decisionRequest(), as: DecisionResponse.self)
-                NSLog("PlaybackController[dp-diag]: prod-decision  %@", fields(prod))
-            } catch {
-                NSLog("PlaybackController[dp-diag]: prod-decision  failed %@", Self.safeErrorSummary(error))
-            }
-        }
-    }
-    #endif
-
     // MARK: - Local-file path
 
     private func loadLocalFile(_ url: URL) {

@@ -275,7 +275,7 @@ struct NowPlayingView: View {
             Button {
                 player.cycleRepeatMode()
             } label: {
-                Image(systemName: repeatIcon)
+                Image(systemName: player.repeatMode.symbolName)
                     .font(.title3)
                     .foregroundStyle(player.repeatMode == .off ? AnyShapeStyle(.secondary)
                                                                : AnyShapeStyle(.tint))
@@ -283,13 +283,6 @@ struct NowPlayingView: View {
             .buttonStyle(.plain)
         }
         .disabled(player.current == nil)
-    }
-
-    private var repeatIcon: String {
-        switch player.repeatMode {
-        case .off, .all: "repeat"
-        case .one: "repeat.1"
-        }
     }
 
     // MARK: - Up Next

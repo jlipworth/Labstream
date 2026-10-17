@@ -360,9 +360,6 @@ uv run python scripts/check-docs-mermaid.py
   `LabstreamTVUITests.xctestplan` isolates deterministic authentication and the initial
   remote-only Home-to-detail browse journey so unrelated hosted sources cannot block UI execution.
 
-Run the app suite for the platform affected by a change (all three hosts — iOS, macOS,
-and tvOS — for shared app infrastructure):
-
 On Xcode 27, a printed test-pass summary is not a completed hosted run: require the
 terminal `xcodebuild` result and a readable `.xcresult`. If the runner stops making
 progress, take a bounded process sample before termination. One observed iOS stall
@@ -375,7 +372,9 @@ records the bounded observation and its limitations.
 
 For a deterministic smoke, affected-platform, or full plan, use the checked
 [`native-test-matrix.py`](TESTING-STRATEGY.md#native-apple-matrix-driver) driver. The commands below
-remain the direct forms for an individually leased platform lane.
+remain the direct forms for an individually leased platform lane. Run the app suite for the
+platform affected by a change (all three hosts — iOS, macOS, and tvOS — for shared app
+infrastructure):
 
 ```sh
 # Mobile-hosted app tests.

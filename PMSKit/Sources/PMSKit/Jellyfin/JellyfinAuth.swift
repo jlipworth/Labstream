@@ -158,8 +158,4 @@ public enum JellyfinAuth {
         guard let url = components.url else { throw JellyfinServerURLError.invalid }
         return url
     }
-
-    static func quote(_ value: String) -> String {
-        MediaBrowserAuth.quote(value)
-    }
 }

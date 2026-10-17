@@ -78,7 +78,6 @@ media details out of commits and public issues.
   container; it writes only gitignored listing, cache, inventory, representative, and summary
   artifacts. See the
   [private media corpus workflow](../docs/MEDIA-CORPUS-TESTING.md).
-- `loc.sh` — informational per-module source line counts.
 - `perf-log-summary.py` — converts privacy-safe performance signposts into summaries/Markdown and
   produces strict, raw-artifact-bound comparison summaries.
 - `perf_evidence_schema.py` — shared closed schema/parser for privacy-safe performance spans,
@@ -281,8 +280,6 @@ scripts/perf-compare.py compare \
 - `agent-tvos-run.sh` — credential-free tvOS semantic Home-to-detail and deterministic local-player evidence; it requires `--allow-simulator` as the lease assertion.
 - `agent-macos-run.sh` / `agent-macos-ax-driver.swift` — isolated credential-free macOS fixture
   run using semantic Accessibility actions and Labstream-window-only screenshots.
-- `simclick.swift` — retained low-level helper for the legacy visionOS click scenario. It is not a
-  supported Xcode 27/Device Hub validation path; current visionOS closure is passive/probe-first.
 
 ## Local Mac development
 
