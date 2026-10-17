@@ -23,8 +23,10 @@ struct EmbyConvertJobTests {
         let cases: [(String, EmbyConvertJobStatus)] = [
             ("Queued", .queued),
             ("Converting", .converting),
+            ("ReadyToTransfer", .readyToTransfer),
             ("Transferring", .transferring),
             ("Completed", .completed),
+            ("CompletedWithError", .completedWithError),
             ("Failed", .failed),
             ("Cancelled", .cancelled),
         ]
@@ -382,12 +384,17 @@ struct EmbyConvertJobTests {
 
     // MARK: - isTerminal / didSucceed
 
-    @Test("isTerminal is true only for Completed/Failed/Cancelled; didSucceed only for Completed",
+    // B48: `CompletedWithError` is part of Emby's SyncJobStatus. Decoding it to `.unknown` kept a
+    // finished-with-error job non-terminal, so every healthy 200 reset the poll budget and the row
+    // showed "Preparing on server…" forever.
+    @Test("isTerminal covers Completed/CompletedWithError/Failed/Cancelled; didSucceed only Completed",
           arguments: [
               (EmbyConvertJobStatus.queued, false, false),
               (.converting, false, false),
+              (.readyToTransfer, false, false),
               (.transferring, false, false),
               (.unknown, false, false),
+              (.completedWithError, true, false),
               (.completed, true, true),
               (.failed, true, false),
               (.cancelled, true, false),
@@ -395,6 +402,16 @@ struct EmbyConvertJobTests {
     func terminalAndSuccessFlags(row: (status: EmbyConvertJobStatus, terminal: Bool, succeeded: Bool)) {
         #expect(row.status.isTerminal == row.terminal)
         #expect(row.status.didSucceed == row.succeeded)
+    }
+
+    @Test("Terminal failures carry a readable user-facing phrase")
+    func terminalFailureDescriptions() {
+        #expect(EmbyConvertJobStatus.failed.terminalFailureDescription == "failed")
+        #expect(EmbyConvertJobStatus.cancelled.terminalFailureDescription == "was cancelled")
+        #expect(EmbyConvertJobStatus.completedWithError.terminalFailureDescription
+                == "finished with an error")
+        #expect(EmbyConvertJobStatus.completed.terminalFailureDescription == nil)
+        #expect(EmbyConvertJobStatus.readyToTransfer.terminalFailureDescription == nil)
     }
 
     // MARK: - createJobRequest body shape

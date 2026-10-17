@@ -6,14 +6,27 @@ import FoundationNetworking
 /// Status of an Emby "Convert Media" Sync job (`GET /Sync/Jobs/{id}` → `Status`).
 ///
 /// The observed server strings (Emby 4.9.3) are `Queued` → `Converting`/`Transferring` →
-/// `Completed` / `Failed` / `Cancelled`. An unrecognized/absent string decodes to `.unknown`
-/// rather than throwing, so a forward-incompatible server value never crashes polling — it is
-/// simply treated as non-terminal (keep polling).
+/// `Completed` / `Failed` / `Cancelled`. Emby's `SyncJobStatus` also defines `ReadyToTransfer` and
+/// `CompletedWithError`, which have not been observed live on the Convert lane (B48):
+/// - `ReadyToTransfer` sits between conversion and the transfer step, so it is modelled as
+///   NON-terminal (keep polling until `Completed`).
+/// - `CompletedWithError` means the job ended but its item failed. It is modelled as a TERMINAL
+///   FAILURE. Decoding it to `.unknown` kept the job non-terminal, and every healthy 200 reset the
+///   poll budget, so the row polled forever. As a failure it clears the job id, so Retry creates a
+///   fresh job (and the reuse preflight still adopts any file the server did produce).
+/// Both assumptions come from the server enum, not from a live capture, and still need live
+/// verification against a server that emits them.
+///
+/// An unrecognized/absent string decodes to `.unknown` rather than throwing, so a
+/// forward-incompatible server value never crashes polling — it is simply treated as non-terminal
+/// (keep polling).
 public enum EmbyConvertJobStatus: String, Decodable, Sendable, Equatable {
     case queued = "Queued"
     case converting = "Converting"
+    case readyToTransfer = "ReadyToTransfer"
     case transferring = "Transferring"
     case completed = "Completed"
+    case completedWithError = "CompletedWithError"
     case failed = "Failed"
     case cancelled = "Cancelled"
     /// Any server string we don't recognize (forward-compat). Never terminal.
@@ -27,9 +40,9 @@ public enum EmbyConvertJobStatus: String, Decodable, Sendable, Equatable {
     /// True once the job has reached a final state (success OR failure/cancel) — stop polling.
     public var isTerminal: Bool {
         switch self {
-        case .completed, .failed, .cancelled:
+        case .completed, .completedWithError, .failed, .cancelled:
             return true
-        case .queued, .converting, .transferring, .unknown:
+        case .queued, .converting, .readyToTransfer, .transferring, .unknown:
             return false
         }
     }
@@ -37,6 +50,18 @@ public enum EmbyConvertJobStatus: String, Decodable, Sendable, Equatable {
     /// True only when the job finished and produced the converted file.
     public var didSucceed: Bool {
         self == .completed
+    }
+
+    /// User-facing phrase for a terminal failure ("Server conversion <phrase>."). Nil for
+    /// non-terminal and successful statuses.
+    public var terminalFailureDescription: String? {
+        switch self {
+        case .failed: return "failed"
+        case .cancelled: return "was cancelled"
+        case .completedWithError: return "finished with an error"
+        case .queued, .converting, .readyToTransfer, .transferring, .completed, .unknown:
+            return nil
+        }
     }
 }
 

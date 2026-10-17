@@ -723,7 +723,7 @@ extension DownloadManager {
                                             attemptKey: storeAttemptKey,
                                             attemptID: attemptID)
                 } else {
-                    // Server-side Failed/Cancelled → fail the row (retry-only; the server job
+                    // Server-side Failed/Cancelled/CompletedWithError → fail the row (retry-only; the server job
                     // itself is left alone — deleting it wouldn't delete a partial file anyway).
                     recordDownloadDiagnostic("downloads.convert_failed", fields: [
                         "download_id": .identifier(ratingKey),
@@ -737,7 +737,7 @@ extension DownloadManager {
                     guard clearEmbyConvertJobIDIfExact(
                         for: storeAttemptKey, expectedJobID: jobId) else { return }
                     failEmbyConvert(for: storeAttemptKey,
-                                    .transferFailed("Server conversion \(job.status.rawValue.lowercased())."))
+                                    .transferFailed("Server conversion \(job.status.terminalFailureDescription ?? "failed")."))
                 }
                 return
             }
