@@ -24,4 +24,21 @@ struct BackgroundRangeCompletionPolicyTests {
             hasRequest: hasRequest
         ) == expected)
     }
+
+    // B09: an OS-initiated -999 (Background App Refresh off, insufficient resources, force quit)
+    // is an interruption, not a user cancel: park the row at its durable checkpoint.
+    @Test("A system-initiated cancel parks at the checkpoint instead of returning silently")
+    func systemInitiatedCancelParks() {
+        #expect(BackgroundRangeCompletionPolicy.disposition(
+            hasError: true, errorCode: NSURLErrorCancelled, hasRequest: true,
+            isSystemInitiatedCancel: true) == .parkSystemInterrupted)
+        #expect(BackgroundRangeCompletionPolicy.disposition(
+            hasError: true, errorCode: NSURLErrorCancelled, hasRequest: false,
+            isSystemInitiatedCancel: true) == .parkSystemInterrupted)
+        // App-initiated cancels (pause, cancel, supersede) stay silent.
+        #expect(BackgroundRangeCompletionPolicy.disposition(
+            hasError: true, errorCode: NSURLErrorCancelled, hasRequest: true,
+            isSystemInitiatedCancel: false) == .cancelled)
+    }
 }
+

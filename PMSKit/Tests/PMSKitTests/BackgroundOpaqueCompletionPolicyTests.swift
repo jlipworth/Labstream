@@ -25,4 +25,44 @@ struct BackgroundOpaqueCompletionPolicyTests {
             supportsPersistedResumeData: supportsPersistedResumeData
         ) == expected)
     }
+
+    // B09: an OS-initiated -999 on the forward-only lane fails retryable with a real reason
+    // instead of leaving the row `.downloading` with no task.
+    @Test("A system-initiated cancel is a retryable interruption, never a silent cancel")
+    func systemInitiatedCancelIsRetryableInterruption() {
+        #expect(BackgroundOpaqueCompletionPolicy.disposition(
+            errorCode: NSURLErrorCancelled, hasResumeData: false,
+            supportsPersistedResumeData: false,
+            isSystemInitiatedCancel: true) == .failSystemInterrupted)
+        #expect(BackgroundOpaqueCompletionPolicy.disposition(
+            errorCode: NSURLErrorCancelled, hasResumeData: true,
+            supportsPersistedResumeData: false,
+            isSystemInitiatedCancel: true) == .failSystemInterrupted)
+        // A resume-safe lane keeps the blob as a resumable pause.
+        #expect(BackgroundOpaqueCompletionPolicy.disposition(
+            errorCode: NSURLErrorCancelled, hasResumeData: true,
+            supportsPersistedResumeData: true,
+            isSystemInitiatedCancel: true) == .pauseWithResumeData)
+        #expect(BackgroundOpaqueCompletionPolicy.disposition(
+            errorCode: NSURLErrorCancelled, hasResumeData: false,
+            supportsPersistedResumeData: false,
+            isSystemInitiatedCancel: false) == .cancelled)
+    }
+
+    @Test("Only a -999 carrying the background cancellation reason is system-initiated")
+    func classifiesSystemInitiatedCancel() {
+        let system = NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled, userInfo: [
+            NSURLErrorBackgroundTaskCancelledReasonKey:
+                NSURLErrorCancelledReasonBackgroundUpdatesDisabled,
+        ])
+        let app = NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)
+        let other = NSError(domain: NSURLErrorDomain, code: NSURLErrorNetworkConnectionLost, userInfo: [
+            NSURLErrorBackgroundTaskCancelledReasonKey:
+                NSURLErrorCancelledReasonInsufficientSystemResources,
+        ])
+        #expect(BackgroundSystemCancellationPolicy.isSystemInitiatedCancel(system))
+        #expect(!BackgroundSystemCancellationPolicy.isSystemInitiatedCancel(app))
+        #expect(!BackgroundSystemCancellationPolicy.isSystemInitiatedCancel(other))
+    }
 }
+
