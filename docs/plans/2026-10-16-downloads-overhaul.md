@@ -356,6 +356,63 @@ Acceptance is a phase's pins and inventory rows staying green.
 
 ## Progress journal
 
+- **2026-10-17 — P7.6 integration.** Joined the library's default factory to the stable
+  manager-owned launch authority and both surfaces to the event-consuming admitted-launch player.
+  Removed the temporary rejecting Debug factory, library progress/close shim and legacy fixture
+  adapters, the unused rating-key compatibility sink, and Detail's duplicate raw-file fallback and
+  preview reconstruction. Lead fixtures now exercise the real default library factory,
+  post-orientation presentation and player adapters; pins **06-library** and
+  **orientation-library** are unwrapped. Only release pin **15** remains wrapped for P7.7.
+
+  Added actual-path controls for all three metadata backends on both surfaces (including a
+  conflicting key prefix), credential-free local start and zero captured control-plane requests,
+  missing local files, counted Detail button rendering, combined-menu stale sidecar parsing on
+  both surfaces, and Emby enqueue's
+  selected source/audio, explicit missing source and stable static extension across seed replacement.
+  Existing P6/v5, source-recovery, container, keepalive and side-work ordering controls are retained.
+  Search found no duplicate local launch construction, rating-key saves, backend-prefix choice or
+  body-time file checks in either surface. Detail's indirect `manager.localURL` body-time stat was
+  replaced with a published terminal-row identity; the post-orientation factory still rejects a
+  disappeared file. The common factory retains its historical prefix
+  fallback only when metadata lacks backend identity; explicit metadata wins. Its detached
+  admission-time stat is required. Side-asset delivery Tasks remain asynchronous but reserve a
+  monotonic control version before suspension; actor-side ordering and cancellation fence late
+  deliveries, including fetch entry. They are not independent authority.
+
+  The reported P6 startup-heartbeat flake came from sign-out tests calling synchronous
+  `createAttemptOwnedRecord` compatibility persistence on MainActor. Converted all three fixtures
+  to async record creation and explicit manager-operation draining after pause actions, preserving
+  P6's two-second heartbeat rather than widening its deadline. The deeper production audit found
+  a separate synchronous encoder-cleanup journal commit in `releaseInFlight`. Both MediaBrowser
+  backends now capture that exact resource before credential revocation, submit its journal work
+  off MainActor and resolve with a bounded P6 deadline before compare-clearing the row reference.
+  Duplicate pending releases coalesce; failure/timeout keeps cleanup authority. Held-journal
+  sign-out controls cover both backends, commit failure, MainActor progress and preservation of a
+  newer exact encoder handle while the old commit is suspended. The combined parallel gate also
+  exposed P7 fixtures sharing the process coordinator with identical synthetic attempt IDs: an
+  unrelated fixture's pause could change pin 14's owner. Each fixture now injects its own existing
+  coordinator boundary; production control ordering is unchanged.
+
+  Updated inventory dispositions for **B32, B51, B57, B73–B76 and B78–B80**, current download/player
+  ownership docs and manual checks for resume parity, combined subtitles, shared rows/colors,
+  exact delete copy and Cinema return. **D3 remains unresolved:** Jellyfin fixed-zero
+  Playing/Progress is interim, Emby Ping-only is retained, and no watch-state neutrality is claimed.
+  D4 sync-back, offline Up Next, season grouping and Premiere detection remain deferred.
+  Live Plex/Jellyfin/Emby negotiation, inspected decoded frames, device orientation/layout/
+  accessibility, Cinema and background/lock/off-head acceptance remain maintainer/TestFlight gates.
+  No simulator, push, PR, merge, release upload or version change is part of P7.6; `Generic`,
+  v5 and the metadata schema remain unchanged.
+
+  **Validation:** hermetic PMSKit passed **1,628 test functions** with no known issues. Two final
+  full Mac hosted runs passed **952 test functions each** (**886 Swift Testing + 66 XCTest**),
+  with normal parallel testing, **one expected known issue (pin 15)**, zero unexpected failures and
+  zero skips. Both held the exclusive Xcode lock; no manifest or parallelism override was used.
+  Clean generic iOS, visionOS and tvOS builds passed with signing disabled, each under the same
+  lock; the hosted runs also compile and execute the Mac product. Strict MkDocs, rendered links,
+  Mermaid and final hygiene passed **386 tooling tests** and public redaction. Worktree-local
+  `build/` products were removed at closeout. Implementation commits are `40c5b8bb` (joined
+  surfaces/controls) and `c8237f30` (sign-out async persistence/cleanup).
+
 - **2026-10-17 — P7.4 shared rows and library launch lane.** Library, iOS/visionOS
   current-download sections and native Mac sections now consume the same row presentation and
   `DownloadRowContent`; selection options share title/detail/accessory geometry. Route/context
@@ -3169,12 +3226,12 @@ At this exact head every Appendix B `jf-*` and `op-*` row is labelled P7; **the 
 
 | IDs | P7 disposition |
 | --- | --- |
-| B32 | Fix ordered park/unpark/cancel bridge in P7.3. |
-| B51 / emby-42 | Fix exact persisted subtitle origin and repair in P7.3; older ambiguous rows keep playable media with bounded skipped repair. |
-| B57 | Fix remaining comma-container consumers; preserve stable retry destinations. |
-| B73, B74, B75 | Factory, separate observed signal, truncation guard and attempt/session-bound sink. |
-| B76 | P6 removes blocking waits; P7 coalesces and wires both surfaces. Retain P6 pins. |
-| B78, B79, B80 | Restricted return consumer, cached availability, combined subtitle menu. |
+| B32 | Fixed in P7.3 and retained by P7.6: owner-sequenced park/unpark/cancel, including fetch-entry registration; pin 14 covers late Resume/Cancel delivery. |
+| B51 / emby-42 | Fixed for new provable origins in P7.3; coding, reordered-source repair and handoff controls retained in P7.6. Historical ambiguous rows deliberately keep playable media and cached sidecars with skipped repair. Live Convert acceptance remains open. |
+| B57 | Fixed in P7.3: shared first-container token across eligibility/request/destination. P7.6 retains container pins and adds an enqueue control preserving a prior static extension across seed replacement. |
+| B73, B74, B75 | Fixed in the joined P7.6 path: both production surfaces use the same exact-attempt launch and event-consuming player. Resume parity, actual-playing verification, truncation retention and stale attempt/session callbacks are pinned. |
+| B76 | Fixed by P6 async submit/resolve plus P7 bounded coalescing and terminal samples on both surfaces. P7.6 removes the rating-key compatibility sink; sign-out fixture setup now awaits async persistence, retaining production heartbeat/deadline controls. |
+| B78, B79, B80 | Fixed by P7.5 and joined in P7.6: identity-acknowledged restricted return, generation-tagged off-MainActor availability scans and combined embedded/sidecar menu. Both real surface adapters exercise the suspended sidecar race. Cinema, layout and decoded playback acceptance remain manual. |
 | jf-01–04 | Preserve minted session, lean retry re-probe, disclosed optimize fallback and selected-audio/video-copy codec policy. |
 | jf-05–08 | Preserve hvc1 fixup, no forward byte resume, daemon redelivery adoption, 0.95 truncation and unknown-duration unverified finalization. P5/P6/session work is not reopened. |
 | jf-09 | Preserve two-strike published body across relaunch and forbid playback-based warning erasure. |

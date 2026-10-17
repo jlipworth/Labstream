@@ -365,6 +365,42 @@ sources. The storage and backup boundary is detailed in [Persistence](PERSISTENC
 
 Side assets such as posters, chapters, and compatible external text subtitles are cached next to the download record when available. They are treated as convenience metadata; the main playable file remains the durable core of the download.
 
+## Local playback and row presentation
+
+Detail's Play Offline and the Offline library admit the exact rendered attempt after orientation.
+One manager-owned factory rechecks ownership, deletion, terminal state and the local file, then
+captures local resume/rewind, metadata-owned backend/assets and an attempt/session-bound event
+sink. The shared player consumes that sink: actual playing can verify eligible unverified rows,
+while repeated-truncation warnings remain. Position updates coalesce behind bounded asynchronous
+P6 persistence, including a terminal close sample; no synchronous close flush or rating-key save
+adapter remains. Positions are local only: watched/progress sync-back and offline Up Next remain
+separate work.
+
+Sign-out parks rows immediately and captures exact encoder-cleanup authority before credentials
+are revoked. Encoder-release journal work uses a P6 worker submission and bounded asynchronous
+resolution. Only a durable journal result permits compare-clearing that exact play-session handle;
+failure or expiry retains its row/transient authority, and an old completion cannot erase a newer
+handle.
+
+Offline offers embedded subtitles and downloaded text sidecars together with one Off choice.
+Opening the menu does not parse sidecars. Selecting embedded, sidecar or Off revokes the other
+selection; item/session/selection generations reject late parses. Emby converted downloads retain
+an independent original text-subtitle source. Historically ambiguous origins skip repair safely
+and keep existing cached subtitles and playable media.
+
+Library and current-download sheets share lifecycle-driven rows. Waiting/paused and route/context
+are neutral, verified completion green, caution amber, and failures/destructive controls red.
+Context, status and quality are single-line with full accessibility values; error details expand.
+Server indexing, preparation and verification remain distinct, and preterminal progress never
+claims 100%. Delete captures exact attempt identities and explains supported unfinished server-job
+cancellation while retaining finished server versions.
+
+Availability is a generation-tagged off-MainActor scan, refreshed at publication, foreground and
+recovery boundaries. Body/progress reads do not stat files. Readable blocked recovery permits
+terminal playback with mutations disabled; opaque unsupported/unreadable indices cannot open
+Offline. Restricted Offline consumes Cinema returns and acknowledges their identity before
+Reconnect, preventing normal Root from replaying an old return.
+
 ## Reconcile and resume
 
 On launch, Labstream compares the offline index, files on disk, active transfers, persisted

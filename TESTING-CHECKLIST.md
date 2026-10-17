@@ -417,6 +417,27 @@ claiming background durability.
       independent budgets, and a new process receives fresh counts.
 - [ ] Offline playback works with the server unreachable, persists a local playhead, uses local
       side assets only, and never attempts online timeline reporting.
+- [ ] On Plex, Jellyfin and Emby downloads, play from Detail, close, and reopen from Offline
+      (then reverse). Both use the same local position and one configured rewind; near-end reset
+      agrees. Retry/replacement cannot inherit delayed saves from the old player. Local progress
+      does not sync watched state back to the server.
+- [ ] With embedded text subtitles and a downloaded sidecar, one menu shows both and one Off.
+      Switch sidecar → embedded → Off, including a slow sidecar load; only the selected source
+      renders and a late parse cannot restore an overlay. Repeat from Detail and Offline.
+- [ ] On narrow iPhone, regular iPad, Vision Pro and resizable Mac, compare Offline rows with
+      current-download sheets: waiting/paused and route context are neutral, verified completion
+      green, caution amber, failure/destructive actions red. Waiting has a clock; zero server
+      progress is indeterminate; server indexing and verification have distinct captions.
+      Long context/status/quality stay single-line; VoiceOver reads full values and error details
+      expand. Media/extras and exact/estimated sizes remain distinct; preterminal progress stays
+      below 100%.
+- [ ] Delete paused and in-prep rows: confirmation explains supported unfinished server-job
+      cancellation and retention of finished server versions. Replace the attempt while the
+      confirmation is open; accepting the old confirmation leaves the replacement intact.
+- [ ] Cold-launch restricted Offline, enter Cinema from a local row, exit, then Reconnect.
+      The row receives focus once; the return is acknowledged by identity and does not replay
+      on normal Root. Repeat with a newer pending return and with blocked readable recovery;
+      playable rows remain available while mutations stay disabled.
 - [ ] Relaunch reconciliation demotes missing, truncated, or unplayable files and preserves
       genuinely complete files. Storage totals distinguish indexed content, temporary data,
       and conservative orphan candidates.

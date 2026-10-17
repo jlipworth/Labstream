@@ -290,7 +290,8 @@ row carries exactly one mechanism—AVFoundation, Plex stream, MediaBrowser stre
 sidecar—and subtitle Off is a lane-specific typed choice. Plex's `0` and MediaBrowser's `-1` Off
 values exist only in the controller's backend adapter immediately next to wire-facing requests.
 
-Offline subtitle menus read only the downloaded track metadata. The controller opens and parses
+Offline subtitle menus combine embedded AVFoundation tracks and downloaded sidecar metadata
+with one Off choice. The controller opens and parses
 the selected SRT/VTT sidecar off the main actor when the viewer chooses it; opening the menu no
 longer parses every sidecar up front. Offline subtitle and metadata-audio selections are
 generation-fenced: a later track or Off choice invalidates stale async parse/PUT completions before
@@ -313,6 +314,14 @@ item, playback, and Cinema teardown. The app-owned offline subtitle overlay mirr
 system profile's supported font, size, colors, opacity, edge, window, and corner settings.
 
 ## Local/offline playback
+
+Detail and the Offline library both present an immutable `OfflinePlaybackLaunch` through
+`CustomPlayerView(offlineLaunch:trickPlayProvider:onClose:)`. Final admission follows orientation
+and checks exact attempt, file, deletion and presentation generation. The launch captures the
+metadata backend, local resume with rewind applied once, local assets and event authority.
+Playing observation is separate from position: it verifies eligible unverified files without
+erasing repeated-truncation warnings. Progress and terminal close samples use one bounded async
+P6 resolver, coalesce pending samples and reject stale attempt/session callbacks.
 
 Completed downloads play from local file URLs. Local playback has no remote progress stream,
 server session, or transcode cleanup path. Its playhead is persisted on the offline record,
