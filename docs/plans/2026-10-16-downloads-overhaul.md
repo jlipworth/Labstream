@@ -606,6 +606,12 @@ Acceptance is a phase's pins and inventory rows staying green.
   - **Reclaiming a surviving condemned body on replacement** (P3, journaled for P3b). It occurs
     only after both the rename and the in-place delete failed. The next launch's staging sweep
     reclaims it, and P3b's journaled artifact effects own retired-body cleanup.
+- **2026-10-17 — P3a after-review, round 9: one blocking P2.** The checkpoint reset kept the
+  deferred intent, but the backend-ready handoff (`resumeStaticRangeWhenReady`) still read
+  `durableStaticRangeCheckpointSize`, which returned nil for a condemned owner, so it gave up.
+  That function now returns 0 for a condemned current owner, an empty usable checkpoint. Every
+  caller treats 0 as "start fresh", so the replacement starts from zero. The layout change had no
+  other blocking regression.
 
 ## P2 detailed plan — cleanup foundation
 
