@@ -469,8 +469,10 @@ extension DownloadManager {
                 for (index, tile) in playlist.tiles.enumerated() {
                     let destination = store.jellyfinTrickPlayTileDestinationURL(
                         ratingKey: attemptKey.ratingKey, index: index)
-                    if let relative = store.reusableSideAssetRelativePath(
-                        for: attemptKey, destination: destination) {
+                    let reusable = await self.reusableSideAssetObservations(for: attemptKey, destinations: [destination])
+                    guard !Task.isCancelled, store.sideAssetSourceIdentity(for: attemptKey) == sourceIdentity else { return }
+                    if reusable.contains(destination.lastPathComponent) {
+                        let relative = destination.lastPathComponent
                         tileRelativeByIndex[index] = relative
                         tileFilenamesByURI[tile.uri] = relative
                         continue

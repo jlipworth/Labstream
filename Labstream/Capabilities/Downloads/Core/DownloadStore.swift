@@ -2602,6 +2602,15 @@ final class DownloadStore: @unchecked Sendable {
         return row.map(hydratedRecord)
     }
 
+    /// Cheap identity for observational repair inventories; it grants no publication authority.
+    func sideAssetObservationGeneration(for key: DownloadAttemptKey) -> UInt64? {
+        lock.withLock {
+            guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
+                  !row.deletionPending else { return nil }
+            return rowMutationGenerations[key.ratingKey, default: 0]
+        }
+    }
+
     /// Reuse only a non-empty regular side-asset file that the exact live attempt already owns in
     /// metadata. A deterministic destination on disk is not sufficient by itself: an orphan or a
     /// previous attempt may have left the same filename behind. Keeping this check attempt-scoped

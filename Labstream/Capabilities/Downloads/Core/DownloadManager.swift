@@ -275,6 +275,8 @@ public final class DownloadManager {
     /// errors directly from SwiftUI. Under Observation that makes every progress tick invalidate a
     /// broad part of the list. Keep the hot derived strings/fractions in one snapshot so the view
     /// observes a single value and row bodies stay manager-free.
+    @ObservationIgnored var completedSideAssetInventoryWorker: Task<Void, Never>?
+    @ObservationIgnored var completedSideAssetInventories: [DownloadAttemptKey: CompletedSideAssetInventory] = [:]
     @ObservationIgnored var resumePresenceEvidence: [DownloadStore.ResumePresenceIdentity: Bool] = [:]
     @ObservationIgnored var resumePresenceWorkers: [DownloadStore.ResumePresenceIdentity: Task<Void, Never>] = [:]
     var offlineLibrarySnapshot: OfflineLibrarySnapshot = .empty
