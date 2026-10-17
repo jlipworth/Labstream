@@ -413,7 +413,7 @@ public enum DownloadLifecycleReducer {
             return to(terminal)
 
         case .localPlaybackProgressed:
-            guard lifecycle == .unverified else { return illegal }
+            guard lifecycle == .unverified, next.history.unverifiedReason != .truncatedRepeated else { return illegal }
             return to(.complete)
 
         case .sizeAuditFailed:

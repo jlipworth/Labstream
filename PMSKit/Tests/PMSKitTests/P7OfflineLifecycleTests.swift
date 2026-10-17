@@ -12,9 +12,7 @@ struct P7OfflineLifecycleTests {
         // Simulate persisted history decoding as well as the immediate reducer result.
         let reloaded = try JSONDecoder().decode(DownloadAttemptHistory.self,
             from: JSONEncoder().encode(after.history))
-        withKnownIssue("P7 red pin: 04") {
-            #expect(after.lifecycle == .unverified)
-            #expect(reloaded.unverifiedReason == .truncatedRepeated)
-        }
+        #expect(after.lifecycle == .unverified)
+        #expect(reloaded.unverifiedReason == .truncatedRepeated)
     }
 }

@@ -25,6 +25,7 @@ struct OfflinePlaybackLaunch {
     let item: MediaItem
     let backend: DownloadBackendKind
     let posterURL: URL?
+    let artworkSource: OfflineArtworkSource?
     let preview: Preview
     let chapters: [OfflineChapter]
     let chapterImageURLs: [Int: URL]
@@ -54,5 +55,21 @@ protocol OfflinePlaybackLaunchFactory {
                     request: OfflinePlaybackPresentationRequest,
                     resumeRewindSeconds: Int) async
         -> Result<OfflinePlaybackLaunch, OfflinePlaybackLaunchRejection>
+}
+#endif
+
+#if !os(tvOS)
+extension OfflinePlaybackLaunch {
+    func makeTrickPlayProvider() -> (any TrickPlayThumbnailProviding)? {
+        switch preview {
+        case .plexBIF(let url): return LocalBIFTrickPlayThumbnailProvider(bifURL: url)
+        case .jellyfinTiles(let url): return LocalJellyfinTrickPlayThumbnailProvider(playlistURL: url)
+        case .embyBIF(let url):
+            let providers = ([LocalBIFTrickPlayThumbnailProvider(bifURL: url),
+                LocalEmbyChapterTrickPlayThumbnailProvider(chapters: chapters,
+                    imageURLsByChapterIndex: chapterImageURLs)] as [(any TrickPlayThumbnailProviding)?]).compactMap { $0 }
+            return providers.isEmpty ? nil : HierarchicalTrickPlayThumbnailProvider(providers)
+        }
+    }
 }
 #endif

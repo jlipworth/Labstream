@@ -42,9 +42,7 @@ struct P7OfflineSubtitleTests {
         #expect(menu.tracks.filter { $0.displayName == "Off" }.count == 1)
         #expect(menu.tracks.contains { $0.id == .offlineSidecar(1) })
         #expect(loads.withLock { $0 } == 0)
-        withKnownIssue("P7 red pin: 09") {
-            #expect(menu.tracks.contains { $0.id == .avFoundation(0) })
-        }
+        #expect(menu.tracks.contains { $0.id == .avFoundation(0) })
     }
 
     @Test func sidecarAndOffRevokeEmbeddedSelection() async throws {
@@ -62,13 +60,9 @@ struct P7OfflineSubtitleTests {
         let sidecar = try #require(menu.tracks.first { $0.id == .offlineSidecar(1) })
         let off = try #require(menu.tracks.first { $0.displayName == "Off" })
         try await controller.selectSubtitle(sidecar)
-        withKnownIssue("P7 red pin: 09-selection") {
-            #expect(controller.player.currentItem?.currentMediaSelection.selectedMediaOption(in: group) == nil)
-        }
+        #expect(controller.player.currentItem?.currentMediaSelection.selectedMediaOption(in: group) == nil)
         try await controller.selectSubtitle(off)
-        withKnownIssue("P7 red pin: 09-off") {
-            #expect(controller.player.currentItem?.currentMediaSelection.selectedMediaOption(in: group) == nil)
-        }
+        #expect(controller.player.currentItem?.currentMediaSelection.selectedMediaOption(in: group) == nil)
         #expect(controller.offlineSubtitleOverlay.text == nil)
     }
 
@@ -93,10 +87,8 @@ struct P7OfflineSubtitleTests {
         release.signal(true)
         try await selection.value
         let after = try #require(try await controller.loadSubtitleTracks())
-        withKnownIssue("P7 red pin: 09-parse") {
-            #expect(after.selectedID == .avFoundation(0))
-            #expect(controller.offlineSubtitleOverlay.text == nil)
-        }
+        #expect(after.selectedID == .avFoundation(0))
+        #expect(controller.offlineSubtitleOverlay.text == nil)
     }
 
     private func preservePreferences() -> () -> Void {

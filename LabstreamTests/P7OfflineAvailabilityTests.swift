@@ -2,6 +2,7 @@
 import Foundation
 import PMSKit
 import Testing
+import Synchronization
 @testable import Labstream
 
 @Suite("P7 offline availability pins", .serialized)
@@ -9,14 +10,55 @@ import Testing
 struct P7OfflineAvailabilityTests {
     @Test func repeatedGateReadsDoNotStatAgain() async throws {
         let f = try await P7PlaybackFixture(status: .complete)
-        var stats = 0
-        f.manager.offlineFileExists = { _ in stats += 1; return true }
+        let stats = Mutex(0)
+        f.manager.offlineFileExists = { _ in stats.withLock { $0 += 1 }; return true }
+        f.manager.refreshOfflineAvailability(force: true)
+        await f.manager.offlineAvailabilityCache.worker?.value
         #expect(f.manager.hasPlayableOfflineContent)
-        let afterScan = stats
+        let afterScan = stats.withLock { $0 }
         for _ in 0..<20 { #expect(f.manager.hasPlayableOfflineContent) }
         f.manager.refreshRecords() // A publication with unchanged terminal candidate identity.
         _ = f.manager.hasPlayableOfflineContent
-        withKnownIssue("P7 red pin: 11") { #expect(stats == afterScan) }
+        #expect(stats.withLock { $0 } == afterScan)
+        await f.finish()
+    }
+
+    @Test func delayedPositiveScanCannotReviveDeletedCandidate() async throws {
+        let f = try await P7PlaybackFixture(status: .complete)
+        let cache = OfflinePlayableAvailabilityCache()
+        let entered = P6Acknowledgement<Bool>()
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        cache.refresh(records: [f.record], access: .readable, fileExists: { _ in
+            entered.signal(true)
+            release.wait()
+            return true
+        })
+        let staleScan = cache.worker
+        _ = await entered.wait()
+        cache.refresh(records: [], access: .readable, fileExists: { _ in true })
+        #expect(!cache.hasPlayableFile)
+        release.signal()
+        await staleScan?.value
+        #expect(!cache.hasPlayableFile)
+        #expect(cache.value.scan == .resolved(hasPlayableFile: false))
+        await f.finish()
+    }
+
+    @Test func progressDoesNotRescanButForegroundDoes() async throws {
+        let f = try await P7PlaybackFixture(status: .complete)
+        await f.manager.offlineAvailabilityCache.worker?.value
+        let count = Mutex(0)
+        f.manager.offlineFileExists = { _ in count.withLock { $0 += 1 }; return true }
+        f.manager.refreshOfflineAvailability(force: true)
+        await f.manager.offlineAvailabilityCache.worker?.value
+        let controller = try await f.launchController()
+        controller.recordLocalPlaybackPosition(70_000)
+        await f.manager.drainManagerOperationsForTesting()
+        #expect(count.withLock { $0 } == 1)
+        f.manager.refreshOfflineAvailability(force: true)
+        await f.manager.offlineAvailabilityCache.worker?.value
+        #expect(count.withLock { $0 } == 2)
         await f.finish()
     }
 
@@ -34,7 +76,14 @@ struct P7OfflineAvailabilityTests {
             await f.finish()
             return
         }
-        // Amendment 1 is already green on this head: a block is not used as a playback gate.
+        f.manager.refreshOfflineAvailability()
+        await f.manager.offlineAvailabilityCache.worker?.value
+        // A readable admission block is not a playback gate or mutation authority.
+        let blockedLaunch = try await f.launch()
+        blockedLaunch.events.progress(positionMs: 80_000, durationMs: 600_000)
+        blockedLaunch.events.playbackObserved()
+        await f.manager.drainManagerOperationsForTesting()
+        #expect(f.store.record(for: f.key)?.metadata?.localPlaybackPositionMs == 30_000)
         #expect(OfflineLaunchAvailability.admitsOfflineLaunch(restoreOutcome: .temporarilyUnavailable,
             hasPlayableDownload: f.manager.hasPlayableOfflineContent))
         #expect(!f.store.records.isEmpty)

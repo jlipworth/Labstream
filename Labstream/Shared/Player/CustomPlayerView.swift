@@ -80,6 +80,26 @@ struct CustomPlayerView: View {
                                                             livePositionMs: item.viewOffset ?? 0))
     }
 
+    #if !os(tvOS)
+    /// Shared admitted-launch entry point for Detail and Offline library presentations.
+    init(offlineLaunch launch: OfflinePlaybackLaunch,
+         trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
+         onClose: (() -> Void)? = nil) {
+        self.init(localFile: launch.fileURL, item: launch.item,
+                  trickPlayProvider: trickPlayProvider ?? launch.makeTrickPlayProvider(),
+                  offlineArtworkSource: launch.artworkSource,
+                  offlineTextSubtitles: launch.textSubtitles,
+                  offlineChapterImageURLs: launch.chapterImageURLs,
+                  onLocalPlaybackProgress: { launch.events.progress(positionMs: $0, durationMs: $1) },
+                  onLocalPlaybackObserved: { launch.events.playbackObserved() },
+                  onLocalPlaybackClose: { launch.events.close(finalSample: .init(positionMs: $0, durationMs: $1)) },
+                  onClose: onClose)
+        #if os(visionOS)
+        cinemaOrigin = .offline(ratingKey: launch.attemptKey.ratingKey)
+        #endif
+    }
+    #endif
+
     /// Offline initializer: plays a downloaded file through the custom player.
     ///
     /// Mirrors the contract of the retired `PlayerView.init(localFile:item:onClose:)`. A pure
@@ -94,6 +114,8 @@ struct CustomPlayerView: View {
          offlineTextSubtitles: [OfflineTextSubtitleTrack] = [],
          offlineChapterImageURLs: [Int: URL] = [:],
          onLocalPlaybackProgress: ((Int, Int?) -> Void)? = nil,
+         onLocalPlaybackObserved: (() -> Void)? = nil,
+         onLocalPlaybackClose: ((Int, Int?) -> Void)? = nil,
          onClose: (() -> Void)? = nil) {
         // Version comes from the bundle (#26) so the offline X-Plex-Version can't drift
         // from the marketing version — same source of truth as the main identity.
@@ -106,7 +128,9 @@ struct CustomPlayerView: View {
                                             fileURL: localFile,
                                             textSubtitles: offlineTextSubtitles,
                                             chapterImageURLs: offlineChapterImageURLs,
-                                            onPlaybackProgress: onLocalPlaybackProgress)),
+                                            onPlaybackProgress: onLocalPlaybackProgress,
+                                            onPlaybackObserved: onLocalPlaybackObserved,
+                                            onPlaybackClose: onLocalPlaybackClose)),
                                          identity: identity,
                                          client: client)
                   },

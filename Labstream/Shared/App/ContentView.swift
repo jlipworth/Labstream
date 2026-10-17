@@ -70,7 +70,7 @@ struct ContentView: View {
         // switch; a genuinely signed-out user still gets the splash/login.
         Group {
             switch BrowseUIGate.state(isBrowseReady: appModel.isBrowseReady,
-                                      isRestoring: bootstrap.isRestoring,
+                                      isRestoring: bootstrap.isRestoring || isResolvingOfflineAvailability,
                                       isSwitchingBackend: appModel.isSwitchingBackend,
                                       hasEverBeenBrowseReady: bootstrap.hasEverBeenBrowseReady,
                                       canOpenOffline: canOpenOffline) {
@@ -240,6 +240,15 @@ struct ContentView: View {
         downloadManager.teardownOrphanedEncodersOnLaunch()
     }
     #endif
+
+    private var isResolvingOfflineAvailability: Bool {
+        #if os(tvOS)
+        false
+        #else
+        authManager.sessionRestoreOutcome == .temporarilyUnavailable
+            && downloadManager.offlineAvailabilityIsResolving
+        #endif
+    }
 
     /// #259: only a preserved credential after a transient restore failure, with at least one
     /// completed local media file, opens the restricted Offline surface.

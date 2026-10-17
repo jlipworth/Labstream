@@ -268,14 +268,13 @@ public final class DownloadManager {
     /// observes a single value and row bodies stay manager-free.
     var offlineLibrarySnapshot: OfflineLibrarySnapshot = .empty
 
-    /// True only when a terminal row still owns a present local media file. A durable row by
-    /// itself is not enough to bypass the launch login gate.
-    var hasPlayableOfflineContent: Bool {
-        OfflineLaunchAvailability.hasPlayableDownload(records: records, fileExists: offlineFileExists)
-    }
-
-    /// Countable filesystem boundary; availability currently invokes it on every gate read.
-    @ObservationIgnored var offlineFileExists: (URL) -> Bool = {
+    var hasPlayableOfflineContent: Bool { offlineAvailabilityCache.hasPlayableFile }
+    var offlineAvailabilityIsResolving: Bool { offlineAvailabilityCache.value.scan == .unresolved }
+    let offlineAvailabilityCache = OfflinePlayableAvailabilityCache()
+    @ObservationIgnored var offlinePresentationGeneration: UInt64 = 0
+    @ObservationIgnored var offlinePlaybackSinks: [DownloadAttemptKey: BoundOfflinePlaybackEventSink] = [:]
+    @ObservationIgnored var compatibilityPlaybackSinks: [String: BoundOfflinePlaybackEventSink] = [:]
+    @ObservationIgnored var offlineFileExists: @Sendable (URL) -> Bool = {
         FileManager.default.fileExists(atPath: $0.path)
     }
 
@@ -488,6 +487,8 @@ public final class DownloadManager {
     func drainManagerOperationsForTesting() async {
         let tasks = managerOperations.values.map { $0.1 }
         for task in tasks { await task.value }
+        for sink in offlinePlaybackSinks.values { await sink.worker?.value }
+        await offlineAvailabilityCache.worker?.value
     }
     #endif
 
@@ -554,6 +555,7 @@ public final class DownloadManager {
         self.cleanupIntentJournal = injectedCleanupIntentJournal
             ?? DownloadCleanupIntentJournal(directory: store.durableCleanupAuthorityDirectory)
         self.records = store.records
+        refreshOfflineAvailability()
         self.offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: self.records)
         // Reattach to any transfers that survived a relaunch + receive progress.
         self.session.onChange = { [weak self] in
@@ -906,6 +908,7 @@ public final class DownloadManager {
                     self.startupRecoveryState = .ready
                     self.records = self.store.records
                     self.offlineLibrarySnapshot = self.makeOfflineLibrarySnapshot(from: self.records)
+                    self.refreshOfflineAvailability()
                     self.performInitialStartupReattachIfNeeded()
                 case .alreadyPurging:
                     self.recordDownloadDiagnostic("downloads.startup_reset_coalesced")
@@ -1072,6 +1075,8 @@ public final class DownloadManager {
         session.releaseBackgroundCompletionAfterStartupFailure()
         startupRecoveryInFlight = false
         startupRecoveryState = .blocked(message: message)
+        records = store.records
+        refreshOfflineAvailability()
         #if DEBUG
         acknowledgeStartupRecoveryForTesting(false)
         #endif
@@ -2055,6 +2060,7 @@ public final class DownloadManager {
         let isActive = reason == .aggregateSceneBecameActive
         isAppSceneActive = isActive
         if isActive {
+            refreshOfflineAvailability(force: true)
             session.noteForegroundAuthorization()
             if startupRecoveryState == .preparing && !startupRecoveryInFlight {
                 continueStartupRecovery(with: store.startupIndexAdmission(), deferCurrentActivation: true)
@@ -4363,35 +4369,18 @@ public final class DownloadManager {
     }
 
 
+    /// Compatibility for existing callers. New presentations capture an exact sink at launch.
     func updateLocalPlaybackPosition(ratingKey: String, positionMs: Int, durationMs: Int?) {
-        enqueueManagerOperation(ratingKey: ratingKey) { [weak self] in
-            await self?.updateLocalPlaybackPositionAsync(ratingKey: ratingKey, positionMs: positionMs, durationMs: durationMs)
-        }
-    }
-
-    private func updateLocalPlaybackPositionAsync(ratingKey: String, positionMs: Int, durationMs: Int?) async {
-        guard let record = store.record(for: ratingKey) else { return }
-        guard let attemptID = record.attemptID else { return }
+        guard let record = store.record(for: ratingKey), let attemptID = record.attemptID else { return }
         let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
-        var promoted = false
-        if positionMs > 0, case .promoted = await store.markCompleteIfUnverifiedAsync(for: key) {
-            promoted = true
+        let sink: BoundOfflinePlaybackEventSink
+        if let current = compatibilityPlaybackSinks[ratingKey], current.attemptKey == key {
+            sink = current
+        } else {
+            sink = makeOfflinePlaybackSink(for: key)
+            compatibilityPlaybackSinks[ratingKey] = sink
         }
-        switch await store.setLocalPlaybackPositionAsync(
-            for: key, positionMs: positionMs, durationMs: durationMs) {
-        case .applied, .noChange:
-            break
-        case .staleOrMissing, .persistenceFailed:
-            return
-        }
-        if promoted {
-            recordDownloadDiagnostic("downloads.unverified_playback_confirmed", fields: [
-                "download_id": .identifier(ratingKey),
-                "position_ms": .int(positionMs),
-                "duration_ms": .int(durationMs ?? -1),
-            ])
-        }
-        refreshRecords()
+        sink.progress(positionMs: positionMs, durationMs: durationMs)
     }
 
     /// Heal rows that historical bugs finalized past the byte-completeness guard: a static
@@ -4808,6 +4797,7 @@ public final class DownloadManager {
 
         records = fresh
         offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: fresh)
+        refreshOfflineAvailability()
         keepaliveCoordinator.reconcile(records: recoveryEligibleFresh)
         for restart in forwardOnlyRestarts {
             Task { @MainActor [weak self] in
