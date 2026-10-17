@@ -525,6 +525,21 @@ Acceptance is a phase's pins and inventory rows staying green.
     a pending handler, which proves the commit. Otherwise the body is kept
     (`downloads.truncated_body_kept_unproven`) for the failed row's Retry or Delete, and a
     relaunch re-finalizes it if the verdict was lost.
+- **2026-10-17 — P3a after-review, round 4: not ready, 2 findings (P2).** Both were in the round-3
+  background-handler response, so that response was replaced rather than patched. The
+  reconcile identity fence was confirmed.
+  - **A handler snapshot is not commit evidence.** A handler could arrive between the snapshot
+    and the resolution. The truncated body is now deleted by
+    `DownloadStore.deleteCondemnedWorkingBody`, but only after the verdict's own persistence
+    ticket commits, and only while the attempt still owns a failed row whose working path and
+    file identity are unchanged. This holds whether or not a handler made acceptance
+    admission-only. A failed or timed-out commit keeps the body
+    (`downloads.truncated_body_kept`).
+  - **A kept body could seed a Retry.** A truncation failure now records the distinct reason
+    `truncated` instead of `validation`. Retry never clones such a body as a static checkpoint,
+    so it downloads again from zero. The strike itself is still inherited. Pins cover a blocked
+    commit (body kept, Retry starts at zero with no working file) and a committed verdict
+    (exactly that body deleted; no ticket, no deletion).
 
 ## P2 detailed plan — cleanup foundation
 
