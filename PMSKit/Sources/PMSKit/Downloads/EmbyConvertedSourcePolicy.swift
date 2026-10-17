@@ -35,6 +35,17 @@ public enum EmbyConvertedSourcePolicy {
         }
     }
 
+    /// The real MediaSource id of the source a Convert job renders from, for the tier cap and the
+    /// audio-language reuse constraint. Prefer the id persisted on the row (`metadata.mediaSourceID`,
+    /// the id `triggerConvertAndDownload` already uses), then the id encoded in the item's synthesized
+    /// part key. Never `Media.id`: the canonical MediaBrowser mapping sets it to index + 1, and an
+    /// item rebuilt from metadata after relaunch has no media at all (B45).
+    public static func primaryMediaSourceID(persisted: String?, item: MediaItem) -> String? {
+        if let persisted, !persisted.isEmpty { return persisted }
+        let media = item.media?.first
+        return DownloadMediaSelectionPolicy.mediaSourceID(media: media, part: media?.part.first)
+    }
+
     /// Strict fresh-output detector used while polling after a Convert job completes. A source must
     /// be outside the pre-conversion snapshot, shaped like a converted output, and (where the request
     /// tier is known) not implausibly far below the tier this job could have rendered — a foreign
