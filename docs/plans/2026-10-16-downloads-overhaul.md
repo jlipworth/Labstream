@@ -2877,6 +2877,310 @@ background-continuation acceptance remain open. Failed current-owner side-cache 
 working-body cleanup can defer conservatively; this does not claim a universal durable recipe
 for every abandoned working-body deletion.
 
+## P7 detailed plan — MediaBrowser, offline playback and row UX
+
+**Design snapshot:** 2026-10-17, `downloads/p6-store` at `b0e2413d01f50ae5cb42d54746214e9b89116184` (P5 plus the P6 plan/frozen P6.1 contract). Line references below are to this snapshot; refresh them after P6 integration.
+
+**Shape:** one PR, with reviewable commits and one combined acceptance gate. Speed to the maintainer's stack merge and TestFlight run is the priority. No performance baseline, architecture rewrite, new simulator lane, or expanded feature programme. This document is a read-only design deliverable: no tracked files, branches, commits, simulators, builds, live services, or release state were changed to produce it. Pins below are proposed red tests inferred from inspected production paths, not executed test results.
+
+### Scope and decisions
+
+P7 completes target-design section 7 (`docs/plans/2026-10-16-downloads-overhaul.md:260`): shared Jellyfin/Emby download negotiation, one keepalive lifecycle, one exact-attempt offline launch factory, playback-observed verification, coalesced position saves, and consistent lifecycle-driven presentation on all download-capable platforms. It fixes B32, B51, B57, B73–B76, B78–B80, subject to the P6 boundary below. B76's blocking mechanism belongs to P6; P7 owns binding and coalescing, and retains P6's nonblocking proof.
+
+- **D1:** preserve P3b's final migration decision: complete/unverified and paused static-range rows, including zero-byte checkpoints, survive. P7 does not reopen migration or reset the index.
+- **D2:** keep existing durable cancellation of paused/in-prep Plex jobs and supported Emby jobs. Completed server versions remain. Finish the sheet's missing explanation and exact-attempt actions; do not rewrite cleanup.
+- **D3:** the live Jellyfin A/B decision is still pending at this snapshot. Keep the fixed-zero Playing/Progress interim and backend-specific request content during consolidation. No advancing fake playhead and no claim that downloads leave watch state untouched. Ping-only is a separate live-evidence decision, not a prerequisite for this structural PR.
+- **D4:** offline progress/watched sync-back, offline Up Next, Offline season grouping, and Emby Premiere detection remain separate issues. Record/link them at implementation closeout; this drafting task creates no issues.
+- **D5:** already implemented in P1: the cellular preference controls cellular, constrained and expensive data-plane requests. Preserve this on media, subtitles, posters and previews. Add truthful explanatory copy if missing; do not rebuild the network policy.
+- Keep `X-Plex-Client-Profile-Name=Generic` (`PMSKit/Sources/PMSKit/Transcode/TranscodeRequest.swift:155`). No Plex profile or streaming-quality redesign.
+- tvOS remains streaming-only. Shared player changes compile there, but no Downloads/Offline UI, factory, settings, or dependencies enter that target.
+
+### Current code map
+
+Paths in this map are repository-relative. `Core/` means `Labstream/Capabilities/Downloads/Core/`; `UI/` means `Labstream/Capabilities/Downloads/UI/`; `Downloads/` means `PMSKit/Sources/PMSKit/Downloads/`.
+
+| Location | Current behaviour / P7 seam |
+| --- | --- |
+| `Core/OfflineLibraryView.swift:185`, `:423`, `:785`, `:801` | Builds a player from a record; progress closure passes only rating key. The row resolves exact identity/file presence before Play, but that identity is lost by the callback. Library reconstruction does not apply resume rewind. |
+| `Labstream/Shared/UI/DetailView.swift:715`, `:974`, `:1008`, `:1563` | Separate local request/player path; no progress sink. Captures local URL separately from a later record lookup, chooses previews from rating-key prefix, and duplicates factory inputs. Detail already applies resume rewind. |
+| `Core/DownloadManager.swift:4110` | Looks up whichever attempt is current on each callback; positive position promotes unverified before saving. P6 changes the persistence scheduling here, not the semantics. |
+| `Core/DownloadStore.swift:2690`, `:3588`, `:5036`, `:5283`, `:5410` | Exact-key lifecycle/history lookup, position policy, metadata submission, lifecycle submission, and current promotion helper. Reuse P6's submit/async-resolve paths; do not edit these internals in parallel. |
+| `Core/DownloadStoreAsyncContract.swift:1` | Frozen deadline/exact-work contract. Compatibility adapters at this head are not yet bounded implementations. Await P6 implementation before relying on them. |
+| `Downloads/DownloadLifecycleReducer.swift:415` | `.localPlaybackProgressed` promotes every unverified state, including a persisted truncation warning. The reducer must reject promotion for `.truncatedRepeated`. |
+| `Downloads/OfflineDownloadModels.swift:278`, `:305`, `:389`, `:486`, `:506`, `:1042`, `:1054` | Existing clamp/near-end policy, local-vs-captured offset, sidecars, selected source, metadata backend and item reconstruction. These stay authoritative. |
+| `Labstream/Shared/Player/PlaybackSessionSource.swift:23`; `Labstream/Shared/Player/CustomPlayerView.swift:96` | Immutable offline authority and optional progress callback. Add a separate observed-playback callback, propagated through the view/session into the controller. |
+| `Labstream/Shared/Player/PlaybackController.swift:1173`, `:3070`, `:4156`, `:4284`, `:4319` | Position reporting on stop/heartbeat/pause/play and existing generation-fenced actual-playing signal. Saved/resume position before playback can reach the progress callback. |
+| `Labstream/Shared/Player/PlaybackController.swift:1278`, `:1358`, `:1709`; `Labstream/Shared/Player/PlaybackTrackSelection.swift:22` | Early sidecar-only subtitle menu hides the AVFoundation legible group. Existing typed subtitle mechanisms and sidecar selection authority are reusable. |
+| `Core/DownloadManager.swift:256`; `Downloads/OfflineLaunchAvailability.swift:5`; `Labstream/Shared/App/ContentView.swift:244` | `hasPlayableOfflineContent` scans/stats terminal files during body-derived gate evaluation. Cache derived availability outside the body, preserving auth admission. |
+| `Labstream/Shared/App/ContentView.swift:134`, `:164`, `:225`; `Labstream/Shared/UI/OfflineLaunchView.swift:65`, `:118` | Launch/backend-ready download recovery and restricted Offline/Reconnect. Reconnect restores auth; avoid adding a competing recovery scheduler. |
+| `Labstream/Shared/SystemIntegration/SystemEntryRouter.swift:87`, `:168`; `Labstream/Shared/UI/RootView.swift:41`; `Labstream/Shared/UI/RootNavigationCoordinator.swift:159` | Root consumes/clears an Offline Cinema return. Restricted Offline has a constant-nil focus binding and no consumer, so a route can survive until Reconnect. |
+| `Labstream/Platforms/visionOS/Player/CustomCinemaMode.swift:468` | Already dispatches Offline Cinema returns through `openOffline`; fix the consuming surface, preserve immersive teardown and online return routing. |
+| `Core/DownloadManager+Jellyfin.swift:138`, `:208`, `:277`, `:362`, `:392` | Duplicate PlaybackInfo POST/decode/verdict blocks, followed by currency checks, resolved-source persistence/reprobe and sidecache dispatch. Preserve server-minted PlaySessionId and selected audio. |
+| `Core/DownloadManager+Emby.swift:112`, `:166`, `:180`, `:299`, `:378`, `:407` | Separate download negotiation and strict override validation. Subtitle source comes from the in-memory selected Part, which is absent after lean retry/relaunch. |
+| `Core/DownloadManager+EmbyConvert.swift:980` | Shared reuse/completion handoff into the static lane; preserve atomic prep-to-static ownership, queue pause and exact source. Carry subtitle-origin identity here. |
+| `Core/DownloadManager+SideCache.swift:201`, `:249`, `:287`, `:425`, `:762` | Repairs use positional media/part lookup and the downloaded source ID, losing the original Emby subtitle source. P6 owns writer/lease/publication internals; P7 changes only source selection/inputs after integration. |
+| `Labstream/Shared/Player/SideAssetFetchCoordinator.swift:328`, `:712`, `:718` | Actor owns parked owners, but bridge sends park/unpark/cancel through independent Tasks. Make bridge ordering explicit per exact owner (B32), without changing P6 disk publication. |
+| `Core/DownloadKeepaliveCoordinator.swift:12`, `:66`, `:106`, `:253` | Two task maps/loop implementations. Transfer gate, generation removal and credential quarantine already exist; consolidate lifecycle while retaining backend request policy. |
+| `PMSKit/Sources/PMSKit/Jellyfin/JellyfinLibrary.swift:290`; `Downloads/DownloadMediaSelectionPolicy.swift:53`; `Downloads/OfflineDownloadDecision.swift:11` | Static request extension, destination extension and eligibility do not consistently split comma-list containers. |
+| `PMSKit/Sources/PMSKit/Jellyfin/JellyfinPlayback.swift:232`, `:265`; `PMSKit/Sources/PMSKit/Emby/EmbyLibrary.swift:299` | Negotiated Jellyfin decisions already split the first container; Emby static requests also split. Keep the same rule across remaining consumers. |
+| `Core/OfflineLibraryView.swift:231`, `:486`, `:663`, `:753`, `:811`; `UI/DownloadOptionsSheet.swift:273`, `:822`, `:994` | List has richer snapshots/actions than either sheet; Mac lacks live phase/progress parity. Context can wrap; route orange conflates processing with warnings; sheet deletion omits D2. |
+| `Downloads/OfflineLibrarySnapshot.swift:47`; `Downloads/OfflineLibrarySnapshotBuilder.swift:11`; `Downloads/DownloadRowStatusCaptionPolicy.swift:1`; `Downloads/DownloadRowDisplayPolicy.swift:1` | Existing value-driven rows, exact action identity and caption/quality rules. Extend/reuse instead of a second row-state machine. |
+| `Labstream.xcodeproj/project.pbxproj:858`, `:891`, `:926`, `:961`, `:996`, `:1031`, `:1253`, `:1288`, `:1323`, `:1356`, `:1425`, `:1459` | Exactly twelve 1.7.2 marketing versions: four apps × Debug/Release/PerformanceAudit. Final P7 commit changes all to 1.8.0. |
+| `scripts/testflight-release.py:444`, `:1083`; `scripts/asc-digest.py:207`, `:580`; `scripts/tests/test_testflight_release.py:340`; `scripts/tests/test_asc_digest.py:66` | Release reads project settings; digest selects latest uploaded marketing version independently per platform. Hardcoded 1.7.2 test/archive fixtures are sample data, not release defaults. |
+| `Labstream/Shared/App/PlatformClientIdentity.swift:42`; `docs/RELEASES.md:10` | Runtime identity reads the bundle (fallback 0.0.0), not a 1.7.2 PMSKit constant. Release doc distinguishes source from already-processed binaries; preserve history. |
+
+### P6 boundary and exact integration requests
+
+**Do not edit any P6 implementation file before P6 is integrated.** In particular: `DownloadStore*`, `RevisionedPersistenceWriter`, `DownloadArtifactLifecycleCoordinator`, `DownloadPathLease`, artifact/filesystem committers, side-cache writer/publication code, `BackgroundDownloadSession`, wake/registry/barrier files and the session AppDelegate are closed to parallel P7 work. Every `DownloadManager*.swift` is also owned by the P6 lead until integration. P7 may prepare pure policies, isolated tests and UI/player code against the agreed interfaces.
+
+P7 needs these existing/additive boundaries, not another persistence engine:
+
+1. Exact-attempt metadata submission + asynchronous typed resolution for `localPlaybackPositionMs`; immutable submission revision and stale/deleting rejection. Keep `OfflinePlaybackPositionPolicy` unchanged.
+2. Exact-attempt lifecycle submission + asynchronous typed resolution for the existing `.localPlaybackProgressed` event, plus cheap `lifecycleState(for:)` to distinguish probe-miss and truncation. Strengthen the pure reducer's truncation guard. Prefer this route over the unconditional `markCompleteIfUnverified` wrapper. No new persisted event/value is needed.
+3. A P7 adapter outside the store can enqueue/coalesce these submissions; it must not call P6.1 compatibility adapters while P6 is unfinished. Timeout/failure remains failure, never an acknowledged save/promotion.
+4. Existing side-cache interfaces must continue to accept the exact attempt and a source identity, and preserve P6's path lease, staging/publication and compare-clear checks. After P6 integration, change only source lookup and subtitle-origin arguments; no writer/lease changes are planned.
+5. Post-P6 `refreshRecords`/publication supplies a row snapshot to the availability cache and presentation builder. P7 adds an observation hook at that boundary, not synchronous filesystem reads under the store lock.
+
+If the completed P6 surface cannot supply one of these, record the precise missing signature and have the lead add only that adapter **after** P6 integration. Do not reopen the P6 contract or let a delegate patch its internals independently.
+
+### Sub-phases and disjoint ownership
+
+These are future implementation assignments, not agents launched by this design task. One lead plus one delegate is enough. File ownership, not function ownership, controls parallelism. Lead handles player/playback and integration; delegate handles MediaBrowser and rows sequentially within its lane.
+
+| Sub-phase | Owner | Files exclusively owned during parallel work | Dependency / overlap |
+| --- | --- | --- | --- |
+| P7.1 Contracts, red fixtures and scope | Lead | New `Core/OfflinePlaybackLaunchFactory.swift`, `Core/OfflinePlaybackEventSink.swift`, `Core/OfflinePlayableAvailability.swift`; new `LabstreamTests/P7OfflinePlaybackTests.swift`, `P7OfflineAvailabilityTests.swift`; pure reducer tests | Freeze ephemeral launch/event interfaces before surface wiring. Delegate can draft its isolated fixtures. |
+| P7.2 Exact-attempt playback and subtitles | Lead | Factory/sink above; `DownloadLifecycleReducer.swift`; `PlaybackSessionSource.swift`, `CustomPlayerView.swift`, `PlaybackController.swift`, `PlaybackTrackSelection.swift`, `DetailView.swift`; dedicated `P7OfflineSubtitleTests.swift` | Parallel with P7.3/P7.4. Manager wiring waits for P6. Lead does not edit `OfflineLibraryView.swift` in this phase. |
+| P7.3 MediaBrowser correctness and consolidation | Delegate | New download negotiation helper; `DownloadManager+Jellyfin.swift`, `+Emby.swift`, `+EmbyConvert.swift`, `+SideCache.swift`; `DownloadKeepaliveCoordinator.swift`; `SideAssetFetchCoordinator.swift`; relevant PMSKit MediaBrowser/request/container files; `OfflineDownloadModels.swift`, metadata builder; new dedicated P7 MediaBrowser/container/sideasset tests | Manager/sidecache files wait for P6 integration. Pure helper/tests can start immediately. No player/list/sheet or lead test files. |
+| P7.4 Shared row presentation and sheet actions | Delegate | `OfflineLibraryView.swift`, `DownloadOptionsSheet.swift`, `DownloadOptionsModel.swift`; new shared `UI/DownloadRowContent.swift`; PMSKit snapshot/presentation/caption files and dedicated row tests | After its P7.3 work; overlaps lead P7.2/P7.5. Wire library to P7.1 factory in this lane, using frozen interfaces. No edits to factory, reducer, player, Detail or manager. |
+| P7.5 Cached launch availability and Cinema return | Lead | `OfflinePlayableAvailability.swift`; `DownloadManager.swift` and new manager playback extension; `ContentView.swift`, `OfflineLaunchView.swift`, `SystemEntryRouter.swift`, `RootView.swift`, `RootNavigationCoordinator.swift`; dedicated launch/route tests | Manager edits only after P6. Parallel with delegate-owned files. Restricted surface provides focus binding to the existing list initializer. |
+| P7.6 Integration, regression gate and documentation | Lead | Canonical overhaul plan, `TESTING-CHECKLIST.md`, affected current download/playback docs; lead tests | Join both lanes; fixes to delegate files go back to delegate. No simultaneous shared-file edits or duplicate matrix. |
+| **P7.7 Version bump and release note — final commit** | **Lead** | **`Labstream.xcodeproj/project.pbxproj`, `docs/RELEASES.md`; version tooling/tests only if a real assumption needs repair** | **After functional changes and combined gate. Twelve marketing versions become 1.8.0. Run focused final version/tooling checks. No later functional P7 commit.** |
+
+**Concrete delegate manifest:** P7.3 owns only `Core/MediaBrowserDownloadNegotiator.swift` (new), the four named backend/sidecache extensions, `Core/DownloadKeepaliveCoordinator.swift`, `Labstream/Shared/Player/SideAssetFetchCoordinator.swift`, and these PMSKit files: `Jellyfin/JellyfinLibrary.swift`, `Jellyfin/JellyfinPlayback.swift`, `Emby/EmbyLibrary.swift`, `Emby/EmbyPlayback.swift`, `Downloads/MediaBrowserDownloadContainer.swift` (new), `Downloads/DownloadMediaSelectionPolicy.swift`, `Downloads/OfflineDownloadDecision.swift`, `Downloads/OfflineDownloadModels.swift`, `Downloads/DownloadOfflineMetadataBuilder.swift`. Changes to existing request builders are limited to the common container/helper integration. P7.4 owns the three named list/sheet/model files, new `UI/DownloadRowContent.swift`, and PMSKit `Downloads/OfflineLibrarySnapshot.swift`, `OfflineLibrarySnapshotBuilder.swift`, `DownloadRowStatusCaptionPolicy.swift`, `DownloadRowDisplayPolicy.swift`, plus new `DownloadRowPresentation.swift` if needed. It does not edit `DownloadLifecycleReducer.swift` or `DownloadManager.swift`. Any additional file requires an explicit ownership handoff before editing.
+
+**Dedicated tests:** lead uses new `LabstreamTests/P7OfflinePlaybackTests.swift`, `P7OfflineSubtitleTests.swift`, `P7OfflineAvailabilityTests.swift`, `P7OfflineReturnTests.swift` and `PMSKit/Tests/PMSKitTests/P7OfflineLifecycleTests.swift`. Delegate uses new `LabstreamTests/P7MediaBrowserNegotiationTests.swift`, `P7SubtitleSourceRecoveryTests.swift`, `P7SideAssetOrderingTests.swift`, `P7DownloadRowsTests.swift` and `PMSKit/Tests/PMSKitTests/P7DownloadContainerTests.swift`, `P7DownloadPresentationTests.swift`, `P7SubtitleSourceCodingTests.swift`. Existing P6 tests are read/run but not concurrently edited. Shared fixture edits and any manager property needed by an ordered side-work bridge go to the lead in the P7.1/P7.5 handoff; delegate does not add them opportunistically.
+
+#### P7.1 Contract and red tests first — lead
+
+Freeze a small immutable `OfflinePlaybackLaunch` keyed by `DownloadAttemptKey`: file URL, reconstructed item (with rewind applied once), metadata backend, cached poster/previews/chapters/subtitles, and exact-key event closures. It contains no tokens, server client, auth restore or network lookup. The factory re-resolves the rendered action identity, rejects deleting/nonterminal/stale attempts and rechecks the exact file. No silent remote fallback from an explicit Play Offline action.
+
+Events are separate: `progress(positionMs, durationMs)` and `playbackObserved`. The sink captures the attempt at launch; it never derives the attempt from rating key when a delayed callback arrives. A playback-session generation fences callbacks and pending samples within an attempt. At most one queued latest progress sample per active sink, plus one resolving commit; a terminal close sample is retained until submitted/resolved or an explicit failure is recorded. Stop invalidates observer callbacks but still sends that sink's captured terminal sample. A reopening of the same attempt must not let the older session's delayed close overwrite the newer session.
+
+Commit tests/fixtures before fixes. Use current real call paths and deterministic latches/request stubs, not sleeps or source-spelling checks for behavioural claims. Proposed pins have explicit current-code failures below. Green ownership/auth/storage controls belong in retained coverage, not the red count.
+
+#### P7.2 One factory, truthful verification and combined subtitle menu — lead
+
+- Detail replaces its private local request assembly with the factory. Library delegate replaces `offlineItem`, prefix-based preview helpers and rating-key progress closure with the same launch. Keep iOS orientation handoff, Mac presentation owner IDs, music pause and Cinema origin.
+- Persist progress using the existing local clamp policy, independently of verification. A captured resume position, seek, pause during startup or close-before-start is not observed playback. Emit the observed event from the current local item's generation-accepted `.playing` observation, once per item generation; ready-to-play alone is insufficient. It must also work when real playback begins at zero.
+- An unverified row with `.probeMiss`, `.backgroundProbeDeferred` or `.migratedUnknown` can promote on that event; a legacy missing reason follows the existing eligible-unverified rule. Add the reducer guard for `.truncatedRepeated`; a known truncated body remains playable with its warning and can save position, but does not become complete because its opening plays. Reuse the existing lifecycle event; no new persisted enum.
+- Use P6 async submission/resolve. Coalesce equal/intermediate samples and bound pending state; do not launch one durable save task for every toggle. Preserve order between observed event, subsequent progress and final close. A held/failing persistence operation must leave MainActor responsive and the exact captured owner intact. No synchronous close flush.
+- Both surfaces choose metadata backend, local-over-captured resume offset and the same rewind policy once. Preserve end reset, negative clamp and nil duration. Missing legacy metadata retains the existing minimal local fallback; do not invent backend authority for a network request.
+- For offline subtitle menus load the local AVFoundation legible group as well as sidecar descriptors; combine typed mechanisms with **one Off row**. Selecting sidecar deselects embedded; selecting embedded clears sidecar overlay/cues selection and invalidates in-flight sidecar parse; Off clears both. Generation/item/selection fences apply after every await. Opening the menu does not parse sidecar files. Preserve language/role preference, duplicate-label disambiguation and no backend selection PUTs. Embedded audio remains AVFoundation-local.
+
+#### P7.3 MediaBrowser source correctness, negotiation and ordered side work — delegate
+
+1. **B57 container normalization.** One small pure MediaBrowser container-token helper: trim/case-fold and use the first comma-separated token, with each caller retaining its existing unknown/fallback policy. Use it consistently for Jellyfin Original offer/eligibility, request extension and new destination. Do not select any playable token from later in a list and pretend it is the actual format. Retried static rows keep their persisted extension; normalization must not rename an existing checkpoint. Preserve Emby's current equivalent behaviour.
+2. **Shared negotiation.** A narrow helper owns one PlaybackInfo send/decode/typed decision flow with injected backend request/decode adapters. Keep Emby's download-vs-compatible-remux profiles distinct, and Jellyfin Original's static fast path. Callers supply immutable attempt, owning session and exact preferred source/audio intent. Revalidate attempt plus server/user after every await before persistence, keepalive or transfer dispatch. An explicitly requested source missing from the response fails closed; a newly minted superseded session follows existing cleanup authority. Preserve commitment of PlaySessionId before forward streaming. Do not merge routers, Convert pollers, storage/session internals or all streaming PlaybackInfo code.
+3. **Resolved source/audio.** Persist negotiated download source and use it for retry, previews and source-specific assets; find media/part by exact source ID, not old array positions or synthetic `Media.id`. Re-probe lean retries where needed. Selected audio drives remux copy-vs-AAC policy and server request indices; no first-audio fallback when a chosen track exists. Existing B58/B59 tests are retained, not newly red.
+4. **B51 subtitle origin.** Converted output and subtitle source are different identities. Preserve the exact original source through fresh Convert, reuse, relaunch polling, retry and static handoff; fetch subtitle descriptors by that source, even if the output has none. Repair uses the original ID, while BIF/media transfer continue using output ID. Never substitute `mediaIndex` or first source after reordering. With no subtitles on the proven source, complete the media download normally and cache no sidecars.
+5. **Minimal v5-compatible exception:** current metadata has one `mediaSourceID`, overwritten by converted output, plus positional indexes and a multi-source baseline; none uniquely preserves the original subtitle source after handoff. Add one optional `textSubtitleSourceMediaSourceID` to `OfflineMetadata` only if the integrated P6 head still lacks an equivalent. Seed before Convert, carry across replacement/handoff, decode with `decodeIfPresent`, and preserve it in metadata merge/coding. No envelope version, lifecycle, journal or filename change. Older v5 readers ignore it; nil on older rows retains an exact provable source if available, otherwise bounded repair skips safely rather than guessing. Include v5 missing/unknown-field and round-trip tests. Do not use a mutable shared string slot for output and subtitle identities.
+6. **One keepalive lifecycle.** One task table keyed by backend+exact attempt and one common loop for generation removal, live-transfer gate, owner-session refresh and credential-generation quarantine. Backend closures build requests and classify responses. Preserve Emby Ping-only and Jellyfin fixed-zero interim, poll interval and two-observation handoff grace. No loop starts for static/preparing rows or a dead transfer; old completion cannot remove a replacement loop. Durable encoder teardown remains the existing cleanup runner's job.
+7. **B32 ordered bridge.** Sequence park/unpark/cancel for the exact `SideAssetOwner` through one ordered bridge (a per-owner task chain or the existing ordered-work pattern), including cancellation relative to pending state changes. Stale commands cannot park a resumed owner or revive a cancelled one; another attempt/owner can proceed independently. Preserve P6 side-cache writer/lease logic. Use a controllable scheduling seam to deliver earlier park work late in the red test; do not rely on chance Task ordering.
+
+#### P7.4 One lifecycle presentation, consistent cells — delegate
+
+Drive list, iOS/visionOS existing-download section and native Mac existing-download section from the same pure row presentation/snapshot, with one shared cell-content component. Platform wrappers can retain native List/Form/group chrome and existing tap-target sizing. Selection options (Original/compatible/preset/existing version) share title, one-line detail and accessory spacing; avoid a broader sheet redesign.
+
+- Lifecycle/admission/finalization semantics, progress fraction and actions come from existing snapshot/caption policies, not three hand-written `DownloadStatus` switches. Planned/waiting has a clock, no transfer spinner/ETA; server work at zero is indeterminate; transfer finalization and server indexing retain distinct wording. Exact vs approximate percentages stay distinct and estimates stop at 99% until terminal.
+- Palette contract: primary/secondary for identity/context/route; accent for interactive controls and selection; green only for verified completion; amber only for an unverified/caution state; red only for failure/destructive actions. Original/Optimized/Remux/Transcode remain textual/icon route badges in neutral styling. Paused/waiting is neutral, never failure red. Do not use color alone to convey state.
+- Context and quality lines never wrap: one line, truncation, full accessible value. Long episode title may use the established compact two-line title. Metrics occupy consistent slots and one-line fields; retire the ad hoc compact flow that produces changing context-row counts. Do not hide important semantics solely in an ellipsis: expose full accessibility text and full error reason in the existing detail/error affordance. Support Dynamic Type and narrow windows without shrinking action targets.
+- Exact action identity travels into Pause/Resume/Retry/Delete and sheet confirmation. Capture the identity when rendering/opening confirmation, not at commit time; if A is replaced with B, confirming A cannot delete/pause/retry B. Library already mostly does this; sheets currently call rating-key entry points.
+- Share D2 deletion message policy: paused/in-prep deletion cancels unfinished Plex/available Emby server preparation where possible; finished server versions remain. Multi-row confirmation counts captured rows accurately. Journal failure stays visible; never show deletion success before the existing barrier.
+- Give title-aware action labels, phase/status and progress accessible values, selected state and stable semantic identifiers. Mac gets live waiting/preparing/verifying/progress/reason parity. Keep media bytes and extras separate and quality based on the saved output/request, not current server primary bitrate.
+
+#### P7.5 Derived availability and one-shot Offline return — lead
+
+- Replace body-time file scans with a generation-tagged, in-memory availability result. Capture terminal `(attempt, URL)` candidates from manager publication, stat off MainActor and outside store locks, then publish only if the candidate generation still matches. Progress-only refreshes/body reads do not rescan unchanged candidates. No new persisted cache.
+- Refresh on initial recovery completion, terminal promotion/publication, Delete/replacement/reset and foreground re-entry; coalesce overlapping refreshes. Fresh cold-launch eligibility uses the completed local scan, with existing restoring presentation while unresolved, rather than flashing sign-in or allowing queued/missing rows. A candidate list becoming empty withdraws availability immediately; a delayed positive scan cannot revive it. Play always rechecks exact file/attempt regardless of the cache.
+- Keep `temporarilyUnavailable` distinct from missing/revoked/refused credentials; browse readiness wins. Do not open Offline during a blocked/unsupported store state or let cached availability confer auth authority. A false cached result must be refreshed on the named edges so newly completed files become reachable.
+- Restricted `OfflineLaunchView` owns a real focus binding and consumes/acknowledges its matching `offlinePending` route on mount/change, like Root, without a server fetch. Clear by route identity so consuming A cannot erase newer B. Reconnect mounts normal browse without replaying the consumed return. Normal Root still consumes returns for an online-origin Offline tab; no global clear on Reconnect that could drop a new route.
+- Preserve `runLaunchDownloadRecovery` and its gate as the sole recovery entry point on backend-ready transition. Test recovery runs once on reconnect, no pending work is lost, and an already-ready browse shell does not bounce back through Offline.
+
+### Pins — write first; each must be red on the inspected head
+
+These are test specifications, not claims that this drafting task ran tests. Red evidence must call the current production behaviour before replacing it. If a proposed case is already green after P6 integration, classify it as retained and do not count it as a new failure. In particular P6's held-writer MainActor test is inherited coverage, not a second P7 red claim.
+
+| Pin / owner | Required assertion and why current code fails |
+| --- | --- |
+| 01 — lead, B73 | Launch Detail's Play Offline path, deliver progress and real-playing events, reopen from either surface: local position is saved and a probe-miss row verifies. Current `DetailView:715` installs neither sink. Keep the test adapter at the real launch path. |
+| 02 — lead, B75/op-04 | Launch attempt A, replace with B at same record key, deliver A progress/observed/close: B's offset/status are untouched. Current manager re-resolves B by rating key. Include delayed commit completion and newer playback session on the same attempt. |
+| 03 — lead, B74 | Start with a positive saved offset, send startup-paused/close without `.playing`: unverified remains unverified. Current library progress path promotes on positive position. Real current-item `.playing` at zero is a green companion after the callback is installed. |
+| 04 — lead, B74/jf-09 | Reducer state is unverified with `.truncatedRepeated`; actual-play event never makes it complete, and warning/bytes survive relaunch. Current reducer unconditionally returns complete. |
+| 05 — lead, B76 P7 portion | Hold first position commit, issue many positions and duplicate pause/play samples, then close: one commit is in flight and only latest/final sample remains queued; final value wins. Current per-callback saves do not coalesce. Retain separate P6 MainActor-heartbeat and typed-failure tests; no timing benchmark. |
+| 06 — lead, op-31 | Identical saved local position/rewind preference yields identical seek target from Detail and library (including floor and near-end reset). Current library skips rewind. |
+| 07 — delegate, B57 | `"mp4,m4v"` is Original-eligible and produces `stream.mp4` plus `.mp4` new destination consistently; case/space/null variants follow caller policy. Current eligibility/request/destination retain comma-list strings. Existing retry `.mov` preservation is a green companion. |
+| 08 — delegate, B51 | Convert original S with text subtitles into output C without subtitle streams, persist/reload, resume/retry/handoff/repair with reordered sources: fetch descriptors/sidecars from S, media/BIF from C. Current handoff depends on missing Part and repair queries C/index. Missing/ambiguous S safely skips, never picks a sibling. |
+| 09 — lead, B80 | Local asset contains embedded tx3g plus an SRT sidecar: one menu contains both and one Off; sidecar→embedded→Off renders only selected source; stale parse cannot restore overlay. Current early return hides embedded tracks whenever sidecars exist. |
+| 10 — lead, B78 | Publish Cinema Offline return while restricted Offline is mounted; it focuses that row and acknowledges route once; after successful Reconnect Root sees no old pending route. Current restricted view never consumes it. Companion: newer route B survives A's acknowledgement. |
+| 11 — lead, B79 | Inject counted file-existence reader: repeated launch-gate/body reads after one scan perform zero new stats, progress-only publication does not rescan, Delete plus delayed scan cannot re-admit removed attempt. Current computed getter rescans every call. Counts/generations, not a performance baseline. |
+| 12 — delegate, D2/pu-24 | Open sheet confirmation for paused Plex/Emby prep A: copy states unfinished server cancellation and finished-version retention; replace A with B before Confirm: B remains. Current sheet lacks copy and invokes rating-key Delete. |
+| 13 — delegate, row parity | Same waiting/preparing/finalizing/paused/unverified/error facts yield the same semantic phase, progress kind and permitted actions in list and both sheets. Use real surface-to-presentation adapters. Current Mac collapses states to generic text and mobile has its own branches. Assert full accessible status/action values too. |
+| 14 — delegate, B32 | Suspend delivery of park(A), issue unpark(A), force the older delivery last: effective state is unparked; cancel fence rejects late commands; unrelated owner advances. Current independent bridge Tasks carry no ordering/fence. Add only a narrow scheduling hook needed to reproduce delivery order. |
+| 15 — lead, final version | Parse all twelve app build configurations: each marketing version equals 1.8.0 and none remains 1.7.2; release note identifies new source without claiming upload. Current project has twelve 1.7.2 entries. This is a static release assertion, not an app regression test. |
+
+**Retained controls (already handled; do not label red):** B58/B59 selected audio/exact missing source, B60 live-transfer gate, D2 journal barriers, D5 three network flags, P6 nonblocking persistence/deadlines, local-position clamp/near-EOF reset, generation-fenced subtitle parsing, zero-network local playback, source metadata upsert preservation, durable truncation park, range extension stability and server/user isolation. Behaviour-preserving negotiation/keepalive consolidation needs these existing tests green, not invented regressions.
+
+### Inventory disposition — no P7 row silently disappears
+
+At this exact head every Appendix B `jf-*` and `op-*` row is labelled P7; **the `pu-*` and `emby-*` rows are still labelled P4**, including emby-42. Treat them as cross-area preservation obligations and B51's companion, not proof that all of P4 must be reimplemented. Appendix A references are older than this head; the map above is authoritative for line locations.
+
+| IDs | P7 disposition |
+| --- | --- |
+| B32 | Fix ordered park/unpark/cancel bridge in P7.3. |
+| B51 / emby-42 | Fix exact persisted subtitle origin and repair in P7.3; older ambiguous rows keep playable media with bounded skipped repair. |
+| B57 | Fix remaining comma-container consumers; preserve stable retry destinations. |
+| B73, B74, B75 | Factory, separate observed signal, truncation guard and attempt/session-bound sink. |
+| B76 | P6 removes blocking waits; P7 coalesces and wires both surfaces. Retain P6 pins. |
+| B78, B79, B80 | Restricted return consumer, cached availability, combined subtitle menu. |
+| jf-01–04 | Preserve minted session, lean retry re-probe, disclosed optimize fallback and selected-audio/video-copy codec policy. |
+| jf-05–08 | Preserve hvc1 fixup, no forward byte resume, daemon redelivery adoption, 0.95 truncation and unknown-duration unverified finalization. P5/P6/session work is not reopened. |
+| jf-09 | Preserve two-strike published body across relaunch and forbid playback-based warning erasure. |
+| jf-10 | Preserve bounded forward stall restart (90s / two automatic restarts), attempt ownership and exact-vs-estimated progress. |
+| jf-11 | Superseded by D3/P1 fixed-zero interim; deliberately do not restore advancing watch-state reports. Pending Ping-only evidence is deferred. |
+| jf-12–15 | Preserve auth quarantine/generation removal, live-transfer gate, journaled encoder ID, post-await rejection and superseded-session cleanup in the common loop/helper. |
+| jf-16–18 | Preserve extension, intent/audio/source across relaunch, and same-server/user resolution without reading activeBackend as authority. |
+| jf-19–20 | Resolved source propagation and selected audio remain exact through negotiation/assets; add integration cases around the helper, retain B58/B59 tests. |
+| jf-21–22 | Reuse existing estimate/cap/P5 storage policies. Surface exact/~estimated/unknown correctly; no new admission math. |
+| jf-23 | Preserve header auth, ApiKey stripping and sanitized local trickplay playlist publication; verify no credential in persisted bytes. |
+| jf-24–25 | Preserve P6 bounded background finalize/foreground revalidation and pre-revocation teardown/sign-out pause. Keep hardware acceptance open. |
+| jf-26 | Keep existing honest forward-only restart/failure policy; additional transient retry redesign deferred below. |
+| op-01–05 | Preserve clamp/local precedence; fix exact-attempt saves, shared launches and Detail parity. |
+| op-06 | D4 separate issue: no progress/watched sync-back. |
+| op-07–12 | Preserve no-network local sessions and auth distinctions; cache availability; fix restricted return/reconnect recovery without duplicate starts. |
+| op-13 | Preserve sign-out/revocation cold-launch exclusion; changing local entitlement is deferred. |
+| op-14–16 | Probe-miss promotion only after observed play, truncation warning retained, lazy sidecars plus embedded selection. |
+| op-17 | Keep bitmap offline rendering intentionally out of scope. |
+| op-18–23 | Preserve local audio selection, side-asset merge ownership, single-flight BIF/tiles/chapter fallback, local artwork and preparing wording. |
+| op-24 | Preserve existing HDR/DV delivery; actual frame/hardware gate stays explicit, decoder redesign deferred. |
+| op-25–29 | Fix restricted Cinema return; preserve orientation restore, music yield, exact-file Play gate, server-deleted item playability and bounded repairs. |
+| op-30 | Keep existing minimal local fallback where present; no new legacy-owner recovery subsystem. |
+| op-31–32 | Same rewind and metadata-derived backend on both surfaces. |
+| op-33 | D4 separate issue: no offline Up Next/autoplay. |
+| op-34–35 | No tokens persisted; Offline remains reachable during connectivity loss/backend transition under existing auth policy. |
+| pu-01–20, pu-35–36 | Retain P4 planning semantics: watched tri-state, immutable atomic plan, dedup, source fidelity, unknown-size confirmation, bounded lane admission, cancellation, secure probes and exact audio intent. No planner rewrite. |
+| pu-21–24 | Preserve episode ordering/identity/context and bulk delete count; extend exact action identity to sheets. No season grouping. |
+| pu-25–30 | One row phase/progress/backend/prepared-version/bytes/quality presentation, including finalizing/waiting states. |
+| pu-31–34 | Do not resurrect obsolete checkpoint wording; paused neutral/resume, waiting truthful, browse-ready precedence preserved. |
+| emby-01–09, emby-11–41, emby-43, emby-45–51 | Retain P4 router/poller/source/audio/create/reuse/cleanup invariants while extracting only negotiation and subtitle handoff. Especially no handoff recursion, no source substitution, 401/403 job retention, same-owner recovery, queue-paused static handoff, finished file retention and stable retry extension. |
+| emby-10 | Keep forward-only remux, persisted minted session, ping-only keepalive and durable teardown. |
+| emby-44 | D4 separate issue for Premiere/capability detection; preserve existing honest failure reporting. |
+
+### Deferred items and reasons
+
+Implementation closeout records issue links in the canonical plan. Reuse existing issues where they exist; no invented issue numbers. Required open work stays open even though P7 is the final structural phase.
+
+| Item | Reason / preserved behaviour |
+| --- | --- |
+| D4 / op-06 progress and watched-state sync-back | Needs durable outbound ownership, conflict/near-end/watch semantics and per-backend replay; adding it now would turn a local playback fix into a sync subsystem. Separate issue. |
+| D4 / op-33 offline Up Next/autoplay | Needs episode sequencing, downloaded-file/source matching and playback queue lifecycle. Separate issue; local sessions continue issuing no PlayQueue/NextUp requests. |
+| D4 Offline season grouping | Changes list hierarchy/navigation; preserve existing show/season/episode sort and identifiable rows. Separate issue. |
+| D4 / emby-44 Premiere detection | Backend capability/entitlement discovery and UX are independent of safe download negotiation. Separate issue; do not silently downgrade intent. |
+| D3 / B55 / jf-11 Ping-only payload change | Live A/B verdict is absent. Keep fixed-zero interim; consolidation alone cannot prove encoder lifetime or no watch-state mutation. Record a bounded live-probe follow-up rather than block P7 on new experimentation. |
+| op-13 access after explicit sign-out/revocation | A product/auth policy change, not a cache optimization. Keep current refusal at cold launch. |
+| op-17 bitmap subtitles | Requires OCR/burn-in/local image renderer and codec support; preserve explicit text/embedded scope. |
+| op-24 broader HDR/DV engine changes | Separate cross-backend decoder/delivery programme; retain current hvc1 handling and require actual decoded-frame/hardware evidence for touched playback. Do not imply labels prove success. |
+| op-30 new legacy metadata/owner recovery | No reliable identity to reconstruct silently; keep existing safe minimal local fallback without broad migration. |
+| Historical B51 rows without provable original subtitle ID | Converted source, indexes and multi-source baseline cannot uniquely reconstruct the original. Never fetch subtitles from a guessed sibling. New rows carry the one optional source field; existing cached sidecars remain available. |
+| B70 new mounted-SwiftUI inspection framework | P1 already fixes audio invalidation when switching to byte-for-byte; existing source guard stays. New broad inspection infrastructure is disproportionate. Use focused presentation/selection tests and the normal semantic smoke when touching this path; a source guard is not claimed as mounted behavioural proof. |
+| jf-26 new forward-stream transient retry strategy | Forward bytes lack a stable validator; safe restart budget/backoff affects transport and P6-owned session files. Preserve bounded existing failure/restart behaviour, no byte-offset recovery. |
+| P5/P6 deferred items, including B30 emergency-full-volume Delete, wider HEVC scanner, all-I/O async construction, larger durability/scheduler redesigns | Already reasoned and journaled in prior phase plans. P7 does not inherit them automatically. Keep their issue/open-gate records and exact existing failure messages. |
+| Performance baseline / benchmark suite | Explicitly excluded. Deterministic counters, held-I/O heartbeats and bounded-queue assertions establish the intended behaviour without a benchmarking project. |
+
+### Risks and edge cases to preserve
+
+1. **Identity survives every suspension.** Attempt, player session generation, source ID and owning server/user are different authorities. Never replace one with rating key, active backend, synthetic Media.id or array index. Old callback/route/parse/keepalive completion cannot affect new work.
+2. **Stable URL reuse has a residual.** Exact-key admission and a final existence check prevent stale launches; they do not themselves guarantee open-file byte retention if Delete/re-download replaces the stable path during startup. Preserve current playback file handling; do not introduce long-lived store leases. A reproducible live-file replacement issue needs a separately scoped playback-file lifetime fix.
+3. **Durability remains real.** P6 asynchronous acceptance is not commit success. Never acknowledge a saved offset, completed verification or deletion on timeout/failure. Failed progress saves do not promote; observed-playback promotion is a distinct event with its own result. No blocking main-thread close barrier.
+4. **Truncation is not a probe miss.** The first minutes playing cannot prove the tail exists. `.truncatedRepeated` survives playback and relaunch; media stays playable and never auto-deletes because warning remains. Unknown duration is not fabricated completeness.
+5. **Offline means local.** No metadata refresh, image server fetch, timeline/scrobble, transcode negotiation, Up Next or auth hydration from the launch factory/player. Background bounded side-asset repair is a separate manager activity and uses existing owner session/network policy.
+6. **Cache correctness outranks stale UI.** Cache is derived, not auth authority. Deletion withdraws candidates, background scan results are generation-checked, missing external files are rechecked on foreground/Play, and a new terminal file triggers refresh. Store startup blocks remain blocks.
+7. **Source/output split.** Emby text sidecars may belong to S while media/BIF belongs to C. New optional source ID must survive coding/upserts/retry/handoff without copying foreign-attempt cached paths. Old v5 rows still load; old readers can ignore the additive field.
+8. **Subtitle mechanisms are mutually exclusive.** One Off, one selection, embedded deselected for sidecar, sidecar authority revoked for embedded. Menu population and selection must survive player item replacement and cancelled parses without a stale overlay.
+9. **Pause/Delete semantics remain distinct.** Pause retains server work/checkpoints according to existing lane rules; Delete durably records cleanup and cancels supported unfinished work. Never clean up a failed row's resumable job on an unrelated sweep. Finished server versions remain reusable.
+10. **Forward-only is still forward-only.** Keep minted session, no range/blob resume, truncation guard, redelivery adoption, bounded stalls, exact progress and P5 storage gates. Loop refactoring cannot restart dead encoders under a foreign account.
+11. **Presentation consistency is semantic.** Planned rows are waiting, conversion at zero is indeterminate, optimized static files are not live transcodes, extras have a different denominator, paused isn't failed, and all context lines are single-line with full accessible values.
+12. **Platform/lifecycle acceptance remains distinct.** iPhone/iPad orientation, Mac presentation teardown, visionOS Cinema return and audio-session handoff all remain. tvOS compiles shared player code with no downloads. Unit tests cannot close real server or device lock/sleep/background gates.
+13. **Privacy/version claims.** No server tokens, real media identifiers, hosts, user IDs or home paths enter fixtures/docs. 1.8.0 source does not mean uploaded/processed/selected; historical 1.7.2 distributions remain historical facts.
+
+### P7.6 Integration and one combined gate — lead
+
+1. Integrate only after P6 and both P7 lanes are complete. Rebase line maps, inspect manager/store adapters, search both surfaces for duplicate local launch construction, rating-key progress sinks, prefix-derived backend, body-time fileExists and independent park Tasks. Preserve `Generic` explicitly.
+2. Run focused red-to-green tests first; retain P6's exact-ticket/deadline/path ownership and v5 migration tests. Add actual-call-path controls for no-network local launch, all three metadata backends, missing source, selected audio, subtitle race and static extension. A green helper-only test does not prove a surface uses it.
+3. Run one canonical combined suite: hermetic PMSKit (`swift test --package-path PMSKit --no-parallel --skip 'Live.*ProbeTests'`), applicable hosted app tests, `scripts/native-test-matrix.py affected`, then documentation strict build → links → Mermaid and `scripts/ci-hygiene.sh`. Use repository instructions for exact build/run commands. No duplicated concurrent matrix and no performance baseline.
+4. Future implementation verifies clean native visionOS/iOS/macOS/tvOS builds and the applicable product runs. Queue simulator turns under the maintainer's lease, one at a time; use only this worktree's exact devices/products, shut down at end, and clean Mac staged apps. This design task runs none of them.
+5. Semantic acceptance: narrow iPhone, regular iPad, visionOS and resizable Mac rows/sheets; VoiceOver/title/action/status parity; long episode/context and error strings; paused/in-prep Delete copy and race; Detail↔library resume; cold Offline→Cinema exit→Reconnect; no repeated route or duplicate recovery. Passive visionOS smoke is not gaze/pinch acceptance.
+6. Playback edits require Plex/Jellyfin/Emby evidence for available matching sources: exact downloaded variant, initial and reopen/seek result, embedded+sidecar selections, and inspected decoded frames where applicable. Local fixture evidence proves local logic, not live backend negotiation, hardware HDR/DV or background continuation. Report blocked live/hardware gates accurately and leave them open for maintainer/TestFlight acceptance.
+7. Update canonical plan/checklist with fixed/retained/deferred IDs and issue links, preserve D3's unresolved status, and document single-line/color rules and the no-sync-back limitation. No release upload or App Review action belongs to P7 implementation.
+
+### P7.7 Final sub-phase — version bump and release note — lead
+
+The last commit in the one P7 PR is the coordinated 1.8.0 marketing-version change. Change exactly all twelve `MARKETING_VERSION = 1.7.2;` entries in `Labstream.xcodeproj/project.pbxproj` to `MARKETING_VERSION = 1.8.0;` (four app targets × three configurations, including tvOS despite its download exclusion). Verify the count and configuration mapping statically; no accidental partial platform bump or leftover 1.7.2 setting. Do not edit runtime identity to inject an app-version constant.
+
+Audit already performed for this design:
+
+- `scripts/testflight-release.py:444` reads `MARKETING_VERSION`/`CURRENT_PROJECT_VERSION` using build settings; `:1083` defaults version-sensitive commands to the project's version. There is no production 1.7.2 default to replace.
+- `scripts/asc-digest.py:207` defaults to newest **uploaded** marketing version per platform, not repository source; `:28` merely shows an explicit 1.7.2 example. After source bump but before upload, the default can correctly report 1.7.2. Do not force it to 1.8.0.
+- `scripts/tests/test_testflight_release.py:340` and `scripts/tests/test_asc_digest.py:66` use 1.7.2 sample archive/API data. Retain historical samples; add a mixed 1.7.2/1.8.0 case with platforms at different upload states, explicit `--version 1.8.0` filtering, and project-version selection mocked as 1.8.0. These are compatibility controls and may already pass; do not label them red bugs.
+- `PlatformClientIdentity.swift:42` takes bundle version and falls back to 0.0.0. No matching 1.7.2 Swift constant was found in Labstream/PMSKit. The release page's old 'matching PMSKit fallback' wording is stale and should be corrected.
+
+Update `docs/RELEASES.md` with **1.8.0 source / downloads overhaul**, the user-visible note below, and accurate source columns for all four products. Preserve the recorded 1.7.2 (1506) processed/1503 selected history. Do not claim 1.8.0 archives, uploads, build selection, validation, device acceptance or review submission. No upload, build-number change or tag is performed by this drafting task; final release build numbering/tagging is coordinated by the maintainer's release workflow after stack integration. The requested P7 edit is the twelve marketing settings and release documentation; do not silently bump build numbers as a side effect.
+
+Run focused static version assertions and both release/digest tooling test modules, then docs checks for the release note. Suggested credential-free command: `python3 -m unittest discover -s scripts/tests -p 'test_testflight_release.py'` and the same command with `test_asc_digest.py`. Do not invoke `testflight-release.py preflight` merely to inspect versions in a read-only task: it calls xcodebuild. If any final test exposes a real version assumption, repair it in this final commit and rerun relevant checks. If a functional defect appears, fix it first and keep the version bump last.
+
+### User-visible changes feeding the final release note
+
+- Detail's Play Offline and the Offline library remember the same local position and apply the same resume rewind. Retried/replaced copies cannot inherit a previous player's saves.
+- Playback-not-verified warnings clear after actual playback for eligible unverified files (including background-deferred validation); known truncated files keep their warning.
+- Embedded subtitles and downloaded text sidecars are both available offline. New Emby converted downloads retain the original subtitle-source identity across retry/relaunch; older ambiguous repairs fail safely.
+- Jellyfin comma-list container metadata consistently offers/downloads compatible Originals. Source/audio intent, ownership and keepalive lifecycle survive refactoring.
+- Offline rows and current-download sheets share clear waiting/preparing/downloading/verifying/paused/failure states, consistent colors, single-line context, and accessible controls across iPhone/iPad, Vision Pro and Mac.
+- Delete explains supported unfinished server-job cancellation and finished server-version retention. An old confirmation cannot remove a newer attempt.
+- Offline cold-launch availability no longer rescans disk while the UI renders. Cinema return is consumed on the restricted Offline surface and does not replay after Reconnect.
+- Download network preference continues to cover cellular, Low Data Mode and expensive networks. Apple TV stays streaming-only.
+
+**Proposed concise release copy (conditioned on accepted implementation):**
+
+> 1.8.0 completes the downloads overhaul with more consistent download controls and status across iPhone, iPad, Apple Vision Pro and Mac. Offline playback now remembers your place from either launch surface, respects resume rewind, and offers embedded subtitles alongside downloaded text subtitles. Jellyfin Original downloads and Emby converted-download subtitle recovery are more reliable. Offline Cinema return and reconnect behaviour are improved. Deleting unfinished downloads explains server-job cancellation while keeping finished server versions. Apple TV remains streaming-only.
+
+**Exit:** P7 red pins turn green, inherited P6/v5/backend invariants stay green, each inventory item has a disposition, shared-surface UX is verified with remaining live/device gates explicit, and the final commit establishes 1.8.0 source plus its release note. The maintainer then owns stack merge and the separately authorized TestFlight run.
+
+### Revision 2 amendments (co-review round 1: approve with changes)
+
+These amendments are binding. Where they conflict with the sections above, they win.
+
+1. **Blocked admission keeps read-only playback (P7.5).**
+   - Treat two states differently:
+     - an **unreadable or unsupported index**, which does not open Offline;
+     - **blocked admission with readable terminal rows**.
+   - In the blocked-admission case:
+     - availability still refreshes, even when startup recovery cannot finish;
+     - completed downloads stay playable;
+     - the recovery banner stays and mutations are disabled.
+   - This preserves target design §6 and the P3 rule.
+   - **New pin:** a credential-free gate test that proves the distinction.
+2. **Final admission after orientation (P7.1/P7.2).** Both launch surfaces await orientation before they present (`DetailView.swift` ~1542, `OfflineLibraryView.swift` ~426).
+   - The exact-attempt and file admission happens after orientation and before presentation.
+   - A presentation-request generation rejects superseded tasks.
+   - **New latch pin:** suspend orientation for A, replace A with B, release; A never starts.
+3. **B32 includes the fetch-entry park path (P7.3.7, pin 14).** `SideAssetFetchCoordinator.swift` ~693 awaits `setParked(true)` inside `fetchOptionalSideAsset`.
+   - Fetch-entry state sync and registration join the same owner sequencing and fencing as the wrapper Tasks.
+   - Admission and control operations are ordered without serializing the network fetch behind them.
+   - **Pin 14 extended:** suspend the fetch-entry path, then Resume or Cancel, then release.
+4. **No unconditional release-tooling expansion (P7.7).**
+   - Keep the existing release and digest suites, plus the static assertion on the twelve configurations.
+   - Add new tooling cases only if the implementation finds a real version assumption.
+
 ## Open gates (never claimed by this work)
 
 - Live Plex, Jellyfin and Emby acceptance for every shared-behaviour phase.
