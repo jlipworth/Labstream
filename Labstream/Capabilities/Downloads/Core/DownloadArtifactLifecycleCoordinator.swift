@@ -6,7 +6,7 @@ import Darwin
 /// mutations. Registration always precedes filesystem work; the worker reports the terminal
 /// index outcome when the operation is safe to release across a lifecycle boundary.
 final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
-    struct Ticket: Sendable, Equatable {
+    struct Ticket: Sendable, Hashable {
         let sequence: UInt64
         let key: DownloadAttemptKey
         let generation: UInt64
@@ -35,6 +35,11 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
         case failed(Failure)
     }
 
+    /// Scheduling seam: suspend consumption outside the condition to pin delayed exact waiters.
+    private let resolutionWillRead: @Sendable (Ticket) -> Void
+    init(resolutionWillRead: @escaping @Sendable (Ticket) -> Void = { _ in }) {
+        self.resolutionWillRead = resolutionWillRead
+    }
     private let condition = NSCondition()
     private var nextSequence: UInt64 = 0
     private struct Entry {
@@ -198,7 +203,13 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
     }
 
     func waitSynchronously(for ticket: Ticket) -> FlushResult {
-        blockingWait(for: ticket, timeout: nil)
+        resolutionWillRead(ticket)
+        return blockingWait(for: ticket, timeout: nil)
+    }
+
+    /// P6.1 adapter; P6.3 enforces the monotonic deadline and registered-waiter retention.
+    func resolve(for ticket: Ticket, deadline: DownloadStoreDeadline) async -> FlushResult {
+        await DownloadStoreWork { self.waitSynchronously(for: ticket) }.resolve(deadline: deadline)
     }
 
     func waitSynchronously(through watermark: Watermark) -> FlushResult {

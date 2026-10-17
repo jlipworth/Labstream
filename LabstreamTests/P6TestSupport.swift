@@ -1,0 +1,88 @@
+#if !os(tvOS)
+import Foundation
+import PMSKit
+import Synchronization
+import Testing
+@testable import Labstream
+
+/// Dedicated semaphore gates are released independently of MainActor, even after assertion failure.
+final class P6Hold: @unchecked Sendable {
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let armed = Mutex(false)
+    func arm() { armed.withLock { $0 = true } }
+    func hit() {
+        guard armed.withLock({ value in let old = value; value = false; return old }) else { return }
+        entered.signal()
+        _ = release.wait(timeout: .now() + 10)
+    }
+}
+
+func p6Signal(_ signal: DispatchSemaphore, seconds: Double = 2) async -> Bool {
+    await withCheckedContinuation { continuation in
+        Thread.detachNewThread { continuation.resume(returning: signal.wait(timeout: .now() + seconds) == .success) }
+    }
+}
+
+final class P6Fixture: @unchecked Sendable {
+    let directory: URL
+    init() throws {
+        directory = FileManager.default.temporaryDirectory.appendingPathComponent("p6-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+    deinit { try? FileManager.default.removeItem(at: directory) }
+    func store(filesystem: DownloadStoreFilesystem = .live,
+               index: DownloadStore.IndexPersistence = .live,
+               promotion: DownloadPromotionFilesystem = .live,
+               checkpoint: DownloadStaticCheckpointFilesystem = .live) -> DownloadStore {
+        DownloadStore(baseDirectory: directory, indexPersistence: index,
+                      checkpointFilesystem: checkpoint, promotionFilesystem: promotion,
+                      storeFilesystem: filesystem)
+    }
+    func record(_ suffix: String = "a", status: DownloadStatus = .downloading,
+                mode: DownloadResumeMode = .staticByteRange, ratingKey: String = "plex:fixture", filename: String = "fixture.mp4") -> DownloadRecord {
+        let id = DownloadAttemptID(rawValue: "attempt-\(suffix)")!
+        var metadata = OfflineMetadata(ratingKey: ratingKey, title: "Fixture", type: "movie")
+        metadata.resumeMode = mode
+        return DownloadRecord(ratingKey: ratingKey, attemptID: id, title: "Fixture",
+                              localURL: directory.appendingPathComponent(filename),
+                              status: status, metadata: metadata)
+    }
+    @discardableResult
+    func seed(_ store: DownloadStore, status: DownloadStatus = .downloading,
+              mode: DownloadResumeMode = .staticByteRange) throws -> DownloadAttemptKey {
+        let record = record(status: status, mode: mode)
+        let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: record.attemptID!)
+        try #require(store.createAttemptOwnedRecord(record, attemptID: key.attemptID) == .committed(key))
+        return key
+    }
+    func working(_ store: DownloadStore, _ key: DownloadAttemptKey) throws -> URL {
+        let url = try #require(store.attemptWorkingFileURL(for: key))
+        try Data([1, 2, 3]).write(to: url)
+        return url
+    }
+}
+
+/// Both threads are ready before the held syscall begins. Completion before release is a
+/// lock-exclusion assertion, not an I/O throughput measurement; every gate has a cleanup bound.
+func p6ExpectReadableWhileHeld(_ store: DownloadStore, key: DownloadAttemptKey,
+                               hold: P6Hold, phase: String = "P6.3") async throws {
+    let done = DispatchSemaphore(value: 0)
+    let ready = DispatchSemaphore(value: 0)
+    let begin = DispatchSemaphore(value: 0)
+    Thread.detachNewThread {
+        ready.signal()
+        begin.wait()
+        _ = store.record(for: key)
+        done.signal()
+    }
+    try #require(await p6Signal(ready))
+    begin.signal()
+    let readable = await p6Signal(done)
+    withKnownIssue("P6 red pin: \(phase) — store lookup blocked by held filesystem operation") {
+        #expect(readable)
+    }
+    hold.release.signal()
+    if !readable { try #require(await p6Signal(done)) }
+}
+#endif

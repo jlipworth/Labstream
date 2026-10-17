@@ -18,8 +18,69 @@ import PMSKit
 /// is the only writer and drives it from the `@MainActor`, but the background
 /// `URLSession` delegate can call in from a delegate queue, so writes are locked.
 final class DownloadStore: @unchecked Sendable {
+    #if DEBUG
+    /// Submission acknowledgement only; invoked under the row lock, so tests must not reenter.
+    var persistenceDidSubmitForP6Testing: (@Sendable (PersistenceTicket) -> Void)?
+    #endif
     private static let unsupportedRootCleanupQueue = DispatchQueue(
         label: "org.labstream.Labstream.download-unsupported-root-cleanup", qos: .utility)
+
+    // P6.1 lease facade extends the existing artifact path reservation table. Session append and
+    // side-cache writers join in P6.4/P6.3; existing callers are deliberately unchanged here.
+    func tryAcquirePathLease(for key: DownloadAttemptKey, relativePaths: Set<String>,
+                             purpose: DownloadPathLease.Purpose) -> DownloadPathLeaseResult {
+        lock.lock(); defer { lock.unlock() }
+        guard !relativePaths.isEmpty, relativePaths.allSatisfy(Self.isSafeOneLevelRelativePath) else {
+            return .invalidPath
+        }
+        guard rows[key.ratingKey]?.attemptID == key.attemptID else { return .staleOrMissing }
+        guard relativePaths.allSatisfy({ reservedArtifactDeletionPaths[$0] == nil }) else { return .busy }
+        let lease = DownloadPathLease(id: UUID(), key: key, relativePaths: relativePaths, purpose: purpose)
+        for path in relativePaths { reservedArtifactDeletionPaths[path] = lease.id }
+        return .acquired(lease)
+    }
+
+    func acquirePathLease(for key: DownloadAttemptKey, relativePaths: Set<String>,
+                          purpose: DownloadPathLease.Purpose,
+                          deadline: DownloadStoreDeadline) async -> DownloadPathLeaseResult {
+        while true {
+            let result = tryAcquirePathLease(for: key, relativePaths: relativePaths, purpose: purpose)
+            guard result == .busy else { return result }
+            guard deadline.remaining > 0 else { return .timedOut }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releasePathLease(_ lease: DownloadPathLease) {
+        lock.lock(); defer { lock.unlock() }
+        for path in lease.relativePaths where reservedArtifactDeletionPaths[path] == lease.id {
+            reservedArtifactDeletionPaths.removeValue(forKey: path)
+        }
+    }
+
+    #if DEBUG
+    /// Exercise the production explicit recovery edge and capture the epochs it registered before
+    /// any resolver consumes a result. No fixture-only outcome manufacture or loader bypass.
+    func recoverArtifactTicketsForP6Testing() -> [DownloadArtifactLifecycleCoordinator.Ticket] {
+        recoverPendingArtifactIntents()
+        return lock.withLock { Array(artifactLifecycleTickets.values) }
+    }
+
+    func drainArtifactWorkerForP6Testing() async {
+        await withCheckedContinuation { continuation in
+            artifactWorkerQueue.async { continuation.resume() }
+        }
+    }
+
+    var artifactEntryCountsForP6Testing: (live: Int, retired: Int) {
+        (artifactLifecycle.liveEntryCountForTesting, artifactLifecycle.retiredFailureCountForTesting)
+    }
+    #endif
+
+    // Worker-only bridge for the additive reconcile adapter. Never call on an executor/callback.
+    func flushPersistenceSynchronouslyForP6Adapter() -> PersistenceFlushResult {
+        waitForPersistence(through: currentPersistenceTicket()).result
+    }
 
     struct IndexPersistence: Sendable {
         let read: @Sendable (URL) throws -> Data
@@ -36,7 +97,7 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
-    struct PersistenceTicket: Sendable, Equatable {
+    struct PersistenceTicket: Sendable, Hashable {
         let revision: UInt64
     }
 
@@ -726,6 +787,7 @@ final class DownloadStore: @unchecked Sendable {
     private var loadedSchemaVersion = DownloadIndexCoding.currentSchemaVersion
     private let rootIndexPersistence: IndexPersistence
     private let artifactFilesystem: DownloadArtifactFilesystem
+    private let storeFilesystem: DownloadStoreFilesystem
     private let checkpointFilesystem: DownloadStaticCheckpointFilesystem
     private let promotionFilesystem: DownloadPromotionFilesystem
     private let artifactLifecycle = DownloadArtifactLifecycleCoordinator()
@@ -776,7 +838,9 @@ final class DownloadStore: @unchecked Sendable {
          embyCleanupPersistence: EmbyCleanupPersistence? = nil,
          artifactFilesystem: DownloadArtifactFilesystem = .live,
          checkpointFilesystem: DownloadStaticCheckpointFilesystem = .live,
-         promotionFilesystem: DownloadPromotionFilesystem = .live) {
+         promotionFilesystem: DownloadPromotionFilesystem = .live,
+         storeFilesystem: DownloadStoreFilesystem = .live) {
+        self.storeFilesystem = storeFilesystem
         self.fileManager = fileManager
         self.artifactFilesystem = artifactFilesystem
         self.checkpointFilesystem = checkpointFilesystem
@@ -1562,7 +1626,8 @@ final class DownloadStore: @unchecked Sendable {
         guard reservedArtifactDeletionPaths[stableURL.lastPathComponent] == nil else {
             return .staleOrMissingOwner
         }
-        guard fileManager.fileExists(atPath: stagingURL.path) else { return .sourceMissing }
+        guard storeFilesystem.exists(atPath: stagingURL.path, using: fileManager) else { return .sourceMissing }
+        storeFilesystem.before(.rename, stagingURL)
         let result = stagingURL.withUnsafeFileSystemRepresentation { source in
             stableURL.withUnsafeFileSystemRepresentation { destination in
                 guard let source, let destination else { return -1 }
@@ -1603,7 +1668,7 @@ final class DownloadStore: @unchecked Sendable {
         var failed: [String] = []
         for url in candidates {
             do {
-                try fileManager.removeItem(at: url)
+                try storeFilesystem.removeItem(at: url, using: fileManager)
                 removed.append(url.lastPathComponent)
             } catch {
                 failed.append(url.lastPathComponent)
@@ -1659,6 +1724,7 @@ final class DownloadStore: @unchecked Sendable {
                     for: key, stableRelativePath: stablePath))
             }
         }
+        storeFilesystem.before(.enumerate, baseDirectory)
         let urls = (try? fileManager.contentsOfDirectory(
             at: baseDirectory, includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsSubdirectoryDescendants])) ?? []
@@ -2337,7 +2403,7 @@ final class DownloadStore: @unchecked Sendable {
             let url = baseDirectory.appendingPathComponent(relativePath)
             do {
                 if fileManager.fileExists(atPath: url.path) {
-                    try fileManager.removeItem(at: url)
+                    try storeFilesystem.removeItem(at: url, using: fileManager)
                 }
                 removed.append(relativePath)
             } catch {
@@ -2947,7 +3013,7 @@ final class DownloadStore: @unchecked Sendable {
         let relatives = sideAssetRelativePaths(for: metadata)
         let sideAssetBytes = relatives.reduce(0) { total, relative in
             let url = baseDirectory.appendingPathComponent(relative)
-            let attrs = try? fileManager.attributesOfItem(atPath: url.path)
+            let attrs = try? storeFilesystem.attributes(atPath: url.path, using: fileManager)
             return total + ((attrs?[.size] as? NSNumber)?.intValue ?? 0)
         }
         let hydrated = HydratedSideAssets(
@@ -2974,6 +3040,7 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     private func directoryFileSnapshots() -> [OfflineDownloadFileSnapshot] {
+        storeFilesystem.before(.enumerate, baseDirectory)
         guard let urls = try? fileManager.contentsOfDirectory(
             at: baseDirectory,
             includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
@@ -2989,7 +3056,7 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     private func fileSize(at url: URL) -> Int? {
-        guard let raw = (try? fileManager.attributesOfItem(atPath: url.path)[.size]) else {
+        guard let raw = (try? storeFilesystem.attributes(atPath: url.path, using: fileManager)[.size]) else {
             return nil
         }
         if let number = raw as? NSNumber {
@@ -3446,10 +3513,10 @@ final class DownloadStore: @unchecked Sendable {
             let newWorkingURL = baseDirectory.appendingPathComponent(newWorkingRelative)
             if let durableBytes = fileSize(at: oldWorkingURL), durableBytes > 0 {
                 do {
-                    if fileManager.fileExists(atPath: newWorkingURL.path) {
-                        try fileManager.removeItem(at: newWorkingURL)
+                    if storeFilesystem.exists(atPath: newWorkingURL.path, using: fileManager) {
+                        try storeFilesystem.removeItem(at: newWorkingURL, using: fileManager)
                     }
-                    try fileManager.copyItem(at: oldWorkingURL, to: newWorkingURL)
+                    try storeFilesystem.copyItem(at: oldWorkingURL, to: newWorkingURL, using: fileManager)
                     oldWorkingURLToRemove = oldWorkingURL
                     inheritedDurableBytes = durableBytes
                 } catch {
@@ -3748,7 +3815,7 @@ final class DownloadStore: @unchecked Sendable {
         let relative = rows[ratingKey]?.metadata?.resumeDataRelativePath
         lock.unlock()
         guard let relative, !relative.isEmpty else { return nil }
-        return try? Data(contentsOf: baseDirectory.appendingPathComponent(relative))
+        return try? storeFilesystem.read(baseDirectory.appendingPathComponent(relative))
     }
 
     func resumeData(for key: DownloadAttemptKey) -> Data? {
@@ -3757,7 +3824,7 @@ final class DownloadStore: @unchecked Sendable {
         let relative = row.metadata?.resumeDataRelativePath
         guard let relative, !relative.isEmpty,
               Self.isSafeOneLevelRelativePath(relative) else { return nil }
-        return try? Data(contentsOf: baseDirectory.appendingPathComponent(relative))
+        return try? storeFilesystem.read(baseDirectory.appendingPathComponent(relative))
     }
 
     /// #95: whether a row has a persisted resume blob ON DISK (used by launch reconciliation to
@@ -5400,11 +5467,12 @@ final class DownloadStore: @unchecked Sendable {
                     == url.standardizedFileURL else { return nil }
             let condemned = baseDirectory.appendingPathComponent(Self.attemptStagingRelativePath(
                 for: key, stableRelativePath: "condemned-\(UUID().uuidString)"))
-            guard Darwin.rename(url.path, condemned.path) == 0 else {
+            storeFilesystem.before(.rename, url)
+            guard storeFilesystem.rename(url, condemned) == 0 else {
                 let renameErrno = errno
                 // Fall back to deleting in place (the pre-P3a behavior). Either way the persisted
                 // `bodyCondemned` fence keeps these bytes from ever seeding a Retry.
-                let deleted = (try? fileManager.removeItem(at: url)) != nil
+                let deleted = (try? storeFilesystem.removeItem(at: url, using: fileManager)) != nil
                 AppDiagnostics.record(.downloads, "downloads.condemn_rename_failed", fields: [
                     "download_id": .identifier(key.ratingKey),
                     "errno": .int(Int(renameErrno)),
@@ -5456,7 +5524,7 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     private func condemnedFileIdentity(at url: URL) -> CondemnedFileIdentity? {
-        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+        guard let attributes = try? storeFilesystem.attributes(atPath: url.path, using: fileManager),
               let fileNumber = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value,
               let size = (attributes[.size] as? NSNumber)?.uint64Value,
               let modified = attributes[.modificationDate] as? Date else { return nil }
@@ -5560,7 +5628,7 @@ final class DownloadStore: @unchecked Sendable {
                   // absent, new, or changed since is left for the row's Retry or Delete.
                   let identity = deletion.identity,
                   condemnedFileIdentity(at: deletion.url) == identity else { continue }
-            try? fileManager.removeItem(at: deletion.url)
+            try? storeFilesystem.removeItem(at: deletion.url, using: fileManager)
         }
         lock.unlock()
     }
@@ -5925,6 +5993,9 @@ final class DownloadStore: @unchecked Sendable {
         let ticket = PersistenceTicket(revision: nextPersistenceRevision)
         indexWriter.submit(revision: ticket.revision, snapshot: IndexSnapshot(
             schemaVersion: indexSchemaVersion, rows: Array(rows.values)))
+        #if DEBUG
+        persistenceDidSubmitForP6Testing?(ticket)
+        #endif
         return ticket
     }
 

@@ -68,6 +68,12 @@ final class BackgroundDownloadCompletionRegistry {
         return token
     }
 
+    /// P6.1 notification receiver. P6.4 retains terminal pre-construction state even when no
+    /// session is registered; this compatibility adapter currently forwards only to a live session.
+    func noteStartupWakeState(_ state: DownloadStartupWakeState, identifier: String) {
+        sessions[identifier]?.noteStartupWakeState(state)
+    }
+
     func hasPendingHandler(identifier: String) -> Bool {
         handlers.hasHandlers(for: identifier)
     }

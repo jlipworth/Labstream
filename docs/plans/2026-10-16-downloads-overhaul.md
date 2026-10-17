@@ -2434,6 +2434,83 @@ Already-off-lock work to preserve: index encode/commit on the revisioned writer;
 
 **Exit:** documented callback/result signatures and behavioural red pins are reviewable before either implementation lane depends on them.
 
+#### P6.1 implementation handoff (2026-10-17)
+
+P6.1 freezes additive interfaces and executable red evidence only. Existing production call sites,
+blocking waits, lock-held filesystem work, and wake-release behavior remain for P6.2/P6.3/P6.4.
+The deadline overloads are explicitly documented **compatibility adapters**: they compile and
+preserve current typed results but do not yet enforce expiry. Do not migrate a caller and claim
+bounded waiting until its owning phase replaces the adapter. No persisted field or filename changes.
+
+Contract locations (all under `Labstream/Capabilities/Downloads/Core/`):
+
+- `DownloadStoreAsyncContract.swift`: monotonic `DownloadStoreDeadline`; exact-epoch
+  `DownloadStoreWork<Result>`; deadline-aware signatures for mutation, resume, artifact mutation,
+  exact artifact ticket, promotion, checkpoint, row deletion, seed/replacement, compare-clear,
+  lifecycle observation, re-probe and reconcile. Existing `submit*` methods remain the submitted
+  revision/ticket authority. `DownloadStoreCallback.resolve(returningOn:operation:completion:)`
+  adapts every result family back onto the session's existing serial queue. Timeouts must use
+  typed persistence failure, artifact `.timedOut`, or the observation's epoch-tagged timeout;
+  timeout must never become stale, success, cancellation or implicit lease release.
+- `DownloadPathLease.swift` and `DownloadStore.tryAcquirePathLease`, `acquirePathLease`,
+  `releasePathLease`: reserve every source/destination against the **existing** artifact path
+  reservation table. Exact lease release is idempotent. Physical completion owns release,
+  independently of persistence-waiter expiry. Session append joins in P6.4; side-cache writes and
+  remaining store I/O join in P6.3. No session/range lock may be held while acquiring a lease;
+  capture/revalidate owner, source generation and file identity before the actual syscall.
+- `DownloadWakeBudgetContract.swift`: registry receipt instants, wake/operation identity,
+  25/20/5-second injectable budget, captured persistence boundary, the three-part normal-release
+  predicate, startup-generation notification signatures, timer registration and terminal-claim
+  acknowledgement hooks. `BackgroundDownloadWakeCoordinator` exposes identified begin/end and
+  receipt adapters. Its injected timers currently acknowledge scheduling only; timer callbacks
+  intentionally preserve the old behavior. P6.4 supplies expiry and terminal acknowledgement.
+- `DownloadStoreFilesystem.swift`: narrow stat/read/copy/rename/remove/enumeration scheduling
+  hooks and removal/rename fault injection. Existing protection, backup exclusion, sync and
+  persistence ordering are unchanged. Session append's hook sits after handles are opened and
+  before seek/write, so held-append tests cover the physical I/O section. Artifact resolution
+  exposes a pre-consumption hold; store submission exposes a DEBUG acknowledgement.
+
+Lead owns the store contract, filesystem/lease implementation and lead pins. Delegate owns the
+wake contract/receivers, session append participation and the dedicated
+`P6BackgroundWakeTests.swift` / `P6PathLeaseTests.swift`; it does not edit lead test files.
+`P6TestSupport.swift` is shared fixture scaffolding; coordinate any edits there first.
+
+Red evidence is recorded by executing real entry points with `withKnownIssue("P6 red pin: …")`.
+An annotation becomes an unexpected-pass failure when its issue disappears; remove that annotation
+with its fix. The manager suite is additionally `.disabled("P6 red pin: P6.2 …")` after its isolated
+red run, so deliberate MainActor holds cannot interfere with unrelated hosted tests; remove that
+suite trait to reproduce its two functions / five cases (five expected known issues). Dedicated semaphore readers and independent cleanup releases bound broken runs.
+The green lease-lifetime seam test is separate from the red pins. Duplicate-file conservation,
+exact-token idempotence, retained checkpoint bytes and replay assertions are green companions,
+not claims of additional regressions.
+
+| Pin | Fix owner / test file | Observed red assertion |
+|---|---|---|
+| 01 | Lead P6.2; `P6ManagerPersistenceTests` | MainActor acknowledgement cannot run while lifecycle commit is held, including commit failure and successor installation; a held lifecycle stat also blocks a manager heartbeat. |
+| 02 | Lead P6.3; `P6StoreResolutionTests`, `P6ArtifactRetryTests` | All eight facade families ignore the supplied deadline. Delayed promotion A reads B's success; delayed checkpoint A reads B's later result and consumes B's slot. A registered exact waiter loses its failure after 600 retirements exceed the 512 cap. Late physical commit and checkpoint-result cleanup are retained controls. |
+| 03 | Lead P6.3; `P6StoreIOTests` | A held Retry copy blocks an independent lookup and competing Delete/replacement fence. The clone installs before that fence can linearize. Failed candidate commit retains the original checkpoint bytes (green). |
+| 04 | Lead P6.3; `P6StoreIOTests` | Independent lookup blocks for all seven held operations: blob read, lifecycle stat, side publication rename, condemned rename, fallback removal, staging enumeration and staging removal. |
+| 05 | Lead P6.3; `P6ReconcileCleanupTests` | Successful cleanup leaves the durable resume reference; a second row's reference does not protect the blob; held failing cleanup blocks lookup. Injected removal failure retains bytes/references (green). |
+| 06 | Delegate P6.4; `P6BackgroundWakeTests` | Late and pre-registration handlers remain pending after terminal startup failure (zero deliveries); no transport was constructed. Exact-token duplicate drain still fires once (green). |
+| 07 | Delegate P6.4; `P6BackgroundWakeTests` | Operation/grace expiry leaves handlers pending; A's stale/duplicate identified end consumes B's anonymous hold. Rearmed grace rejects A's stale generation (green). |
+| 08 | Delegate P6.4; `P6BackgroundWakeTests` | Balanced work, a blocked append after successful flush, absent finish-events, and an already-running slow index flush outlive the absolute deadline. Replaying a receipt at second 10 schedules second 35 rather than 25; a second-24 operation schedules 44 rather than the wake cap 25. |
+| 09 | Delegate P6.4; `P6BackgroundWakeTests` | A physically active body keeps the original OS token beyond expiry and has no terminal timeout acknowledgement. Attempt/body claim, committed three-byte checkpoint and pending resume-artifact replay survive (green). |
+| 10 | Lead P6.3; `P6StoreLoadSafetyTests` | Only the source guard is red: `load` still contains the unique-key trapping initializer. Same/different-attempt v4/v5 duplicate fixtures remain wholly blocked, unchanged and repairable (green). |
+| 11 | Lead P6.3; `P6ArtifactRetryTests` | 600 failed retries of one intent leave 600 live entries; an unrelated row commit increases artifact attempts from one to two. |
+| 12 | Lead P6.3; `P6StoreInventoryTests`, shared `OfflineDownloadFileInventoryTests` | Audit omits hidden/infrastructure bytes and working/pending-promotion authority; the classifier rejects the existing hidden staging grammar. Held/generation-resume references and report-only/no-foreign-sweep assertions are retained. |
+| Amendment 3 | Delegate append / lead Retry-reconcile; `P6PathLeaseTests` | A lease is granted while append has an open writer. Retry clones three bytes before the fourth is appended; paused non-resumable reconcile removes the active destination. A timed-out lease waiter must leave the physical writer's exclusion installed. |
+
+Focused red run: 27 Swift Testing functions / 50 cases, 70 expected known issues and zero
+unexpected failures before the final contract documentation pass. The package classifier adds a
+separate expected known issue. Final checks: PMSKit 1,615 tests with one expected known issue;
+Mac host 66 XCTest tests plus 820 Swift Testing tests with 65 expected known issues and the two
+manager functions disabled; isolated manager run two functions / five cases with five expected
+known issues. After strengthening pin 11 to retry the real durable store head and observing its
+worker without invoking another recovery trigger, the four affected test functions passed with
+seven expected known issues. Repository hygiene passed 386 tooling tests plus strict docs/link/
+Mermaid and public-redaction checks. No simulator was booted. P6 does not claim hardware wake
+timing or background continuation.
+
 ### P6.2 Nonblocking manager callers — lead
 
 **Owned files:** all `Core/DownloadManager*.swift`, lead P6 tests and touched existing store/manager tests. The delegate never edits these files.

@@ -85,7 +85,8 @@ final class RevisionedPersistenceWriter<Snapshot: Sendable>: @unchecked Sendable
         }
     }
 
-    /// Transitional compatibility for call sites that already perform synchronous disk I/O.
+    /// Worker-only compatibility for artifact execution and the P6.1 transitional adapters.
+    /// P6.2/P6.4 remove mapped MainActor/delegate/range-queue callers; never add new ones.
     /// This intentionally has no timeout: the old path returned only after its encode/write
     /// attempt finished. New lifecycle boundaries should use the bounded async API instead.
     func waitSynchronouslyForOutcome(through targetRevision: UInt64) -> FlushResult {
