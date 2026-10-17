@@ -560,6 +560,13 @@ private struct ExecutionProbeBrowseAdapter: MediaBrowserBrowseCoreAdapter {
         try base.itemsRequest(context, query: query)
     }
 
+    func itemCountRequest(_ context: MediaBrowserBrowseContext<Identity>,
+                          parentID: String?, recursive: Bool,
+                          nameStartsWith: String?, includeItemTypes: String) throws -> URLRequest {
+        try base.itemCountRequest(context, parentID: parentID, recursive: recursive,
+                                  nameStartsWith: nameStartsWith, includeItemTypes: includeItemTypes)
+    }
+
     func albumArtistsRequest(_ context: MediaBrowserBrowseContext<Identity>, parentID: String?,
                              startIndex: Int?, limit: Int?, nameStartsWith: String?,
                              sortBy: String, sortOrder: String) throws -> URLRequest {
@@ -621,6 +628,13 @@ private struct MetadataProfileProbeBrowseAdapter: MediaBrowserBrowseCoreAdapter 
     func itemsRequest(_ context: MediaBrowserBrowseContext<Identity>,
                       query: MediaBrowserItemsQuery) throws -> URLRequest {
         try base.itemsRequest(context, query: query)
+    }
+
+    func itemCountRequest(_ context: MediaBrowserBrowseContext<Identity>,
+                          parentID: String?, recursive: Bool,
+                          nameStartsWith: String?, includeItemTypes: String) throws -> URLRequest {
+        try base.itemCountRequest(context, parentID: parentID, recursive: recursive,
+                                  nameStartsWith: nameStartsWith, includeItemTypes: includeItemTypes)
     }
 
     func albumArtistsRequest(_ context: MediaBrowserBrowseContext<Identity>, parentID: String?,

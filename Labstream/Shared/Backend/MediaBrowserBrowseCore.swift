@@ -38,6 +38,17 @@ extension MediaBrowserBrowseFacade {
         try await browseCore().userViewLinks()
     }
 
+    /// Total item count for a library scope from a count-only request (no rows). Nil when the
+    /// server does not report `TotalRecordCount`.
+    func itemCount(parentId: String?,
+                   recursive: Bool,
+                   nameStartsWith: String?,
+                   includeItemTypes: String) async throws -> Int? {
+        try await browseCore().itemCount(parentID: parentId, recursive: recursive,
+                                         nameStartsWith: nameStartsWith,
+                                         includeItemTypes: includeItemTypes)
+    }
+
     /// Tag-aggregated album artists for a music library via `/Artists/AlbumArtists`.
     func albumArtistsPage(parentId: String?,
                           startIndex: Int? = nil,
@@ -241,6 +252,9 @@ protocol MediaBrowserBrowseCoreAdapter: Sendable {
     func userViewsRequest(_ context: MediaBrowserBrowseContext<Identity>) throws -> URLRequest
     func itemsRequest(_ context: MediaBrowserBrowseContext<Identity>,
                       query: MediaBrowserItemsQuery) throws -> URLRequest
+    func itemCountRequest(_ context: MediaBrowserBrowseContext<Identity>,
+                          parentID: String?, recursive: Bool,
+                          nameStartsWith: String?, includeItemTypes: String) throws -> URLRequest
     func albumArtistsRequest(_ context: MediaBrowserBrowseContext<Identity>,
                              parentID: String?, startIndex: Int?, limit: Int?,
                              nameStartsWith: String?, sortBy: String,
@@ -296,6 +310,20 @@ struct MediaBrowserBrowseCore<Adapter: MediaBrowserBrowseCoreAdapter>: Sendable 
             request,
             as: MediaBrowserItemsResponse<Adapter.Flavor>.self,
             transform: Self.page
+        )
+    }
+
+    /// Total item count for a scope via a count-only request (no rows, fields, images or user
+    /// data). Returns nil when the server omits `TotalRecordCount`.
+    func itemCount(parentID: String?, recursive: Bool,
+                   nameStartsWith: String?, includeItemTypes: String) async throws -> Int? {
+        let request = try adapter.itemCountRequest(context, parentID: parentID, recursive: recursive,
+                                                   nameStartsWith: nameStartsWith,
+                                                   includeItemTypes: includeItemTypes)
+        return try await execute(
+            request,
+            as: MediaBrowserItemsResponse<Adapter.Flavor>.self,
+            transform: { $0.totalRecordCount }
         )
     }
 
@@ -505,6 +533,15 @@ struct JellyfinBrowseCoreAdapter: MediaBrowserBrowseCoreAdapter {
                                              identity: c.identity, userId: c.userID)
     }
 
+    func itemCountRequest(_ c: MediaBrowserBrowseContext<Identity>,
+                          parentID: String?, recursive: Bool,
+                          nameStartsWith: String?, includeItemTypes: String) throws -> URLRequest {
+        try JellyfinLibrary.itemCountRequest(server: c.server, token: c.token, identity: c.identity,
+                                   userId: c.userID, parentId: parentID, recursive: recursive,
+                                   nameStartsWith: nameStartsWith,
+                                   includeItemTypes: includeItemTypes)
+    }
+
     func itemsRequest(_ c: MediaBrowserBrowseContext<Identity>,
                       query q: MediaBrowserItemsQuery) throws -> URLRequest {
         try JellyfinLibrary.itemsRequest(server: c.server, token: c.token, identity: c.identity,
@@ -580,6 +617,15 @@ struct EmbyBrowseCoreAdapter: MediaBrowserBrowseCoreAdapter {
     func userViewsRequest(_ c: MediaBrowserBrowseContext<Identity>) throws -> URLRequest {
         try EmbyLibrary.userViewsRequest(server: c.server, token: c.token,
                                         identity: c.identity, userId: c.userID)
+    }
+
+    func itemCountRequest(_ c: MediaBrowserBrowseContext<Identity>,
+                          parentID: String?, recursive: Bool,
+                          nameStartsWith: String?, includeItemTypes: String) throws -> URLRequest {
+        try EmbyLibrary.itemCountRequest(server: c.server, token: c.token, identity: c.identity,
+                                   userId: c.userID, parentId: parentID, recursive: recursive,
+                                   nameStartsWith: nameStartsWith,
+                                   includeItemTypes: includeItemTypes)
     }
 
     func itemsRequest(_ c: MediaBrowserBrowseContext<Identity>,
