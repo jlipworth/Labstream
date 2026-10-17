@@ -538,13 +538,29 @@ struct SettingsView: View {
         let operationID = UUID()
         plexServerOperationID = operationID
         checkingPlexServers = true
-        let servers = appModel.plexServers
-        for server in servers {
-            guard plexServerOperationID == operationID else { return }
-            plexServerStatuses[server.clientIdentifier] = .checking
-            let ok = await authManager.probePlexServer(id: server.clientIdentifier)
-            guard plexServerOperationID == operationID else { return }
-            plexServerStatuses[server.clientIdentifier] = ok ? .reachable(.now) : .unreachable(.now)
+        let serverIDs = appModel.plexServers.map(\.clientIdentifier)
+        for serverID in serverIDs {
+            plexServerStatuses[serverID] = .checking
+        }
+        // Probe servers concurrently so one unreachable server does not hold every later
+        // row in "Checking" for its full probe timeout.
+        let authManager = authManager
+        let probes = serverIDs.map { serverID in
+            (serverID, Task { await authManager.probePlexServer(id: serverID) })
+        }
+        let superseded = await withTaskCancellationHandler {
+            for (serverID, probe) in probes {
+                let ok = await probe.value
+                guard plexServerOperationID == operationID else { return true }
+                plexServerStatuses[serverID] = ok ? .reachable(.now) : .unreachable(.now)
+            }
+            return false
+        } onCancel: {
+            probes.forEach { $0.1.cancel() }
+        }
+        guard !superseded else {
+            probes.forEach { $0.1.cancel() }
+            return
         }
         if let selectedID = appModel.selectedServer?.clientIdentifier,
            case let status? = plexServerStatuses[selectedID] {

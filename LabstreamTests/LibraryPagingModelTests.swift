@@ -297,7 +297,10 @@ struct LibraryPagingModelTests {
                 reportedTotal: 6
             )
         )
+        // Later pages are requested through a window, so page 4 may already be in flight;
+        // wait for page 2's publication itself rather than for page 4's request.
         await probe.waitUntilStarted(start: 4)
+        await Self.waitUntil { model.total == 3 }
         #expect(model.slots.count == 3)
         #expect(model.slots.allSatisfy { $0 != nil })
         #expect(model.slots.compactMap { $0 }.map(\.ratingKey) == ["alpha-4k", "bravo", "charlie"])
@@ -578,6 +581,93 @@ struct LibraryPagingModelTests {
             },
             fetchAlphabetCounts: { [] }
         )
+    }
+
+    @Test func collapsingLaterPagesOverlapInBoundedWindowAndIngestInOrder() async {
+        // 1 + 10 pages of distinct movies, each later page taking 50 ms. A serial walk costs
+        // about 10 × 50 ms; the window overlaps the round trips without exceeding its bound.
+        let pageSize = 2
+        let laterPages = 10
+        var inFlight = 0
+        var maxInFlight = 0
+        func page(_ start: Int) -> LibraryPagingPage {
+            LibraryPagingPage(
+                items: (start..<(start + pageSize)).map {
+                    Self.movie("m\($0)", title: String(format: "Title %03d", $0), year: 2000)
+                },
+                reportedTotal: pageSize * (laterPages + 1))
+        }
+        let source = LibraryPagingSource(
+            title: "Movies",
+            identity: "collapse-window",
+            backendLabel: "Test",
+            pageSize: pageSize,
+            cacheEmptyFirstPage: true,
+            collapsesMovieVersions: true,
+            fetchPage: { start, _ in
+                if start == 0 { return page(0) }
+                inFlight += 1
+                maxInFlight = max(maxInFlight, inFlight)
+                defer { inFlight -= 1 }
+                // Later offsets answer faster, so completion order differs from offset order.
+                try await Task.sleep(for: .milliseconds(50 - start))
+                return page(start)
+            },
+            fetchAlphabetCounts: { [] }
+        )
+        let model = LibraryPagingModel()
+        let clock = ContinuousClock()
+        let elapsed = await clock.measure { await model.load(source: source) { true } }
+        print("perf.collapsing_window elapsed_ms=\(elapsed.components.attoseconds / 1_000_000_000_000_000 + elapsed.components.seconds * 1000) later_pages=\(laterPages) max_in_flight=\(maxInFlight)")
+
+        #expect(maxInFlight == LibraryPagingModel.collapsingPageWindow)
+        #expect(model.slots.compactMap { $0 }.map(\.ratingKey)
+            == (0..<(pageSize * (laterPages + 1))).map { "m\($0)" })
+        #expect(model.alphabetBuckets.map(\.display) == ["T"])
+    }
+
+    @Test func collapsingEmptyLaterPageStopsIngestionAtThatPage() async {
+        var requested: [Int] = []
+        let source = LibraryPagingSource(
+            title: "Movies",
+            identity: "collapse-empty-stop",
+            backendLabel: "Test",
+            pageSize: 2,
+            cacheEmptyFirstPage: true,
+            collapsesMovieVersions: true,
+            fetchPage: { start, _ in
+                requested.append(start)
+                switch start {
+                case 0:
+                    return LibraryPagingPage(
+                        items: [Self.movie("alpha", title: "Alpha", year: 2020),
+                                Self.movie("bravo", title: "Bravo", year: 2021)],
+                        reportedTotal: 10)
+                case 2:
+                    return LibraryPagingPage(items: [], reportedTotal: 10)
+                default:
+                    // Pages past the empty one may be requested by the window but must never
+                    // be ingested.
+                    return LibraryPagingPage(
+                        items: [Self.movie("late-\(start)", title: "Zulu \(start)", year: 2022)],
+                        reportedTotal: 10)
+                }
+            },
+            fetchAlphabetCounts: { [] }
+        )
+        let model = LibraryPagingModel()
+        await model.load(source: source) { true }
+        #expect(model.slots.compactMap { $0 }.map(\.ratingKey) == ["alpha", "bravo"])
+        #expect(model.alphabetBuckets.map(\.display) == ["A", "B"])
+        #expect(requested.count <= 1 + LibraryPagingModel.collapsingPageWindow)
+    }
+
+    /// Yields until `condition` holds, bounded so a regression fails instead of hanging.
+    private static func waitUntil(_ condition: @MainActor () -> Bool) async {
+        for _ in 0..<1_000 where !condition() {
+            await Task.yield()
+        }
+        #expect(condition())
     }
 
     private func collapsingSource(identity: String,

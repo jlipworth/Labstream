@@ -1074,37 +1074,40 @@ struct DetailView: View {
 
     /// Fetch each collapsed version's brief metadata concurrently to build resolution/codec
     /// labels for the chooser (#108, finding 5). Grid items lack `MediaSources`, so without
-    /// this every entry would read "Version N". Bounded to `movieVersions` (2–3 items), run
-    /// in parallel, and resolved off the main work of the screen — a failure for one version
-    /// simply leaves its label as the "Version N" fallback.
+    /// this every entry would read "Version N". Bounded to `movieVersions` (2–3 items) — a
+    /// failure for one version simply leaves its label as the "Version N" fallback.
     @MainActor
     private func resolveMovieVersionLabels() async {
         let versions = movieVersions
         guard versions.count > 1 else { return }
-        // Capture the values the fetch needs as locals so the concurrent children don't
-        // capture `self` (a non-Sendable View) across the task boundary. `appModel` is a
-        // @MainActor model and the children stay on the main actor.
+        // Capture the values the fetch needs as locals so the children don't capture `self`
+        // (a non-Sendable View) across the task boundary. `appModel` is a @MainActor model.
         let backend = actionBackend
         let model = appModel
-        let ratingKeys = versions.map(\.ratingKey)
-        // Sequential awaits (bounded to 2–3 versions): each child would be `@MainActor`
-        // anyway, so a TaskGroup buys no real cross-actor concurrency here, and the
-        // region-based isolation checker rejects a `@MainActor` group child returning a
-        // tuple. A plain loop is simpler and avoids that compiler limitation.
-        for ratingKey in ratingKeys {
-            if let label = await Self.fetchVersionLabel(ratingKey: ratingKey,
-                                                        backend: backend,
-                                                        appModel: model),
-               !label.isEmpty {
-                movieVersionLabels[ratingKey] = label
+        // Start every fetch before awaiting any: the children are main-actor tasks, but each
+        // suspends on its network round trip, so the round trips overlap. Unstructured tasks
+        // are used because the region-based isolation checker rejects a `@MainActor` task
+        // group child returning a tuple; cancellation is forwarded explicitly.
+        let fetches = versions.map(\.ratingKey).map { ratingKey in
+            (ratingKey, Task {
+                await Self.fetchVersionLabel(ratingKey: ratingKey, backend: backend, appModel: model)
+            })
+        }
+        await withTaskCancellationHandler {
+            for (ratingKey, fetch) in fetches {
+                if let label = await fetch.value, !label.isEmpty {
+                    movieVersionLabels[ratingKey] = label
+                }
             }
+        } onCancel: {
+            fetches.forEach { $0.1.cancel() }
         }
     }
 
     /// Resolve one version's resolution/codec label from its full metadata's first `Media`.
     /// Returns nil on any failure or when no tech specs are available, so the caller keeps the
     /// "Version N" fallback for that entry. Static + explicitly-passed dependencies so the
-    /// concurrent task group never captures the `DetailView` value.
+    /// concurrent fetch tasks never capture the `DetailView` value.
     @MainActor
     private static func fetchVersionLabel(ratingKey: String,
                                           backend: MediaBackendKind,
