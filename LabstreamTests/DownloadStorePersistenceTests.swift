@@ -5,6 +5,48 @@ import Testing
 @testable import Labstream
 
 struct DownloadStorePersistenceTests {
+    /// B15: init reads and classifies the index; load() must decode those same bytes. A second
+    /// read that fails transiently previously admitted an empty store as `.current`, and the next
+    /// mutation replaced the real index with a snapshot holding only the new row.
+    @Test func loadDecodesTheStartupBytesSoATransientSecondReadCannotEmptyTheIndex() throws {
+        try withTemporaryDirectory { directory in
+            let existingID = DownloadAttemptID.generated()
+            let existing = DownloadRecord(
+                ratingKey: "existing", attemptID: existingID, title: "Existing",
+                localURL: directory.appendingPathComponent("existing.mp4"), status: .complete,
+                metadata: OfflineMetadata(ratingKey: "existing", title: "Existing", type: "movie"))
+            let seed = DownloadStore(baseDirectory: directory)
+            #expect(seed.createAttemptOwnedRecord(existing, attemptID: existingID)
+                == .committed(DownloadAttemptKey(ratingKey: "existing", attemptID: existingID)))
+
+            let reads = Mutex(0)
+            let flaky = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init(
+                    read: { url in
+                        let count = reads.withLock { value in value += 1; return value }
+                        guard count == 1 else { throw CocoaError(.fileReadUnknown) }
+                        return try Data(contentsOf: url)
+                    },
+                    atomicWrite: { data, url in try data.write(to: url, options: .atomic) }))
+
+            #expect(reads.withLock { $0 } == 1)
+            #expect(flaky.startupIndexProbe == .current)
+            #expect(flaky.record(for: "existing")?.status == .complete)
+
+            let newID = DownloadAttemptID.generated()
+            let added = DownloadRecord(
+                ratingKey: "added", attemptID: newID, title: "Added",
+                localURL: directory.appendingPathComponent("added.mp4"), status: .queued,
+                metadata: OfflineMetadata(ratingKey: "added", title: "Added", type: "movie"))
+            #expect(flaky.createAttemptOwnedRecord(added, attemptID: newID)
+                == .committed(DownloadAttemptKey(ratingKey: "added", attemptID: newID)))
+            let reopened = DownloadStore(baseDirectory: directory)
+            #expect(reopened.record(for: "existing") != nil)
+            #expect(reopened.record(for: "added") != nil)
+        }
+    }
+
     @Test func seasonPlanNewRowsAndExactRetriesCommitInOneSnapshot() throws {
         try withTemporaryDirectory { directory in
             let retryID = DownloadAttemptID.generated()
