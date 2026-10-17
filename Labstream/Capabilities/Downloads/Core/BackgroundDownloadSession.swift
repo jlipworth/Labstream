@@ -1221,14 +1221,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         guard let event = finalizeVerdictEvent(
             for: key, outcome: outcome, status: status, outcomeID: outcomeID,
             publishesWorkingFile: publishesWorkingFile) else {
-            // P3a-TODO: a verdict whose row is in neither the expected `.finalizing` (publish) nor
-            // `.complete`/`.unverified` (revalidation) lifecycle — e.g. a complete/unverified
-            // revalidation verdict over a row some other path already moved — has no reducer event:
-            // `finalizeOutcome` and `publishedBodyRevalidated` both reject it, and
-            // `promotionRecovered` would claim a promotion that never ran. Keep the legacy status
-            // write (through the store's shim) until the store grows a revalidation-from-any-state
-            // rule or the manager conversion proves the state unreachable.
-            return store.submitStatus(for: key, status)
+            // The row left the lifecycle this verdict was computed for (publishing a body always
+            // enters `.finalizing` first, from any non-terminal state). Overwriting it would undo
+            // that later decision, so the verdict is dropped and recorded.
+            AppDiagnostics.record(.downloads, "downloads.lifecycle_event_rejected", fields: [
+                "download_id": .identifier(key.ratingKey),
+                "phase": .label(phase),
+                "verdict": .label(status.rawValue),
+                "lifecycle": .label(store.lifecycleState(for: key)?.lifecycle.rawValue ?? "missing"),
+            ])
+            return .accepted(change: .noChange, ticket: nil)
         }
         return submitLifecycleEvent(event, for: key, phase: phase)
     }

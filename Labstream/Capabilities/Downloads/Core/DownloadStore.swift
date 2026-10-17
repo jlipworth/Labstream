@@ -4988,6 +4988,9 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
+    #if DEBUG
+    // P3a: test fixtures only. Production status changes go through `submitLifecycleEvent`;
+    // `scripts/ci-hygiene.sh` rejects any non-fixture status write.
     /// Set the explicit lifecycle status for a row (D2). No-op if the row is gone.
     func setStatus(ratingKey: String, _ status: DownloadStatus) {
         lock.lock()
@@ -4995,7 +4998,7 @@ final class DownloadStore: @unchecked Sendable {
         let previousStatus = row.status
         let bytes = row.bytes
         let progress = row.progress
-        row.status = status
+        row.status = status // P3a-legacy-fixture
         rows[ratingKey] = row
         lock.unlock()
         if previousStatus != status {
@@ -5040,7 +5043,7 @@ final class DownloadStore: @unchecked Sendable {
         }
         let bytes = row.bytes
         let progress = row.progress
-        row.status = status
+        row.status = status // P3a-legacy-fixture
         rows[key.ratingKey] = row
         let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
@@ -5054,6 +5057,7 @@ final class DownloadStore: @unchecked Sendable {
         ])
         return .accepted(change: .applied, ticket: ticket)
     }
+    #endif
 
     /// Promote a previously byte-complete but probe-inconclusive row once a later validation or
     /// actual local playback proves the file is usable. No-op for already-complete/active/failed rows

@@ -175,7 +175,19 @@ struct DownloadLifecycleReducerTests {
         #expect(R.reduce(state(.failed), .retry(.convertResume), facts: staticFacts).state?
             .lifecycle == .serverPrep)
         #expect(R.reduce(state(.paused), .retry(.prepReattach), facts: staticFacts).state?
+            .lifecycle == .admitted, "Plex prep is persisted queued")
+        // A planned season row retries like a failed one.
+        #expect(R.reduce(state(.planned), .retry(.convertResume), facts: staticFacts).state?
             .lifecycle == .serverPrep)
+        #expect(R.reduce(state(.planned), .backendUnavailable(.awaitingSession),
+                         facts: staticFacts).state?.lifecycle == .paused)
+        // A deferred resume keeps or restores the queued intent.
+        for lifecycle: DownloadLifecycle in [.paused, .failed, .admitted, .transferring, .planned] {
+            #expect(R.reduce(state(lifecycle), .requeued, facts: staticFacts).state?.lifecycle
+                    == .admitted)
+        }
+        #expect(R.reduce(state(.finalizing), .requeued, facts: staticFacts) == .rejected(.illegal))
+        #expect(R.reduce(state(.complete), .requeued, facts: staticFacts) == .rejected(.illegal))
         #expect(R.reduce(state(.paused), .retry(.resumeBlob), facts: staticFacts).state?
             .lifecycle == .transferring)
         #expect(R.reduce(state(.failed), .retry(.staticCheckpoint), facts: staticFacts).state?

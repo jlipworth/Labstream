@@ -90,6 +90,16 @@ fi
 
 
 
+printf '== Download lifecycle writes go through the reducer ==\n'
+# P3a: production code changes a download's status only through lifecycle events. Legacy status
+# setters survive as DEBUG test fixtures, marked `P3a-legacy-fixture`.
+if git grep -n -E 'setAttemptStatus\(|\.submitStatus\(for:|\.setStatus\((for|ratingKey):' -- 'Labstream/*.swift'; then
+  fail "download status written outside the lifecycle reducer; submit a DownloadLifecycleEvent instead"
+fi
+if git grep -n -E '\b(row|current|record)\.status = ' -- 'Labstream/Capabilities/Downloads/*.swift' | grep -v 'P3a-legacy-fixture'; then
+  fail "direct download row status assignment; submit a DownloadLifecycleEvent instead"
+fi
+
 # The shared signing template is intentionally committed. Local overrides and
 # credential/profile material must never be tracked.
 if tracked_file Signing.local.xcconfig; then
