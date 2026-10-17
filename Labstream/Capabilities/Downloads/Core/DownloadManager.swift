@@ -1982,8 +1982,11 @@ public final class DownloadManager {
         String(String(describing: event).prefix { $0 != "(" })
     }
 
-    private func removeAttempt(_ key: DownloadAttemptKey, context: String) async -> Bool {
-        switch await store.resolveRowDeletion(store.submitRemove(for: key)) {
+    private func removeAttempt(_ key: DownloadAttemptKey, context: String,
+                               retainingTruncationForRetry: Bool = false) async -> Bool {
+        let submission = retainingTruncationForRetry
+            ? store.submitRemoveForRetry(for: key) : store.submitRemove(for: key)
+        switch await store.resolveRowDeletion(submission) {
         case .removed:
             return true
         case .staleOrMissing:
@@ -2611,7 +2614,8 @@ public final class DownloadManager {
             guard self.retryAttemptCanContinue(for: retryAttemptKey, token: retryToken) else { return }
             self.releaseInFlight(for: retryAttemptKey)
             if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record, durablePartialURL: self.durableStaticPartialURL(for: record)) {
-                guard await self.removeAttempt(retryAttemptKey, context: "retry_replace") else { return }
+                guard await self.removeAttempt(retryAttemptKey, context: "retry_replace",
+                                               retainingTruncationForRetry: true) else { return }
             }
             await self.download(currentItem, choice: choice, mediaIndex: mediaIndex, partIndex: partIndex,
                                 audioStreamIndex: metadata?.audioStreamIndex,

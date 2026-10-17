@@ -254,7 +254,10 @@ struct DownloadLifecycleStoreTests {
             let first = try seed("plex:strike", status: .failed, metadata: profiled("1080p"),
                                  in: store)
             #expect(store.recordTruncationStrike(for: first, outcomeID: "A-1") == 1)
-            #expect(store.remove(for: first) == .applied)
+            guard case .removed = store.resolveRowDeletionSynchronously(
+                store.submitRemoveForRetry(for: first)) else {
+                Issue.record("Expected the retry removal to apply"); return
+            }
 
             let second = DownloadAttemptKey(ratingKey: first.ratingKey,
                                             attemptID: DownloadAttemptID(uuid: UUID()))
@@ -263,8 +266,8 @@ struct DownloadLifecycleStoreTests {
                 == .committed(second))
             #expect(store.truncationStrikes(for: second) == 1)
 
-            // A cancel clears the strikes, so a later removal carries nothing.
-            store.clearTruncationStrikes(for: second)
+            // An ordinary removal (Delete) carries nothing, even with strikes on the row.
+            #expect(store.recordTruncationStrike(for: second, outcomeID: "B-1") == 2)
             #expect(store.remove(for: second) == .applied)
             let third = DownloadAttemptKey(ratingKey: first.ratingKey,
                                            attemptID: DownloadAttemptID(uuid: UUID()))
