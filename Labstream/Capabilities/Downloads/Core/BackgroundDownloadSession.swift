@@ -1149,6 +1149,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// finish-events callback cannot be awaited. The failure has already been observed by the
     /// manager; release the OS wake explicitly and leave admission dormant.
     func releaseBackgroundCompletionAfterStartupFailure() {
+        // B05: only a dormant session lacks a guaranteed finish-events callback. A runtime block
+        // (for example an indeterminate season persist) while admission is active or purging must
+        // not abort live gate operations and grace ownership mid-append; the normal finish-events
+        // path, or a later failed activation's own block, releases the wake.
+        let isDormant = lock.withLock { startupAdmissionState == .dormant }
+        guard isDormant else {
+            AppDiagnostics.record(.downloads, "downloads.startup_failure_release_skipped", fields: [
+                "reason": .label("session_not_dormant"),
+            ])
+            return
+        }
         let drain = backgroundWakeCoordinator.abortAwaitingHandlers()
         if !drain.deferredRevalidationKeys.isEmpty {
             onBackgroundCompletionGateDrained?(drain.deferredRevalidationKeys)

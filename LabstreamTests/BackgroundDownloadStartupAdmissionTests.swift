@@ -62,6 +62,42 @@ struct BackgroundDownloadStartupAdmissionTests {
         }
     }
 
+    /// B05: a runtime block (for example an indeterminate season persist) must not abort the
+    /// ACTIVE session's background-completion gate; only a dormant session has no finish-events
+    /// callback to wait for.
+    @Test func startupFailureReleaseKeepsActiveSessionWakeOwnership() async throws {
+        try await withTemporaryDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let session = BackgroundDownloadSession(
+                store: store, protocolClasses: [], releaseBackgroundCompletion: { _ in })
+            defer { session.invalidateInjectedSessionForTesting() }
+            #expect(await activate(session) == .activated(cancelledTaskCount: 0))
+            session.noteBackgroundCompletionHandlerStored(
+                identifier: BackgroundDownloadSession.identifier)
+
+            session.releaseBackgroundCompletionAfterStartupFailure()
+
+            #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false)
+                .backgroundCompletionHandlerCount == 1)
+        }
+    }
+
+    @Test func startupFailureReleaseDrainsDormantSessionWake() throws {
+        try withTemporaryDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let session = BackgroundDownloadSession(
+                store: store, protocolClasses: [], releaseBackgroundCompletion: { _ in })
+            defer { session.invalidateInjectedSessionForTesting() }
+            session.noteBackgroundCompletionHandlerStored(
+                identifier: BackgroundDownloadSession.identifier)
+
+            session.releaseBackgroundCompletionAfterStartupFailure()
+
+            #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false)
+                .backgroundCompletionHandlerCount == 0)
+        }
+    }
+
     @Test func activeStaticTransferCheckpointsOnlyInAttemptWorkingFile() async throws {
         try await withTemporaryDirectory { directory in
             let store = DownloadStore(baseDirectory: directory)
