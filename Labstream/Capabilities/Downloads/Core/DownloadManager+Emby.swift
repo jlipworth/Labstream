@@ -132,7 +132,7 @@ extension DownloadManager {
                     maxStaticBitrate: 200_000_000,
                     audioStreamIndex: audioStreamIndex)
             }
-            let (data, response) = try await URLSession.shared.data(for: infoReq)
+            let (data, response) = try await embyConvertSession.data(for: infoReq)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 recordDownloadDiagnostic("downloads.playback_info_failed", fields: [
                     "download_id": .identifier(ratingKey),

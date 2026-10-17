@@ -444,10 +444,11 @@ public final class DownloadManager {
     /// Attempt-scoped server cleanup survives row/file removal in a separate durability domain.
     let cleanupIntentJournal: DownloadCleanupIntentJournal
 
-    /// Poll cadence for Plex server-side optimize jobs. Deliberately no wall-clock timeout:
-    /// long 4K/HDR software transcodes can legitimately run for hours, and the app must base
-    /// failure only on server truth (metadata/background queue status), not elapsed time.
-    let optimizePollInterval: TimeInterval = 5
+    /// Injectable prep cadences and Emby control-plane transport. Long renders retain the
+    /// separate persisted deadline and server-truth grace policies.
+    var optimizePollInterval: TimeInterval = 5
+    var embyConvertPollInterval: TimeInterval = 5
+    var embyConvertSession: URLSession = .shared
 
     init(appModel: AppModel,
          store injectedStore: DownloadStore? = nil,
@@ -2846,9 +2847,7 @@ public final class DownloadManager {
 
     /// Resume a paused Plex server-prep row by reattaching to its existing optimize queue item.
     ///
-    /// Do not call `retryPausedPlexOptimize` here: that path creates a fresh optimize request after
-    /// fetching current metadata. A server-prep row already has the queue title/baseline needed by
-    /// `resumePendingServerPrepDownloads`, so recreating risks a duplicate Plex transcode.
+    /// The persisted queue identity and dispatch evidence are reconciled before any create.
     private func resumePausedPlexServerPrep(record: DownloadRecord, targetName: String) {
         guard let key = attemptKey(for: record) else { return }
         guard let backendSession = appModel.backendSession(for: .plex) else {
@@ -2888,55 +2887,6 @@ public final class DownloadManager {
         optimizeState[record.ratingKey] = DownloadOptimizeStateLabel.queued
         refreshRecords()
         resumePendingServerPrepDownloads(allowWhileQueuePaused: true)
-    }
-
-    private func retryPausedPlexOptimize(record: DownloadRecord, targetName: String) {
-        guard let key = attemptKey(for: record) else { return }
-        let metadata = record.metadata
-        let item = metadata?.makeMediaItem()
-            ?? MediaItem(ratingKey: record.ratingKey, title: record.title, type: "movie")
-        let mediaIndex = metadata?.mediaIndex ?? 0
-        let partIndex = metadata?.partIndex ?? 0
-        Task { [weak self] in
-            guard let self else { return }
-            guard let backendSession = self.appModel.backendSession(for: .plex) else {
-                self.lastError[record.ratingKey] = .notAuthenticated
-                _ = self.applyLifecycleEvent(
-                    .backendUnavailable(.awaitingSession), for: key, context: "plex_optimize_auth")
-                self.refreshRecords()
-                return
-            }
-            if let metadata, !backendSession.matchesPersistedServer(metadata) {
-                self.recordDownloadDiagnostic("downloads.paused_optimize_resume_skip", fields: [
-                    "download_id": .identifier(record.ratingKey),
-                    "target": .label(targetName),
-                    "reason": .label("plex_session_mismatch"),
-                ])
-                self.lastError[record.ratingKey] = .transferFailed(
-                    "Waiting for the original Plex server session.")
-                _ = self.applyLifecycleEvent(
-                    .backendUnavailable(.awaitingSession), for: key, context: "plex_optimize_server")
-                self.refreshRecords()
-                return
-            }
-            let currentItem = await self.fetchCurrentMediaItem(ratingKey: record.ratingKey,
-                                                               server: backendSession.baseURL,
-                                                               token: backendSession.token,
-                                                               identity: self.appModel.identity) ?? item
-            guard self.retryAttemptCanContinue(for: key) else { return }
-            self.recordDownloadDiagnostic("downloads.paused_optimize_resume", fields: [
-                "download_id": .identifier(record.ratingKey),
-                "target": .label(targetName),
-            ])
-            self.releaseInFlight(for: key)
-            if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record, durablePartialURL: self.durableStaticPartialURL(for: record)) {
-                guard await self.removeAttempt(key, context: "plex_optimize_replace") else { return }
-            }
-            await self.download(currentItem, choice: .optimize(targetName: targetName),
-                                mediaIndex: mediaIndex, partIndex: partIndex,
-                                audioStreamIndex: record.metadata?.audioStreamIndex)
-            self.refreshRecords()
-        }
     }
 
     @discardableResult
@@ -3151,13 +3101,14 @@ public final class DownloadManager {
             case .poll(let jobId):
                 activeJobs.insert(ratingKey)
                 inFlightAttempts.acquire(key)
-                let attemptID = beginEmbyConvertAttempt(for: key)
+                guard let attemptID = beginEmbyConvertPoller(for: key) else { continue }
                 recordDownloadDiagnostic("downloads.convert_resume", fields: [
                     "download_id": .identifier(ratingKey),
                     "job_id": .int(jobId),
                 ])
                 let task = Task { [weak self] in
                     guard let self else { return }
+                    defer { self.endEmbyConvertPoller(for: key, id: attemptID) }
                     await self.pollAndDownloadEmbyConvertJob(
                         item: item, ratingKey: ratingKey, jobId: jobId,
                         snapshotIds: resumeSnapshot,
@@ -3185,13 +3136,14 @@ public final class DownloadManager {
                     .prepReattached, for: key, context: "emby_convert_recover") else { continue }
                 activeJobs.insert(ratingKey)
                 inFlightAttempts.acquire(key)
-                let attemptID = beginEmbyConvertAttempt(for: key)
+                guard let attemptID = beginEmbyConvertPoller(for: key) else { continue }
                 recordDownloadDiagnostic("downloads.convert_recovery", fields: [
                     "download_id": .identifier(ratingKey),
                     "baseline_count": .int(baseline.count),
                 ])
                 let task = Task { [weak self] in
                     guard let self else { return }
+                    defer { self.endEmbyConvertPoller(for: key, id: attemptID) }
                     await self.recoverAndResumeEmbyConvertJob(
                         item: item, ratingKey: ratingKey, baselineJobIDs: Set(baseline),
                         fingerprint: fingerprint, attemptStartedAtEpochSeconds: startedAt,
@@ -3395,6 +3347,12 @@ public final class DownloadManager {
         serverPrepPollerTasks[key] = task
     }
 
+    #if DEBUG
+    func serverPrepPollerTaskForTesting(for key: DownloadAttemptKey) -> Task<Void, Never>? {
+        serverPrepPollerTasks[key]
+    }
+    #endif
+
     /// Stop only process-owned work after the row became deletion-pending. Do not call
     /// `releaseInFlight`: it also executes/clears external encoder authority, which must remain in
     /// the sealed row until every cleanup intent is independently durable in the journal.
@@ -3448,6 +3406,19 @@ public final class DownloadManager {
             "source": .label(source),
         ])
         return id
+    }
+
+    func beginEmbyConvertPoller(for key: DownloadAttemptKey) -> UUID? {
+        serverPrepAttempts.beginEmbyConvertPoller(for: key)
+    }
+
+    @discardableResult
+    func endEmbyConvertPoller(for key: DownloadAttemptKey, id: UUID) -> Bool {
+        guard serverPrepAttempts.endEmbyConvertPoller(for: key, id: id) else { return false }
+        // Compare-remove before releaseInFlight: never cancel the task doing the static handoff,
+        // and never remove a successor poller's handle from an older task's defer.
+        serverPrepPollerTasks.removeValue(forKey: key)
+        return true
     }
 
     func endServerPrepPoller(for key: DownloadAttemptKey, id: UUID) {
@@ -3516,107 +3487,14 @@ public final class DownloadManager {
             try assertCurrentOptimizeAttempt(attemptKey: key,
                                              metadata: metadata,
                                              targetName: targetName)
-            let currentItem = await fetchCurrentMediaItem(ratingKey: ratingKey, server: server,
-                                                         token: token, identity: identity)
-                ?? metadata.makeMediaItem()
-            guard store.ownsAttempt(key) else {
-                throw DownloadLifecycleCancellation.staleOptimizeAttempt
-            }
-            try assertCurrentOptimizeAttempt(attemptKey: key,
-                                             metadata: metadata,
-                                             targetName: targetName)
+            let currentItem = metadata.makeMediaItem()
             let originalPartIDs = DownloadOptimizeSourcePolicy.resumeBaselinePartIDs(metadata: metadata, item: currentItem)
-            guard !originalPartIDs.isEmpty else {
-                throw DownloadError.optimizeFailed("No source media parts found while resuming optimize.")
-            }
-            let sourceHeight = currentItem.media?[safe: metadata.mediaIndex ?? 0]?.height
-                ?? metadata.sourceMediaHeight
-            // Reconcile the rendered artifact BEFORE inspecting/recreating queue work. Plex may
-            // already have completed and removed the type-42 item while the app was suspended; in
-            // that state a missing queue entry is not evidence that another optimize POST is needed.
-            if let renderedPart = Self.optimizedDownloadCandidate(
-                from: currentItem.media ?? [],
-                baselinePartIDs: originalPartIDs,
-                targetName: targetName,
-                sourceHeight: sourceHeight
-            ) {
-                recordDownloadDiagnostic("downloads.optimize_resume_adopt_completed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "target": .label(targetName),
-                ])
-                try startOptimizedPartDownload(attemptKey: key,
-                                               title: record.title,
-                                               part: renderedPart,
-                                               metadata: metadata,
-                                               server: server,
-                                               token: token)
-                return
-            }
-            // No matching rendered artifact is visible yet. Inspect the exact persisted queue item
-            // before deciding whether its work disappeared and needs to be recreated.
-            let backgroundProcessingKey = await bgKeyForPolling(server: server,
-                                                                 token: token,
-                                                                 identity: identity)
-            guard store.ownsAttempt(key) else {
-                throw DownloadLifecycleCancellation.staleOptimizeAttempt
-            }
-            let persistedQueueStatus: OptimizerQueueResponse.Status?
-            if let backgroundProcessingKey, let queueTitle = metadata.optimizeQueueTitle {
-                persistedQueueStatus = await optimizerQueueStatus(
-                    backgroundProcessingKey: backgroundProcessingKey,
-                    queueTitle: queueTitle,
-                    server: server,
-                    token: token,
-                    identity: identity)
-            } else {
-                persistedQueueStatus = nil
-            }
-            // Recreate only when the queue was actually inspected and the item is provably
-            // absent. A nil backgroundProcessingKey means the key lookup itself failed (bgKey
-            // fetch swallows transient errors), which is "could not inspect", not "vanished" —
-            // re-POSTing there would enqueue a duplicate optimize beside a still-running job.
-            if backgroundProcessingKey != nil,
-               persistedQueueStatus == nil,
-               let queueTitle = metadata.optimizeQueueTitle {
-                guard store.ownsAttempt(key) else {
-                    throw DownloadLifecycleCancellation.staleOptimizeAttempt
-                }
-                recordDownloadDiagnostic("downloads.optimize_resume_recreate", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "target": .label(targetName),
-                ])
-                do {
-                    try await triggerOptimize(item: currentItem, targetName: targetName,
-                                              queueTitle: queueTitle,
-                                              server: server, token: token, identity: identity,
-                                              isStillCurrent: { [weak self] in
-                                                  self?.store.attemptAdmitsWork(key) == true
-                                              })
-                    markPlexOptimizeCreateConfirmed(for: key, queueTitle: queueTitle)
-                } catch {
-                    // Same policy as fresh optimize starts: a recreate failure should not briefly
-                    // turn a queued/preparing row red if the optimized Part can still be discovered.
-                    recordDownloadDiagnostic("downloads.optimize_create_failed", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "target": .label(targetName),
-                        "error": .error(error),
-                    ])
-                }
-                guard store.ownsAttempt(key) else {
-                    throw DownloadLifecycleCancellation.staleOptimizeAttempt
-                }
-                try assertCurrentOptimizeAttempt(attemptKey: key,
-                                                 metadata: metadata,
-                                                 targetName: targetName)
-            }
-            guard store.ownsAttempt(key) else {
-                throw DownloadLifecycleCancellation.staleOptimizeAttempt
-            }
+            let sourceHeight = metadata.sourceMediaHeight
             let part = try await pollForOptimizedPart(ratingKey: ratingKey,
                                                       originalPartIDs: originalPartIDs,
                                                       targetName: targetName,
                                                       sourceHeight: sourceHeight,
-                                                      backgroundProcessingKey: backgroundProcessingKey,
+                                                      backgroundProcessingKey: nil,
                                                       queueTitle: metadata.optimizeQueueTitle,
                                                       startedAtEpochSeconds: optimizeStartedAt,
                                                       mediaTitle: record.title,
@@ -3631,10 +3509,10 @@ public final class DownloadManager {
                                              targetName: targetName)
             try startOptimizedPartDownload(attemptKey: key,
                                            title: record.title,
-                                           part: part,
+                                           part: part.part,
                                            metadata: metadata,
-                                           server: server,
-                                           token: token)
+                                           server: part.session.baseURL,
+                                           token: part.session.token)
         } catch DownloadLifecycleCancellation.staleOptimizeAttempt {
             recordDownloadDiagnostic("downloads.optimize_resume_stale", fields: [
                 "download_id": .identifier(ratingKey),
@@ -5000,10 +4878,14 @@ public final class DownloadManager {
 
     /// Poll the item's metadata until an optimized (extra) `Part` shows up.
     ///
-    /// Heuristic: the optimized version appears as an additional `Media`/`Part`
-    /// alongside the original. We snapshot the original part ids first, then poll;
-    /// the first part whose id is NOT in that original set is the optimized output.
-    /// If the item had no media at all, we take the highest-id new part.
+    /// Fresh and resumed prep share the same reconciliation: adopt a playable matching version,
+    /// inspect the queue, dispatch only on proven absence, then keep inspecting through grace.
+    /// The observation carries the exact live lane used to read the rendered Part.
+    struct OptimizedPartObservation {
+        let part: Part
+        let session: BackendSession
+    }
+
     func pollForOptimizedPart(ratingKey: String,
                                       originalPartIDs: Set<Int>,
                                       targetName: String,
@@ -5014,11 +4896,16 @@ public final class DownloadManager {
                                       mediaTitle: String,
                                       server: URL,
                                       token: String,
-                                      identity: ClientIdentity) async throws -> Part {
+                                      identity: ClientIdentity) async throws -> OptimizedPartObservation {
         var pollHealth = PlexOptimizePollHealthPolicy.State()
+        var baselinePartIDs = originalPartIDs
+        var resolvedSourceHeight = sourceHeight
         var successfulCompletionObservedAt: TimeInterval?
         var resolvedBackgroundProcessingKey = backgroundProcessingKey
         var bgKeyRetriesRemaining = 3
+        guard let attemptKey = store.record(for: ratingKey).flatMap(attemptKey(for:)) else {
+            throw CancellationError()
+        }
         while !Task.isCancelled {
             if PlexOptimizeDeadlinePolicy.isExpired(
                 startedAtEpochSeconds: startedAtEpochSeconds,
@@ -5036,8 +4923,7 @@ public final class DownloadManager {
             // remove the queue row entirely. Re-check LIVE app state every iteration and stop
             // polling the server the moment this download no longer exists or lost its slot.
             // P3b: a row being deleted (barrier or capsule) counts as gone for polling.
-            let rowExists = store.record(for: ratingKey)
-                .flatMap { attemptKey(for: $0) }.map(store.attemptAdmitsWork) ?? false
+            let rowExists = store.attemptAdmitsWork(attemptKey) && inFlightAttempts.owns(attemptKey)
             guard ServerPrepRefreshPolicy.plexPrepPollerShouldContinue(
                 rowExists: rowExists,
                 slotActive: activeJobs.contains(ratingKey)
@@ -5087,13 +4973,27 @@ public final class DownloadManager {
                 ])
                 throw DownloadError.notAuthenticated
             }
-            if let metadata = fetch.item {
-                if let newPart = Self.optimizedDownloadCandidate(from: metadata.media ?? [],
-                                                                 baselinePartIDs: originalPartIDs,
+            if let item = fetch.item, let metadata = store.record(for: attemptKey)?.metadata {
+                if baselinePartIDs.isEmpty {
+                    baselinePartIDs = DownloadOptimizeSourcePolicy.resumeBaselinePartIDs(metadata: metadata, item: item)
+                }
+                guard !baselinePartIDs.isEmpty else {
+                    throw DownloadError.optimizeFailed("No source media parts found while inspecting optimize.")
+                }
+                if resolvedSourceHeight == nil {
+                    resolvedSourceHeight = item.media?[safe: metadata.mediaIndex ?? 0]?.height
+                }
+                if let newPart = Self.optimizedDownloadCandidate(from: item.media ?? [],
+                                                                 baselinePartIDs: baselinePartIDs,
                                                                  targetName: targetName,
-                                                                 sourceHeight: sourceHeight) {
+                                                                 sourceHeight: resolvedSourceHeight) {
                     clearOptimizeProgress(ratingKey: ratingKey)
-                    return newPart
+                    try Task.checkCancellation()
+                    try assertCurrentOptimizeAttempt(attemptKey: attemptKey, metadata: metadata, targetName: targetName)
+                    recordDownloadDiagnostic("downloads.optimize_adopt_completed", fields: [
+                        "download_id": .identifier(ratingKey), "target": .label(targetName),
+                    ])
+                    return OptimizedPartObservation(part: newPart, session: liveSession)
                 }
             }
             // Surface server-side optimize/transcode progress for the "Preparing on
@@ -5122,16 +5022,68 @@ public final class DownloadManager {
                 resolvedBackgroundProcessingKey = await bgKeyForPolling(
                     server: server, token: token, identity: identity)
             }
-            if let backgroundProcessingKey = resolvedBackgroundProcessingKey,
-               let queueTitle,
-               let status = await optimizerQueueStatus(backgroundProcessingKey: backgroundProcessingKey,
-                                                       queueTitle: queueTitle, server: server,
-                                                       token: token, identity: identity) {
-                // Pause/delete may have landed while this task was suspended in the await above
-                // (releaseInFlight cancels the task, but an already-produced result still resumes
-                // the continuation). Do not stamp finalizing display state or throw terminal
-                // errors on behalf of a superseded attempt.
-                guard !Task.isCancelled else { throw CancellationError() }
+            let lookup: OptimizerQueueLookup
+            if let backgroundProcessingKey = resolvedBackgroundProcessingKey, let queueTitle {
+                lookup = await optimizerQueueStatus(backgroundProcessingKey: backgroundProcessingKey,
+                                                     queueTitle: queueTitle, server: server,
+                                                     token: token, identity: identity)
+            } else {
+                lookup = .unavailable
+            }
+            try Task.checkCancellation()
+            guard let row = store.record(for: attemptKey), let metadata = row.metadata else {
+                throw DownloadLifecycleCancellation.staleOptimizeAttempt
+            }
+            try assertCurrentOptimizeAttempt(attemptKey: attemptKey, metadata: metadata, targetName: targetName)
+            switch PlexOptimizePrepPolicy.action(
+                queue: lookup.classification, metadataInspected: fetch.item != nil,
+                dispatchedAt: metadata.plexOptimizeCreateDispatchedAtEpochSeconds,
+                now: Date().timeIntervalSince1970) {
+            case .keepInspecting:
+                break
+            case .failMissingCreate:
+                throw DownloadError.optimizeFailed("Plex did not expose the requested optimize job or a playable version.")
+            case .create:
+                if let item = fetch.item, let queueTitle {
+                    do {
+                        try await triggerOptimize(
+                            item: item, targetName: targetName, queueTitle: queueTitle,
+                            server: server, token: token, identity: identity,
+                            isStillCurrent: { [weak self] in
+                                self?.store.attemptAdmitsWork(attemptKey) == true
+                                    && self?.inFlightAttempts.owns(attemptKey) == true
+                            },
+                            willDispatch: { [weak self] in
+                                guard let self else { throw CancellationError() }
+                                try self.persistPlexOptimizeDispatch(for: attemptKey, targetName: targetName)
+                            })
+                        markPlexOptimizeCreateConfirmed(for: attemptKey, queueTitle: queueTitle)
+                    } catch PlexError.http(400) {
+                        // Duplicate creates can race metadata indexing. Re-run adoption immediately;
+                        // if still missing, retain the original dispatch clock and keep inspecting.
+                        let duplicate = await fetchCurrentMediaItemForPoll(
+                            ratingKey: ratingKey, server: server, token: token, identity: identity)
+                        try Task.checkCancellation()
+                        try assertCurrentOptimizeAttempt(attemptKey: attemptKey, metadata: metadata, targetName: targetName)
+                        if let part = Self.optimizedDownloadCandidate(
+                            from: duplicate.item?.media ?? [], baselinePartIDs: baselinePartIDs,
+                            targetName: targetName, sourceHeight: resolvedSourceHeight) {
+                            return OptimizedPartObservation(part: part, session: liveSession)
+                        }
+                        recordDownloadDiagnostic("downloads.optimize_duplicate_pending", fields: [
+                            "download_id": .identifier(ratingKey),
+                        ])
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch let error as DownloadLifecycleCancellation {
+                        throw error
+                    } catch {
+                        throw DownloadError.optimizeFailed(DiagnosticRedactor.safeUserFacingErrorMessage(
+                            error, operation: "Optimize request"))
+                    }
+                }
+            }
+            if case .present(let status) = lookup, let status {
                 switch status.outcome {
                 case .failed:
                     downloadLog.error("optimizer-failed failed=\(status.itemsFailedCount ?? -1, privacy: .public) successful=\(status.itemsSuccessfulCount ?? -1, privacy: .public)")
@@ -5183,6 +5135,23 @@ public final class DownloadManager {
         throw CancellationError()
     }
 
+    private func persistPlexOptimizeDispatch(for key: DownloadAttemptKey, targetName: String) throws {
+        guard let metadata = store.record(for: key)?.metadata else {
+            throw DownloadLifecycleCancellation.staleOptimizeAttempt
+        }
+        try assertCurrentOptimizeAttempt(attemptKey: key, metadata: metadata, targetName: targetName)
+        switch store.updateMetadata(for: key, mutate: { metadata in
+            if metadata.plexOptimizeCreateDispatchedAtEpochSeconds == nil {
+                metadata.plexOptimizeCreateDispatchedAtEpochSeconds = Date().timeIntervalSince1970
+            }
+        }) {
+        case .applied, .noChange: break
+        case .staleOrMissing: throw DownloadLifecycleCancellation.staleOptimizeAttempt
+        case .persistenceFailed:
+            throw DownloadError.optimizeFailed("The optimize request could not be saved safely. Retry to continue.")
+        }
+    }
+
     /// Pick only a NEW Plex server-optimized output that the local/offline player can open.
     ///
     /// GH #135 Stage 1a: the bounding-box / bitrate matching now lives in the pure, unit-tested
@@ -5192,16 +5161,8 @@ public final class DownloadManager {
                                                    baselinePartIDs: Set<Int>,
                                                    targetName: String,
                                                    sourceHeight: Int?) -> Part? {
-        let settings = DownloadPresetPolicy.customDownloadProfile(named: targetName)?.settings ?? DownloadPresetPolicy.mediaSettings(forTargetName: targetName)
-        let targetDimensions = settings.videoResolution
-            .flatMap(DownloadResolutionLabel.dimensions(forVideoResolution:))
-        return OptimizedVersionMatch.candidate(
-            from: media,
-            baselinePartIDs: baselinePartIDs,
-            targetDimensions: targetDimensions,
-            targetVideoKbps: settings.maxVideoBitrateKbps,
-            isOriginalQuality: DownloadPresetPolicy.isPlexOriginalQualityTarget(targetName),
-            sourceHeight: sourceHeight)
+        PlexOptimizePrepPolicy.candidate(from: media, baselinePartIDs: baselinePartIDs,
+                                         targetName: targetName, sourceHeight: sourceHeight)
     }
 
     func fetchCurrentMediaItem(ratingKey: String, server: URL, token: String,
@@ -5242,6 +5203,8 @@ public final class DownloadManager {
             return (response.mediaContainer.metadata.first, .success)
         } catch PlexError.unauthorized {
             return (nil, .authRejected)
+        } catch PlexError.http(403) {
+            return (nil, .authRejected)
         } catch {
             return (nil, .failure)
         }
@@ -5256,7 +5219,7 @@ public final class DownloadManager {
         return pl.key
     }
 
-    private struct OptimizerQueueResponse: Decodable {
+    struct OptimizerQueueResponse: Decodable {
         struct Container: Decodable {
             let item: [Item]
             enum CodingKeys: String, CodingKey { case item = "Item" }
@@ -5281,17 +5244,34 @@ public final class DownloadManager {
         enum CodingKeys: String, CodingKey { case mediaContainer = "MediaContainer" }
     }
 
-    private func optimizerQueueStatus(backgroundProcessingKey: String, queueTitle: String,
+    enum OptimizerQueueLookup {
+        case present(OptimizerQueueResponse.Status?)
+        case inspectedAbsent
+        case unavailable
+
+        var classification: PlexOptimizePrepPolicy.QueueLookup {
+            switch self {
+            case .present: return PlexOptimizePrepPolicy.queueLookup(inspected: true, matchingItemPresent: true)
+            case .inspectedAbsent: return PlexOptimizePrepPolicy.queueLookup(inspected: true, matchingItemPresent: false)
+            case .unavailable: return PlexOptimizePrepPolicy.queueLookup(inspected: false, matchingItemPresent: false)
+            }
+        }
+    }
+
+    func optimizerQueueStatus(backgroundProcessingKey: String, queueTitle: String,
                                       server: URL, token: String,
-                                      identity: ClientIdentity) async -> OptimizerQueueResponse.Status? {
+                                      identity: ClientIdentity) async -> OptimizerQueueLookup {
         let trimmed = backgroundProcessingKey.hasPrefix("/")
             ? String(backgroundProcessingKey.dropFirst()) : backgroundProcessingKey
         let req = PlexRequest(url: server.appendingPathComponent(trimmed), method: "GET",
                               queryItems: [],
                               headers: PlexHeaders.standard(identity: identity, token: token))
         guard let response = try? await appModel.client.send(req, as: OptimizerQueueResponse.self)
-        else { return nil }
-        return response.mediaContainer.item.last(where: { $0.title == queueTitle })?.status
+        else { return .unavailable }
+        guard let item = response.mediaContainer.item.last(where: { $0.title == queueTitle }) else {
+            return .inspectedAbsent
+        }
+        return .present(item.status)
     }
 
     // MARK: - Server-side optimize progress (GET /activities)

@@ -27,8 +27,9 @@ extension DownloadManager {
     ///
     /// // TODO(live, Phase 0): the background-processing key, the targets endpoint/shape, and
     /// the accepted POST grammar are confirmed by `scripts/live-optimize-probe.sh`. Until then
-    /// this is the best-known contract and is NOT live-verified. Failures are recorded as
-    /// `.optimizeFailed`; we still poll metadata so an out-of-band optimized part is picked up.
+    /// this is the best-known contract and is NOT live-verified. Existing matching output is
+    /// adopted before create; a duplicate response rechecks adoption and keeps its dispatch grace.
+    /// Other create failures are surfaced immediately.
     func triggerOptimizeAndDownload(item: MediaItem, targetName: String,
                                             metadata: OfflineMetadata,
                                             session: BackendSession,
@@ -41,14 +42,13 @@ extension DownloadManager {
         // with nothing to cancel, so after delete it kept polling the server every ~5s.
         let task = Task { [weak self] in
             guard let self else { return }
+            defer { self.endServerPrepPoller(for: attemptKey, id: pollerID) }
             await self.runOptimizeAndDownload(item: item, targetName: targetName,
                                               metadata: metadata, session: session,
                                               ratingKey: ratingKey, pollerID: pollerID,
                                               attemptKey: attemptKey)
         }
         registerServerPrepPollerTask(task, for: attemptKey)
-        await task.value
-        endServerPrepPoller(for: attemptKey, id: pollerID)
     }
 
     private func runOptimizeAndDownload(item: MediaItem, targetName: String,
@@ -186,61 +186,22 @@ extension DownloadManager {
             guard !originalPartIDs.isEmpty else {
                 throw DownloadError.optimizeFailed("No source media parts found before optimize.")
             }
-            // Do not silently reuse older Plex Versions for a newly-requested transcode. Existing
-            // server-rendered versions may have a lower resolution/bitrate than the user's selected
-            // preset (notably Original video quality on a 4K source). If we surface reuse later, it
-            // should be an explicit menu item, not an implicit substitute for this request.
-            try assertCurrentOptimizeAttempt(attemptKey: attemptKey,
-                                             metadata: optimizeMetadata,
-                                             targetName: targetName)
-            let backgroundProcessingKey = await bgKeyForPolling(server: server,
-                                                                       token: token,
-                                                                       identity: identity)
-            do {
-                try await triggerOptimize(item: sourceItem, targetName: targetName,
-                                          queueTitle: queueTitle,
-                                          server: server, token: token, identity: identity,
-                                          isStillCurrent: { [weak self] in
-                                              self?.inFlightAttempts.owns(attemptKey) == true
-                                                  && self?.store.attemptAdmitsWork(attemptKey) == true
-                                          })
-                markPlexOptimizeCreateConfirmed(for: attemptKey, queueTitle: queueTitle)
-            } catch {
-                // Do not flash a terminal failed row here. Plex may reject duplicate/odd optimize
-                // creates (HTTP 400) while an already-rendered Plex Version is still discoverable
-                // from metadata. Keep the visible row in server-prep state and let the metadata/
-                // queue polling path decide whether a downloadable Part appears or the server job
-                // truly failed.
-                recordDownloadDiagnostic("downloads.optimize_create_failed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "target": .label(targetName),
-                    "error": .error(error),
-                ])
-            }
-            try assertCurrentOptimizeAttempt(attemptKey: attemptKey,
-                                             metadata: optimizeMetadata,
-                                             targetName: targetName)
-            let sourceHeight = sourceItem.media?[safe: sourceMediaIndex]?.height
-                ?? optimizeMetadata.sourceMediaHeight
-            let part = try await pollForOptimizedPart(ratingKey: ratingKey,
-                                                      originalPartIDs: originalPartIDs,
-                                                      targetName: targetName,
-                                                      sourceHeight: sourceHeight,
-                                                      backgroundProcessingKey: backgroundProcessingKey,
-                                                      queueTitle: queueTitle,
-                                                      startedAtEpochSeconds: optimizeMetadata.plexOptimizeStartedAtEpochSeconds!,
-                                                      mediaTitle: item.title,
-                                                      server: server, token: token,
-                                                      identity: identity)
+            let part = try await pollForOptimizedPart(
+                ratingKey: ratingKey, originalPartIDs: originalPartIDs,
+                targetName: targetName,
+                sourceHeight: sourceItem.media?[safe: sourceMediaIndex]?.height ?? optimizeMetadata.sourceMediaHeight,
+                backgroundProcessingKey: nil, queueTitle: queueTitle,
+                startedAtEpochSeconds: optimizeMetadata.plexOptimizeStartedAtEpochSeconds!,
+                mediaTitle: item.title, server: server, token: token, identity: identity)
             try assertCurrentOptimizeAttempt(attemptKey: attemptKey,
                                              metadata: optimizeMetadata,
                                              targetName: targetName)
             try startOptimizedPartDownload(attemptKey: attemptKey,
                                            title: item.title,
-                                           part: part,
+                                           part: part.part,
                                            metadata: optimizeMetadata,
-                                           server: server,
-                                           token: token)
+                                           server: part.session.baseURL,
+                                           token: part.session.token)
         } catch DownloadLifecycleCancellation.staleOptimizeAttempt {
             recordDownloadDiagnostic("downloads.optimize_stale", fields: [
                 "download_id": .identifier(ratingKey),
@@ -496,7 +457,8 @@ extension DownloadManager {
                                  queueTitle: String,
                                  server: URL, token: String,
                                  identity: ClientIdentity,
-                                 isStillCurrent: () -> Bool = { true }) async throws {
+                                 isStillCurrent: () -> Bool = { true },
+                                 willDispatch: () throws -> Void = {}) async throws {
         // 1. Background-processing playlist key.
         let bgKey: String
         do {
@@ -568,13 +530,10 @@ extension DownloadManager {
         // P3b: the steps above suspend repeatedly; a Delete or replacement in between must not
         // be followed by creating a server job nobody owns.
         guard isStillCurrent() else { throw DownloadLifecycleCancellation.staleOptimizeAttempt }
-        do {
-            try await appModel.client.send(create)
-        } catch {
-            throw DownloadError.optimizeFailed(
-                DiagnosticRedactor.safeUserFacingErrorMessage(error,
-                                                              operation: "Optimize request"))
-        }
+        try Task.checkCancellation()
+        try willDispatch()
+        // Preserve the typed HTTP error so a duplicate can re-run adoption.
+        try await appModel.client.send(create)
 
         // 4. Optionally jump this just-enqueued conversion ahead of the PENDING items (but never
         //    the one currently transcoding). Opt-in via Settings; best-effort — never fails the
