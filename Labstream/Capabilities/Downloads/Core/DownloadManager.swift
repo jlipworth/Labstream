@@ -564,9 +564,10 @@ public final class DownloadManager {
         // D3: surface background-delegate failures instead of silently dropping the
         // row. Hard failures record a `.failed` status in the store and hand us the
         // reason here so `lastError` can drive the OfflineLibraryView message + retry.
-        self.session.onError = { [weak self] ratingKey, error in
+        self.session.onError = { [weak self] attemptKey, error in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.store.ownsAttempt(attemptKey) else { return }
+                let ratingKey = attemptKey.ratingKey
                 // A-3 (audit lens 8): the range engine's terminal branch surfaces persistent
                 // 401/403 rehydration exhaustion as a generic "Server returned HTTP 401." — remap
                 // it here (manager-side) to the sign-in-again affordance.
@@ -585,9 +586,10 @@ public final class DownloadManager {
                 self.refreshRecords()
             }
         }
-        self.session.onRangeRequestNeeded = { [weak self] ratingKey, reason in
+        self.session.onRangeRequestNeeded = { [weak self] attemptKey, reason in
             Task { @MainActor in
-                self?.resumeStaticRangeWhenReady(ratingKey: ratingKey, reason: reason.rawValue)
+                guard let self, self.store.ownsAttempt(attemptKey) else { return }
+                self.resumeStaticRangeWhenReady(ratingKey: attemptKey.ratingKey, reason: reason.rawValue)
             }
         }
         // Finding 6: logout revokes the JF/Emby token server-side, so an in-flight remainder can
@@ -2350,22 +2352,20 @@ public final class DownloadManager {
         var lastFailureWasStorageFull = false
         if case .storageFull = lastError[ratingKey] { lastFailureWasStorageFull = true }
         if lastFailureWasStorageFull {
-            let expectedBytes = expectedDownloadBytes(for: record) ?? 0
-            let remainingBytes = Int64(max(0, expectedBytes - checkpointBytes))
+            let expectedBytes = expectedDownloadBytes(for: record)
+            let remainingBytes = Int64(max(0, (expectedBytes ?? 0) - checkpointBytes))
+            let requiredBytes = session.requiredAdditionalFreeBytes(
+                for: key, expectedBytes: expectedBytes, durableCheckpointBytes: checkpointBytes)
             let measured = DownloadVolumeFreeSpace.measure(directory: store.directory)
-            if StaticRangeRecoveryPolicy.shouldParkAutoResumeAfterStorageFull(
-                lastFailureWasStorageFull: true,
-                freeBytes: measured?.bytes,
-                remainingBytes: remainingBytes
-            ) {
+            if let measured, measured.bytes < requiredBytes {
                 staticRangeRecovery.addPendingResume(ratingKey)
                 recordDownloadDiagnostic("downloads.range_auto_resume_parked", fields: [
                     "download_id": .identifier(ratingKey),
                     "reason": .label("storage_full"),
                     "resume_reason": .label(reason),
                     "remaining_bytes": .bytes(Int(remainingBytes)),
-                    "free_bytes": .bytes(Int(measured?.bytes ?? 0)),
-                    "free_space_source": .label(measured?.source.rawValue ?? "unavailable"),
+                    "free_bytes": .bytes(Int(measured.bytes)),
+                    "free_space_source": .label(measured.source.rawValue),
                 ])
                 return
             }
@@ -2598,24 +2598,6 @@ public final class DownloadManager {
             supportsPersistedResumeData: supportsPersistedResumeData,
             hasResumeData: persistedResumeData != nil
         ), let resumeData = persistedResumeData {
-            // Consume the blob path, but keep its display watermark until the resumed task proves
-            // equal/greater progress. URLSession can report a blob-resumed download task's
-            // `countOfBytesReceived` from near zero even while it still owns a large resumable temp
-            // body; clearing the watermark here made the Offline UI flash 0% / tiny bytes on Resume.
-            switch store.clearResumeData(for: retryAttemptKey, clearDisplayBytes: false) {
-            case .applied, .noChange:
-                break
-            case .staleOrMissing:
-                retryState.removeRetrying(ratingKey)
-                return nil
-            case .persistenceFailed(let failure):
-                recordDownloadDiagnostic("downloads.resume_manifest_clear_failed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "failure": .label(Self.startupPersistenceFailureLabel(failure)),
-                ])
-                retryState.removeRetrying(ratingKey)
-                return nil
-            }
             guard applyLifecycleEvent(
                 .retry(.resumeBlob), for: retryAttemptKey, context: "resume_blob") else {
                 retryState.removeRetrying(ratingKey)
@@ -2630,13 +2612,25 @@ public final class DownloadManager {
             let resumed: Bool
             switch lane {
             case .staticRange:
-                resumed = session.resumeRange(
+                switch session.resumeRange(
                     ratingKey: ratingKey,
                     resumeData: resumeData,
                     expectedBytes: BackgroundDownloadProgressPolicy.derivedExpectedBytes(record)
-                )
+                ) {
+                case .resumed: resumed = true
+                case .unusableOrStaleBlob: resumed = false
+                case .storageRefused:
+                    lastError[ratingKey] = .storageFull
+                    retryState.removeRetrying(ratingKey)
+                    refreshRecords()
+                    return nil
+                case .staleOrCancelled:
+                    retryState.removeRetrying(ratingKey)
+                    return nil
+                }
             case .opaque:
                 resumed = session.resume(ratingKey: ratingKey, resumeData: resumeData)
+                if resumed { _ = store.clearResumeData(for: retryAttemptKey, clearDisplayBytes: false) }
             }
             if resumed {
                 activeJobs.insert(ratingKey)

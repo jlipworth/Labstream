@@ -128,6 +128,27 @@ struct ManagerLifecycleEventTests {
 
     // MARK: - Fixtures
 
+    @Test("Stale session error and rebuild callbacks cannot act on the current row (P5 pin 11)")
+    func staleSessionCallbacksAreIgnored() async throws {
+        let directory = try makeDirectory("stale-callback")
+        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+        let store = DownloadStore(baseDirectory: directory)
+        let (manager, session) = makeManager(store: store)
+        defer { session.invalidateInjectedSessionForTesting() }
+        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        let key = try seedPlexPrepRow(in: store)
+        let stale = DownloadAttemptKey(ratingKey: key.ratingKey, attemptID: .init(uuid: UUID()))
+        let before = store.lifecycleState(for: key)
+        session.onError?(stale, .storageFull)
+        session.onRangeRequestNeeded?(stale, .requestRebuildNeeded)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(manager.lastError[key.ratingKey] == nil)
+        #expect(store.lifecycleState(for: key) == before)
+        // Exact ownership still delivers the presentation callback.
+        session.onError?(key, .storageFull)
+        #expect(await waitUntil { manager.lastError[key.ratingKey] == .storageFull })
+    }
+
     /// A Plex optimize row still in server prep: queued, no bytes, no poller.
     private func seedPlexPrepRow(in store: DownloadStore) throws -> DownloadAttemptKey {
         let key = DownloadAttemptKey(ratingKey: "plex:201", attemptID: DownloadAttemptID(uuid: UUID()))
