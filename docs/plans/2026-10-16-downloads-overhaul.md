@@ -2301,6 +2301,385 @@ P5 edit touches the row.
 4. **Integration** (lead).
 5. **Docs**, then the combined matrix.
 
+## P6 detailed plan — store responsiveness and bounded background wakes
+
+**Status:** design draft, 2026-10-17, based on `downloads/p5-storage-transport` at `01565133` (P5 head). Source inspection only; no tests, builds, simulator actions, tracked edits or Git mutations were performed to prepare this draft.
+
+**Shape:** one PR, with a lead and one delegate working in disjoint files after the API contract is agreed. Finish the remaining correctness work needed to reach P7; no performance baseline, profiling campaign, actor conversion or general store rewrite is a prerequisite. This draft is an insertion candidate for the existing overhaul plan, not a second canonical plan.
+
+**Priority:** remove store persistence waits from the MainActor and callback queues; move filesystem operations out of the store lock without weakening ownership; release every OS wake within an explicit application budget; remove the persisted-row duplicate-key trap. Add the small audit and failed-head bookkeeping fixes while those paths are open. Explicitly defer the rest.
+
+### Pins — write these first
+
+These are proposed tests, not claimed results. Each numbered pin has a specific red assertion on this head. A missing future API or a compile failure does not count as a red test. First add only the minimal clock/filesystem scheduling hooks needed to exercise the existing production entry points; record the failure, then change behaviour. Use held semaphores, dedicated readers and a fake monotonic clock, following `DownloadStoreAttemptOwnedCheckpointTests.staticCheckpointStatRunsOffStoreLock`; do not use throughput thresholds or `Task.yield()` counts as a performance baseline. Always arrange a test-side cleanup release from outside the MainActor so a broken implementation cannot wedge the test process.
+
+| Pin | Fixture and required assertion | Why it fails at `01565133` | Owner / test home |
+|---|---|---|---|
+| P6-pin-01 | Hold the injected index committer. Drive a real manager lifecycle action and a separate MainActor acknowledgement. The acknowledgement runs before the committer is released; dependent transport/server work remains absent until commit, then is attempted only after a fresh authority check. Repeat with commit failure and attempt replacement while awaiting. | `applyLifecycleEvent` calls `resolveSynchronously` at `DownloadManager.swift:2080`; that MainActor cannot acknowledge while the write is held. | Lead; new `LabstreamTests/P6ManagerPersistenceTests.swift`. |
+| P6-pin-02 | Hold an index/artifact worker indefinitely. Resolving a mutation, promotion, checkpoint or deletion reaches its supplied deadline with the appropriate typed timeout; a later commit can still complete the original operation, and cannot complete a different epoch's waiter. | The synchronous resolvers and the async wrappers around them wait without a deadline. The latter merely move the unbounded wait onto a global queue. | Lead; new `LabstreamTests/P6StoreResolutionTests.swift`. |
+| P6-pin-03 | Hold a Retry checkpoint clone inside `createAttemptOwnedRecord`. An unrelated exact-owner lookup completes before clone release. Race a Delete/replacement and verify that the obsolete clone cannot install its owner or delete the replacement; a failed candidate commit retains the old checkpoint. | The current clone/stat/remove/copy runs with `lock` held at store lines 3446–3452. The red assertion is the independent lookup, with race assertions retained beside it. | Lead; new `LabstreamTests/P6StoreIOTests.swift`. |
+| P6-pin-04 | Parameterize slow blob read, existence/stat used by lifecycle facts, side-asset publication, condemned rename/fallback removal, and staging enumeration/removal. While each actual filesystem operation is held, an independent row lookup completes. Re-check row/source/file identity after the hold before applying the result. | All listed operations still occur under the store lock; see the code map. This supplements, rather than duplicates, the already-green off-lock `submitStaticRangeCheckpointReset` pin. | Lead; `P6StoreIOTests.swift`. |
+| P6-pin-05 | Reconcile an eligible interrupted non-resumable row with a resume blob. After successful cleanup, its resume path/display authority is cleared durably; an injected removal failure retains recovery authority. Hold cleanup I/O and prove another row remains readable. Add a second row referencing the selected path and require its bytes survive. | Reconcile deletes under the lock at 5552–5565, leaves resume metadata unchanged, and has no full cross-row path reservation at this step. A fixture requiring cleared references is independently red. | Lead; new `LabstreamTests/P6ReconcileCleanupTests.swift`; retain the existing same-attempt file-identity race pin. |
+| P6-pin-06 | Block startup recovery before transport construction, finish its failure release, then supply another OS handler. Also store before session registration and register after the failure. Every exact token fires once without constructing a URLSession. A merely deferred initial activation is allowed to activate normally. | Failure release is an edge, not remembered terminal startup state. `noteBackgroundCompletionHandlerStored` only stores the late token, and `ensureSessionReady` is a dormant no-op. | Delegate; new `LabstreamTests/P6BackgroundWakeTests.swift`, with real registry/session wiring. |
+| P6-pin-07 | Begin operation A and finish events; advance past its operation deadline. That wake becomes release-eligible. Start operation B/new wake, then deliver A's stale or duplicate end/timer. B's hold remains. Do the same for rearmed grace. | Gate operations have no identities or deadlines, only a count; there is no operation-expiry path. | Delegate; `P6BackgroundWakeTests.swift` and `BackgroundDownloadWakeCoordinatorTests.swift`. |
+| P6-pin-08 | Repeatedly start and finish individual operations before each operation timeout while keeping a wake continuously occupied. Include a blocked append, slow index commit, missing finish-events, and a flush already in flight. At the one absolute wake deadline, the original tokens become release-eligible exactly once; no additional 5-second flush starts then. | The existing 5-second persistence bound starts only after operations drain. Balanced operations and missing finish-events can delay reaching it indefinitely (B82). | Delegate; `P6BackgroundWakeTests.swift` plus `BackgroundCompletionPersistenceBarrierTests.swift`. |
+| P6-pin-09 | Timeout a wake while a body worker remains physically active. Its attempt/train ownership and body claim remain installed; no successor appends concurrently. A late completion/end cannot consume a new wake's token or operation. Committed checkpoint bytes and pending artifact intent survive reinitialization. | There is no timeout transition today. Exercise the proposed deadline via a test scheduling hook over the existing gate; the current gate retains the original handler beyond it, which is the red assertion. The ownership assertions prevent an unsafe implementation of expiry. | Delegate; `P6BackgroundWakeTests.swift`. |
+| P6-pin-10 | A small source safety assertion rejects a trapping `Dictionary(uniqueKeysWithValues:)` in persisted-row ingestion. Pair it with identical-key and different-attempt duplicate v4/v5 fixtures through real store initialization and Retry Recovery: admission stays blocked, no winner is guessed, bytes and files are unchanged, and repairing the file permits recovery. | **Only the source safety assertion is red:** `load` still uses the trapping initializer at 5839. `classifyIndex` already rejects duplicate keys at 854–859, so an ordinary duplicate-file launch is already blocked and must not be advertised as a new crashing reproduction. | Lead; new `LabstreamTests/P6StoreLoadSafetyTests.swift`; no forced private-loader bypass. |
+| P6-pin-11 | Repeatedly fail and explicitly retry one durable artifact head 600 times, without ever completing it. Live coordinator entries are proportional to live intents/current epochs, not attempts; retired unclaimed failures are capped at 512. An unrelated successful row commit does not launch that failed head again. A relevant dirty-prepared-revision recovery and an explicit same-row successor still restart it. | Failed epochs accumulate in `entries`; store failure drops its ticket and generic successful persistence repeatedly calls `recoverPendingArtifactIntents`. Existing retirement tests only cover completion/abandonment, not a permanently failing head. | Lead; new `LabstreamTests/P6ArtifactRetryTests.swift`. |
+| P6-pin-12 | Audit a fixture with hidden working/held staging files, generation resume files, an index commit temp, a pending promotion/deletion path and a foreign file. Every byte in the Downloads directory is accounted for once; owned pending paths are referenced/protected, and infrastructure/foreign files are never sweep candidates. Audit does not delete anything. | `directoryFileSnapshots` skips hidden files (2981), referenced accounting omits the working path and pending-intent paths, and the filename classifier does not recognize hidden staging. | Lead; `OfflineDownloadFileInventoryTests.swift` plus new `LabstreamTests/P6StoreInventoryTests.swift`. |
+
+**Retained coverage is separate from red pins.** D1 migration, unsupported-root drain, duplicate admission, existing crash-replay, ENOSPC and ownership tests are regression gates, even when already green. Do not relabel them as failing tests. Extend touched required/unpinned inventory cases before merge (especially st-02, st-23 and st-38); do not invent a failure for a case this head already handles.
+
+### Current code map
+
+All line numbers below refer to this exact head. `Core/` means `Labstream/Capabilities/Downloads/Core/`. A file followed by several line numbers denotes distinct call sites, not a line range. This is a map of production blocking paths, with test-only wrappers listed separately.
+
+#### Store wait funnel and synchronous facade
+
+| File:line | Current path / implication |
+|---|---|
+| `Core/DownloadStore.swift:177`, `:186`, `:197`, `:203`, `:225` | Mutation/resume/artifact synchronous resolvers; index or lifecycle condition waits. |
+| `Core/DownloadStore.swift:1143`, `:1218`, `:1240` | Promotion wrapper and sync resolver; the async resolver dispatches that same unbounded resolver to a global queue. |
+| `Core/DownloadStore.swift:1795`, `:2131`, `:2174`, `:2242`, `:2279`, `:2303`, `:2363` | Legacy attempt-scoped held-body mutation/purge paths still wait for persistence. New production submissions already exist at 1833 and 1873. |
+| `Core/DownloadStore.swift:3161`, `:3211`, `:3231` | Atomic season apply waits for both candidate and conditional rollback, with exact canonical-byte proof after ambiguity. The manager already executes this work detached. |
+| `Core/DownloadStore.swift:3322`, `:3494` | Attempt seed/replacement waits before returning its committed result; additionally clones under the lock. |
+| `Core/DownloadStore.swift:3521`, `:3537`, `:3549`, `:3585`, `:3677`, `:3829`, `:4947`, `:5061`, `:5295`, `:5343` | Playback position, PlaySession set/compare-clear, size, resume replace/clear, metadata, progress, status fixture shim, and unverified promotion wrappers. Their attempt results imply a synchronous durability wait. |
+| `Core/DownloadStore.swift:4439`, `:4448` | Retry Recovery can synchronously wait for a season-indeterminate recommit; re-probe/startup tail also performs filesystem work. |
+| `Core/DownloadStore.swift:4520`, `:4604`, `:4631` | Checkpoint sync facade; async facade dispatches an unbounded wait. The underlying submitted checkpoint's filesystem work is already off-lock. |
+| `Core/DownloadStore.swift:5466`, `:5540`, `:5571`, `:5580`, `:5670`, `:5699` | Reconcile waits; row-deletion sync facades; row-deletion async facade dispatches an unbounded wait. |
+| `Core/DownloadStore.swift:5892`, `:5906`, `:5931`, `:5960`, `:5984` | Load-time normalization can call blocking `persist`; all private persistence waits funnel through 5931. Existing async bounded index/lifecycle flush is at 5960/5984 and should be reused. |
+| `Core/RevisionedPersistenceWriter.swift:77`, `:91`, `:100` | Bounded async flush already exists. Compatibility `waitSynchronouslyForOutcome` has an unbounded condition wait. Keep blocking internals confined to known workers while migrating callers. |
+| `Core/DownloadArtifactLifecycleCoordinator.swift:59`, `:96`, `:200`, `:204`, `:208` | Register/finish, synchronous ticket/watermark waits, and async watermark flush. Failed per-ticket epochs are retained after repeated failure; no async deadline-aware exact-ticket resolver exists. |
+| `Core/DownloadStore.swift:231`, `:3074`, `:3312`, `:3641`, `:3813`, `:4475`, `:4900`, `:5032`, `:5272` | Test/legacy entry points and rating-key mutation shims. Removal is not a prerequisite; keep fixture adapters DEBUG-only where needed, and port only tests touched by the new API. |
+
+#### Manager callers that reach synchronous waits
+
+| Caller file:line | Call |
+|---|---|
+| `Core/DownloadManager.swift:706` | `reprobeBlockedIndex` directly on MainActor. |
+| `Core/DownloadManager.swift:1018`, `:1969` | `reconcile` from reattach completion handling. |
+| `Core/DownloadManager.swift:1126`, `:4783`, `:4826`; `Core/DownloadManager+CleanupRunner.swift:424` | `clearPlaySessionID`; compare-clear proof must still precede clearing cleanup authority. |
+| `Core/DownloadManager.swift:1315`, `:5243` | `updateMetadata`. |
+| `Core/DownloadManager.swift:1637`, `:3525`; `Core/DownloadManager+Plex.swift:257`; `Core/DownloadManager+PlexOptimize.swift:405`; `Core/DownloadManager+Jellyfin.swift:325`; `Core/DownloadManager+Emby.swift:499` | `createAttemptOwnedRecord`; committed seed precedes external work. |
+| `Core/DownloadManager.swift:2080` | `applyLifecycleEvent` resolves synchronously; this is the shared high-fan-out bottleneck. |
+| `Core/DownloadManager.swift:2657` | `clearResumeData` after opaque blob resume. |
+| `Core/DownloadManager.swift:4115`, `:4118` | Unverified promotion and playback position persistence. Remove the blocking mechanism here in P6; attempt-bound playback sinks and playback-observed semantics remain P7 (B73–B76). |
+| `Core/DownloadManager+Jellyfin.swift:348`, `:376`, `:540` | `setPlaySessionID`, metadata persistence. |
+| `Core/DownloadManager+Emby.swift:477`; `Core/DownloadManager+EmbyConvert.swift:783`, `:800`, `:818`; `Core/DownloadManager+PlexOptimize.swift:684` | Backend helpers call blocking metadata persistence. |
+| `Core/DownloadManager+SideCache.swift:330`, `:503`, `:557`, `:608`, `:751` | Side-asset metadata publication; retain exact source checks and post-commit retirement. |
+| `Core/DownloadManager+SeasonPlanner.swift:172` | Atomic season apply is **already detached** by `persistPlannedSeeds` (170); preserve that working barrier rather than redesigning season transactions. |
+| `Core/DownloadManager.swift:1083`, `:2019`, `:2146`, `:3983`; `Core/DownloadManager+PlexOptimize.swift:388` | Existing **async** deletion/checkpoint resolvers: these already release MainActor, but currently hide unbounded worker waits. Migrate their deadline contracts, not their execution context. |
+
+The shared lifecycle helper's call graph also has to be migrated, not just the explicit `resolveSynchronously` spelling:
+
+| File | `applyLifecycleEvent` / failure-helper callers |
+|---|---|
+| `Core/DownloadManager.swift` | 1748, 1788, 1796, 1801, 2114, 2124, 2206, 2213, 2219, 2590, 2625, 2674, 2706, 2715, 2750, 2794, 2933, 2961, 2984, 3031, 3053, 3191, 3226, 3258, 3538, 3614, 3641, 3771, 4065, 4072, 4161, 4587. |
+| `Core/DownloadManager+Admission.swift` | 166, 196, 199, 201, 215, 221, 233, 240, 245, 286, 445. |
+| `Core/DownloadManager+SeasonPlanner.swift` | 216, 258. |
+| `Core/DownloadManager+Plex.swift` | 271. |
+| `Core/DownloadManager+PlexOptimize.swift` | 111, 233, 256, 277. |
+| `Core/DownloadManager+Jellyfin.swift` | 317, 338, 356, 380. |
+| `Core/DownloadManager+Emby.swift` | 157, 198, 282, 353. |
+| `Core/DownloadManager+EmbyConvert.swift` | 753, 771. |
+
+#### Session callers and wake control
+
+| File:line | Current path / implication |
+|---|---|
+| `Core/BackgroundDownloadSession.swift:1168`, `:1190`, `:1336`, `:1350` | Submission helpers synchronously resolve when a stored OS handler is absent. The presence of a handler currently selects persistence semantics; that is not an executor guarantee. A handler arriving late does not make a blocked foreground call safe. |
+| `Core/BackgroundDownloadSession.swift:1366` | Held-lifecycle waiter is already off the range queue but unbounded; ordered completion returns to `rangeIOQueue`. |
+| `Core/BackgroundDownloadSession.swift:1663`, `:2054`, `:2823`, `:3036`, `:3135`, `:5612` | Checkpoint sync facade. `:2071` also explicitly resolves lifecycle synchronously. Preserve the individual queue/ordering contracts when replacing them. |
+| `Core/BackgroundDownloadSession.swift:1727` | Legacy validated-promotion recovery is already dispatched off delegate delivery; retain its startup classification ordering. |
+| `Core/BackgroundDownloadSession.swift:7248` | Blob-resume path clears resume data synchronously. |
+| `Core/BackgroundDownloadSession.swift:6280` | Existing async validated-promotion resolver releases the caller but has no bounded exact-ticket outcome. |
+| `Core/BackgroundDownloadSession.swift:1511`, `:1515`; `Core/BackgroundDownloadWakeCoordinator.swift:67`, `:73` | Anonymous begin/end gate operations; no operation token or upper bound. |
+| `Core/BackgroundDownloadSession.swift:852`/`:861`, `:4087`/`:4092`, `:4110`/`:4116`, `:4476`/`:4479`, `:5469`/`:5501`, `:7440`/`:7445` | Production operation acquisition/release pairs to convert to captured handles. DEBUG helper pair is 796/800. Grace begin/end is separately owned by the coordinator. |
+| `Core/BackgroundDownloadSession.swift:1519`, `:1529`, `:1574` | Store-handler, one-shot startup failure release, then 5-second index/lifecycle flush **after** gate drain. No whole-wake deadline. |
+| `Core/BackgroundDownloadCompletionRegistry.swift:32`, `:51`, `:77` | Registration replays pending tokens; store records tokens even with no session; release drains exact tokens. No terminal-startup memory or registry-side deadline exists. |
+| `PMSKit/Sources/PMSKit/Downloads/BackgroundDownloadCompletionGate.swift:beginOperation`, `:endOperation`, `:abortAwaitingHandlers` | Count-only state. Abort zeroes all operations; it must not be reused as a live-wake timeout. |
+
+#### Filesystem work held under the store lock
+
+| Store file:line | Work | P6 treatment |
+|---|---|---|
+| `DownloadStore.swift:1553`, `:1565`, `:1569` | Side-asset staging existence check and rename while ownership/source check holds the lock. | Reserve paths and source generation, perform publication on worker, then revalidate; do not just unlock around rename. |
+| `DownloadStore.swift:1588`, `:1599`, `:1606`, `:1662`, `:1672` | Startup staging enumeration, resource reads and removals. | Immutable init inventory, off-lock scan, then path reservation against complete current references. |
+| `DownloadStore.swift:2311`, `:2339`, `:2340` | Legacy deferred-held cleanup existence/removal. | Route touched production work through existing held lifecycle worker; retain latest-revision and cross-row proofs. |
+| `DownloadStore.swift:2708`, `:2720` | Reusable side-asset stat/type/size. | Snapshot owner/source/cache generation, stat off-lock, compare before returning. |
+| `DownloadStore.swift:2816`, `:2819`, `:2824`, `:2831`, `:2838`, `:2846`, `:2860` | Local/BIF/playlist/chapter existence checks. | Snapshot then off-lock read; invalidate/reject on changed authority. Do not turn them into UI-wide async APIs in this PR. |
+| `DownloadStore.swift:3446`, `:3449`, `:3450`, `:3452` | Retry handoff stat, destination exists/remove, potentially multi-GB copy. | Worker handoff with source/destination reservation and compare-and-swap; highest-cost lock hold. |
+| `DownloadStore.swift:3755`, `:3760`, `:3774`, `:3778` | Exact-attempt resume blob read/existence. | Snapshot and read on worker for main-actor callers, then exact-owner/path/generation validation. |
+| `DownloadStore.swift:4458`, `:4460` | Retry Recovery's `stagingInventory` directory read is invoked inside `lock.withLock`. | Compute inventory off-lock before installing it. |
+| `DownloadStore.swift:4478`, `:4490` | Legacy rating-key checkpoint reset stats the stable file while locked. | No mapped production caller uses this overload; keep any retained fixture adapter DEBUG-only or route touched tests to the attempt-keyed submission. |
+| `DownloadStore.swift:4807`, `:4816`, `:4823`, `:4877`, `:4889`, `:4893` | Exact-attempt durable checkpoint/recovery-evidence stat/existence. | Snapshot and observe off-lock; validate results before use for mutation/work. |
+| `DownloadStore.swift:5158`, `:5178`, `:5191`, `:5199` | Lifecycle facts stat working bytes, resume existence and published existence under lock. Called by normal submissions and inside reconcile's outer lock. | Separate immutable row facts from filesystem observations; capture a process mutation generation and validate before reduction. |
+| `DownloadStore.swift:5396`, `:5403`, `:5407` | Condemned-body rename; removal fallback on rename error. | Serialize with actual range writers, retain condemned fence, do I/O off-lock with a path reservation. |
+| `DownloadStore.swift:5467`, `:5487`, `:5490`, `:5507`, `:5512`, `:5552`, `:5562`, `:5563` | Reconcile gathers stat/file identities under lock, waits off-lock, then **re-takes the lock** for identity stat and deletion. | Off-lock observation and cleanup, with reservations plus owner/lifecycle/file-identity checks. The historical comment that reconcile I/O moved off-lock does not describe this final loop. |
+| `DownloadStore.swift:5822`, `:5883` | Load normalizes rows and removes retired side assets while locked. | Normalize from immutable decoded values; publish rows under lock; reserve and retire unreferenced safe paths off-lock after admission is proven. No blocking load-time normalization persist. |
+
+Already-off-lock work to preserve: index encode/commit on the revisioned writer; prepared/terminal artifact workers; the submitted checkpoint's clone/stat path; most resume replacement/clear workers; row-deletion file operations; side-asset hydration's size scan. Cleanup journals have their own lock/durability domain; inspection found no current journal file operation to move out of the store lock. Their worker-private waits do not automatically block the MainActor, but a caller must not wait on those workers synchronously. Startup classification/directory protection and the audit scan also run outside the store lock; they can still be synchronous callers' disk work. Do not claim this PR removes every synchronous filesystem syscall in the app.
+
+### P6.1 Contract and red pins — lead, committed first
+
+**Owned files:** `Core/DownloadStore.swift`, `Core/RevisionedPersistenceWriter.swift`, `Core/DownloadArtifactLifecycleCoordinator.swift`, the existing `Core/Download*Filesystem.swift` seams only as needed, and the lead's new P6 test files. The delegate can author its new test file concurrently, but waits for this contract before modifying session call sites.
+
+1. Keep the lock-owning store; it has cheap exact-attempt **submit** operations and bounded asynchronous **resolve** operations. No conversion of the store to an actor.
+2. Agree the overload signatures for mutation, resume, artifact, promotion, checkpoint, row deletion, compare-clear and seed/replacement outcomes. Inputs carry the exact ticket/epoch and a monotonic deadline or remaining timeout; results retain the current typed success/stale/failure distinctions. Timeout is an existing `PersistenceFlushResult.timedOut` where the result already embeds it; artifact resolutions use their typed timed-out result. Never translate timeout or a discarded result into `.applied`/`.removed`.
+3. Use the existing bounded writer flush and add an exact-ticket bounded lifecycle wait. Do not replace exact ticket outcomes with a watermark-only success: unrelated earlier failures and later retry outcomes must not be misattributed.
+4. Async resolvers release the executor while waiting. Keep worker-private blocking implementation details where necessary, but make the production facade unable to call them synchronously. Do not delete `RevisionedPersistenceWriter.waitSynchronouslyForOutcome` while artifact workers still need it; confine/document it as worker-only. Full waiter/continuation machinery is unnecessary for this PR.
+5. Agreement includes async worker adapters for seed/replacement, re-probe and reconcile, and completion adapters where session APIs must remain callback-based. The immutable submitted snapshot's schema version and revision remain captured under the lock.
+6. Do not change side effects into fire-and-forget work. Submission only proves acceptance. Commit-before-network, commit-before-artifact deletion, cleanup absence proofs, and season compensation remain real barriers.
+7. Test scaffolding may expand an existing filesystem seam enough to block `stat/read/rename/remove` deterministically. Defer a universal `DurableFS` rewrite. No new persisted artifact operation/phase, lifecycle value or envelope field is introduced in P6.
+
+**Exit:** documented callback/result signatures and behavioural red pins are reviewable before either implementation lane depends on them.
+
+### P6.2 Nonblocking manager callers — lead
+
+**Owned files:** all `Core/DownloadManager*.swift`, lead P6 tests and touched existing store/manager tests. The delegate never edits these files.
+
+- Replace `applyLifecycleEvent` and its server-prep/failure adapters with submit plus bounded async resolve; migrate their full call graph in the map. Already-async starts await them. Synchronous UI/callback entries capture exact authority, install immediate pause/delete/admission fences, and schedule a continuation using the existing ordered coordinator pattern; they return without waiting for disk.
+- Preserve order for same-attempt actions; unrelated rows may continue. Do not let a new `Task` reorder Pause, Resume, Retry, Delete or same-attempt metadata updates. Do not put an immediate Delete/halt fence behind an older persistence waiter.
+- At **every new suspension**, check the exact attempt, start-chain generation/reservation, delete/capsule barrier, and relevant source or train generation before external work. An in-memory `.applied` revision can be superseded while awaiting; commit success never re-authorizes an obsolete start. Cleanup compares both attempt and exact expected server handle.
+- Migrate seed/create, metadata, PlaySession set/compare-clear and resume clear callers in the map. Keep retired side-asset cleanup after the corresponding successful durability proof; replacing `updateMetadata` with bare `submitMetadata` alone loses that behaviour.
+- Run Retry Recovery's filesystem re-probe on a worker; apply the result only for the current startup-recovery generation. Preserve manual retry, transient retry limits and the separate season-indeterminate reason. Do not construct transport before current admission.
+- Keep `persistPlannedSeeds`' existing detached transaction and `seasonPlanCommitsInFlight` barrier. Its internal wait is not currently a main-thread stall. Preserve exact candidate-byte proofs, conditional rollback and in-process indeterminate recovery; do not gratuitously rebuild the season transaction around the new facade.
+- Move playback position/unverified persistence onto the same ordered asynchronous machinery. **Only remove blocking here.** Keep current public calls and semantics; P7 still owns binding the sink to the actual playing attempt and requiring observed playback (B73–B75). Record B76's persistence-mechanism portion as fixed, not all playback bugs.
+- Remove the production synchronous store facades once no mapped production caller uses them. Port touched tests to submit/resolve; untouched fixture shims may stay DEBUG-only. A final call-site search must include backend and side-cache extensions, not just `DownloadManager.swift`.
+
+**Exit:** pin 01 passes; held index I/O does not stop MainActor handling; no dependent start happens before proof or after its authority was withdrawn.
+
+### P6.3 Filesystem outside the lock and targeted store safety — lead
+
+**Owned files:** store/writer/artifact coordinator and existing filesystem seams; `PMSKit/Sources/PMSKit/Downloads/OfflineDownloadFileInventory.swift` and its tests; lead P6 tests. The delegate consumes these APIs without editing their implementation.
+
+#### Observation and reservations
+
+- Make locked sections read/mutate in-memory values and submit snapshots only. Capture exact owner, path set, source identity, lifecycle and an in-process row mutation generation; observe files outside the lock; compare before using observations to mutate. Increment the generation at every relevant mutation. Generation is in memory, not a new v5 field.
+- A filesystem snapshot is not deletion permission. Reserve paths against publication/adoption and serialize with **actual range writes**, which occur outside the store lock already. Check file identity on the worker immediately before destructive I/O. All writers that could reuse the path must respect the reservation or be fenced/serialized by the session's existing per-attempt range queue. Keep lock order consistent; never await a range queue or journal while holding the store lock.
+- Extend the existing path-reservation system, rather than adding a second generic transaction engine. Reject unsafe one-level paths before any I/O; use `artifactPathsReferenced(by:)` for cross-row protection, including pending intents, resume/held manifests, staging and side assets. A manifest-only reference set is insufficient.
+- Retry checkpoint handoff reserves the exact old source and new attempt-private destination, copies on a worker using the existing durable-copy seam, then compare-and-swaps the captured old owner. Keep the source until the successor snapshot is proven committed. A failed/ambiguous candidate cannot delete that source. Release reservations on every outcome, and never let a stale copy retire a newer body's path.
+- Side-asset rename must reserve both source and destination while retaining exact source-generation authority. A same-attempt source change cancels the old publication logically; retirement cleans its obsolete result without deleting the new source's bundle. Preserve hydration-cache invalidation.
+- For lifecycle facts/reconcile, do not apply a reducer decision based on stale filesystem observations after a row mutation. Retry a bounded number of times, then defer to the next recovery edge; do not spin under heavy progress.
+
+#### Reconcile (B20 and the remaining st-41 work)
+
+1. Snapshot eligible rows; skip capsules, row-deletion barriers and pending artifact heads as today. Collect bytes/existence/file identities on a worker. Revalidate row generation before applying `relaunchObserved` and submitting the demotion snapshot.
+2. Resolve demotion off the caller executor. On failed/timeout proof, keep files and recovery references. Preserve the current same-attempt lifecycle/file-identity checks; a new failed-row body with the same owner must survive.
+3. Reserve destructive paths after proof, checking other rows' **complete** artifact references and coordinating with live range writers. Perform stat/rename/remove off-lock. A replacement, changed identity, or conflicting reference causes conservative deferral, not deletion.
+4. Use existing resume-clear lifecycle submission for blob retirement, so clearing references and deleting the blob retains the existing durable intent/replay protocol. Do not manually unlink a blob and leave its manifest live. Clear display bytes only when the matching authority is retired.
+5. For a non-resumable working body, keep the condemned-body identity/fencing model and remove it off-lock. Do not reinterpret a partial as a complete body, convert failed rows into user-paused rows, or expose the stable path as a nonterminal checkpoint.
+6. **Bounded claim:** this closes lock-held I/O, stale resume references and cross-row deletion hazards in B20. A new universal durable reconcile-effect recipe is deferred below. If a working-body cleanup cannot complete, retain the row/path authority for Retry/Delete and report a deferred cleanup; do not claim guaranteed replay of every abandoned working-body deletion.
+
+#### Inventory and audit (B19)
+
+- Enumerate hidden files for the report. Count every regular file once, while explicitly separating index/infrastructure/temp bytes from media candidates. Reference `artifactPathsReferenced(by:)`, not only published media and metadata. Include pending promotion, deletion, clear and checkpoint-temp paths.
+- Teach the shared pure inventory/name classifier the **existing** staging grammar (`.attempt-stage-v1-<64 lowercase hex>.stage`) and existing generation/temp forms needed by the audit; keep filenames byte-for-byte compatible. The classifier describes ownership, not permission to delete.
+- Startup deletion stays conservative: only recognized staging entries inventoried at this Store's initialization, still unreferenced and unclaimed at reservation time, are eligible. Include file identity when practical so a replacement at an old pathname is not mistaken for the old orphan. Do not broaden this into stable-media or foreign-file deletion.
+- Reattach's held-body sweep keeps P5's claim protection and startup-inventory constraint. Add named st-23 coverage if edits touch that sweep; current-process new files and queued appends survive. Never delete CFNetwork temp files.
+- Keep the audit report-only. This plan requires no settings redesign, new dashboard or profiling baseline.
+
+#### Duplicate load and failed artifact epochs
+
+- B84: preserve `classifyIndex`'s current whole-index duplicate rejection. Replace the unique-key initializer in `load` with checked insertion that can return failure before publishing any partially built dictionary or normalization side effects. Reuse the unreadable/block path; no new persisted reason or arbitrary first/last-wins salvage policy. Use the exact probed bytes (B15), including Retry Recovery. The duplicate fixtures are conservation gates, not proof of a new startup crash.
+- B17: on retry registration, supersede the previous **failed** epoch for the same intent in the live coordinator table; retain exact results for registered waiters and the existing capped retired history. Current retryable intents still gate boundaries; unrelated failures remain visible. Do not abandon durable cleanup authority to make a boundary green.
+- Stop a permanent artifact I/O failure from being retried by every unrelated successful snapshot. Retry triggers are explicit startup/recovery, an explicit same-row successor, or resolution of that intent's previously failed prepared persistence revision. Track the trigger/attempt epoch so the terminal write of another row is not another retry opportunity. Preserve the existing same-process failed-head/successor recovery tests.
+- Leave the broader typed-ticket/retired-result API redesign deferred. This change targets live-table growth and retry churn, with the existing 512 history policy preserved and live waiters never silently losing their outcome.
+
+**Exit:** pins 02–05 and 10–12 pass; the mapped production filesystem operations execute outside the store lock; copy/retire failure paths conserve ownership and bytes.
+
+### P6.4 Identified operations and a bounded wake — delegate, parallel with P6.2/P6.3
+
+**Owned files:** `Core/BackgroundDownloadSession.swift`, `Core/BackgroundDownloadWakeCoordinator.swift`, `Core/BackgroundDownloadCompletionRegistry.swift`, `Core/BackgroundCompletionPersistenceBarrier.swift`, `PMSKit/Sources/PMSKit/Downloads/BackgroundDownloadCompletionGate.swift`, and only their wake/registry/gate/P6 session tests. The lead does not edit these files during this lane.
+
+#### Startup distinctions (B06)
+
+- Remember whether startup is (a) not yet attempted/deferred, (b) actively purging/activating, (c) blocked before transport construction, or (d) failed after transport construction with healthy owned callbacks still possible. Dormant alone cannot distinguish these cases.
+- Publish blocked/failed state to the registry/session even if no token exists yet. A late handler in terminal pre-construction blocked state takes the explicit failed-startup release path immediately, without constructing or reattaching URLSession. A handler stored before registration retains its arrival time and is handled when the session registers, or by registry fallback if registration never occurs.
+- Initial deferred activation can still progress normally. A runtime season-indeterminate block while the session is active/purging must preserve live operations and grace (B05). Post-construction failure uses owned-callback drain plus the whole-wake deadline (B07), not `abortAwaitingHandlers`.
+- Manager startup notifications and signatures are part of P6.1; lead implements manager calls, delegate implements receivers. No cross-file edits between owners.
+
+#### Operation handles (B13)
+
+- `beginOperation` returns an opaque handle with unique sequence, wake/generation membership, start instant and a bounded diagnostic kind (append, held-lifecycle, finalization, delayed retry, grace). End requires that exact handle and is idempotent; old ends cannot decrement new work.
+- Capture handles at every mapped begin/end pair, including nested lifecycle holds and delayed retry closures. Grace rearm keeps one hold, advances only its timer generation, and remains exact-attempt/train fenced.
+- Separate **wake waiting** from **physical work ownership**. Expiring an operation ends its permission to hold an OS completion indefinitely; it does not remove a pending-range-work count, drop a stash claim, declare an artifact durable, cancel arbitrary tasks, or authorize a replacement writer.
+- Use a **20-second** per-operation watchdog capped by the owning wake deadline; existing 20-second grace remains generation-fenced. Expiry begins the remaining-budget durability/release path. Operations begun without a handler must still have handles; a subsequently arriving wake observes outstanding work. Expired handles remain physically owned until their real completion, and cannot become new anonymous holds through a stale callback.
+
+#### One absolute budget (B82)
+
+- Choose explicit application constants for this PR: **25 seconds from the first handler's registry receipt**, with the final **up to 5 seconds reserved for persistence**. These are engineering bounds, not a claim that every Apple OS grants 25 seconds. Inject clock and durations in tests.
+- Additional handlers, operations, grace rearms, retries and successive balanced completions do **not** slide an open wake's deadline. A new generation is created only after the previous exact token set has been handed off for release. A later handler must not be swept into an already-claimed normal-release batch.
+- Begin the drain/flush at `deadline - min(5 seconds, remaining)`; normal early finish may flush sooner. Once winding down, defer new optional validation, side-asset repair and range-refill work; already admitted URLSession tasks may remain daemon-owned. Do not restart a paused row or revoke an independently healthy foreground transfer merely to meet a wake timer.
+- Track release ownership through awaiting events, deferred operations **and flushing** until delivery is acknowledged. Starting a normal flush must not remove tokens from deadline supervision. At deadline, claim remaining original tokens once; registry token drains make races with normal completion idempotent. Missing finish-events is explicitly covered.
+- Capture the exact index revision and artifact watermark for a normal flush; run index/lifecycle flush concurrently using **remaining** time. If new required durable work arrives, supervise it under the same deadline, not a fresh budget. At hard expiry, fire/claim the batch without adding another flush interval.
+- Do not implement the deadline by racing structured child tasks whose scope then waits for a stuck child. A timer/release lease must be able to reach its terminal release state independently of an ongoing append or blocked filesystem syscall. Expiring a waiter does not cancel the commit already in progress.
+- A hard expiry is observable as `timed_out`/unfinished, never as committed drain. Keep dirty snapshots, durable intents and all physical worker ownership. Prefer the existing durable held-body handoff before a costly append when its protocol permits it; do not load bodies into memory or invent a new v5 intent to meet the timer.
+- **Limit stated explicitly:** no design can both guarantee a finite callback deadline and guarantee a hung filesystem has completed durability. On timeout, preserve committed checkpoints and recovery authority, retain uncommitted bodies conservatively, and allow later recovery/refetch of an uncommitted tail. Never delete or bless it as durable merely to release the handler. This is the same failure class already represented by the bounded persistence barrier, extended to the whole wake.
+- Release callbacks run on MainActor at the next available turn. The testable absolute bound is release eligibility/claim plus dispatch; OS scheduling or an independently wedged MainActor cannot be given a wall-clock callback guarantee. P6.2 removes the known persistence waits that would obstruct that turn.
+
+#### Session persistence adapters
+
+- Replace handler-presence-based synchronous resolves with submit plus bounded asynchronous continuations for both foreground and background contexts. Foreground task creation still waits for committed prerequisites; an OS completion may submit accepted work whose exact outcome is supervised by the wake barrier.
+- Return completions onto the existing serialized `rangeIOQueue`; retain train epoch, exact attempt and halt checks immediately before append/publication/refill. Never block that queue waiting for work scheduled onto itself.
+- Preserve O(1) temp ownership transfer during the URLSession delegate callback, before its temporary URL expires. Heavy copies, index waits, probes and late-body classification remain off delegate delivery.
+- Keep no-probe-while-handler-pending (bg-37) and deferred revalidation's exactly-once drain. A timed-out wake must not immediately schedule a foreground probe while the scene remains inactive; resume it on the next authorized foreground edge.
+- Emit one bounded diagnostic per deadline/expired operation with reason, operation kinds/counts, pending bytes where already known, elapsed time and persistence outcome. No titles, paths, URLs, tokens or full per-body event stream. Do not add a separate telemetry project.
+
+**Exit:** pins 06–09 pass through real registry/session wiring as well as the pure gate, including handler reentrancy during release and old-completion/new-wake races.
+
+### P6.5 Integration, documentation and one combined gate — lead
+
+**Owned files:** lead test files and the canonical overhaul plan/testing documentation. Delegate makes any corrections in its own files; no simultaneous edits to shared files.
+
+1. Integrate after both lanes pass focused checks. Search for production `resolve*Synchronously`, blocking wrapper calls, and `waitSynchronously` escaping worker/test scope; use the map above as the checklist. Inspect locking paths for indirect `fileSize`, `resolvedDownloadAssetURL`, journal calls and `Darwin` calls, not only `FileManager` spelling.
+2. Re-run the red pins and the retained cases below on the combined result. Do not run a second competing matrix while the current checkout's matrix is active. This drafting task starts no verification processes.
+3. For the future implementation PR, use the canonical CLAUDE.md gates once: hermetic PMSKit (`swift test --package-path PMSKit --no-parallel --skip 'Live.*ProbeTests'`), relevant hosted app tests, `scripts/native-test-matrix.py affected`, strict docs build/link/Mermaid checks and `scripts/ci-hygiene.sh`, clean native visionOS/iOS/macOS/tvOS builds, then serialized appropriate app smokes. tvOS must still compile without Downloads. Let the maintainer's matrix own build/simulator scheduling; no duplicate performance suite.
+4. Journal the exact fixed, partially fixed and deferred IDs. Correct stale inventory evidence: st-09 duplicate admission already blocks at this head, and st-41's final reconcile loop is again lock-held. B06/B13's Appendix A phase cells still say P5, but the later P5 field-report paragraph explicitly assigns them to P6.
+5. State live Plex/Jellyfin/Emby and physical iPhone/iPad/Vision Pro sleep/lock/off-head wakes, plus Mac recovery, as open maintainer gates. Unit deadlines establish application logic, not OS/hardware acceptance. The build-1506 root cause remains unproven without the matching termination report.
+
+#### Ownership and sequencing
+
+| Sub-phase | Owner | Files / handoff | Can overlap |
+|---|---|---|---|
+| P6.1 | Lead | Store, writer, artifact coordinator, minimal store filesystem seams; lead pins. Freeze signatures before session migration. | Delegate may draft its isolated P6 wake tests. |
+| P6.2 | Lead | Every `DownloadManager*.swift`; lead manager tests. | P6.4, once the contract is available. |
+| P6.3 | Lead | Store internals, artifact coordinator/seams, pure file-inventory helper and tests; lead store tests. | P6.4. Lead sequences its own P6.2/P6.3 edits as needed. |
+| P6.4 | Delegate | Session, wake coordinator, registry, barrier, pure completion gate and their dedicated tests. | P6.2/P6.3; no shared implementation files. |
+| P6.5 | Lead | Integration evidence and canonical plan/checklist updates; fixes in delegate files go back to delegate. | Verification is serialized. |
+
+No additional agent is needed to execute this plan. These are future implementation assignments, not permission to alter the checkout during this read-only design task.
+
+#### Suggested commits within the one PR
+
+1. Lead: contract/test hooks and pins; demonstrate behavioural reds before fixes.
+2. Lead: asynchronous store facade and MainActor caller migration, preserving authority checks.
+3. Lead: off-lock reservation/observation fixes, B20 cleanup, B19 audit, B84 checked load and B17 retry bounds. Keep reviewable commits if needed; still one PR.
+4. Delegate: startup distinctions, identified operations, whole-wake deadline and session adapter migration against the contract.
+5. Lead: integration corrections, updated coverage/deferred journal and the combined verification record.
+
+### Deferred
+
+Deferral is explicit scope, not a claim that the original row is fixed. Carry these into the canonical journal/backlog before merging P6; none requires a performance baseline to close this PR.
+
+| Item / ID | Disposition and reason |
+|---|---|
+| Full store/facet file split, actor conversion, wholesale ownership reorganization | Behaviour-neutral and a large review/conflict surface. Keep the existing lock and worker design; split last only if later work benefits. |
+| Universal `DurableFS` replacing every existing seam | Behaviour-neutral consolidation. Extend existing seams only where red ordering/lock tests require it. |
+| Deleting all ~30 rating-key/test-only APIs and wholesale test porting; B29 dead ownerless-delete branch | B29 was refuted as a live defect. Remove blocking production uses now; broad API/fixture cleanup does not improve the prioritized failures. |
+| Physical tombstone-engine deletion promised in P2.5 | Compatibility import/receipts and cleanup authority already work. Deletion is behaviour-neutral cleanup with rollback risk; preserve legacy reads and the authority domain. |
+| Generic typed-ticket/result registry replacing all per-operation outcome maps (remaining §6/B17 design) | Keep exact typed outcomes and fix live failed-epoch growth now. A unified result system is a separate refactor and must not silently change retained-waiter semantics. |
+| General stable-media/side-asset launch orphan deletion (st-39), and merging all sweep engines | st-39 is explicitly non-required/dropped-intentional. The report and startup staging sweep are sufficient here; widening deletion requires new liveness proofs. |
+| Fully durable, generalized reconcile working-body effect recipes (remaining B20) | Off-lock I/O, complete reference fencing and durable resume clearing are in P6. A new persistent recipe would add rollback/schema obligations. Retain working-body recovery authority and defer failed cleanup conservatively. Do not report all of B20's structural redesign complete. |
+| B27: preempting a wedged validated promotion / legacy promotion deletion refusal | Current normal promotion uses the artifact queue; row deletion can queue behind its head and failed-head retirement exists. The remaining explicit reject is `pendingValidatedPromotionStatus` at store 5611 (legacy). Preemption needs cancellation/safe-publication rules; preserve current queue and document the residual rather than adding them here. |
+| B30: emergency Delete on a completely full volume | Durable prepared-intent creation can itself fail at store 5724 before bytes are removed. Safely freeing bytes first needs reserved journal capacity or an emergency deletion protocol; changing durability ordering to force a delete would threaten D1 and cleanup authority. Keep explicit storage/persistence failure and retry. |
+| B83: a proven global memory ceiling for inherited completed bodies plus side assets | Disk append already reads at most 4 MiB per iteration (session 5874–5879), but this does not prove a process-wide memory ceiling or bound all queued closures/assets. Preserve streamed bodies, serial append and P4 caps; whole-backlog memory accounting/backpressure is a separate policy. Do not mark B83 fixed by the wake timer. |
+| B85: eliminating/measuring append write amplification and MetricKit disk-write exceptions | `appendFile` (session 5846–5882) re-copies bodies in bounded chunks; a clock bound does not bound lifetime bytes written. Zero-copy/extent redesign and amplification instrumentation are not required for this correctness PR. No baseline is requested; B85 remains open. |
+| P5 rebuild primitive, `RangeAttemptState` packaging, unified owned-work snapshot, DEBUG extraction | Behaviour-neutral consolidation. Keep P5's targeted train generations/claims/backoff; the new wake operation handles do not authorize a restart-engine rewrite. |
+| Deleting the opaque resume-data fallback | Still used by legacy metadata-poor rows. Preserve it until a separate compatibility decision. |
+| Paused-static finish-before-reattach finalization (P3/P5 carry-over) | Preserving a just-finished body and deciding it is a whole publishable file are different decisions. Keep write-then-pause; finalization needs its own complete-file pin and remains outside this PR. |
+| Async store construction and UI-wide async lookup APIs; B79 launch availability stat caching | The prioritized disk waits and lock-held filesystem work are removed. Initial classification/protection and some off-lock metadata reads remain synchronous. An async factory/UI observation redesign is larger and B79 belongs to P7. State this residual rather than claiming zero synchronous disk access. |
+| B73–B75 playback-observed promotion and exact playing-attempt sinks; remaining P7 presentation/negotiation | P6 only changes persistence scheduling at existing call sites. Keep the planned P7 ownership and UI work intact. |
+| B16/B21 read-only offline surface redesign | Already implemented in P3; preserve recovery/read-only gates and the distinct season-indeterminate reason. P6 changes execution context only. |
+| New schema/intent cases or downgrade migration redesign (st-42) | P6 must preserve v5 decoding. No new persisted enum cases; do not spend this PR on a generalized rollback protocol. |
+| A build-1506 root-cause claim or benchmark/profile campaign | No matching termination signature was supplied. The watchdog/wake/ownership ranking motivates bounded fixes, not a diagnosis. No baseline is needed. |
+
+### Bug and inventory disposition
+
+#### Appendix A rows assigned to P6, plus promoted wake bugs
+
+| ID | P6 disposition |
+|---|---|
+| B06 | Fix late blocked/dormant handler release with remembered startup state; preserve B05/B07 distinctions. |
+| B13 | Fix anonymous leaked holds with operation handles and bounded wake waiting. |
+| B17 | Fix repeated failed-epoch live-table growth and unrelated-commit retry churn; defer universal result-system refactor. |
+| B19 | Fix hidden/pending artifact audit accounting; audit remains report-only. |
+| B20 | Fix remaining lock-held reconcile I/O, stale resume authority and path reservation gaps; generalized durable working-body recipes explicitly deferred. |
+| B27 | Residual legacy/promotion preemption deferred, with current queued Delete/failed-head handling preserved. |
+| B29 | Refuted; dead-code removal deferred, no fabricated bug fix. |
+| B30 | Emergency full-volume delete protocol deferred. |
+| B82 | Fix aggregate deadline across handler arrival, operations, missing finish-events and flush. |
+| B83 | Global inherited-backlog memory ceiling deferred; no whole-body reads introduced. |
+| B84 | Remove trapping load initializer; retain already-existing duplicate admission block and exact-byte conservation. |
+| B85 | Append amplification work deferred; no claim that deadlines solve write amplification. |
+
+#### Appendix B store rows — preserve or deliberately change
+
+| Rows | Contract / required gate |
+|---|---|
+| st-01, st-02 | Container-relative one-level paths; validate **all touched** read/destructive inputs including decoded legacy paths and pending intents. Reject separators, dot/dot-dot and unsafe locations before I/O. Add unsafe-path fixtures and require outside-root sentinel files unchanged. |
+| st-03–st-07 | Existing protection/backup exclusion, external cleanup authority, byte-equality legacy journal import, two-empty-pass unsupported reset and asynchronous retired-root reclamation remain intact. No path reservation spans journal I/O. |
+| st-08–st-11 | Keep current fail-closed admission: the codec can isolate bad elements, but a malformed current index is not silently salvaged/rewritten. Duplicate files block; malformed attempt ownership never gets guessed. Newer schemas remain untouched. |
+| st-12–st-16 | Serialized full snapshots, captured revision/schema, obsolete-snapshot suppression, durable unique temp/full-sync/rename/parent-sync, dirty retry and exact ambiguous-write proofs survive async adaptation. Progress stays about one write/second; status transitions submit immediately. |
+| st-17 | Normal handler release waits for index and lifecycle in one budget. Hard deadline release is explicitly an observable timeout, retaining dirty work; it is never called a successful durability boundary. |
+| st-18–st-20 | Resume prepared intent/private generation names, promotion crash replay and exact-attempt hidden working paths retain their durability/ownership rules. Bound waiters without killing worker authority. |
+| st-21, st-23 | Existing-at-init staging eligibility plus current references/claims; held-body sweep never steals a new/unmanifested writer's path. Add named coverage for touched st-23. |
+| st-22, st-24–st-27 | Held manifest/deletion durability; row-deletion terminal barrier; joined exact-epoch waiters; cleanup capsule; unreadable journals are never empty; canonical-byte/element-quarantine proofs remain. Failure or timeout does not release cleanup ownership or bless deletion. |
+| st-28–st-31, st-41 | Although tagged P3a, P6 touches these reconcile paths. Preserve missing terminal-body failure, app partial before blob, missing-blob nonresumability, pending-intent skip, Plex-prep queueing, live static ownership and JF/Emby forward-only failure. Move I/O outside the lock with conservative stale-observation deferral. |
+| st-32, st-33 | Retain adoption of legacy ownerless side bundles **with** a known attempt, rejection/retirement of mismatched bundles, and prepared-static lane normalization. Normalization must not stamp a pre-migration schema or delete bytes while admission is blocked. |
+| st-34 | Atomic season barrier, exact retries, conditional compensation and indeterminate block remain; this is not a new reservation/admission redesign. |
+| st-35 | Full cross-row path protection, including different artifact kinds and paths referenced only in pending intents, remains mandatory after unlocking. Reservation must close adoption between check and I/O. |
+| st-36, st-37 | Durable filesystem bytes alone establish a checkpoint. Complete/unverified audits use the published file; nonterminal resumes use the private working file. A Retry's old body survives until new owner durability, and truncated/condemned bodies are never cloned. |
+| st-38, st-39 | Restore report-only byte visibility including hidden files; do not introduce general stable-file deletion. |
+| st-40 | Live lifecycle bookkeeping bounded by current work/intents, retired unclaimed history capped at 512. Joined/registered waiters retain their own failure epoch; supersession cannot report another epoch's success. |
+| st-42, st-43 | No new persisted cases; retain the existing rollback boundary and Application Support-to-temporary-directory fallback. Do not turn fallback into a destructive reset. |
+
+### Risks and edge cases to preserve
+
+1. **D1 means “keep partials only,” in its final maintainer refinement.** Keep `complete`, `unverified` and every **paused static-range** row, including zero-byte checkpoints. Drop other upgrade candidates through the existing Delete barrier/capsule path; preserve the legacy-promotion rescue and rows already being deleted. Do not implement the earlier contradictory prose that dropped all paused rows. No await may expose `.ready` before the existing migration fences are installed.
+2. **v4/v5 compatibility is byte-shape compatibility, not just a version integer.** Keep admissible 4...5, the existing row/envelope shape, existing Codable intent cases, existing filename grammar, and per-snapshot schema capture. Preserve v4 writes until stamp and v5 writes thereafter. A newer/unreadable/duplicate index stays untouched, including during failed Retry Recovery.
+3. **Await reentrancy:** source/owner/queue admission can change while a commit resolves. Pause/delete remain immediate fences; callbacks and starts recheck exact authority at their final side-effect boundary. A wake operation ID does not replace the attempt or train epoch.
+4. **Off-lock TOCTOU:** a lock check followed by an unreserved unlink/rename is not safe. All adopters and actual file writers must respect reservations; file identity alone is insufficient if it can change again before the syscall. Avoid store/session lock inversion and range-queue self-waits.
+5. **Timeout is not cancellation or rollback:** a write/copy already in progress may finish later. Keep original intent/epoch, dirty state and bodies; stale continuations cannot retire successors. Never compensate ambiguous season success before exact canonical proof.
+6. **Whole-wake timeout is not successful drain:** committed partials are protected; uncommitted body tails can require recovery/refetch after OS suspension. Do not force a shared physical worker free, start overlapping appends or run an AVPlayer probe while inactive. Normal release still honors durable work.
+7. **Handler cardinality:** late handlers, pre-registration handlers, same-identifier reentrancy, identifier independence, already-flushing batches, absent finish-events, post-construction failure and subsequent Retry Recovery must all release exact tokens once. Old ends/timers cannot affect new holds.
+8. **Low storage/protected data:** preserve ENOSPC failures, checkpoint/blob retention and manual retry; unreadable journals/indexes are not empty. Emergency delete remains explicitly unresolved. Parent sync/protection/backup exclusion cannot be dropped to speed the path.
+9. **Filesystem evidence:** static checkpoints precede blobs; optimistic URLSession bytes never set resume offsets. Hidden staging, held bodies, publication sources, condemned bodies and index temps remain distinct. Audit never authorizes a deletion by itself.
+10. **Migration/legacy scope:** do not erase server obligations, tombstone receipts or cleanup capsules; do not remove metadata-poor opaque compatibility paths. Reconcile must not demote a body behind pending validated promotion.
+11. **Bounded claims:** a 4 MiB copy buffer and P4's start caps do not prove B83, bound inherited OS task count or close B85. A fake-clock unit test does not prove background continuation on hardware, and no P6 evidence establishes the build-1506 termination cause.
+
+**P6 acceptance:** the new red pins pass; mapped production synchronous persistence facades are gone; mapped store filesystem I/O runs outside the lock with ownership preserved; every wake has an exact-token, non-sliding deadline; duplicate input cannot reach a trapping loader; D1/v5 regression gates stay green; and all deferred/open acceptance rows are journaled before moving to P7.
+
+### Revision 2 amendments (co-review round 1: approve with changes)
+
+These amendments bind the plan above. Where they conflict with it, they win.
+
+1. **Epoch-safe store results (P6.1/P6.3).** Promotion and checkpoint outcomes are currently
+   consumed by `intentID` (`DownloadStore.swift` ~1226, ~4617), so retry B can overwrite the slot
+   before the delayed resolver for attempt A reads it. P6 retains results keyed by epoch for those
+   two paths; the generic registry stays deferred.
+   - **Pin 02 extended:** hold A's resolver, fail A, retry the same intent successfully as B,
+     resolve both. A sees its own failure.
+   - Also cover timeout cleanup, and registered waiters across the 512-entry retirement cap.
+2. **Nonblocking lifecycle submission itself (P6.1/P6.2, pin 01).** `submitLifecycleEvent` calls
+   `lifecycleFacts` (stat and existence work) before it returns.
+   - Events that do not consume filesystem facts derive them from memory.
+   - Events that need disk facts go through a worker observation adapter.
+   - Immediate Pause and Delete fences stay synchronous.
+   - **New pin:** a manager heartbeat survives while a lifecycle stat is held.
+3. **Path-lease contract frozen in P6.1.** Store reservations do not cover the session's
+   `appendFile` (`BackgroundDownloadSession.swift` ~5850) or the side-cache staging writers.
+   P6.1 freezes a path-lease/serialization API next to the persistence signatures.
+   - The delegate makes the session's append participate.
+   - The lead makes the side-cache writers participate.
+   - **New pin:** a held append against a Retry/reconcile proves the exclusion lasts through the
+     actual syscall, including after a waiter has timed out.
+4. **Release predicate for the wake budget (P6.4, pins 08–09).**
+   - A normal release requires all three of:
+     - finish-events;
+     - every required operation settled;
+     - persistence proof that covers those operations' resulting boundary.
+   - A proactive flush may cache proof, but it cannot satisfy the other conditions.
+   - Expiry with unfinished work is a timeout outcome even if the captured flush committed.
+   - **New fake-clock cases:**
+     - the flush succeeds while an append is still blocked;
+     - finish-events never arrives.
+   - The original absolute deadline is kept.
+   - Timer registration and terminal-state acknowledgement are exposed, so clock advances follow
+     confirmed production scheduling.
+5. **B84 keeps whole-index blocking.** It does not guess a winner between duplicate rows.
+   B83/B85, the structural splits, tombstone removal and the broad API cleanup stay deferred.
+
 ## Open gates (never claimed by this work)
 
 - Live Plex, Jellyfin and Emby acceptance for every shared-behaviour phase.
