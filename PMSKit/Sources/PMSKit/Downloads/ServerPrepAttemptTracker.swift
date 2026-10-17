@@ -83,6 +83,20 @@ public struct ServerPrepAttemptTracker: Sendable, Equatable {
         return id
     }
 
+    @discardableResult
+    public mutating func beginEmbyConvertPoller(for key: DownloadAttemptKey, id: UUID = UUID()) -> UUID? {
+        guard embyConvertAttemptByAttempt[key] == nil else { return nil }
+        embyConvertAttemptByAttempt[key] = id
+        return id
+    }
+
+    @discardableResult
+    public mutating func endEmbyConvertPoller(for key: DownloadAttemptKey, id: UUID) -> Bool {
+        guard embyConvertAttemptByAttempt[key] == id else { return false }
+        embyConvertAttemptByAttempt.removeValue(forKey: key)
+        return true
+    }
+
     public func isCurrentEmbyConvertAttempt(for key: DownloadAttemptKey, id: UUID) -> Bool {
         embyConvertAttemptByAttempt[key] == id
     }
