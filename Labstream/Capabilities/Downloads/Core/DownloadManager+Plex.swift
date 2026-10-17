@@ -257,7 +257,8 @@ extension DownloadManager {
         case .failed:
             lastError[ratingKey] = .transferFailed(
                 "The download could not be saved safely. Check storage and try again.")
-            _ = setAttemptStatus(.failed, for: attemptKey, context: "plex_static_publish")
+            _ = applyLifecycleEvent(
+                .transferFailed(.internalError), for: attemptKey, context: "plex_static_publish")
             if store.ownsAttempt(attemptKey) { releaseInFlight(for: attemptKey) }
             refreshRecords()
             return

@@ -154,7 +154,9 @@ extension DownloadManager {
             ])
             lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "playback_info")
+            _ = applyLifecycleEvent(
+                .transferFailed((error as? DownloadError).map(Self.lifecycleFailureReason) ?? .server),
+                for: attemptKey, context: "emby_playback_info")
             clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(for: attemptKey)
             refreshRecords()
@@ -193,7 +195,8 @@ extension DownloadManager {
             ])
             lastError[ratingKey] = .transferFailed(
                 "The requested server version is no longer available. Choose another version and retry.")
-            _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "source_mismatch")
+            _ = applyLifecycleEvent(
+                .transferFailed(.sourceMissing), for: attemptKey, context: "emby_source_mismatch")
             clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(for: attemptKey)
             refreshRecords()
@@ -271,7 +274,8 @@ extension DownloadManager {
             }
             recordDownloadDiagnostic(event, fields: fields)
             lastError[ratingKey] = .transferFailed(reason.userMessage)
-            _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "route_rejected")
+            _ = applyLifecycleEvent(
+                .transferFailed(.server), for: attemptKey, context: "emby_route_rejected")
             clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(for: attemptKey)
             refreshRecords()
@@ -341,7 +345,10 @@ extension DownloadManager {
             ])
             lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "request_build")
+            _ = applyLifecycleEvent(
+                .transferFailed((error as? DownloadError).map(Self.lifecycleFailureReason)
+                                ?? .internalError),
+                for: attemptKey, context: "emby_request_build")
             clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(for: attemptKey)
             refreshRecords()
@@ -393,8 +400,7 @@ extension DownloadManager {
                                server: server, token: token, identity: identity, userId: userId)
 
         if deferStaticStartWhenQueuePaused, isQueuePaused, route == .original {
-            guard setEmbyAttemptStatus(
-                .paused, for: attemptKey, context: "queue_paused") else { return }
+            guard applyQueuePause(for: attemptKey, context: "emby_queue_paused") else { return }
             lastError[ratingKey] = .interruptedResumable
             releaseInFlight(for: attemptKey)
             recordDownloadDiagnostic("downloads.start_deferred_queue_paused", fields: [
@@ -445,31 +451,6 @@ extension DownloadManager {
                 // candidate path used when a background task is reattached after process death.
                 refreshRecords()
             }
-        }
-    }
-
-    @discardableResult
-    func setEmbyAttemptStatus(
-        _ status: DownloadStatus,
-        for key: DownloadAttemptKey,
-        context: String
-    ) -> Bool {
-        switch store.setStatus(for: key, status) {
-        case .applied, .noChange:
-            return true
-        case .staleOrMissing:
-            recordDownloadDiagnostic("downloads.emby_status_owner_stale", fields: [
-                "download_id": .identifier(key.ratingKey),
-                "context": .label(context),
-            ])
-            return false
-        case .persistenceFailed(let failure):
-            recordDownloadDiagnostic("downloads.emby_status_persist_failed", fields: [
-                "download_id": .identifier(key.ratingKey),
-                "context": .label(context),
-                "failure": .label(String(describing: failure)),
-            ])
-            return false
         }
     }
 

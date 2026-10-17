@@ -108,7 +108,7 @@ extension DownloadManager {
         } catch {
             lastError[ratingKey] = .transferFailed(
                 "The download could not be saved safely. Check storage and try again.")
-            _ = setAttemptStatus(.failed, for: attemptKey, context: "plex_optimize_seed")
+            _ = applyServerPrepFailure(.internalError, for: attemptKey, context: "plex_optimize_seed")
             if store.ownsAttempt(attemptKey) {
                 releaseInFlight(for: attemptKey)
             }
@@ -265,7 +265,8 @@ extension DownloadManager {
                 "error": .error(error),
             ])
             lastError[ratingKey] = error
-            _ = setAttemptStatus(.failed, for: attemptKey, context: "plex_optimize_start")
+            _ = applyServerPrepFailure(Self.lifecycleFailureReason(for: error),
+                                       for: attemptKey, context: "plex_optimize_start")
             clearOptimizeProgress(ratingKey: ratingKey)
             refreshRecords()
         } catch is CancellationError {
@@ -287,7 +288,7 @@ extension DownloadManager {
             ])
             lastError[ratingKey] = .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            _ = setAttemptStatus(.failed, for: attemptKey, context: "plex_optimize_start")
+            _ = applyServerPrepFailure(.network, for: attemptKey, context: "plex_optimize_start")
             clearOptimizeProgress(ratingKey: ratingKey)
             refreshRecords()
         }
@@ -308,7 +309,7 @@ extension DownloadManager {
         let destination = store.destinationURL(ratingKey: ratingKey,
                                                ext: ext.isEmpty ? "mp4" : ext)
         if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Plex", expectedBytes: part.size) {
-            _ = setAttemptStatus(.failed, for: attemptKey, context: "plex_optimize_storage")
+            _ = applyServerPrepFailure(.storage, for: attemptKey, context: "plex_optimize_storage")
             releaseInFlight(for: attemptKey)
             throw lastError[ratingKey] ?? DownloadError.storageLimitExceeded("Storage limit exceeded.")
         }
