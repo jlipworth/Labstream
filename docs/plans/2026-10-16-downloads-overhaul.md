@@ -1158,7 +1158,7 @@ migration therefore means:
 - journaling dropped rows' obligations;
 - bumping the version.
 
-### P3b revision 6 (2026-10-17): stamp at ready, durable retirement list, ordinary Delete
+### P3b revision 7 (2026-10-17): Delete every dropped row at ready, then stamp
 
 **Maintainer decision (2026-10-17, refining D1).** P3a made lifecycle authoritative inside v4, so
 the upgrade no longer has to reset everything that is not terminal. The maintainer chose "keep
@@ -1169,76 +1169,78 @@ partials only":
 - **Dropped:** every other row. That is planned (season) rows, admitted, serverPrep,
   transferring, finalizing, failed, and paused rows on a non-static route.
 
-The round-3 review of revision 5 asked for rework. Retiring rows before activation needed
-dormant-session waits, a classification boundary that depends on timing, and a purge that
-cannot see capsules, and it ordered the notice badly against row removal. Revision 6 moves
-retirement to after activation and makes it durable. It replaces revisions 4 and 5; where it
-conflicts with P3b.1 or P3b.2, it wins.
+Rounds 3 and 4 of the before-review asked for rework of revisions 5 and 6. Both kept dropped
+rows alive while the app ran (pre-activation waits, then a durable retirement list), and so had
+to invent a new gate on Retry, starts, callbacks, finalization and season admission. That gate
+already exists: **Delete's row-deletion barrier.** Every one of those paths must already respect
+it, because a user can press Delete at any moment. Revision 7 performs exactly what a user
+pressing Delete on each dropped row at launch would do, and then stamps v5. It replaces
+revisions 4–6; where it conflicts with P3b.1 or P3b.2, it wins.
 
 1. **Codec.**
    - Envelopes with version 4 or 5 decode; 1–3 reset; newer is unreadable.
+   - The row shape and envelope shape are unchanged: no new envelope fields.
    - The store encodes each snapshot with the version captured when it is enqueued; that
      includes the season-plan submission and its candidate encoding.
-   - **v5 envelope field.** The v5 envelope adds an optional `pendingRetirements`:
-     `[{ratingKey, attemptID}]` plus a `noticeContributions` record. A v4 loader never sees it,
-     because the P1 guard makes v5 unreadable to older binaries.
-2. **Stamp at `.ready`, synchronously.** v4 startup runs exactly as today until the moment
-   `activateDownloadsForCurrentStore` publishes `.ready`. In the same MainActor turn, before
-   `.ready` is published, `store.stampSchemaV5()` runs under the lock:
-   - it computes the retirement list: every row the maintainer decision does not keep, by exact
-     attempt;
-   - it records the notice contribution: retired count, and the attempt IDs of retirements
-     that are pending;
-   - it fills `migratedUnknown`, switches the encoding version to 5, and enqueues the snapshot.
+2. **At `.ready`, in one MainActor turn.** When `activateDownloadsForCurrentStore` succeeds on a
+   store whose committed schema is v4, the manager does the following before publishing
+   `.ready` and before reattach.
+   1. **Classify** rows by the maintainer decision.
+      - **Kept as is:** a row with a legacy `pendingValidatedPromotionStatus`. Its body is being
+        published and becomes complete.
+      - **Left in place:** a row that is already deletion-pending, or that has a pending
+        row-deletion intent. Its deletion is already under way.
+   2. **Record the notice** (round 4, finding 5; round 3, finding 6). The upgrade notice file is
+      a small JSON in the authority directory, written with the P2 committer. It gets the
+      union of the dropped attempt IDs and the IDs whose server identity cannot be represented.
+      The union is computed deterministically from the rows, before any deletion, so a crash
+      and redo is idempotent. Nothing is added to the index envelope (round 4, finding 4).
+   3. **Delete each dropped row** through `delete(record:)`.
+      - Its synchronous part journals obligations first, keeping a capsule if the journal is
+        unavailable, then installs the row-deletion barrier, halts session work and cancels
+        exact cancellable work.
+      - Its asynchronous part removes the files through the existing artifact queue.
+      - Rows with earlier artifact heads get the deletion queued after them.
+   4. **Stamp.** `store.stampSchemaV5()` fills `migratedUnknown`, switches the encoding version
+      to 5 and enqueues the snapshot. The stamp is not awaited.
 
-   Because no other snapshot can be enqueued in between, **every later snapshot is v5**. An
-   index that is still v4 on disk therefore contains exactly the pre-upgrade rows, and the next
-   launch recomputes the same list. The stamp is not awaited and never blocks startup: a failed
-   commit leaves the snapshot dirty for the ordinary writer, and a crash leaves v4, which redoes
-   the upgrade. An interrupted replacement leaves a readable v4 or v5; both are handled.
-3. **Retire after reattach, through the ordinary user Delete.**
-   - In the reattach completion, right after `migrateAndRetryActiveEncodingCleanupOnLaunch`
-     (which already handles capsules), and before finalization, revalidation, server-prep
-     polling and the static auto-resume scans, the manager walks `pendingRetirements`. For each
-     entry:
-     - **Exact attempt gone:** drop the entry.
-     - **Row now kept** (recovery made it complete or unverified, or it is paused static): drop
-       the entry and keep the row.
-     - **Row has pending artifact intents or a legacy promotion:** leave the entry for a later
-       pass, and run nothing else for that row this launch.
-     - **Otherwise:** call the public `delete(record:)`.
-   - Entries are removed only once their exact attempt is absent, so Delete failures, capsules
-     and interrupted runs retry on every later launch.
-   - Until its entry is gone, a listed row is excluded from season admission, static
-     auto-resume and server-prep resumption. That is one predicate,
-     `store.isPendingRetirement(key)`.
-   - Live tasks of retired rows are cancelled two ways: by reattach's unowned-task handling,
-     and by the existing callback rejection, which cancels a task on its next callback once
-     its row-deletion barrier is installed.
-   - **Covers round-3 findings 1–3 and 5:** there is no pre-activation wait and no dormant
-     session, and Retry Recovery is untouched.
-4. **Notice** (round-3 finding 6).
-   - The retired count is persisted in the same v5 commit that creates the list.
-   - Cleanup gaps are recorded by Delete, before row removal, as attempt IDs in the persisted
-     `noticeContributions`. Recording by ID means a re-run Delete cannot double-count.
-   - The Offline library shows a dismissible notice once the list is empty or on the first
-     ready launch after the stamp, and clears it on acknowledgement.
-5. **Out of scope.**
-   - **Round-3 finding 4** (a finished body for a paused static row arriving before reattach
-     cancels it) predates P3b and applies to every launch. It is journaled for P5 with a pin
-     request.
+   Then the manager publishes `.ready` and runs reattach.
+3. **Why there is no other gate.**
+   - **Barriered rows.** After step 3, every dropped attempt either has a row-deletion barrier,
+     so `ownsAttempt` is false and callbacks are rejected and cancelled on their next arrival,
+     or is a capsule (`deletionPending`). Both are states every Retry, start, finalizer and
+     season path must handle for a user Delete.
+   - **Hardening.** Where a path checks only `isDeletionPending`, it gains `ownsAttempt`. Retry
+     (`DownloadManager` ~2321) and the season selection are examples. This closes a window
+     that exists for user Delete today (round 4, findings 1–2).
+   - **Nothing to prune** (round 4, finding 3). There is no retirement list, so there is no
+     committed-absence proof to make.
+   - **Accurate counts** (round 4, finding 5). Rescue cannot happen, so the notice counts real
+     deletions.
+4. **Crash and retry.**
+   - **Before the stamp commits:** v4 stays on disk. It may already carry committed barriers or
+     capsules from step 3, and v4 recovery executes those. The next launch reclassifies the
+     remaining rows and repeats the phase, and the notice union absorbs the repeat.
+   - **After the stamp:** v5 is current, and in-flight deletions finish through ordinary
+     recovery.
+   - **Every snapshot after the stamp is v5.** A v4 index on disk therefore never contains a
+     row created after the upgrade.
+   - **Interrupted replacement:** this leaves a readable v4 or v5.
+5. **Notice UI.** The Offline library shows "N in-progress downloads were removed during an
+   update", plus a cleanup-gap line when there are gaps, until it is dismissed. Dismissing it
+   deletes the file.
+6. **Out of scope.**
+   - **The paused-static finish-before-reattach race** predates P3b. It is journaled for P5.
    - **New artifact-intent cases** stay in P6.
-6. **Tests** (written first):
-   - kept/retired matrix, including paused static at zero bytes and paused forward-only;
-   - every later snapshot after the stamp is v5, including a delayed v4 enqueue racing the
-     stamp;
-   - a crash before the stamp commits redoes the same list;
-   - `pendingRetirements` survives a relaunch until rows are gone;
-   - a listed row that becomes complete through recovery is kept;
-   - pending-intent and legacy-promotion entries are deferred, not deleted;
-   - a Delete failure or capsule is retried next launch;
-   - a listed row is excluded from season admission and auto-resume;
-   - the notice is counted once across re-runs and survives relaunch;
+7. **Tests** (written first):
+   - kept/dropped matrix, including paused static at zero bytes, paused forward-only, a legacy
+     promotion row and a row already deletion-pending;
+   - every dropped row is barriered or a capsule before `.ready` is observable;
+   - Retry, start and season admission on a dropped attempt are refused;
+   - snapshots after the stamp are v5, including a v4 enqueue delayed across the stamp;
+   - a crash after barriers commit but before the stamp commits redoes the upgrade
+     idempotently, with the notice counted once;
+   - a journal-unavailable capsule;
    - a pre-P3a v4 index upgrades directly;
    - v5 loads as current; 1–3 reset; 6 is unreadable.
 
