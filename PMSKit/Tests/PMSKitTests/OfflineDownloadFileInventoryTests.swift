@@ -62,8 +62,8 @@ struct OfflineDownloadFileInventoryTests {
         )
 
         #expect(audit.referencedBytes == 1_100)
-        #expect(audit.directoryBytes == 1_600)
-        #expect(audit.unreferencedBytes == 500)
+        #expect(audit.directoryBytes == 1_650)
+        #expect(audit.unreferencedBytes == 550)
         #expect(audit.orphanCandidates == [
             OfflineDownloadFileSnapshot(relativePath: "plex_2.poster.jpg", byteCount: 200)
         ])
@@ -91,4 +91,28 @@ struct OfflineDownloadFileInventoryTests {
         #expect(!OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("../escape.mp4"))
         #expect(!OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("unowned.tmp"))
     }
+    @Test("P6-pin-12: existing hidden attempt staging grammar is recognized")
+    func p6HiddenStagingGrammar() {
+        let path = ".attempt-stage-v1-" + String(repeating: "a", count: 64) + ".stage"
+        #expect(OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename(path))
+
+        #expect(!OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename(".index.json.commit-fixture"))
+        #expect(!OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("foreign.bin"))
+    }
+
+    @Test("existing generation resume and checkpoint temp grammar is accounted for")
+    func generationAndTemporaryGrammar() {
+        let generation = "fixture.resume-" + String(repeating: "a", count: 24) + "-00000000-0000-0000-0000-000000000001"
+        let temporary = "." + generation + ".commit-00000000-0000-0000-0000-000000000002"
+        let checkpoint = "..attempt-stage-v1-" + String(repeating: "b", count: 64) + ".stage.checkpoint-00000000-0000-0000-0000-000000000003"
+        #expect(OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename(generation))
+        #expect(OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename(checkpoint))
+        let audit = OfflineDownloadFileInventory.audit(directoryFiles: [
+            .init(relativePath: generation, byteCount: 3), .init(relativePath: temporary, byteCount: 2),
+            .init(relativePath: checkpoint, byteCount: 1)], referencedRelativePaths: [])
+        #expect(audit.directoryBytes == 6)
+        #expect(audit.infrastructureBytes == 2)
+        #expect(!audit.orphanCandidates.contains { $0.relativePath == temporary })
+    }
+
 }

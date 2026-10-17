@@ -71,7 +71,7 @@ struct DownloadStoreAttemptStagingTests {
                 for: owner, terminalStatus: .complete)
             #expect(await wait(gate.blocked, timeout: 1))
             let read = DispatchSemaphore(value: 0)
-            DispatchQueue.global().async { _ = store.records; read.signal() }
+            Thread.detachNewThread { _ = store.records; read.signal() }
             #expect(await wait(read, timeout: 0.25))
             gate.release.signal()
             #expect(await store.resolveValidatedPromotion(submission)

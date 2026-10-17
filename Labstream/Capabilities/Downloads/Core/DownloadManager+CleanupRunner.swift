@@ -421,7 +421,7 @@ extension DownloadManager {
             confirmedGone = false
         }
         guard confirmedGone else { return .failed }
-        switch store.clearPlaySessionID(for: intent.attemptKey, expectedPlaySessionID: playSessionID) {
+        switch await store.clearPlaySessionIDAsync(for: intent.attemptKey, expectedPlaySessionID: playSessionID) {
         case .persistenceFailed:
             // Repeat the idempotent stop later; never drop the only durable record while the row
             // clear is still unproven.
@@ -524,7 +524,7 @@ extension DownloadManager {
                 return .failed
             }
         }
-        guard clearEmbyConvertMetadataIfExact(intent) else { return .failed }
+        guard await clearEmbyConvertMetadataIfExact(intent) else { return .failed }
         return await retire(intent)
     }
 

@@ -94,7 +94,7 @@ struct DownloadLifecycleStoreTests {
             let prep = try seed("plex:prep", status: .queued, metadata: queued, in: store)
             var paused = OfflineMetadata(ratingKey: "plex:partial", title: "Ep", type: "episode")
             paused.seasonPlannerPendingAdmission = true
-            paused.resumeDataRelativePath = "resume/partial.blob"
+            paused.resumeDataRelativePath = "partial.resume"
             let partial = try seed("plex:partial", status: .paused, metadata: paused, in: store)
             #expect(store.lifecycleState(for: prep)?.lifecycle == .admitted)
             #expect(store.lifecycleState(for: prep)?.history.admissionIntent == nil)

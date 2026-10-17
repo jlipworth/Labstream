@@ -82,7 +82,7 @@ extension DownloadManager {
                                             downloadLane: DownloadChoicePolicy.downloadLane(for: choice),
                                             serverPreparedVersion: DownloadChoicePolicy.isServerPreparedVersion(for: choice))
         let seedDestination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
-        guard persistAttemptSeed(
+        guard await persistAttemptSeed(
             DownloadRecord(ratingKey: ratingKey, attemptID: startAttempt.attemptID,
                            title: item.title, localURL: seedDestination,
                            bytes: 0, progress: 0, metadata: metadata),
@@ -314,29 +314,34 @@ extension DownloadManager {
                     DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
                 failure = .server
             }
-            _ = applyLifecycleEvent(
+            let failureFence = managerActionGenerations[attemptKey.ratingKey, default: 0]
+            _ = await applyLifecycleEvent(
                 .transferFailed(failure), for: attemptKey, context: "jellyfin_playback_info")
+            guard !Task.isCancelled, managerActionGenerations[attemptKey.ratingKey, default: 0] == failureFence, store.ownsAttempt(attemptKey) else { return }
             clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(for: attemptKey)
             refreshRecords()
             return
         }
 
-        let publishResult = store.createAttemptOwnedRecord(
+        let publishResult = await store.createAttemptOwnedRecordAsync(
             DownloadRecord(ratingKey: ratingKey, attemptID: startAttempt.attemptID,
                            title: item.title, localURL: destination,
                            bytes: 0, progress: 0, metadata: metadata),
             attemptID: startAttempt.attemptID)
         guard case .committed(let publishedKey) = publishResult,
-              publishedKey == attemptKey else {
+              publishedKey == attemptKey,
+              startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "publish_committed") else {
             jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
             stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                               playSessionID: mintedPlaySessionId,
                                               backendKind: .jellyfin,
                                               backendSession: backendSession)
-            if store.ownsAttempt(attemptKey) {
-                _ = applyLifecycleEvent(
+            if startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "failure_cleanup") {
+                let failureFence = managerActionGenerations[attemptKey.ratingKey, default: 0]
+                _ = await applyLifecycleEvent(
                     .transferFailed(.internalError), for: attemptKey, context: "jellyfin_publish")
+                guard !Task.isCancelled, managerActionGenerations[attemptKey.ratingKey, default: 0] == failureFence, store.ownsAttempt(attemptKey) else { return }
                 releaseInFlight(for: attemptKey)
             }
             return
@@ -345,16 +350,19 @@ extension DownloadManager {
         // still tear the encoder down on next launch (was in-memory only).
         if let mintedPlaySessionId {
             guard jellyfinMutationAccepted(
-                store.setPlaySessionID(for: attemptKey, mintedPlaySessionId),
-                key: attemptKey, phase: "play_session") else {
+                await store.setPlaySessionIDAsync(for: attemptKey, mintedPlaySessionId),
+                key: attemptKey, phase: "play_session"),
+                  startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "play_session_committed") else {
                 jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
                 stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                                   playSessionID: mintedPlaySessionId,
                                                   backendKind: .jellyfin,
                                                   backendSession: backendSession)
-                if store.ownsAttempt(attemptKey) {
-                    _ = applyLifecycleEvent(.transferFailed(.internalError),
+                if startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "failure_cleanup") {
+                    let failureFence = managerActionGenerations[attemptKey.ratingKey, default: 0]
+                    _ = await applyLifecycleEvent(.transferFailed(.internalError),
                                             for: attemptKey, context: "jellyfin_play_session")
+                    guard !Task.isCancelled, managerActionGenerations[attemptKey.ratingKey, default: 0] == failureFence, store.ownsAttempt(attemptKey) else { return }
                     releaseInFlight(for: attemptKey)
                 }
                 return
@@ -373,12 +381,15 @@ extension DownloadManager {
         if let resolvedJellyfinMediaSourceID,
            resolvedJellyfinMediaSourceID != jellyfinMediaSourceID {
             guard jellyfinMutationAccepted(
-                store.updateMetadata(for: attemptKey) {
+                await store.updateMetadataAsync(for: attemptKey) {
                     $0.mediaSourceID = resolvedJellyfinMediaSourceID
-                }, key: attemptKey, phase: "media_source") else {
-                if store.ownsAttempt(attemptKey) {
-                    _ = applyLifecycleEvent(.transferFailed(.internalError),
+                }, key: attemptKey, phase: "media_source"),
+                  startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "media_source_committed") else {
+                if startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "failure_cleanup") {
+                    let failureFence = managerActionGenerations[attemptKey.ratingKey, default: 0]
+                    _ = await applyLifecycleEvent(.transferFailed(.internalError),
                                             for: attemptKey, context: "jellyfin_media_source")
+                    guard !Task.isCancelled, managerActionGenerations[attemptKey.ratingKey, default: 0] == failureFence, store.ownsAttempt(attemptKey) else { return }
                     releaseInFlight(for: attemptKey)
                 }
                 return
@@ -506,10 +517,10 @@ extension DownloadManager {
                               !Task.isCancelled,
                               let staging = store.attemptStagingURL(
                                 for: attemptKey, stableURL: destination) else { continue }
-                        defer { try? FileManager.default.removeItem(at: staging) }
-                        guard await DownloadSideAssetService.prepare(
+                        defer { Self.discardSideAssetStaging(store: store, key: attemptKey, url: staging) }
+                        guard await Self.prepareSideAsset(store: store, key: attemptKey, expectedSource: sourceIdentity,
                                 data, as: .image, at: staging),
-                              Self.promoteSideAsset(store: store, key: attemptKey,
+                              await Self.promoteSideAsset(store: store, key: attemptKey,
                                                     expectedSource: sourceIdentity,
                                                     stagingURL: staging, stableURL: destination) else { continue }
                         let relative = destination.lastPathComponent
@@ -525,24 +536,22 @@ extension DownloadManager {
                     ratingKey: attemptKey.ratingKey)
                 guard let playlistStaging = store.attemptStagingURL(
                     for: attemptKey, stableURL: playlistURL) else { return }
-                defer { try? FileManager.default.removeItem(at: playlistStaging) }
+                defer { Self.discardSideAssetStaging(store: store, key: attemptKey, url: playlistStaging) }
                 guard let sanitizedData = sanitized.data(using: .utf8),
-                      await DownloadSideAssetService.prepare(
+                      await Self.prepareSideAsset(store: store, key: attemptKey, expectedSource: sourceIdentity,
                         sanitizedData, as: .jellyfinPlaylist, at: playlistStaging),
-                      Self.promoteSideAsset(store: store, key: attemptKey,
+                      await Self.promoteSideAsset(store: store, key: attemptKey,
                                             expectedSource: sourceIdentity,
                                             stagingURL: playlistStaging,
                                             stableURL: playlistURL) else { return }
                 let batch = DownloadSideAssetPublicationBatch(
                     jellyfinTiles: tileRelatives,
                     jellyfinPlaylist: playlistURL.lastPathComponent)
-                await MainActor.run {
-                    let result = store.updateMetadata(
+                let result = await store.updateMetadataAsync(
                         for: attemptKey, expectedSideAssetSource: sourceIdentity) {
                         batch.apply(to: &$0)
                     }
-                    if result == .applied || result == .noChange { self.refreshRecords() }
-                }
+                    if result == .applied || result == .noChange { await MainActor.run { self.refreshRecords() } }
             } catch {
                 // Optional asset cache. Never log token-bearing playlist/tile URLs.
             }

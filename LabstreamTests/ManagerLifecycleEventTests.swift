@@ -17,7 +17,7 @@ struct ManagerLifecycleEventTests {
         let store = DownloadStore(baseDirectory: directory)
         let (manager, session) = makeManager(store: store)
         defer { session.invalidateInjectedSessionForTesting() }
-        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        #expect(await manager.awaitStartupRecoveryForTesting())
         manager.setQueuePausedForTesting(false)
         // Seed after startup reconcile, which would otherwise fail a task-less active row.
         let key = try seedPlexPrepRow(in: store)
@@ -38,7 +38,7 @@ struct ManagerLifecycleEventTests {
         let store = DownloadStore(baseDirectory: directory)
         let (manager, session) = makeManager(store: store)
         defer { session.invalidateInjectedSessionForTesting() }
-        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        #expect(await manager.awaitStartupRecoveryForTesting())
         manager.setQueuePausedForTesting(false)
         let key = try seedPlexPrepRow(in: store)
         _ = store.submitLifecycleEvent(.bodyAtWorking, for: key,
@@ -67,7 +67,7 @@ struct ManagerLifecycleEventTests {
         let store = DownloadStore(baseDirectory: directory)
         let (manager, session) = makeManager(store: store)
         defer { session.invalidateInjectedSessionForTesting() }
-        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        #expect(await manager.awaitStartupRecoveryForTesting())
         let key = try seedPlexPrepRow(in: store)
         manager.setQueuePausedForTesting(true)
         defer { manager.setQueuePausedForTesting(false) }
@@ -86,7 +86,7 @@ struct ManagerLifecycleEventTests {
         let store = DownloadStore(baseDirectory: directory)
         let (manager, session) = makeManager(store: store)
         defer { session.invalidateInjectedSessionForTesting() }
-        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        #expect(await manager.awaitStartupRecoveryForTesting())
         manager.setQueuePausedForTesting(false)
         let key = try seedJellyfinForwardOnlyRow(in: store, seasonPlanned: false)
         #expect(store.lifecycleState(for: key)?.history.lastFailure == nil)
@@ -109,7 +109,7 @@ struct ManagerLifecycleEventTests {
         let store = DownloadStore(baseDirectory: directory)
         let (manager, session) = makeManager(store: store)
         defer { session.invalidateInjectedSessionForTesting() }
-        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        #expect(await manager.awaitStartupRecoveryForTesting())
         manager.setQueuePausedForTesting(false)
         let key = try seedJellyfinForwardOnlyRow(in: store, seasonPlanned: true)
         try #require(store.lifecycleState(for: key)?.lifecycle == .failed)
@@ -135,7 +135,7 @@ struct ManagerLifecycleEventTests {
         let store = DownloadStore(baseDirectory: directory)
         let (manager, session) = makeManager(store: store)
         defer { session.invalidateInjectedSessionForTesting() }
-        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        #expect(await manager.awaitStartupRecoveryForTesting())
         let key = try seedPlexPrepRow(in: store)
         let stale = DownloadAttemptKey(ratingKey: key.ratingKey, attemptID: .init(uuid: UUID()))
         let before = store.lifecycleState(for: key)
@@ -157,7 +157,7 @@ struct ManagerLifecycleEventTests {
         let store = DownloadStore(baseDirectory: directory)
         let (manager, session) = makeManager(store: store)
         defer { session.invalidateInjectedSessionForTesting() }
-        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        #expect(await manager.awaitStartupRecoveryForTesting())
         manager.setQueuePausedForTesting(false)
         let key = DownloadAttemptKey(ratingKey: "plex:callback", attemptID: .init(uuid: UUID()))
         let record = DownloadRecord(ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Item",
