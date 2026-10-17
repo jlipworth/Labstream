@@ -369,8 +369,16 @@ extension DownloadManager {
             case .leaveToCurrentOwner:
                 break
             case .cancel:
-                cancelEmbyConvertJob(jobId: job.id, ratingKey: ratingKey,
-                                     server: server, token: token, identity: identity)
+                // B50: the job has no row authority any more; journal its cancel. If that fails,
+                // fall back to today's unrecorded best-effort DELETE (a documented residual window).
+                let session = cleanupSession(kind: .emby, server: server, token: token,
+                                             userID: userId)
+                if !journalCleanupAbandonment(
+                    .embyConvert(.knownJob(jobID: job.id)), originAttempt: storeAttemptKey,
+                    session: session, reason: "convert_stale_create") {
+                    cancelEmbyConvertJob(jobId: job.id, ratingKey: ratingKey,
+                                         server: server, token: token, identity: identity)
+                }
             }
             refreshRecords()
             return
@@ -532,18 +540,20 @@ extension DownloadManager {
             phase: "resume_pre_poll", attemptID: attemptID)
         if let reuseId = resumedReusableSource?.id,
            embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
-                                       targetName: targetName, jobId: jobId) {
+                                       targetName: targetName, jobId: jobId),
+           // B50: this attempt abandons its own still-converting job for the reused version.
+           // DELETE /Sync/Jobs/{id} never deletes an already-converted file. If the cancel cannot
+           // be journaled, skip the whole handoff and keep polling the job this row still owns:
+           // a duplicate render is preferable to an unrecorded leak.
+           journalCleanupAbandonment(
+            .embyConvert(.knownJob(jobID: jobId)), originAttempt: storeAttemptKey,
+            session: cleanupSession(kind: .emby, server: server, token: token, userID: userId),
+            reason: "convert_reuse_duplicate") {
             recordDownloadDiagnostic("downloads.convert_reuse", fields: [
                 "download_id": .identifier(ratingKey),
                 "target": .label(targetName),
                 "phase": .label("resume_pre_poll"),
             ])
-            // If THIS attempt's job is still Converting it would otherwise render to completion
-            // server-side as a duplicate version. Cancel it first:
-            // DELETE /Sync/Jobs/{id} never deletes an already-converted file, so this is safe
-            // even when the reused source IS this job's own finished output.
-            cancelEmbyConvertJob(jobId: jobId, ratingKey: ratingKey,
-                                 server: server, token: token, identity: identity)
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(for: storeAttemptKey)
             await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,

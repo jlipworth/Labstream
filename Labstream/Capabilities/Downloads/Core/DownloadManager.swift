@@ -1548,7 +1548,8 @@ public final class DownloadManager {
     /// noticed the delete/pause. No transfer ever started, so at worst this DELETEs an encoder that
     /// never spun up (harmless) — but if the backend did start one for the minted PlaySessionId, it
     /// would otherwise leak with no row, no task, and no activeJobs slot pointing at it.
-    func stopSupersededMediaBrowserEncoder(ratingKey: String,
+    func stopSupersededMediaBrowserEncoder(attemptKey: DownloadAttemptKey,
+                                           ratingKey: String,
                                            playSessionID: String?,
                                            backendKind: DownloadBackendKind,
                                            backendSession: BackendSession) {
@@ -1557,6 +1558,13 @@ public final class DownloadManager {
             "download_id": .identifier(ratingKey),
             "backend": .label(backendKind.rawValue),
         ])
+        // P2.4: journal the stop from the session the negotiation captured; the runner executes
+        // it. If that fails, keep today's unrecorded best-effort stop (a documented residual
+        // window).
+        guard backendKind != .plex,
+              !journalCleanupAbandonment(
+                .activeEncoding(playSessionID: playSessionID), originAttempt: attemptKey,
+                session: backendSession, reason: "superseded_encoder") else { return }
         switch backendKind {
         case .jellyfin:
             let service = JellyfinBrowseService(appModel: appModel)
@@ -3262,6 +3270,7 @@ public final class DownloadManager {
                     try await triggerOptimize(item: currentItem, targetName: targetName,
                                               queueTitle: queueTitle,
                                               server: server, token: token, identity: identity)
+                    markPlexOptimizeCreateConfirmed(for: key, queueTitle: queueTitle)
                 } catch {
                     // Same policy as fresh optimize starts: a recreate failure should not briefly
                     // turn a queued/preparing row red if the optimized Part can still be discovered.
@@ -3528,6 +3537,22 @@ public final class DownloadManager {
                     ])
                 }
             }
+            // P2.4/D2: a Plex row still in server prep (paused included) journals its optimize
+            // queue item like every other server obligation; the runner removes it after the
+            // row's deletion commits and never touches a completed render.
+            if DownloadDeletePolicy.plexOptimizeCleanupQueueTitle(for: rowToDelete) != nil,
+               let attemptID = rowToDelete.attemptID {
+                let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+                if let intent = Self.makePlexOptimizeCleanupIntent(
+                    attemptKey: key, metadata: metadata,
+                    create: metadata.plexOptimizeCreateConfirmed == true ? .confirmed : .unresolved,
+                    provenance: .rowDeletion) {
+                    cleanupIntentsToExecute.append(intent)
+                } else {
+                    serverCleanupLeakDisclosure = .transferFailed(
+                        "Downloaded file deleted; server optimize cleanup identity was unavailable.")
+                }
+            }
             if Self.hasEmbyConvertCleanupAuthority(metadata) {
                 if let attemptID = rowToDelete.attemptID {
                     let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
@@ -3621,38 +3646,6 @@ public final class DownloadManager {
         // server-side "Convert Media" Sync job, or it keeps rendering after the user abandoned it.
         // Capture the row BEFORE removing it (best-effort; deleting the job never deletes an
         // already-converted file, so this only ever cancels an in-flight conversion).
-        // Plex parity: deleting a row still in server prep (optimize job triggered, no rendered
-        // Part handed off yet) must also remove its type-42 background-processing item, or the
-        // server keeps transcoding — and later stores a rendered version — for a download the
-        // user abandoned. Targeted at THIS row's queue title only; the completed-state guard in
-        // `cancellableItemID` keeps finished renders (which other rows may reuse) untouched.
-        let plexSession = appModel.backendSession(for: .plex)
-        let plexSessionMatchesDeletedRow = rowToDelete.metadata.map { metadata in
-            plexSession?.matchesPersistedServer(metadata) == true
-        } ?? false
-        switch DownloadDeletePolicy.plexOptimizeCancelDecision(
-            for: rowToDelete,
-            plexSessionMatchesPersistedServer: plexSessionMatchesDeletedRow
-        ) {
-        case .none:
-            break
-        case .cancel(let queueTitle):
-            guard let plexSession else { break }
-            let server = plexSession.baseURL
-            let token = plexSession.token
-            let identity = appModel.identity
-            Task { [weak self] in
-                await self?.removePlexOptimizeQueueItem(ratingKey: ratingKey,
-                                                        queueTitle: queueTitle,
-                                                        server: server, token: token,
-                                                        identity: identity)
-            }
-        case .skip(_, let reason):
-            recordDownloadDiagnostic("downloads.optimize_cancel_skip", fields: [
-                "download_id": .identifier(ratingKey),
-                "reason": .label(reason),
-            ])
-        }
         // The prepared row-deletion recipe is submitted synchronously, but filesystem work and
         // terminal persistence run on the artifact worker. Keep the main actor responsive and do
         // not release attempt state until exact removal is proven complete.

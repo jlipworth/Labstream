@@ -282,7 +282,7 @@ extension DownloadManager {
             guard startAttemptStillCurrent(startAttempt, backend: "Jellyfin",
                                            phase: "post_negotiation") else {
                 jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
-                stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
+                stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                                   playSessionID: mintedPlaySessionId,
                                                   backendKind: .jellyfin,
                                                   backendSession: backendSession)
@@ -291,7 +291,7 @@ extension DownloadManager {
         } catch {
             guard store.ownsAttempt(attemptKey) else {
                 jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
-                stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
+                stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                                   playSessionID: mintedPlaySessionId,
                                                   backendKind: .jellyfin,
                                                   backendSession: backendSession)
@@ -326,7 +326,7 @@ extension DownloadManager {
         guard case .committed(let publishedKey) = publishResult,
               publishedKey == attemptKey else {
             jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
-            stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
+            stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                               playSessionID: mintedPlaySessionId,
                                               backendKind: .jellyfin,
                                               backendSession: backendSession)
@@ -343,7 +343,7 @@ extension DownloadManager {
                 store.setPlaySessionID(for: attemptKey, mintedPlaySessionId),
                 key: attemptKey, phase: "play_session") else {
                 jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
-                stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
+                stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                                   playSessionID: mintedPlaySessionId,
                                                   backendKind: .jellyfin,
                                                   backendSession: backendSession)

@@ -453,6 +453,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// Wall-clock start of the current Plex optimize attempt. Persisted so relaunch/resume cannot
     /// reset the server-prep deadline and poll a stalled queue item forever.
     public var plexOptimizeStartedAtEpochSeconds: Double?
+    /// Set once the optimize create PUT returned success. Without it a deleted row's queue item
+    /// may still appear later, so its cleanup intent records the create as unresolved (P2).
+    public var plexOptimizeCreateConfirmed: Bool?
     /// Locally-cached poster path, relative to the Downloads base directory.
     public var posterRelativePath: String?
     /// Persisted content revision for the locally-cached poster. This advances whenever the
@@ -645,6 +648,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 optimizeQueueTitle: String? = nil,
                 optimizeBaselinePartIDs: [Int]? = nil,
                 plexOptimizeStartedAtEpochSeconds: Double? = nil,
+                plexOptimizeCreateConfirmed: Bool? = nil,
                 posterRelativePath: String? = nil,
                 posterGeneration: UInt64 = 0,
                 plexBIFRelativePath: String? = nil,
@@ -714,6 +718,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.optimizeQueueTitle = optimizeQueueTitle
         self.optimizeBaselinePartIDs = optimizeBaselinePartIDs
         self.plexOptimizeStartedAtEpochSeconds = plexOptimizeStartedAtEpochSeconds
+        self.plexOptimizeCreateConfirmed = plexOptimizeCreateConfirmed
         self.posterRelativePath = posterRelativePath
         self.posterGeneration = posterGeneration
         self.plexBIFRelativePath = plexBIFRelativePath
@@ -788,6 +793,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         optimizeBaselinePartIDs = try c.decodeIfPresent([Int].self, forKey: .optimizeBaselinePartIDs)
         plexOptimizeStartedAtEpochSeconds = try c.decodeIfPresent(
             Double.self, forKey: .plexOptimizeStartedAtEpochSeconds)
+        plexOptimizeCreateConfirmed = try c.decodeIfPresent(
+            Bool.self, forKey: .plexOptimizeCreateConfirmed)
         posterRelativePath = try c.decodeIfPresent(String.self, forKey: .posterRelativePath)
         posterGeneration = try c.decodeIfPresent(UInt64.self, forKey: .posterGeneration) ?? 0
         plexBIFRelativePath = try c.decodeIfPresent(String.self, forKey: .plexBIFRelativePath)
@@ -908,6 +915,12 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         }
         if downloadBitrateKbps == nil {
             downloadBitrateKbps = previous.downloadBitrateKbps
+        }
+        // A re-snapshot of the same optimize attempt keeps its create confirmation; a new queue
+        // title is a new create and starts unconfirmed.
+        if plexOptimizeCreateConfirmed == nil,
+           optimizeQueueTitle != nil, optimizeQueueTitle == previous.optimizeQueueTitle {
+            plexOptimizeCreateConfirmed = previous.plexOptimizeCreateConfirmed
         }
     }
 

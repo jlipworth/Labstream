@@ -26,45 +26,13 @@ struct DownloadDeletePolicyTests {
                               metadata: metadata)
     }
 
-    @Test("Preparing Emby convert rows cancel their server job when the persisted lane matches")
-    func preparingEmbyConvertCancelsMatchingSession() {
-        let row = record(status: .preparing, jobID: 42)
-        #expect(DownloadDeletePolicy.embyConvertCancelDecision(for: row,
-                                                               embySessionMatchesPersistedServer: true)
-                == .cancel(jobID: 42))
-    }
-
-    @Test("Preparing Emby convert rows log skip when the lane is unavailable or mismatched")
-    func preparingEmbyConvertSkipsMismatchedSession() {
-        let row = record(status: .preparing, jobID: 99)
-        #expect(DownloadDeletePolicy.embyConvertCancelDecision(for: row,
-                                                               embySessionMatchesPersistedServer: false)
-                == .skip(jobID: 99,
-                         reason: DownloadDeletePolicy.embySessionUnavailableOrMismatchReason))
-    }
-
-    @Test("Rows without an active convert job need no server-side delete")
-    func rowsWithoutPreparingConvertNeedNoServerCancel() {
-        #expect(DownloadDeletePolicy.embyConvertCancelDecision(for: nil,
-                                                               embySessionMatchesPersistedServer: true) == .none)
-        #expect(DownloadDeletePolicy.embyConvertCancelDecision(for: record(status: .paused, jobID: 42),
-                                                               embySessionMatchesPersistedServer: true) == .none)
-        #expect(DownloadDeletePolicy.embyConvertCancelDecision(for: record(status: .preparing),
-                                                               embySessionMatchesPersistedServer: true) == .none)
-    }
-
-    @Test("A failed Emby row whose persisted Convert job may still be Converting cancels the job")
-    func failedEmbyRowWithPersistedJobStillCancels() {
-        // Terminal poll failures (e.g. 401/403) fail the row app-side while the server keeps
-        // converting; the persisted jobID is the only remaining handle at delete time.
-        let row = record(status: .failed, jobID: 7)
-        #expect(DownloadDeletePolicy.embyConvertCancelDecision(for: row,
-                                                               embySessionMatchesPersistedServer: true)
-                == .cancel(jobID: 7))
-        #expect(DownloadDeletePolicy.embyConvertCancelDecision(for: row,
-                                                               embySessionMatchesPersistedServer: false)
-                == .skip(jobID: 7,
-                         reason: DownloadDeletePolicy.embySessionUnavailableOrMismatchReason))
+    @Test("The deletion note covers Emby Convert rows still in server prep")
+    func embyPrepDeletionDisclosesCancel() {
+        #expect(DownloadDeletePolicy.deletionCancelsServerPrep(record(status: .preparing, jobID: 42)))
+        #expect(DownloadDeletePolicy.deletionCancelsServerPrep(record(status: .paused, jobID: 42)))
+        #expect(!DownloadDeletePolicy.deletionCancelsServerPrep(record(status: .preparing)))
+        #expect(!DownloadDeletePolicy.deletionCancelsServerPrep(record(status: .complete, jobID: 42)))
+        #expect(!DownloadDeletePolicy.deletionCancelsServerPrep(nil))
     }
 
     // MARK: - Plex optimize delete-time cancel
@@ -89,52 +57,35 @@ struct DownloadDeletePolicyTests {
                               metadata: metadata)
     }
 
-    @Test("Deleting a Plex row still in server prep cancels its optimize queue item")
-    func plexPrepPhaseDeleteCancels() {
-        for status in [DownloadStatus.queued, .preparing, .failed] {
-            #expect(DownloadDeletePolicy.plexOptimizeCancelDecision(
-                for: plexRecord(status: status),
-                plexSessionMatchesPersistedServer: true)
-                == .cancel(queueTitle: "Title [Labstream abcd1234]"))
+    @Test("Deleting a Plex row still in server prep owes its optimize queue item, paused included (D2)")
+    func plexPrepPhaseDeleteOwesCleanup() {
+        for status in [DownloadStatus.queued, .preparing, .paused, .failed] {
+            #expect(DownloadDeletePolicy.plexOptimizeCleanupQueueTitle(
+                for: plexRecord(status: status)) == "Title [Labstream abcd1234]")
+            #expect(DownloadDeletePolicy.deletionCancelsServerPrep(plexRecord(status: status)))
         }
     }
 
-    @Test("Deleting a Plex row after the rendered-Part handoff or completion never cancels")
-    func plexCompletedRenderDeleteDoesNotCancel() {
+    @Test("Deleting a Plex row after the rendered-Part handoff or completion owes nothing")
+    func plexCompletedRenderDeleteOwesNothing() {
         // Handed off: resume mode rewritten to staticByteRange at startOptimizedPartDownload.
-        #expect(DownloadDeletePolicy.plexOptimizeCancelDecision(
-            for: plexRecord(status: .downloading, resumeMode: .staticByteRange),
-            plexSessionMatchesPersistedServer: true) == .none)
+        #expect(DownloadDeletePolicy.plexOptimizeCleanupQueueTitle(
+            for: plexRecord(status: .downloading, resumeMode: .staticByteRange)) == nil)
         // Completed download: the type-42 item is the rendered version other rows may reuse.
-        #expect(DownloadDeletePolicy.plexOptimizeCancelDecision(
-            for: plexRecord(status: .complete, resumeMode: .staticByteRange),
-            plexSessionMatchesPersistedServer: true) == .none)
-        // Paused is an intentional keep, not an abandon.
-        #expect(DownloadDeletePolicy.plexOptimizeCancelDecision(
-            for: plexRecord(status: .paused),
-            plexSessionMatchesPersistedServer: true) == .none)
+        #expect(DownloadDeletePolicy.plexOptimizeCleanupQueueTitle(
+            for: plexRecord(status: .complete, resumeMode: .staticByteRange)) == nil)
+        #expect(!DownloadDeletePolicy.deletionCancelsServerPrep(
+            plexRecord(status: .complete, resumeMode: .staticByteRange)))
     }
 
-    @Test("Plex delete-time cancel needs a persisted queue title and a Plex row")
-    func plexCancelRequiresHandleAndBackend() {
-        #expect(DownloadDeletePolicy.plexOptimizeCancelDecision(
-            for: nil, plexSessionMatchesPersistedServer: true) == .none)
-        #expect(DownloadDeletePolicy.plexOptimizeCancelDecision(
-            for: plexRecord(status: .queued, queueTitle: nil),
-            plexSessionMatchesPersistedServer: true) == .none)
-        // An Emby prep row must never route into the Plex optimize cancel.
-        #expect(DownloadDeletePolicy.plexOptimizeCancelDecision(
-            for: record(status: .preparing, jobID: 42),
-            plexSessionMatchesPersistedServer: true) == .none)
-    }
-
-    @Test("Plex session mismatch or unavailability skips instead of cancelling")
-    func plexSessionMismatchSkips() {
-        #expect(DownloadDeletePolicy.plexOptimizeCancelDecision(
-            for: plexRecord(status: .queued),
-            plexSessionMatchesPersistedServer: false)
-            == .skip(queueTitle: "Title [Labstream abcd1234]",
-                     reason: DownloadDeletePolicy.plexSessionUnavailableOrMismatchReason))
+    @Test("Plex delete-time cleanup needs a persisted queue title and a Plex row")
+    func plexCleanupRequiresHandleAndBackend() {
+        #expect(DownloadDeletePolicy.plexOptimizeCleanupQueueTitle(for: nil) == nil)
+        #expect(DownloadDeletePolicy.plexOptimizeCleanupQueueTitle(
+            for: plexRecord(status: .queued, queueTitle: nil)) == nil)
+        // An Emby prep row must never route into the Plex optimize cleanup.
+        #expect(DownloadDeletePolicy.plexOptimizeCleanupQueueTitle(
+            for: record(status: .preparing, jobID: 42)) == nil)
     }
 
     // MARK: - Plex prep poller orphan-exit gate
