@@ -249,6 +249,9 @@ public final class DownloadManager {
     /// tokens, persistence error descriptions, or server values are exposed to UI/diagnostics.
     public private(set) var startupRecoveryState: StartupRecoveryState = .preparing
     @ObservationIgnored private var startupRecoveryInFlight = false
+    /// A readable load may outlive its OS wake. Keep publication independent of the next
+    /// authorized transport edge, without automatically retrying unrelated startup failures.
+    @ObservationIgnored private var startupActivationAwaitingAuthorization = false
     @ObservationIgnored private(set) var startupIndexObservationTask: Task<Void, Never>?
     @ObservationIgnored private let startupIndexDeadline: @Sendable () -> DownloadStoreDeadline
     @ObservationIgnored private var didRunInitialStartupReattach = false
@@ -781,9 +784,7 @@ public final class DownloadManager {
         // session's completion gate before activation constructs URLSession and events can arrive.
         self.session.onBackgroundWakeAuthorized = { [weak self] in
             Task { @MainActor in
-                guard let self, self.startupRecoveryState == .preparing,
-                      !self.startupRecoveryInFlight else { return }
-                self.continueStartupRecovery(with: self.store.startupIndexAdmission(), deferCurrentActivation: true)
+                self?.resumeStartupRecoveryAfterAuthorization()
             }
         }
         if registerForBackgroundEvents {
@@ -852,6 +853,7 @@ public final class DownloadManager {
     @ObservationIgnored private var startupReprobeGeneration = UUID()
     public func retryDownloadStartupRecovery() {
         guard startupRecoveryState != .ready, !startupRecoveryInFlight else { return }
+        startupActivationAwaitingAuthorization = false
         startupRecoveryDeferredActivationTask?.cancel()
         startupRecoveryDeferredActivationTask = nil
         startupRecoveryRetryTask?.cancel()
@@ -915,6 +917,13 @@ public final class DownloadManager {
         }
     }
 
+    private func resumeStartupRecoveryAfterAuthorization() {
+        guard startupRecoveryState == .preparing || startupActivationAwaitingAuthorization,
+              !startupRecoveryInFlight else { return }
+        startupRecoveryState = .preparing
+        continueStartupRecovery(with: store.startupIndexAdmission(), deferCurrentActivation: true)
+    }
+
     /// Keep deterministic store admission and callback/registry installation synchronous, but move
     /// the healthy store's lazy transport construction/submission across the same async boundary
     /// used by the older startup composition. A retry before this turn cancels the pending edge and
@@ -968,7 +977,20 @@ public final class DownloadManager {
         #if DEBUG
         startupActivationDecisionForTesting?()
         #endif
-        guard !session.startupAuthorizationExpired else { return }
+        guard !session.startupAuthorizationExpired else {
+            // The load and its persistence proof remain valid after wake expiry. Publish the
+            // readable library now, but leave admission, reattach, probes and refill dormant.
+            startupActivationAwaitingAuthorization = true
+            startupRecoveryState = .blocked(message: "Downloads are waiting to resume recovery.")
+            records = store.records
+            offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: records)
+            refreshOfflineAvailability()
+            #if DEBUG
+            acknowledgeStartupRecoveryForTesting(false)
+            #endif
+            return
+        }
+        startupActivationAwaitingAuthorization = false
         startupRecoveryDeferredActivationTask?.cancel()
         startupRecoveryDeferredActivationTask = nil
         startupRecoveryInFlight = true
@@ -1113,6 +1135,7 @@ public final class DownloadManager {
         // is then guaranteed, so release a stored OS wake after the failure has been observed.
         session.releaseBackgroundCompletionAfterStartupFailure()
         startupRecoveryInFlight = false
+        startupActivationAwaitingAuthorization = false
         startupRecoveryState = .blocked(message: message)
         records = store.records
         refreshOfflineAvailability()
@@ -2144,9 +2167,7 @@ public final class DownloadManager {
         if isActive {
             refreshOfflineAvailability(force: true)
             session.noteForegroundAuthorization()
-            if startupRecoveryState == .preparing && !startupRecoveryInFlight {
-                continueStartupRecovery(with: store.startupIndexAdmission(), deferCurrentActivation: true)
-            }
+            resumeStartupRecoveryAfterAuthorization()
             beginDownloadRateForegroundRebaseline()
             // #187: headset reattach can deliver a burst of background-session progress and scene
             // activation events while the Offline window is being reconstructed. Coalesce the first

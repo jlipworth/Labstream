@@ -469,6 +469,11 @@ transport submission crosses one bounded MainActor turn and retains the manager 
 submission occurs. A retry before that turn cancels the deferred edge and owns the one immediate
 submission, so retry cannot overtake it or submit activation twice.
 
+A readable load that finishes after the startup deadline still publishes rows and Offline
+availability, even if its background wake has expired. Transport, probes and queue refill stay
+dormant until foreground or a new background wake authorizes recovery; older load generations
+cannot overwrite a newer recovery attempt.
+
 - **Unsupported schemas** keep their explicit reset path.
 - **Unreadable indexes and malformed current ownership** remain fail-closed.
 - **A v4 index** runs the one-time upgrade pass (see PERSISTENCE) before `.ready` is published.

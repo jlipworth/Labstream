@@ -131,8 +131,8 @@ struct AsyncDownloadIndexStartupTests {
         _ = completions
     }
 
-    @Test @MainActor
-    func expiredInitialLoadResolvesTheLaunchGateAndPublishesLateSuccess() async throws {
+    @MainActor
+    private func assertUnexpiredWakePublishesLateSuccess() async throws {
         let f = try P6Fixture()
         let row = f.record(status: .complete)
         let seed = f.store()
@@ -175,8 +175,110 @@ struct AsyncDownloadIndexStartupTests {
         #expect(manager.records.map(\.ratingKey) == [row.ratingKey])
     }
 
-    @Test @MainActor
-    func lateInitialCompletionCannotOverwriteANewerReprobe() async throws {
+    enum LateLoadAuthorization: CaseIterable, Sendable {
+        case unexpired, foreground, newWake
+    }
+
+    @Test("Late readable startup publishes independently of wake authorization",
+          arguments: LateLoadAuthorization.allCases) @MainActor
+    func lateReadableStartupAfterExpiredWakePublishesBeforeAuthorizedRecovery(
+        authorization: LateLoadAuthorization
+    ) async throws {
+        // Keep all late-load publication cases under one serialized fixture boundary.
+        if authorization == .unexpired {
+            try await assertUnexpiredWakePublishesLateSuccess()
+        } else {
+            try await assertExpiredWakePublishesBeforeAuthorizedRecovery(newWake: authorization == .newWake)
+        }
+    }
+
+    @MainActor
+    private func assertExpiredWakePublishesBeforeAuthorizedRecovery(newWake: Bool) async throws {
+        let f = try P6Fixture()
+        let seed = f.store()
+        let key = try f.seed(seed, status: .unverified)
+        try Data([1, 2, 3]).write(to: seed.record(for: key)!.localURL)
+        let gate = StartupIndexReadGate()
+        defer { gate.release.signal() }
+        let store = DownloadStore(baseDirectory: f.directory, startupOnWorker: true,
+            startupRepairWillBegin: { gate.hold() })
+        try #require(await p6Signal(gate.entered))
+        let clock = P6WakeClock()
+        let released = P6Acknowledgement<Bool>()
+        let constructions = Mutex(0)
+        let probes = Mutex(0)
+        let refills = Mutex(0)
+        let registry = BackgroundDownloadCompletionRegistry(clockHooks: clock.hooks)
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [],
+            playbackValidator: { _, _ in
+                probes.withLock { $0 += 1 }
+                return .init(played: true, reason: "played", durationMs: nil, detail: nil)
+            },
+            wakeClockHooks: clock.hooks,
+            transportWillConstruct: { constructions.withLock { $0 += 1 } },
+            releaseBackgroundCompletion: { registry.fireCompletions(in: $0) })
+        defer { session.invalidateInjectedSessionForTesting() }
+        registry.register(session)
+        registry.store(identifier: BackgroundDownloadSession.identifier) { released.signal(true) }
+        try clock.requireWakeTimers()
+        clock.advance(to: 26)
+        try #require(await released.wait(seconds: 5) == true)
+        #expect(session.startupAuthorizationExpired)
+        // Expire the initial-load wait only after the 25-second wake. The injected deadline
+        // and wake clock avoid real sleeps while the same physical index load remains held.
+        clock.advance(to: 30)
+        let manager = DownloadManager(appModel: AppModel(identity: PlatformClientIdentity.make(
+            clientIdentifier: "expired-wake-index-fixture")), store: store, session: session,
+            backgroundCompletionRegistry: registry, registerForBackgroundEvents: false,
+            startupIndexDeadline: { .after(0) })
+        #expect(await manager.awaitStartupRecoveryForTesting() == false)
+        guard case .blocked = manager.startupRecoveryState else {
+            Issue.record("The initial-load deadline must block startup after wake expiry"); return
+        }
+        #expect(manager.records.isEmpty)
+        #expect(!manager.hasPlayableOfflineContent)
+        gate.release.signal()
+        await manager.startupIndexObservationTask?.value
+        await manager.offlineAvailabilityCache.worker?.value
+        #expect(manager.records.map(\.ratingKey) == [key.ratingKey])
+        #expect(manager.offlineLibrarySnapshot.rows.map(\.id) == [key.ratingKey])
+        #expect(manager.hasPlayableOfflineContent)
+        #expect(!manager.offlineAvailabilityIsResolving)
+        #expect(manager.offlineIndexAccess == .admissionBlockedReadable)
+        #expect(!manager.admission.recoveryComplete)
+        #expect(!session.startupAdmissionIsActiveForTesting)
+        #expect(manager.startupActivationSubmissionCountForTesting == 0)
+        #expect(constructions.withLock { $0 } == 0)
+        #expect(probes.withLock { $0 } == 0)
+        #expect(session.revalidateCompletedDownload(ratingKey: key.ratingKey,
+            validationLabel: "expired_wake_pin") == .deferredForBackgroundWake)
+        let refill = f.record("refill", ratingKey: "plex:refill", filename: "refill.mp4")
+        let refillKey = DownloadAttemptKey(ratingKey: refill.ratingKey, attemptID: refill.attemptID!)
+        try #require(store.createAttemptOwnedRecord(refill, attemptID: refillKey.attemptID) == .committed(refillKey))
+        try #require(store.attemptWorkingFileURL(for: refillKey) != nil)
+        session.onRangeRequestNeeded = { _, _, _ in refills.withLock { $0 += 1 } }
+        session.continueRangeAfterBodyForTesting(refillKey, partialSize: 3)
+        #expect(refills.withLock { $0 } == 0)
+        #expect(probes.withLock { $0 } == 0)
+        if newWake {
+            let authorized = P6Acknowledgement<Bool>()
+            manager.startupActivationDecisionForTesting = { authorized.signal(true) }
+            registry.store(identifier: BackgroundDownloadSession.identifier) {}
+            try #require(await authorized.wait(seconds: 5) == true)
+        } else {
+            manager.noteAppSceneRecovery(.aggregateSceneBecameActive)
+        }
+        #expect(await manager.awaitStartupRecoveryForTesting())
+        #expect(manager.startupRecoveryState == .ready)
+        #expect(session.startupAdmissionIsActiveForTesting)
+        #expect(manager.startupActivationSubmissionCountForTesting == 1)
+        #expect(constructions.withLock { $0 } == 1)
+        session.continueRangeAfterBodyForTesting(refillKey, partialSize: 3)
+        #expect(refills.withLock { $0 } == 1)
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func lateInitialCompletionCannotOverwriteANewerReprobe(expiredWake: Bool) async throws {
         let f = try P6Fixture()
         let index = f.directory.appendingPathComponent("index.json")
         try Data("invalid".utf8).write(to: index)
@@ -193,8 +295,16 @@ struct AsyncDownloadIndexStartupTests {
             try DownloadIndexFileCommitter().commit(data, to: url)
         }), startupOnWorker: true)
         try #require(await p6Signal(initial.entered))
-        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+        let clock = P6WakeClock()
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [], wakeClockHooks: clock.hooks,
+            releaseBackgroundCompletion: { _ in })
         defer { session.invalidateInjectedSessionForTesting() }
+        if expiredWake {
+            session.noteBackgroundCompletionHandlerStored(identifier: BackgroundDownloadSession.identifier)
+            try clock.requireWakeTimers()
+            clock.advance(to: 30)
+            #expect(session.startupAuthorizationExpired)
+        }
         let manager = DownloadManager(appModel: AppModel(identity: PlatformClientIdentity.make(
             clientIdentifier: "generation-fixture")), store: store, session: session,
             registerForBackgroundEvents: false, startupIndexDeadline: { .after(0) })
@@ -202,12 +312,22 @@ struct AsyncDownloadIndexStartupTests {
         let old = manager.startupIndexObservationTask
         manager.retryDownloadStartupRecovery()
         try Data(#"{"schemaVersion":5,"rows":[]}"#.utf8).write(to: index)
+        let availabilityBeforeOldCompletion = manager.offlineAvailabilityCache.value
         initial.release.signal()
         try #require(await p6Signal(retry.entered))
         await old?.value
         #expect(manager.startupRecoveryState == .preparing)
         #expect(manager.startupActivationSubmissionCountForTesting == 0)
+        #expect(manager.records.isEmpty)
+        #expect(manager.offlineLibrarySnapshot.rows.isEmpty)
+        #expect(manager.offlineAvailabilityCache.value == availabilityBeforeOldCompletion)
         retry.release.signal()
+        if expiredWake {
+            await manager.startupIndexObservationTask?.value
+            #expect(!session.startupAdmissionIsActiveForTesting)
+            #expect(manager.startupActivationSubmissionCountForTesting == 0)
+            manager.noteAppSceneRecovery(.aggregateSceneBecameActive)
+        }
         #expect(await manager.awaitStartupRecoveryForTesting())
         #expect(manager.startupRecoveryState == .ready)
     }
