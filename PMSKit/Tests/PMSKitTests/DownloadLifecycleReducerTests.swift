@@ -72,6 +72,37 @@ struct DownloadLifecycleReducerTests {
 
     // MARK: - B54: truncation strikes survive attempts and relaunch
 
+    @Test func aFailingTruncationCondemnsTheBodyForTheWholeAttempt() throws {
+        guard case .applied(let failed, let effects) = R.reduce(
+            state(.finalizing), .finalizeOutcome(id: "a#body-1", outcome: .truncated, source: source),
+            facts: staticFacts) else {
+            Issue.record("the first truncation must apply"); return
+        }
+        #expect(failed.lifecycle == .failed)
+        #expect(failed.history.lastFailure == .truncated)
+        #expect(failed.history.isBodyCondemned)
+        #expect(effects == [.deleteWorkingBody])
+        // Another failure overwrites the reason but never the fence.
+        guard case .applied(let overwritten, _) = R.reduce(
+            failed, .retryRejected(.sourceMissing), facts: staticFacts) else {
+            Issue.record("a retry rejection must apply"); return
+        }
+        #expect(overwritten.history.lastFailure == .sourceMissing)
+        #expect(overwritten.history.isBodyCondemned)
+        // The condemned body never re-enters finalization.
+        #expect(R.reduce(overwritten, .bodyAtWorking, facts: staticFacts) == .rejected(.illegal))
+        // A replacement attempt inherits the strike, not the fence.
+        let inherited = overwritten.history.inherited(by: source)
+        #expect(inherited.truncation?.strikes == 1)
+        #expect(!inherited.isBodyCondemned)
+        // The legacy failing-verdict path condemns too.
+        guard case .applied(let legacy, _) = R.reduce(
+            state(.finalizing), .transferFailed(.truncated), facts: staticFacts) else {
+            Issue.record("a truncated transfer failure must apply"); return
+        }
+        #expect(legacy.history.isBodyCondemned)
+    }
+
     @Test func reenteringAFinalizingBodyKeepsItsPendingVerdict() throws {
         // A second truncation parked the body; a crash before promotion re-enters finalizing.
         var history = DownloadAttemptHistory.empty

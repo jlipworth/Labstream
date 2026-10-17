@@ -3275,6 +3275,7 @@ final class DownloadStore: @unchecked Sendable {
         if existing?.attemptID != attemptID,
            let expectedPreviousOwner,
            previous?.history.lastFailure != .truncated,
+           previous?.history.isBodyCondemned != true,
            previous?.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange,
            metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange,
            let previous,
@@ -5009,7 +5010,9 @@ final class DownloadStore: @unchecked Sendable {
         let checkpoint: DownloadRowFacts.Checkpoint
         // Pre-P3a reconcile precedence: an app-owned static partial is the checkpoint whether or
         // not a resume manifest also exists, and a manifest counts only while its blob survives.
-        if route == .staticRange, workingBytes > 0 {
+        if row.history.isBodyCondemned {
+            checkpoint = .none   // a condemned body is never a checkpoint
+        } else if route == .staticRange, workingBytes > 0 {
             checkpoint = .durablePartial(bytes: workingBytes)
         } else if let resumeRelative, !resumeRelative.isEmpty,
                   fileManager.fileExists(
@@ -5224,7 +5227,18 @@ final class DownloadStore: @unchecked Sendable {
                     == url.standardizedFileURL else { return nil }
             let condemned = baseDirectory.appendingPathComponent(Self.attemptStagingRelativePath(
                 for: key, stableRelativePath: "condemned-\(UUID().uuidString)"))
-            guard Darwin.rename(url.path, condemned.path) == 0 else { return nil }
+            guard Darwin.rename(url.path, condemned.path) == 0 else {
+                let renameErrno = errno
+                // Fall back to deleting in place (the pre-P3a behavior). Either way the persisted
+                // `bodyCondemned` fence keeps these bytes from ever seeding a Retry.
+                let deleted = (try? fileManager.removeItem(at: url)) != nil
+                AppDiagnostics.record(.downloads, "downloads.condemn_rename_failed", fields: [
+                    "download_id": .identifier(key.ratingKey),
+                    "errno": .int(Int(renameErrno)),
+                    "deleted_in_place": .bool(deleted),
+                ])
+                return nil
+            }
             return condemned
         }
     }
@@ -5245,8 +5259,18 @@ final class DownloadStore: @unchecked Sendable {
             through: ticket, timeout: timeout) {
             committed = revision >= ticket.revision
         }
-        if let identity, condemnedFileIdentity(at: condemned) == identity {
-            try? fileManager.removeItem(at: condemned)
+        // Bounded retries: the name is unreferenced and absent from this launch's staging
+        // inventory, so nothing else in this process would reclaim it.
+        for attempt in 0..<3 {
+            guard let identity, condemnedFileIdentity(at: condemned) == identity else { break }
+            if (try? fileManager.removeItem(at: condemned)) != nil { break }
+            if attempt == 2 {
+                AppDiagnostics.record(.downloads, "downloads.condemned_body_delete_failed", fields: [
+                    "bytes": .bytes(Int(clamping: identity.size)),
+                ])
+            } else {
+                try? await Task.sleep(for: .seconds(1))
+            }
         }
         return committed
     }
