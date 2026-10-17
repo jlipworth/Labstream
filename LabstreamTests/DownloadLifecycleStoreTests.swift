@@ -121,6 +121,56 @@ struct DownloadLifecycleStoreTests {
         }
     }
 
+    @Test("Truncation strikes persist, survive relaunch and are inherited by a Retry (B54)")
+    func truncationStrikesSurviveRelaunchAndRetry() async throws {
+        try await withAsyncDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let first = try seed("plex:strike", status: .downloading,
+                                 metadata: profiled("1080p"), in: store)
+            #expect(store.recordTruncationStrike(for: first, outcomeID: "A-1") == 1)
+            // A replayed outcome is not a second strike.
+            #expect(store.recordTruncationStrike(for: first, outcomeID: "A-1") == 1)
+            guard case .committed = await store.flushPersistence(
+                through: store.currentPersistenceTicket(), timeout: 5) else {
+                Issue.record("Expected the strike to commit"); return
+            }
+
+            // Relaunch keeps the strike.
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.truncationStrikes(for: first) == 1)
+
+            // Retry mints attempt B for the same source: the strike is inherited.
+            let second = DownloadAttemptKey(ratingKey: first.ratingKey,
+                                            attemptID: DownloadAttemptID(uuid: UUID()))
+            #expect(relaunched.createAttemptOwnedRecord(
+                record(second, metadata: profiled("1080p")), attemptID: second.attemptID,
+                replacing: first.attemptID) == .committed(second))
+            #expect(relaunched.truncationStrikes(for: second) == 1)
+            #expect(relaunched.recordTruncationStrike(for: second, outcomeID: "B-1") == 2)
+
+            // A proven profile change starts over.
+            let third = DownloadAttemptKey(ratingKey: first.ratingKey,
+                                           attemptID: DownloadAttemptID(uuid: UUID()))
+            #expect(relaunched.createAttemptOwnedRecord(
+                record(third, metadata: profiled("720p")), attemptID: third.attemptID,
+                replacing: second.attemptID) == .committed(third))
+            #expect(relaunched.truncationStrikes(for: third) == 0)
+        }
+    }
+
+    private func profiled(_ profile: String) -> OfflineMetadata {
+        var metadata = OfflineMetadata(ratingKey: "plex:strike", title: "Item", type: "movie")
+        metadata.requestedProfileLabel = profile
+        metadata.backendServerID = "machine-1"
+        return metadata
+    }
+
+    private func record(_ key: DownloadAttemptKey, metadata: OfflineMetadata) -> DownloadRecord {
+        DownloadRecord(ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Item",
+                       localURL: URL(fileURLWithPath: "/dev/null"), status: .queued,
+                       metadata: metadata)
+    }
+
     // MARK: - Fixtures
 
     private func seed(_ ratingKey: String, status: DownloadStatus,

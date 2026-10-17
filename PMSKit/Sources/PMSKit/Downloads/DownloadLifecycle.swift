@@ -198,6 +198,25 @@ public struct DownloadAttemptHistory: Codable, Sendable, Equatable {
 
     public static let empty = DownloadAttemptHistory()
 
+    /// Count one truncation outcome (R2-5): replayed IDs are ignored, a proven source change
+    /// restarts the count. Returns the updated history and whether this outcome was new.
+    public func recordingTruncation(
+        outcomeID: String, source: DownloadSourceKey
+    ) -> (history: DownloadAttemptHistory, recorded: Bool) {
+        var next = self
+        var truncation = next.truncation
+        if truncation?.countedOutcomeIDs.contains(outcomeID) == true { return (self, false) }
+        if truncation == nil || truncation!.sourceKey.provenDifferent(from: source) {
+            truncation = DownloadTruncationHistory(strikes: 0, sourceKey: source)
+        }
+        truncation!.strikes += 1
+        truncation!.countedOutcomeIDs = Array(
+            (truncation!.countedOutcomeIDs + [outcomeID])
+                .suffix(DownloadTruncationHistory.rememberedOutcomeLimit))
+        next.truncation = truncation
+        return (next, true)
+    }
+
     /// History a replacement attempt inherits (R2-5): truncation strikes for the same source, and
     /// nothing else. Everything else describes the previous attempt only.
     public func inherited(by newSource: DownloadSourceKey) -> DownloadAttemptHistory {

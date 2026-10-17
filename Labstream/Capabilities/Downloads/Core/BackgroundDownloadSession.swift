@@ -205,14 +205,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var loggedExpectation: Set<Int> = []
     /// Retry count by exact attempt for transient URLSession drops that provide resume data.
     private var retryCounts: [DownloadAttemptKey: Int] = [:]
-    /// JF-F2 loop guard: consecutive `.truncated` finalize outcomes per attempt. Deliberately NOT
-    /// reset by `start`/`clearRetryCount` (a retry that truncates again must keep counting toward
-    /// the parking budget); reset only on a `.complete` finalize. Only touched inside
-    /// `finalizeTransferredFile`, guarded by `finalizationStateQueue` (async context — no NSLock).
-    /// Consecutive truncation failures belong to the visible download, not a disposable attempt.
-    /// Retry intentionally mints a new attempt; keying this budget by attempt made parking
-    /// unreachable for a repeatedly truncated server response.
-    private var truncationFailureCounts: [String: Int] = [:]
     /// Bounded per-row backend/request rehydrations after auth/forbidden HTTP responses on static
     /// Range tasks. This is intentionally separate from transient retry counts: 403 should not blindly
     /// replay the same URL, but one fresh backend negotiation may mint a usable request.
@@ -735,11 +727,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// unit test), so expose read/seed access — guarded by the same `finalizationStateQueue` — to
     /// prove `halt()` clears the count when the row is cancelled/deleted.
     func truncationFailureCountForTesting(ratingKey: String) -> Int {
-        finalizationStateQueue.sync { truncationFailureCounts[ratingKey] ?? 0 }
+        guard let attemptID = currentAttemptIdentity(ratingKey: ratingKey) else { return 0 }
+        return store.truncationStrikes(
+            for: DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID))
     }
 
     func seedTruncationFailureCountForTesting(_ count: Int, ratingKey: String) {
-        finalizationStateQueue.sync { truncationFailureCounts[ratingKey] = count }
+        guard let attemptID = currentAttemptIdentity(ratingKey: ratingKey) else { return }
+        let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+        for index in 0..<count {
+            _ = store.recordTruncationStrike(for: key, outcomeID: "seed-\(index)")
+        }
     }
 
     /// #212 regression seam: run the production off-head finished-body flow — the caller's
@@ -2817,7 +2815,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // Clear it here for the same M-7 reason: the row is being cancelled/deleted, so a
         // re-download of the same item must start clean instead of inheriting a stale truncation
         // count that would park it immediately. `.complete` is the only other clear site.
-        finalizationStateQueue.sync { _ = truncationFailureCounts.removeValue(forKey: ratingKey) }
+        store.clearTruncationStrikes(for: attemptKey)
         endRangeRequestRebuildGrace(for: attemptKey, reason: "cancelled")
         // Keep the durable owner on the row. Delete removes the whole row immediately; restart
         // paths need the old owner so the replacement can perform an exact A → B compare/swap.
@@ -5490,21 +5488,25 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                                            expectedExactBytes: expectedExactBytes,
                                                            forwardOnly: forwardOnly)
         guard !Task.isCancelled else { return }
-        let truncationFailures: Int? = finalizationStateQueue.sync {
-            guard !Task.isCancelled else { return nil }
-            switch outcome {
-            case .truncated:
-                let next = truncationFailureCounts[attemptKey.ratingKey, default: 0] + 1
-                truncationFailureCounts[attemptKey.ratingKey] = next
-                return next
-            case .complete:
-                truncationFailureCounts.removeValue(forKey: attemptKey.ratingKey)
-                return 0
-            default:
-                return truncationFailureCounts[attemptKey.ratingKey] ?? 0
-            }
+        // P3a/B54: strikes are persisted attempt history, inherited by a Retry of the same
+        // source and deduplicated by this finalizer request, so neither a relaunch nor a
+        // replayed outcome resets or double-counts them.
+        guard !Task.isCancelled else { return }
+        let outcomeID = finalizationStateQueue.sync {
+            finalizerRequestIDsByAttempt[attemptKey]?.uuidString
+        } ?? "\(attemptKey.attemptID.rawValue)-\(validationLabel)"
+        let truncationFailures: Int
+        switch outcome {
+        case .truncated:
+            guard let strikes = store.recordTruncationStrike(
+                for: attemptKey, outcomeID: outcomeID) else { return }
+            truncationFailures = strikes
+        case .complete:
+            store.clearTruncationStrikes(for: attemptKey)
+            truncationFailures = 0
+        default:
+            truncationFailures = store.truncationStrikes(for: attemptKey)
         }
-        guard let truncationFailures else { return }
         let finalizationResult = BackgroundFinalizationResultPolicy.result(
             for: outcome,
             consecutiveTruncationFailures: truncationFailures,

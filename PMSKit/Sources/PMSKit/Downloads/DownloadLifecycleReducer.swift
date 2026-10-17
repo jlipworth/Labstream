@@ -289,16 +289,8 @@ public enum DownloadLifecycleReducer {
             case .emptyFile:
                 return fail(.validation, [.deleteWorkingBody])
             case .truncated:
-                var truncation = next.history.truncation
-                if truncation == nil || truncation!.sourceKey.provenDifferent(from: source) {
-                    truncation = DownloadTruncationHistory(strikes: 0, sourceKey: source)
-                }
-                truncation!.strikes += 1
-                truncation!.countedOutcomeIDs = Array(
-                    (truncation!.countedOutcomeIDs + [id])
-                        .suffix(DownloadTruncationHistory.rememberedOutcomeLimit))
-                next.history.truncation = truncation
-                if truncation!.strikes >= maxTruncationStrikes {
+                next.history = next.history.recordingTruncation(outcomeID: id, source: source).history
+                if (next.history.truncation?.strikes ?? 0) >= maxTruncationStrikes {
                     return finalizingPublish(&next, reason: .truncatedRepeated)
                 }
                 return fail(.validation, [.deleteWorkingBody])
