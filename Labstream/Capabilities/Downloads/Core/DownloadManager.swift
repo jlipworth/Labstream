@@ -1615,6 +1615,15 @@ public final class DownloadManager {
             isServerPrepRecord: DownloadRetryPolicy.isPlexServerPrepResumeCandidate(record)
         )
         guard pauseAction != .ignore else { return }
+        // P3a: a finalizing body is finished. Pausing it would cancel the finalizer while the
+        // reducer keeps the row finalizing, stranding it as "Verifying" until relaunch; let the
+        // finalizer publish it instead.
+        if store.lifecycleState(for: releaseKey)?.lifecycle == .finalizing {
+            recordDownloadDiagnostic("downloads.pause_ignored_finalizing", fields: [
+                "download_id": .identifier(ratingKey),
+            ])
+            return
+        }
 
         recordDownloadDiagnostic("downloads.pause", fields: [
             "download_id": .identifier(ratingKey),

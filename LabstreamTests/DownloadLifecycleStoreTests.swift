@@ -205,6 +205,127 @@ struct DownloadLifecycleStoreTests {
         }
     }
 
+    @Test("Relaunch keeps a static partial as the checkpoint even beside a resume manifest")
+    func relaunchPrefersStaticPartialOverResumeManifest() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            var metadata = OfflineMetadata(ratingKey: "plex:ckpt", title: "Ckpt", type: "movie")
+            metadata.resumeMode = .staticByteRange
+            metadata.resumeDataRelativePath = "plex-ckpt.resume"   // manifest whose blob is gone
+            let key = try seed("plex:ckpt", status: .downloading, metadata: metadata, in: store)
+            let body = try #require(store.attemptWorkingFileURL(for: key))
+            try Data(repeating: 3, count: 8_192).write(to: body)
+
+            store.reconcile(liveRatingKeys: [], snapshotRatingKeys: [key.ratingKey])
+
+            #expect(store.lifecycleState(for: key)?.lifecycle == .paused)
+            #expect(store.record(for: key)?.bytes == 8_192)
+            #expect(FileManager.default.fileExists(atPath: body.path), "the checkpoint is kept")
+        }
+    }
+
+    @Test("A resume manifest whose blob is gone does not keep a paused live-stream row")
+    func missingResumeBlobIsNotACheckpoint() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            var metadata = OfflineMetadata(ratingKey: "jellyfin:blob", title: "Blob", type: "movie")
+            metadata.resumeMode = .liveForwardOnly
+            metadata.resumeDataRelativePath = "jellyfin-blob.resume"
+            let key = try seed("jellyfin:blob", status: .paused, metadata: metadata, in: store)
+
+            store.reconcile(liveRatingKeys: [], snapshotRatingKeys: [key.ratingKey])
+            #expect(store.record(for: key)?.status == .failed)
+
+            // With the blob on disk the same row stays resumable.
+            let kept = try seed("jellyfin:blob2", status: .paused, metadata: {
+                var m = metadata; m.ratingKey = "jellyfin:blob2"
+                m.resumeDataRelativePath = "jellyfin-blob2.resume"; return m
+            }(), in: store)
+            try Data([1, 2, 3]).write(to: directory.appendingPathComponent("jellyfin-blob2.resume"))
+            store.reconcile(liveRatingKeys: [], snapshotRatingKeys: [kept.ratingKey])
+            #expect(store.record(for: kept)?.status == .paused)
+        }
+    }
+
+    @Test("A Retry that removes the failed row first still inherits its strikes; Delete does not")
+    func retryRemovalCarriesStrikes() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let first = try seed("plex:strike", status: .failed, metadata: profiled("1080p"),
+                                 in: store)
+            #expect(store.recordTruncationStrike(for: first, outcomeID: "A-1") == 1)
+            #expect(store.remove(for: first) == .applied)
+
+            let second = DownloadAttemptKey(ratingKey: first.ratingKey,
+                                            attemptID: DownloadAttemptID(uuid: UUID()))
+            #expect(store.createAttemptOwnedRecord(
+                record(second, metadata: profiled("1080p")), attemptID: second.attemptID)
+                == .committed(second))
+            #expect(store.truncationStrikes(for: second) == 1)
+
+            // A cancel clears the strikes, so a later removal carries nothing.
+            store.clearTruncationStrikes(for: second)
+            #expect(store.remove(for: second) == .applied)
+            let third = DownloadAttemptKey(ratingKey: first.ratingKey,
+                                           attemptID: DownloadAttemptID(uuid: UUID()))
+            #expect(store.createAttemptOwnedRecord(
+                record(third, metadata: profiled("1080p")), attemptID: third.attemptID)
+                == .committed(third))
+            #expect(store.truncationStrikes(for: third) == 0)
+        }
+    }
+
+    @Test("Re-finalizing the same body after a relaunch replays its truncation, not a second strike")
+    func refinalizedBodyReplaysItsOutcome() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let key = try seed("plex:strike", status: .downloading, metadata: profiled("1080p"),
+                               in: store)
+            _ = store.submitLifecycleEvent(.bodyAtWorking, for: key,
+                                           facts: DownloadRowFacts(route: .staticRange))
+            let source = try #require(store.truncationSourceKey(for: key))
+            let id = BackgroundDownloadSession.finalizeOutcomeID(for: key, bytes: 4_096)
+            // A fresh finalizer run over the same bytes names the same outcome.
+            #expect(id == BackgroundDownloadSession.finalizeOutcomeID(for: key, bytes: 4_096))
+            #expect(id != BackgroundDownloadSession.finalizeOutcomeID(for: key, bytes: 4_097))
+
+            guard case .accepted = store.submitLifecycleEvent(
+                .finalizeOutcome(id: id, outcome: .truncated, source: source), for: key) else {
+                Issue.record("Expected the first truncation to apply"); return
+            }
+            // Strike and verdict commit together.
+            #expect(store.truncationStrikes(for: key) == 1)
+            #expect(store.lifecycleState(for: key)?.lifecycle == .failed)
+
+            _ = store.submitLifecycleEvent(.bodyAtWorking, for: key,
+                                           facts: DownloadRowFacts(route: .staticRange))
+            #expect(store.submitLifecycleEvent(
+                .finalizeOutcome(id: id, outcome: .truncated, source: source), for: key)
+                == .rejected(.replayed))
+            #expect(store.truncationStrikes(for: key) == 1)
+        }
+    }
+
+    @Test("A probe-miss publication records its unverified reason")
+    func probeMissRecordsUnverifiedReason() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let key = try seed("plex:miss", status: .downloading, in: store)
+            _ = store.submitLifecycleEvent(.bodyAtWorking, for: key,
+                                           facts: DownloadRowFacts(route: .staticRange))
+            let source = try #require(store.truncationSourceKey(for: key))
+            guard case .accepted(let effects, _) = store.submitLifecycleEvent(
+                .finalizeOutcome(id: "miss", outcome: .unverified(reason: "probe_timeout"),
+                                 source: source), for: key) else {
+                Issue.record("Expected the probe miss to apply"); return
+            }
+            #expect(effects == [.publish(.unverified)])
+            let state = try #require(store.lifecycleState(for: key))
+            #expect(state.lifecycle == .finalizing, "lifecycle waits for the promotion commit")
+            #expect(state.history.unverifiedReason == .probeMiss("probe_timeout"))
+        }
+    }
+
     @Test("Retry Recovery admits an index that was unreadable at launch once it reads cleanly (B16)")
     func retryRecoveryReprobesARepairedIndex() throws {
         try withDirectory { directory in
