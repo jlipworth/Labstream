@@ -89,7 +89,8 @@ extension DownloadManager {
         var requests: [DownloadAdmissionRequest] = []
         for record in snapshot where isWaitingForAdmission(record)
             && admission.supervised[record.ratingKey] == nil {
-            guard let key = attemptKey(for: record), store.attemptAdmitsWork(key) else { continue }
+            guard let key = attemptKey(for: record), store.attemptAdmitsWork(key),
+                  admissionPersistenceProofs[key] == nil else { continue }
             waiting[record.ratingKey] = record
             requests.append(admission.request(for: record.ratingKey, lane: admissionLane(for: record)))
         }
@@ -153,7 +154,7 @@ extension DownloadManager {
             } else {
                 await retryWork?.value
             }
-            self.finishAdmittedStart(id, generation: generation,
+            await self.finishAdmittedStart(id, generation: generation,
                                      intent: firstStart ? .seasonPlanned : .retryRequested)
         }
     }
@@ -163,14 +164,15 @@ extension DownloadManager {
     private func runFirstStart(_ record: DownloadRecord, generation: UUID) async {
         guard let key = attemptKey(for: record),
               admission.isCurrent(record.ratingKey, generation: generation),
-              applyLifecycleEvent(.admissionGranted, for: key, context: "admission_granted"),
-              let granted = store.record(for: key) else { return }
+              await applyLifecycleEvent(.admissionGranted, for: key, context: "admission_granted"),
+              let granted = store.record(for: key),
+              admission.isCurrent(record.ratingKey, generation: generation), store.attemptAdmitsWork(key) else { return }
         await startPlannedRecord(granted)
     }
 
     /// Classify a supervised start after its async work finished (P4.4). Never rewrites a row the
     /// user paused, a deleting row, or a row a newer generation owns.
-    func finishAdmittedStart(_ id: String, generation: UUID, intent: DownloadAdmissionIntent) {
+    func finishAdmittedStart(_ id: String, generation: UUID, intent: DownloadAdmissionIntent) async {
         defer {
             refreshRecords()
             scheduleAdmissionPump()
@@ -193,13 +195,13 @@ extension DownloadManager {
             let deferred: Bool
             switch intent {
             case .seasonPlanned:
-                deferred = applyLifecycleEvent(.admissionDeferred(.seasonPlanned), for: key,
+                deferred = await applyLifecycleEvent(.admissionDeferred(.seasonPlanned), for: key,
                                                context: "admission_deferred")
             case .retryRequested:
-                deferred = applyLifecycleEvent(.backendUnavailable(.deferredResume), for: key,
-                                               context: "admission_deferred")
-                    && applyLifecycleEvent(.admissionRequested(.retryRequested), for: key,
-                                           context: "admission_deferred")
+                let parked = await applyLifecycleEvent(.backendUnavailable(.deferredResume), for: key,
+                                                       context: "admission_deferred")
+                deferred = parked ? await applyLifecycleEvent(.admissionRequested(.retryRequested), for: key,
+                                                               context: "admission_deferred") : false
             }
             // Back off even when the deferral write failed, so a failing volume is not retried
             // in a tight loop.
@@ -212,14 +214,14 @@ extension DownloadManager {
                 // The granted start did not move the row: end the request rather than re-grant it.
                 admission.clearRequest(id)
                 if record.admissionIntent != nil {
-                    _ = applyLifecycleEvent(.admissionWithdrawn, for: key, context: "admission_no_start")
+                    _ = await applyLifecycleEvent(.admissionWithdrawn, for: key, context: "admission_no_start")
                 }
                 return
             }
             // Parked by the start itself (backend not ready, session mismatch): retry with backoff.
-            if record.admissionIntent == .retryRequested
-                || applyLifecycleEvent(.admissionRequested(.retryRequested), for: key,
-                                       context: "admission_deferred") {
+            let requested = record.admissionIntent == .retryRequested ? true
+                : await applyLifecycleEvent(.admissionRequested(.retryRequested), for: key, context: "admission_deferred")
+            if requested {
                 noteAdmissionDeferral(id, reason: "parked")
             }
         case .failed?:
@@ -230,19 +232,19 @@ extension DownloadManager {
             let deferrals = admission.requestStates[id]?.deferrals ?? 0
             if reason == .server || reason == .network,
                deferrals < Self.maximumTransientAdmissionDeferrals,
-               applyLifecycleEvent(.admissionRequested(.retryRequested), for: key,
+               await applyLifecycleEvent(.admissionRequested(.retryRequested), for: key,
                                    context: "admission_transient_failure") {
                 noteAdmissionDeferral(id, reason: "transient_failure")
                 return
             }
             admission.clearRequest(id)
             if record.admissionIntent != nil {
-                _ = applyLifecycleEvent(.admissionWithdrawn, for: key, context: "admission_refused")
+                _ = await applyLifecycleEvent(.admissionWithdrawn, for: key, context: "admission_refused")
             }
         case nil:
             admission.clearRequest(id)
             if record.admissionIntent != nil {
-                _ = applyLifecycleEvent(.admissionWithdrawn, for: key, context: "admission_refused")
+                _ = await applyLifecycleEvent(.admissionWithdrawn, for: key, context: "admission_refused")
             }
         }
     }
@@ -278,17 +280,29 @@ extension DownloadManager {
     func requestAdmission(for record: DownloadRecord, origin: DownloadAdmissionOrigin,
                           exemptFromQueuePause: Bool = false) -> Bool {
         guard let key = attemptKey(for: record), store.attemptAdmitsWork(key) else { return false }
-        // A first start (planned, or paused while planned) re-requests its first start (B65);
-        // every other parked row waits for its retry.
         let intent: DownloadAdmissionIntent = record.lifecycle == .planned
             || record.admissionIntent == .seasonPlanned ? .seasonPlanned : .retryRequested
+        let proofID = UUID()
+        admissionPersistenceProofs[key] = proofID
+        let submission: DownloadStore.LifecycleEventSubmission
         if !isWaitingForAdmission(record) || record.admissionIntent != intent {
-            guard applyLifecycleEvent(.admissionRequested(intent), for: key,
-                                      context: "admission_requested") else { return false }
+            submission = store.submitLifecycleEvent(.admissionRequested(intent), for: key)
+        } else { submission = .accepted(effects: [], ticket: store.currentPersistenceTicket()) }
+        guard case .accepted(_, let ticket) = submission else {
+            admissionPersistenceProofs.removeValue(forKey: key)
+            return false
         }
-        if exemptFromQueuePause { markRowResumedDuringQueuePause(record.ratingKey) }
-        admission.noteRequest(record.ratingKey, origin: origin)
-        scheduleAdmissionPump()
+        let state = store.lifecycleState(for: key)
+        enqueueManagerOperation(ratingKey: key.ratingKey) { [weak self, store] in
+            let result = await store.resolve(DownloadStore.AttemptMutationSubmission.accepted(change: .applied, ticket: ticket), deadline: .after(30))
+            guard let self, result == .applied, store.attemptAdmitsWork(key),
+                  store.lifecycleState(for: key) == state,
+                  admissionPersistenceProofs[key] == proofID else { return }
+            admissionPersistenceProofs.removeValue(forKey: key)
+            if exemptFromQueuePause { markRowResumedDuringQueuePause(record.ratingKey) }
+            admission.noteRequest(record.ratingKey, origin: origin)
+            scheduleAdmissionPump()
+        }
         return true
     }
 
@@ -297,6 +311,8 @@ extension DownloadManager {
                           exemptFromQueuePause: Bool = false) -> Bool {
         guard startupRecoveryState == .ready, admission.recoveryComplete,
               seasonPlanCommitsInFlight == 0, admission.supervised[id] == nil else { return false }
+        if let record = store.record(for: id), let key = attemptKey(for: record),
+           admissionPersistenceProofs[key] != nil { return false }
         // A row that already holds a lane (a range train rebuilding its request, an adopted
         // remainder) continues under its own admission.
         if let current = store.record(for: id), occupiesAdmissionLane(current) { return true }
@@ -384,7 +400,7 @@ extension DownloadManager {
                                audioStreamIndex: audioStreamIndex,
                                mediaSourceIDOverride: mediaSourceIDOverride)
         }
-        finishAdmittedStart(id, generation: generation, intent: .seasonPlanned)
+        await finishAdmittedStart(id, generation: generation, intent: .seasonPlanned)
     }
 
     /// P4.5: a statically admitted start is about to create server-prep work (a Plex original
@@ -442,7 +458,7 @@ extension DownloadManager {
         case .unsupported:
             lastError[record.ratingKey] = .transferFailed(
                 "This episode has no original that plays offline.")
-            _ = applyLifecycleEvent(.transferFailed(.validation), for: key,
+            _ = await applyLifecycleEvent(.transferFailed(.validation), for: key,
                                     context: "admission_original_unsupported")
             return nil
         }

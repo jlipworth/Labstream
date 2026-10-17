@@ -692,7 +692,9 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
                 return Data([8])
             }
         }
-        await Task.yield()
+        await waitUntil {
+            await coordinator.waiterCountForTesting(origin: .init(rawValue: "origin"), requestKey: request) == 1
+        }
         let second = Task {
             try await coordinator.fetch(
                 origin: .init(rawValue: "origin"), owner: active, requestKey: request

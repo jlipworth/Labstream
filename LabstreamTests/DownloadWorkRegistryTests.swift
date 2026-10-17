@@ -229,7 +229,7 @@ struct DownloadWorkRegistryTests {
         let gate = AsyncWorkGate()
         let oldTail = Task { () -> Bool in
             await gate.wait()
-            guard DownloadManager.promoteSideAsset(
+            guard await DownloadManager.promoteSideAsset(
                 store: store, key: old, expectedSource: oldSource,
                 stagingURL: staging, stableURL: stable
             ) else { return false }

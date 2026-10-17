@@ -75,14 +75,36 @@ final class RevisionedPersistenceWriter<Snapshot: Sendable>: @unchecked Sendable
     }
 
     func flush(through targetRevision: UInt64, timeout: TimeInterval) async -> FlushResult {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async { [self] in
-                continuation.resume(returning: blockingFlush(
-                    through: targetRevision,
-                    timeout: timeout
-                ))
-            }
+        await flush(through: targetRevision, deadline: .after(timeout))
+    }
+
+    func flush(through targetRevision: UInt64, deadline: DownloadStoreDeadline) async -> FlushResult {
+        let startingOutcome = beginAsyncFlush(through: targetRevision)
+        while true {
+            if let result = asyncFlushOutcome(through: targetRevision, after: startingOutcome, deadline: deadline) { return result }
+            do { try await Task.sleep(for: .seconds(min(deadline.remaining, 0.01))) }
+            catch { return .timedOut(targetRevision: targetRevision, committedRevision: state.committedRevision) }
         }
+    }
+
+    private func beginAsyncFlush(through targetRevision: UInt64) -> UInt64 {
+        condition.lock(); defer { condition.unlock() }
+        let generation = outcomeGeneration
+        if committedRevision < targetRevision, !workerRunning, let dirty {
+            pending = dirty
+            startWorkerIfNeededLocked()
+        }
+        return generation
+    }
+
+    private func asyncFlushOutcome(through targetRevision: UInt64, after startingOutcome: UInt64,
+                                   deadline: DownloadStoreDeadline) -> FlushResult? {
+        condition.lock(); defer { condition.unlock() }
+        if committedRevision >= targetRevision { return .committed(revision: committedRevision) }
+        if outcomeGeneration > startingOutcome, let failure = lastFailure,
+           failure.revision >= targetRevision, !workerRunning { return .failed(failure) }
+        if deadline.remaining == 0 { return .timedOut(targetRevision: targetRevision, committedRevision: committedRevision) }
+        return nil
     }
 
     /// Worker-only compatibility for artifact execution and the P6.1 transitional adapters.

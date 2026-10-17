@@ -61,9 +61,8 @@ struct P6StoreResolutionTests {
         }
         try #require(await p6Signal(hold.entered))
         let returnedBeforeRelease = await p6Signal(completed, seconds: 0.3)
-        withKnownIssue("P6 red pin: P6.3 — exact \(kind.rawValue) deadline is ignored by the compatibility resolver") {
-            #expect(returnedBeforeRelease && timedOut.withLock { $0 })
-        }
+        #expect(returnedBeforeRelease && timedOut.withLock { $0 })
+
         hold.release.signal()
         await task.value
         // Late physical work still reaches its original boundary; timeout is not cancellation.
@@ -97,10 +96,9 @@ struct P6StoreResolutionTests {
         #expect(ticketA.intentID == ticketB.intentID)
         #expect(store.resolveArtifactSynchronously(ticketB) == .completed)
         let resultA = await store.resolveValidatedPromotion(a)
-        await withKnownIssue("P6 red pin: P6.3 — intent-keyed promotion result overwritten by successful retry") {
-            if case .renameFailed = resultA {} else { Issue.record("A inherited B's outcome: \(resultA)") }
-            #expect(await store.resolveValidatedPromotion(b) == .promoted(key, bytes: 3, status: .complete))
-        }
+        if case .renameFailed = resultA {} else { Issue.record("A inherited B's outcome: \(resultA)") }
+        #expect(await store.resolveValidatedPromotion(b) == .promoted(key, bytes: 3, status: .complete))
+
     }
 
     @Test("P6-pin-02 amendment: checkpoint retry B cannot overwrite delayed A")
@@ -124,10 +122,9 @@ struct P6StoreResolutionTests {
         #expect(ticketA.sequence != ticketB.sequence)
         #expect(store.resolveArtifactSynchronously(ticketB) == .completed)
         let resultA = await store.resolveStaticCheckpoint(a)
-        await withKnownIssue("P6 red pin: P6.3 — intent-keyed checkpoint result overwritten by successful retry") {
-            if case .persistenceFailed = resultA {} else { Issue.record("A inherited B's outcome: \(resultA)") }
-            #expect(await store.resolveStaticCheckpoint(b) == .unchanged(bytes: 3))
-        }
+        if case .persistenceFailed = resultA {} else { Issue.record("A inherited B's outcome: \(resultA)") }
+        #expect(await store.resolveStaticCheckpoint(b) == .unchanged(bytes: 3))
+
     }
 }
 #endif

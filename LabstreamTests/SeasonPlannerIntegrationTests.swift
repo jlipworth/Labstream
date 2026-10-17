@@ -316,7 +316,7 @@ struct SeasonPlannerIntegrationTests {
         h.manager.storageLimitBytesOverrideForTesting = 500
         let record = try #require(h.store.record(for: "episode-1"))
         let task = h.manager.retry(record: record, allowReplacingExistingActiveRow: false)
-        #expect(task == nil)
+        await task?.value
         #expect(isStorageLimit(h.manager.lastError["episode-1"]))
         #expect(h.store.resumeData(for: key) != nil, "the blob survives the refusal")
         #expect(h.store.record(for: "episode-1")?.status == .paused)

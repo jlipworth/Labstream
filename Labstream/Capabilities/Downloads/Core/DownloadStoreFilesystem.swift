@@ -7,7 +7,7 @@ struct DownloadStoreFilesystem: Sendable {
     enum Operation: String, Sendable { case stat, read, rename, remove, copy, enumerate }
     var before: @Sendable (Operation, URL) -> Void = { _, _ in }
     var rename: @Sendable (URL, URL) -> Int32 = { Darwin.rename($0.path, $1.path) }
-    var remove: @Sendable (URL, FileManager) throws -> Void = { try $1.removeItem(at: $0) }
+    var remove: (@Sendable (URL, FileManager) throws -> Void)? = nil
 
     func attributes(atPath path: String, using manager: FileManager) throws -> [FileAttributeKey: Any] {
         before(.stat, URL(fileURLWithPath: path))
@@ -21,9 +21,10 @@ struct DownloadStoreFilesystem: Sendable {
         before(.read, url)
         return try Data(contentsOf: url)
     }
-    func removeItem(at url: URL, using manager: FileManager) throws {
+    func removeItem(at url: URL, using manager: FileManager,
+                    fallback: @escaping @Sendable (URL, FileManager) throws -> Void = { try $1.removeItem(at: $0) }) throws {
         before(.remove, url)
-        try remove(url, manager)
+        try (remove ?? fallback)(url, manager)
     }
     func copyItem(at source: URL, to destination: URL, using manager: FileManager) throws {
         before(.copy, source)

@@ -38,18 +38,16 @@ struct P6StoreInventoryTests {
             total + (try Data(contentsOf: fixture.directory.appendingPathComponent(name))).count
         }
         let audit = store.storageAudit()
-        withKnownIssue("P6 red pin: P6.3 — audit omits hidden/infrastructure bytes and working intent authority") {
-            #expect(audit.directoryBytes == everyByte)
-            #expect(audit.referencedRelativePaths.contains(working.lastPathComponent))
-        }
+        #expect(audit.directoryBytes == everyByte)
+        #expect(audit.referencedRelativePaths.contains(working.lastPathComponent))
+
         #expect(audit.referencedRelativePaths.contains(held))
         #expect(audit.referencedRelativePaths.contains(resume))
         #expect(audit.referencedBytes + audit.unreferencedBytes == audit.directoryBytes)
         #expect(!audit.orphanCandidates.contains { ["foreign.bin", temporary, "index.json", held, resume].contains($0.relativePath) })
         #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.directory.path).sorted() == before)
-        withKnownIssue("P6 red pin: P6.3 — shared filename classifier does not recognize existing hidden staging grammar") {
-            #expect(OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename(held))
-        }
+        #expect(OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename(held))
+
         hold.release.signal()
         _ = await store.resolveValidatedPromotion(pending)
     }

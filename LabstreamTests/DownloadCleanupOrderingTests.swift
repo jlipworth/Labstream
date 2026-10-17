@@ -427,7 +427,9 @@ struct DownloadCleanupOrderingTests {
                 clientIdentifier: authority.rawValue), activeBackend: .emby),
             store: store, session: session, cleanupIntentJournal: journal,
             registerForBackgroundEvents: false)
-        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        manager.appModel.embyAccessToken = nil
+        manager.setQueuePausedForTesting(false)
+        #expect(await waitUntil { manager.startupRecoveryState == .ready && manager.admission.recoveryComplete })
 
         // Backend-switch edge: the same sweep that ran at launch.
         manager.teardownOrphanedEncodersOnLaunch()
@@ -444,7 +446,8 @@ struct DownloadCleanupOrderingTests {
         manager.retry(ratingKey: key.ratingKey)
 
         // P4: the row action goes through admission, which opens after startup reattach.
-        #expect(await waitUntil { store.record(for: key)?.status == .preparing })
+        #expect(await waitUntil { store.record(for: key)?.status == .preparing },
+                "lifecycle=\(String(describing: store.lifecycleState(for: key))) ready=\(manager.admission.recoveryComplete) proofs=\(manager.admissionPersistenceProofs.count) supervised=\(manager.admission.supervised.count)")
         #expect(store.metadata(for: key.ratingKey)?.embyConvertJobID == metadata.embyConvertJobID)
     }
 

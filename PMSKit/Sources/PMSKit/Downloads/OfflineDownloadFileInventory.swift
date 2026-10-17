@@ -21,6 +21,13 @@ public struct OfflineDownloadStorageAudit: Equatable, Sendable {
     public var unreferencedFiles: [OfflineDownloadFileSnapshot]
     public var orphanCandidates: [OfflineDownloadFileSnapshot]
 
+    /// Index and atomic-index temporary files are accounted for, but never media sweep candidates.
+    public var infrastructureFiles: [OfflineDownloadFileSnapshot] {
+        unreferencedFiles.filter { OfflineDownloadFileInventory.isInfrastructureFilename($0.relativePath) }
+    }
+
+    public var infrastructureBytes: Int { infrastructureFiles.reduce(0) { $0 + $1.byteCount } }
+
     public var unreferencedBytes: Int {
         unreferencedFiles.reduce(0) { $0 + $1.byteCount }
     }
@@ -63,8 +70,9 @@ public enum OfflineDownloadFileInventory {
     public static func audit(directoryFiles: some Sequence<OfflineDownloadFileSnapshot>,
                              referencedRelativePaths: Set<String>,
                              inFlightRelativePaths: Set<String> = []) -> OfflineDownloadStorageAudit {
+        var seen: Set<String> = []
         let files = directoryFiles
-            .filter { isOneLevelRelativePath($0.relativePath) && $0.relativePath != indexFilename }
+            .filter { isOneLevelRelativePath($0.relativePath) && seen.insert($0.relativePath).inserted }
             .sorted { lhs, rhs in lhs.relativePath < rhs.relativePath }
         let directoryBytes = files.reduce(0) { $0 + $1.byteCount }
         let referencedBytes = files.reduce(0) { total, file in
@@ -73,6 +81,7 @@ public enum OfflineDownloadFileInventory {
         let unreferenced = files.filter { !referencedRelativePaths.contains($0.relativePath) }
         let candidates = unreferenced.filter {
             !inFlightRelativePaths.contains($0.relativePath)
+                && !isInfrastructureFilename($0.relativePath)
                 && isLabstreamOwnedDownloadFilename($0.relativePath)
         }
         return OfflineDownloadStorageAudit(referencedRelativePaths: referencedRelativePaths,
@@ -82,8 +91,26 @@ public enum OfflineDownloadFileInventory {
                                            orphanCandidates: candidates)
     }
 
+    public static func isInfrastructureFilename(_ path: String) -> Bool {
+        if path == indexFilename || path.hasPrefix(".index.json.commit-") { return true }
+        guard path.hasPrefix("."), let marker = path.range(of: ".commit-", options: .backwards),
+              UUID(uuidString: String(path[marker.upperBound...])) != nil else { return false }
+        return isGenerationResumeFilename(String(path[path.index(after: path.startIndex)..<marker.lowerBound]))
+    }
+
     public static func isLabstreamOwnedDownloadFilename(_ relativePath: String) -> Bool {
         guard isOneLevelRelativePath(relativePath), relativePath != indexFilename else { return false }
+        let stagingPrefix = ".attempt-stage-v1-"
+        if relativePath.hasPrefix(stagingPrefix), relativePath.hasSuffix(".stage") {
+            let digest = relativePath.dropFirst(stagingPrefix.count).dropLast(".stage".count)
+            return digest.count == 64 && digest.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) }
+        }
+        if isGenerationResumeFilename(relativePath) { return true }
+        if let marker = relativePath.range(of: ".checkpoint-", options: .backwards),
+           relativePath.hasPrefix("..attempt-stage-v1-"),
+           UUID(uuidString: String(relativePath[marker.upperBound...])) != nil {
+            return isLabstreamOwnedDownloadFilename(String(relativePath[relativePath.index(after: relativePath.startIndex)..<marker.lowerBound]))
+        }
         let mediaExtensions = ["avi", "m4v", "mkv", "mov", "mp4", "ts", "webm"]
         let subtitleExtensions = ["srt", "vtt"]
         let lowercased = relativePath.lowercased()
@@ -113,6 +140,15 @@ public enum OfflineDownloadFileInventory {
             return false
         }
         return safePrefix(beforeFirstDotIn: relativePath)
+    }
+
+    private static func isGenerationResumeFilename(_ path: String) -> Bool {
+        guard safePrefix(beforeFirstDotIn: path), let marker = path.range(of: ".resume-") else { return false }
+        let tail = path[marker.upperBound...]
+        guard tail.count == 24 + 1 + 36 else { return false }
+        let digest = tail.prefix(24)
+        return digest.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) }
+            && tail.dropFirst(24).first == "-" && UUID(uuidString: String(tail.suffix(36))) != nil
     }
 
     private static func sideAssetRelativePaths(metadata: OfflineMetadata) -> [String] {

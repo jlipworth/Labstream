@@ -49,7 +49,7 @@ struct P6PathLeaseTests {
             competitorFinished.signal()
         }
         let competedWhileAppendHeld = await p6Signal(competitorFinished, seconds: 0.3)
-        withKnownIssue("P6 red pin: P6.3/P6.4 — \(reconcile ? "reconcile" : "Retry clone") ignores the physically active append") {
+        withKnownIssue("P6 red pin: P6.4 integration — append has not leased its path before \(reconcile ? "reconcile" : "Retry")") {
             #expect(FileManager.default.fileExists(atPath: working.path))
             if !reconcile { #expect(store.record(for: key.ratingKey)?.attemptID == key.attemptID) }
         }
@@ -60,10 +60,41 @@ struct P6PathLeaseTests {
             let successorKey = DownloadAttemptKey(ratingKey: successor.ratingKey, attemptID: successor.attemptID!)
             let copied = try #require(store.attemptWorkingFileURL(for: successorKey))
             let bytes = try Data(contentsOf: copied)
-            withKnownIssue("P6 red pin: P6.3/P6.4 — Retry clones before the held append syscall completes") {
-                #expect(bytes == Data([1, 2, 3, 4]))
+            withKnownIssue("P6 red pin: P6.4 integration — append has not leased its path before Retry copy") {
+        #expect(bytes == Data([1, 2, 3, 4]))
             }
         }
     }
+    // Lead-owned half: exercise the store with an actual lease, independent of whether the
+    // delegate's session append integration has landed in this checkout yet.
+    @Test("P6 lead: physical path lease excludes Retry and reconcile", arguments: [false, true])
+    func storePathLeaseExclusion(reconcile: Bool) throws {
+        let fixture = try P6Fixture()
+        let store = fixture.store()
+        let key = try fixture.seed(store, mode: reconcile ? .liveForwardOnly : .staticByteRange)
+        let working = try fixture.working(store, key)
+        guard case .acquired(let lease) = store.tryAcquirePathLease(for: key,
+            relativePaths: [working.lastPathComponent], purpose: .append) else {
+            Issue.record("writer lease rejected"); return
+        }
+        defer { store.releasePathLease(lease) }
+        if reconcile {
+            _ = store.submitLifecycleEvent(.pause(.user), for: key)
+            store.reconcile(liveRatingKeys: [], snapshotRatingKeys: [key.ratingKey])
+            #expect(try Data(contentsOf: working) == Data([1, 2, 3]))
+        } else {
+            let successor = fixture.record("b", status: .failed)
+            let result = store.createAttemptOwnedRecord(successor, attemptID: successor.attemptID!, replacing: key.attemptID)
+            guard case .rejectedOwnership = result else { Issue.record("Retry bypassed live writer"); return }
+            #expect(store.record(for: key) != nil)
+            try Data([1, 2, 3, 4]).write(to: working)
+            store.releasePathLease(lease)
+            let next = DownloadAttemptKey(ratingKey: successor.ratingKey, attemptID: successor.attemptID!)
+            #expect(store.createAttemptOwnedRecord(successor, attemptID: next.attemptID, replacing: key.attemptID) == .committed(next))
+            let copied = try #require(store.attemptWorkingFileURL(for: next))
+            #expect(try Data(contentsOf: copied) == Data([1, 2, 3, 4]))
+        }
+    }
+
 }
 #endif

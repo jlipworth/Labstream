@@ -5,14 +5,13 @@ import Synchronization
 import Testing
 @testable import Labstream
 
-@Suite("P6 lead manager pins", .serialized,
-       .disabled("P6 red pin: P6.2 — held MainActor evidence runs in isolation"))
+@Suite("P6 lead manager pins", .serialized)
 struct P6ManagerPersistenceTests {
     @Test("P6-pin-01 manager heartbeat survives a held index commit", arguments: [false, true], [false, true])
     func commitHeartbeat(fails: Bool, replace: Bool) async throws {
         let fixture = try P6Fixture()
         let initial = fixture.store()
-        let key = try fixture.seed(initial)
+        let key = try fixture.seed(initial, status: .paused)
         let hold = P6Hold()
         let store = fixture.store(index: .init { data, url in
             hold.hit()
@@ -26,9 +25,14 @@ struct P6ManagerPersistenceTests {
                                     registerForBackgroundEvents: false), session)
         }
         defer { hold.release.signal(); pair.1.invalidateInjectedSessionForTesting() }
+        let readyDeadline = DownloadStoreDeadline.after(5)
+        while !(await MainActor.run { pair.0.admission.recoveryComplete }), readyDeadline.remaining > 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(await MainActor.run { pair.0.admission.recoveryComplete })
         hold.arm()
         let action = Task { @MainActor in
-            pair.0.applyLifecycleEvent(.pause(.user), for: key, context: "p6_pin")
+            await pair.0.applyLifecycleEvent(.pause(.user), for: key, context: "p6_pin")
         }
         try #require(await p6Signal(hold.entered))
         var replacementSubmission: DownloadStore.SeedSubmission?
@@ -46,11 +50,10 @@ struct P6ManagerPersistenceTests {
         let heartbeat = DispatchSemaphore(value: 0)
         Task { @MainActor in heartbeat.signal() }
         let acknowledged = await p6Signal(heartbeat)
-        withKnownIssue("P6 red pin: P6.2 — MainActor waits synchronously for manager lifecycle persistence") {
-            #expect(acknowledged)
-        }
+        #expect(acknowledged)
+
         hold.release.signal()
-        #expect(await action.value == !fails)
+        #expect(await action.value == (!fails && !replace))
         if let replacementSubmission {
             _ = await store.resolve(replacementSubmission, deadline: .after(2))
             let current = try #require(store.record(for: key.ratingKey))
@@ -65,7 +68,7 @@ struct P6ManagerPersistenceTests {
     func lifecycleStatHeartbeat() async throws {
         let fixture = try P6Fixture()
         let initial = fixture.store()
-        let key = try fixture.seed(initial)
+        let key = try fixture.seed(initial, status: .paused)
         _ = try fixture.working(initial, key)
         let hold = P6Hold()
         let store = fixture.store(filesystem: .init(before: { operation, _ in
@@ -77,6 +80,11 @@ struct P6ManagerPersistenceTests {
                                     store: store, session: session, registerForBackgroundEvents: false), session)
         }
         defer { hold.release.signal(); pair.1.invalidateInjectedSessionForTesting() }
+        let readyDeadline = DownloadStoreDeadline.after(5)
+        while !(await MainActor.run { pair.0.admission.recoveryComplete }), readyDeadline.remaining > 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(await MainActor.run { pair.0.admission.recoveryComplete })
         hold.arm()
         let observationDone = DispatchSemaphore(value: 0)
         Thread.detachNewThread { _ = store.lifecycleFacts(for: key); observationDone.signal() }
@@ -84,18 +92,62 @@ struct P6ManagerPersistenceTests {
         let actionStarted = DispatchSemaphore(value: 0)
         let action = Task { @MainActor in
             actionStarted.signal()
-            return pair.0.applyLifecycleEvent(.pause(.user), for: key, context: "p6_stat")
+            return await pair.0.applyLifecycleEvent(.pause(.user), for: key, context: "p6_stat")
         }
         try #require(await p6Signal(actionStarted))
         let heartbeat = DispatchSemaphore(value: 0)
         Task { @MainActor in heartbeat.signal() }
         let acknowledged = await p6Signal(heartbeat)
-        withKnownIssue("P6 red pin: P6.2/P6.3 — submitLifecycleEvent computes disk facts synchronously") {
-            #expect(acknowledged)
-        }
+        #expect(acknowledged)
+
         hold.release.signal()
         #expect(await action.value)
         try #require(await p6Signal(observationDone))
     }
+    @Test("P6-pin-01 admission never grants an unproven request or revives a paused one", arguments: [false, true])
+    func admissionCommitFence(fails: Bool) async throws {
+        let fixture = try P6Fixture()
+        let initial = fixture.store()
+        let key = try fixture.seed(initial, status: .paused)
+        let hold = P6Hold()
+        let store = fixture.store(index: .init { data, url in
+            hold.hit()
+            if fails { throw CocoaError(.fileWriteUnknown) }
+            try DownloadIndexFileCommitter().commit(data, to: url)
+        })
+        let pair = await MainActor.run {
+            let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            let manager = DownloadManager(appModel: AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "p6-admission")),
+                store: store, session: session, registerForBackgroundEvents: false)
+            manager.setQueuePausedForTesting(false)
+            return (manager, session)
+        }
+        defer { hold.release.signal(); pair.1.invalidateInjectedSessionForTesting() }
+        let deadline = DownloadStoreDeadline.after(5)
+        while !(await MainActor.run { pair.0.admission.recoveryComplete }), deadline.remaining > 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(await MainActor.run { pair.0.admission.recoveryComplete })
+        hold.arm()
+        let record = try #require(store.record(for: key))
+        #expect(await MainActor.run { pair.0.requestAdmission(for: record, origin: .user) })
+        try #require(await p6Signal(hold.entered))
+        await MainActor.run {
+            pair.0.pumpAdmission()
+            #expect(pair.0.admission.supervised[key.ratingKey] == nil)
+            #expect(!pair.1.isTrackingTransfer(ratingKey: key.ratingKey))
+            if !fails {
+                #expect(pair.0.pause(.init(ratingKey: key.ratingKey, attemptID: key.attemptID)))
+            }
+        }
+        hold.release.signal()
+        await pair.0.drainManagerOperationsForTesting()
+        await MainActor.run {
+            pair.0.pumpAdmission()
+            #expect(pair.0.admission.supervised[key.ratingKey] == nil)
+            #expect(!pair.1.isTrackingTransfer(ratingKey: key.ratingKey))
+        }
+    }
+
 }
 #endif

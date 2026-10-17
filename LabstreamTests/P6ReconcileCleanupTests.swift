@@ -18,9 +18,8 @@ struct P6ReconcileCleanupTests {
         store.reconcile(liveRatingKeys: [], snapshotRatingKeys: [key.ratingKey])
         #expect(!FileManager.default.fileExists(atPath: blob.path))
         let reloaded = fixture.store()
-        withKnownIssue("P6 red pin: P6.3 — reconcile unlinks blob but leaves durable resume reference") {
-            #expect(reloaded.record(for: key)?.metadata?.resumeDataRelativePath == nil)
-        }
+        #expect(reloaded.record(for: key)?.metadata?.resumeDataRelativePath == nil)
+
     }
 
     @Test("P6-pin-05 cleanup failure conserves authority and cleanup does not lock unrelated lookups")
@@ -59,9 +58,8 @@ struct P6ReconcileCleanupTests {
         #expect(store.createAttemptOwnedRecord(second, attemptID: second.attemptID!)
                 == .committed(.init(ratingKey: second.ratingKey, attemptID: second.attemptID!)))
         store.reconcile(liveRatingKeys: [], snapshotRatingKeys: [key.ratingKey])
-        withKnownIssue("P6 red pin: P6.3 — reconcile cleanup lacks complete cross-row path protection") {
-            #expect(FileManager.default.fileExists(atPath: blob.path))
-        }
+        #expect(FileManager.default.fileExists(atPath: blob.path))
+
     }
 }
 #endif
