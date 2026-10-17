@@ -78,6 +78,49 @@ struct DownloadLifecycleStoreTests {
             for: .failed, current: .planned, admissionPending: false) == .failed)
     }
 
+    @Test("Progress records bytes but never promotes a paused or failed row (B09)")
+    func progressDoesNotPromotePausedRows() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let paused = try seed("plex:paused", status: .paused, in: store)
+            _ = store.submitProgress(for: paused, bytes: 500, progress: 0.5)
+            #expect(store.record(for: paused)?.status == .paused)
+            #expect(store.record(for: paused)?.bytes == 500)
+
+            let queued = try seed("plex:queued", status: .queued, in: store)
+            _ = store.submitProgress(for: queued, bytes: 10, progress: 0.1)
+            #expect(store.lifecycleState(for: queued)?.lifecycle == .transferring)
+            #expect(store.record(for: queued)?.status == .downloading)
+        }
+    }
+
+    @Test("Lifecycle events persist history and reject illegal transitions without writing")
+    func lifecycleEventsPersistHistory() async throws {
+        try await withAsyncDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let key = try seed("plex:event", status: .downloading, in: store)
+            guard case .accepted(_, let ticket?) = store.submitLifecycleEvent(
+                .transferInterrupted(.cancelledBySystem), for: key,
+                facts: DownloadRowFacts(route: .staticRange)) else {
+                Issue.record("Expected the interruption to apply"); return
+            }
+            guard case .committed = await store.flushPersistence(through: ticket, timeout: 5) else {
+                Issue.record("Expected the revision to commit"); return
+            }
+            #expect(store.lifecycleState(for: key)?.history.pauseCause == .systemInterrupted)
+            #expect(store.submitLifecycleEvent(
+                .transferProgress, for: key, facts: DownloadRowFacts(route: .staticRange))
+                == .rejected(.illegal))
+            let reloaded = DownloadStore(baseDirectory: directory)
+            #expect(reloaded.lifecycleState(for: key)?.history.pauseCause == .systemInterrupted)
+            let stale = DownloadAttemptKey(ratingKey: key.ratingKey,
+                                           attemptID: DownloadAttemptID(uuid: UUID()))
+            #expect(store.submitLifecycleEvent(
+                .pause(.user), for: stale, facts: DownloadRowFacts(route: .staticRange))
+                == .staleOrMissing)
+        }
+    }
+
     // MARK: - Fixtures
 
     private func seed(_ ratingKey: String, status: DownloadStatus,
@@ -110,6 +153,15 @@ struct DownloadLifecycleStoreTests {
         for index in rows.indices { edit(&rows[index]) }
         object["rows"] = rows
         try JSONSerialization.data(withJSONObject: object).write(to: url)
+    }
+
+    private func withAsyncDirectory(_ body: (URL) async throws -> Void) async throws {
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lifecycle-store-\(UUID().uuidString)", isDirectory: true)
+        let directory = parent.appendingPathComponent("Downloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        try await body(directory)
     }
 
     private func withDirectory(_ body: (URL) throws -> Void) throws {
