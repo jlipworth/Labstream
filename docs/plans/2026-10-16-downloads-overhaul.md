@@ -2779,6 +2779,17 @@ These amendments bind the plan above. Where they conflict with it, they win.
 
 ### P6.2/P6.3 implementation journal (2026-10-17)
 
+- **Round-1 store/manager rework:** production startup now runs the admissible load/repair
+  tail on a worker and awaits its bounded admission and persistence proof before activation.
+  D1, v4/v5 compatibility and whole-index duplicate blocking remain unchanged. Emby recovery
+  captures every candidate's action generation before suspension and rechecks exact ownership,
+  lifecycle and source/recovery metadata before mutation or poller registration; the other async
+  manager loops retain their per-row generation, source or durable-cleanup authority checks.
+  The append exclusion pin now acknowledges actual competitor lease admission and joins both
+  workers with bounded cleanup. Red controls reproduced the blocked initialization heartbeat,
+  B's revival and poller registration after Pause (with A's prep slot freed while its commit is
+  held), and bounded acknowledgement failure when the lease hook is removed.
+
 Lead lane, based on the frozen P6.1 handoff. Manager lifecycle/seed/metadata/PlaySession,
 playback-position and recovery callers now submit work and await bounded proof. Synchronous
 Pause and Delete still install their halt/admission fences immediately; same-row continuations

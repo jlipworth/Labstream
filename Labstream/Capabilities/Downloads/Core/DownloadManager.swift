@@ -503,9 +503,9 @@ public final class DownloadManager {
         let downloadStoreSpan = PerformanceInstrumentation.begin(.runtimeDownloadStore,
                                                                   backend: "App")
         #endif
-        let store = injectedStore ?? DownloadStore()
-        // Commit typed row ownership before the background session can be constructed/activated.
-        // A failure remains explicit and leaves session admission dormant.
+        let store = injectedStore ?? DownloadStore(startupOnWorker: true)
+        // The production store runs its admissible load/repair tail on a worker. Install the
+        // dormant session and its callbacks now; activation awaits that tail's durability proof.
         let startupAdmission = store.startupIndexAdmission()
         #if PERFORMANCE_AUDIT
         downloadStoreSpan.end(fields: ["default_store": injectedStore == nil ? 1 : 0])
@@ -726,7 +726,40 @@ public final class DownloadManager {
         if registerForBackgroundEvents {
             backgroundCompletionRegistry.register(self.session)
         }
-        continueStartupRecovery(with: startupAdmission, deferCurrentActivation: true)
+        if let submission = store.initialStartupSubmission {
+            startupRecoveryInFlight = true
+            Task { @MainActor [weak self, store] in
+                let deadline = DownloadStoreDeadline.after(30)
+                let result = await store.resolve(submission, deadline: deadline)
+                guard let self else { return }
+                startupRecoveryInFlight = false
+                switch result {
+                case .observed(let admission):
+                    guard await proveStartupPersistence(admission, deadline: deadline) else { return }
+                    continueStartupRecovery(with: admission)
+                case .timedOut:
+                    blockDownloadStartup(affectedRatingKeys: store.allRatingKeys,
+                        message: "Downloads recovery timed out. Try recovery again.", reason: "initial_load_timed_out")
+                }
+            }
+        } else {
+            continueStartupRecovery(with: startupAdmission, deferCurrentActivation: true)
+        }
+    }
+
+    /// The worker's observation alone cannot authorize transport after a failed repair commit.
+    private func proveStartupPersistence(_ admission: DownloadStore.StartupIndexAdmission,
+                                         deadline: DownloadStoreDeadline) async -> Bool {
+        guard admission == .current else { return true }
+        startupRecoveryInFlight = true
+        let proof = await store.flushPersistence(through: store.currentPersistenceTicket(), deadline: deadline)
+        startupRecoveryInFlight = false
+        guard case .committed = proof else {
+            blockDownloadStartup(affectedRatingKeys: store.allRatingKeys,
+                message: "Download recovery could not be saved. Try recovery again.", reason: "startup_repair_not_durable")
+            return false
+        }
+        return true
     }
 
     /// Explicit retry hook for a prior persistence/activation failure. It is intentionally not an
@@ -747,11 +780,14 @@ public final class DownloadManager {
         startupRecoveryInFlight = true
         let submission = store.submitReprobeBlockedIndex()
         Task { @MainActor [weak self, store] in
-            let result = await store.resolve(submission, deadline: .after(30))
+            let deadline = DownloadStoreDeadline.after(30)
+            let result = await store.resolve(submission, deadline: deadline)
             guard let self, startupReprobeGeneration == generation else { return }
             startupRecoveryInFlight = false
             switch result {
-            case .observed(let admission): continueStartupRecovery(with: admission)
+            case .observed(let admission):
+                guard await proveStartupPersistence(admission, deadline: deadline) else { return }
+                continueStartupRecovery(with: admission)
             case .timedOut:
                 blockDownloadStartup(affectedRatingKeys: store.allRatingKeys, message: "Downloads recovery timed out. Try recovery again.", reason: "reprobe_timed_out")
             }
@@ -3187,7 +3223,7 @@ public final class DownloadManager {
         }
     }
 
-    private func resumePendingEmbyConvertDownloadsAsync() async {
+    func resumePendingEmbyConvertDownloadsAsync() async {
         guard startupRecoveryState == .ready else { return }
         // Use the store's current rows, not the published `records` snapshot. Manual Resume paths
         // mutate the store and then call this immediately; reading stale published rows can skip the
@@ -3204,6 +3240,11 @@ public final class DownloadManager {
                 // P4: a failed row waiting for its retry is admitted by the coordinator, never
                 // reattached here past the caps.
                 && !isWaitingForAdmission(record)
+        }
+        // Capture all action fences before the first suspension: a later candidate may be paused
+        // while an earlier candidate's repair commit is still pending.
+        let candidates = embyPreparing.sorted { $0.ratingKey < $1.ratingKey }.map {
+            ($0, managerActionGenerations[$0.ratingKey, default: 0])
         }
         // P2: legacy tombstones are migrated into the cleanup journal at launch and executed by
         // the cleanup runner; this sweep only resumes Convert rows.
@@ -3223,7 +3264,8 @@ public final class DownloadManager {
         let server = session.baseURL
         let token = session.token
         let identity = appModel.identity.emby
-        for record in embyPreparing {
+        for (snapshot, fence) in candidates {
+            guard let record = currentEmbyRecoveryCandidate(snapshot, fence: fence) else { continue }
             // P4: as for Plex, a late attach after startup recovery needs prep-lane room (Convert
             // polling itself continues during Pause All, emby-33).
             if admission.recoveryComplete,
@@ -3293,7 +3335,8 @@ public final class DownloadManager {
                 // A prior bounded/list attempt may have parked this row failed while preserving
                 // ownership evidence. Relaunch/retry re-enters recovery, never a blind new POST.
                 guard await applyLifecycleEvent(
-                    .prepReattached, for: key, context: "emby_convert_recover") else { continue }
+                    .prepReattached, for: key, context: "emby_convert_recover"),
+                      currentEmbyRecoveryCandidate(snapshot, fence: fence, reattached: true) != nil else { continue }
                 activeJobs.insert(ratingKey)
                 inFlightAttempts.acquire(key)
                 guard let attemptID = beginEmbyConvertPoller(for: key) else { continue }
@@ -3325,7 +3368,8 @@ public final class DownloadManager {
                     // Durable proof POST was never handed to URLSession: safe to discard this
                     // baseline so a user retry may create a fresh job.
                     guard await clearEmbyConvertRecoveryIfExact(
-                        for: key, expected: metadata) else { continue }
+                        for: key, expected: metadata),
+                          managerContinuationIsCurrent(key, fence: fence) else { continue }
                 }
                 let failureFence = managerActionGenerations[key.ratingKey, default: 0]
                 _ = await applyServerPrepFailure(.internalError, for: key, context: "emby_convert_identity")
@@ -3358,7 +3402,8 @@ public final class DownloadManager {
                 }
                 cleanupRunner?.kick(reason: "convert_recovery_expired")
                 guard await clearEmbyConvertRecoveryIfExact(
-                    for: key, expected: metadata) else { continue }
+                    for: key, expected: metadata),
+                      managerContinuationIsCurrent(key, fence: fence) else { continue }
                 lastError[record.ratingKey] = .transferFailed(
                     "Server conversion could not be recovered; retry to create a new conversion.")
                 let failureFence = managerActionGenerations[key.ratingKey, default: 0]
@@ -3369,6 +3414,18 @@ public final class DownloadManager {
             }
         }
         refreshRecords()
+    }
+
+    /// Re-read exact ownership, lifecycle, source/recovery identity and the user-action fence.
+    /// A scanner snapshot is never authority to revive a row after a different candidate awaited.
+    private func currentEmbyRecoveryCandidate(_ snapshot: DownloadRecord, fence: UInt64,
+                                               reattached: Bool = false) -> DownloadRecord? {
+        guard let key = attemptKey(for: snapshot), managerContinuationIsCurrent(key, fence: fence),
+              let current = store.record(for: key), !isDeletionPending(current),
+              current.metadata == snapshot.metadata,
+              current.status == (reattached ? .preparing : snapshot.status),
+              !activeJobs.contains(key.ratingKey), !isWaitingForAdmission(current) else { return nil }
+        return current
     }
 
     /// #169: auto-resume static byte-range downloads that a hard app kill interrupted mid-transfer.
