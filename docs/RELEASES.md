@@ -110,21 +110,11 @@ is not evidence that the retention/storage uncertainties above were resolved.
 [#326](https://github.com/jlipworth/Labstream/issues/326) stayed open until the exact signed
 build 2 archive reports were checked on 2026-10-14.
 
-Local integration validation passed 1,712 PMSKit Swift Testing cases plus 121 XCTest
-cases, 731 iPhone-hosted cases, 418 tvOS-hosted cases, semantic iPhone/iPad/TV fixtures,
-and a passive visionOS fixture. The isolated Mac fixture passed home/detail navigation;
-the single-worker full Mac suite passed 747 cases and a focused 20-case integration set
-passed three repetitions. Earlier default-parallel runs exposed season-metadata,
-artwork-admission and authorization-fixture deadline failures. The follow-up below removed
-unnecessary filesystem diagnostics and isolated fixture scheduling/storage assumptions;
-a fresh default-parallel Mac run and an independent repeat each passed all 747 tests across
-five repetitions. Earlier failing evidence is retained; the passing single-worker result was
-not used as a substitute for parallel validation. No new physical-device or source-matched
-live-backend acceptance is implied by this integration.
-
 [#259](https://github.com/jlipworth/Labstream/issues/259), disconnected cold-launch access to
-completed downloads, is **deferred by user decision**. Keep the issue open; deferral is not
-hardware acceptance. Do not advertise reliable offline cold launch as verified.
+completed downloads, was **deferred by user decision** for the 1.7.2 (build 2) candidate. The
+typed session-restore offline launch gate (PR #355) is now on `main` for the next candidate, but
+physical-device acceptance is open: keep the issue open and do not advertise reliable offline
+cold launch as verified.
 
 The [licensed-media capture plan](https://github.com/jlipworth/Labstream/blob/main/docs/plans/2026-09-15-store-demo-capture.md)
 retains final screenshots, storefront attribution, age suitability and clean-install reviewer
@@ -146,11 +136,13 @@ The release owner explicitly deferred these issues for this candidate on 2026-09
 - [#322](https://github.com/jlipworth/Labstream/issues/322): Emby P8 deep-seek
   investigation and remaining controlled validation;
 - [#258](https://github.com/jlipworth/Labstream/issues/258): iOS player-chrome
-  size/position changes and clipping.
+  size/position changes and clipping. The stable safe-area envelope (PR #356) is now on `main`
+  for the next candidate; physical iPhone confirmation remains open (see
+  [MOBILE-IOS.md](MOBILE-IOS.md)).
 
 These are accepted deferrals, not fixes or passing acceptance results. Keep the issues
-open and preserve their evidence. The previous #259 offline-cold-launch deferral also
-remains in effect. [#331](https://github.com/jlipworth/Labstream/issues/331), Stats
+open and preserve their evidence. The #259 offline-cold-launch deferral above applies to this
+candidate too. [#331](https://github.com/jlipworth/Labstream/issues/331), Stats
 readability redesign, is low-priority follow-up and not a release blocker.
 
 Candidate preparation does not close the physical-device, privacy/disclosure,
@@ -159,36 +151,13 @@ TestFlight upload and App Review submission require separate authorization.
 
 ### Local correction validation
 
-The parallel-stress follow-up separates cheap download counters from filesystem diagnostics.
-Health collection is now gated before work by logging enablement and its existing reporting
-cadence, and temporary-file bytes are collected only for an eligible active snapshot. Reattach
-also skips diagnostic-only enumeration when logging is off; cleanup/recovery authority is
-unchanged. Eligible enabled diagnostics still inspect the filesystem synchronously. Tests that
-only assert counters omit that inspection, startup fixtures own their parent directory and its
-sibling cleanup authority, and controlled home-rail completions wait for their corresponding
-publication before asserting a particular intermediate order. No production timeout, test
-assertion, or parallel-execution setting is relaxed by these corrections. The updated hermetic
-PMSKit run passed 1,713 Swift Testing cases plus 121 XCTest cases.
-
-The continuation adds acknowledged Emby stop-before-reopen ordering and preserves failed
-cleanup authority for explicit Retry, together with relative-seek target handling and opt-in
-bounded HLS startup diagnostics. It does not prove server worker exit. See the
-[ordering investigation](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/audits/2026-10-04-emby-reopen-session-overlap.md)
-for evidence limits.
-
-After test-only event synchronization and manual-clock fixes, a clean-build default-parallel
-Mac suite passed all three repetitions: 737 distinct tests (781 parameterized cases per
-repetition). Earlier failing runs remain in local evidence rather than being discarded.
-Hermetic PMSKit, repository hygiene, iPhone/tvOS hosted tests, iPhone/iPad/tvOS semantic
-fixtures, and the passive visionOS fixture also passed in the continuation. Simulator
-evidence used installed beta runtimes with stable Xcode and does not certify stable-runtime
-or physical acceptance.
-
-Per-backend Mac visual smokes and a user-reported in-place iPhone Emby smoke are partial
-acceptance only. Exact source-matched cross-backend parity, audible output, subtitles,
-next-episode behavior, broader source coverage, physical iPad/Vision Pro/Apple TV and
-TestFlight acceptance remain open. No physical Apple TV was available.
-
+Hermetic PMSKit, repository hygiene, iPhone/tvOS hosted tests, the Mac suite under default
+parallelism, iPhone/iPad/tvOS semantic fixtures and the passive visionOS fixture passed for the
+candidate on installed beta simulator runtimes. The Emby stop-before-reopen ordering work does not
+prove server worker exit; see the
+[ordering investigation](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/audits/2026-10-04-emby-reopen-session-overlap.md).
+Exact source-matched cross-backend parity, audible output, subtitles, next-episode behavior,
+broader source coverage, physical iPad/Vision Pro/Apple TV and TestFlight acceptance remain open.
 
 ## Coordinated publication sequence
 
