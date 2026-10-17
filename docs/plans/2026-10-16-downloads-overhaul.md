@@ -688,6 +688,42 @@ Acceptance is a phase's pins and inventory rows staying green.
     legacy attempt ID count twice.
   - **Test:** a failed save, the fallback merge, and shared legacy IDs.
   - **Noted, still open:** the crash test does not suspend artifact execution at the barrier.
+- **2026-10-17 — P4 plan co-review, round 1: rework (3 blockers, 13 majors).**
+  - **Blockers:**
+    - granting before `retry` broke the parked-only retry modes;
+    - permit ownership across attempt replacement was unspecified;
+    - a registered Emby chain would cancel itself at handoff.
+  - **Majors:**
+    - the relaunch barrier;
+    - the season commit barrier and rollback;
+    - deferral busy-loops and stranded rows;
+    - lane changes before a create;
+    - the queue-pause exemption and emby-33;
+    - stale pause forwarding (pu-24);
+    - legacy-flag precedence over paused rows;
+    - `userRequested` breaking P3b decoding;
+    - Plex `.preparing` ripple effects;
+    - admission release vs resource teardown;
+    - the typed queue lookup;
+    - insufficient pins;
+    - commit boundaries.
+  - **Minor:** one code-map claim was wrong; handed-off Plex rows already count as static.
+  - **Response, revision 2:**
+    - occupancy is observed from persisted lifecycle, plus reservations keyed by rating key and
+      generation (no permit table);
+    - grants run the existing start path without `admissionGranted`;
+    - typed start outcomes with backoff;
+    - recovery and season barriers;
+    - `mayEnter` before reroute creates;
+    - a row-scoped pause exemption;
+    - exact-attempt pause kept;
+    - existing intents only;
+    - Plex `serverPrep` dropped;
+    - typed queue lookup and a separate persisted 3 min grace;
+    - one non-cancelling Emby handoff with its own poller token;
+    - 25 pins;
+    - activation in a single commit.
+  - **Shape:** P4 ships as one PR, per the maintainer's pace decision.
 
 ## P2 detailed plan — cleanup foundation
 
@@ -1525,294 +1561,317 @@ build ships.
 
 ## P4 detailed plan — admission coordinator and server-prep runners
 
-**Status:** revision 1 (2026-10-17), before the co-review. Built on P3b (`downloads/p3b-v5`).
+**Status:** revision 2 (2026-10-17), after the first co-review. That review returned **rework**,
+with 3 blockers and 13 majors; the findings and responses are in the progress journal.
 
-P4 ships as two PRs, the way P3 did: **P4a** routes every start through one admission coordinator,
-and **P4b** turns Plex optimize and Emby Convert into one registered runner each. P4b depends on
-P4a's permits, because a runner converts its server-prep permit at handoff.
+**Shape:** P4 ships as **one PR**. The maintainer wants to reach P7 quickly, and the two halves share
+the reservation model.
 
-### What the code map changed about the design
+### Why revision 2 is simpler
 
-The map was taken at `744dc045`.
+Revision 1 kept an in-memory **permit table keyed by attempt**. Retry mints a new attempt,
+pause→resume can reuse an attempt, and a handoff releases its slot before it restarts. Every one of
+those moves had to thread the permit through by hand, and the review found three blockers and most of
+its majors in exactly that threading.
 
-- **Only season admission is lane-aware.** `SeasonDownloadAdmissionPolicy` (2/1/1, total 3) runs
-  in a 2 s polling loop over flagged rows. Every other start bypasses it:
-  - single taps;
-  - Resume All (B63) and manual Resume;
-  - every retry branch;
-  - launch reattach, the backend-ready drains and the static range resume;
-  - the prep scanner (B62) and the stalled-stream restart.
-- **The admitting key lives as long as the start call.** A Plex optimize or Emby Convert start
-  awaits its whole render, so the key is held for hours.
-- **In-flight counting reads `activeJobs` from a store snapshot.** It misses retries whose Task has
-  not yet taken a slot (B72), and it counts a handed-off Plex row as still in server prep.
-- **The pending flag is cleared before the start is proven** (B66). A refresh failure fails the row
-  outright (B67).
-- **No production code emits `admissionGranted`.** New season rows are already lifecycle
-  `admitted` when they are inserted.
-- **Plex prep never enters `serverPrep`.** It is persisted as `admitted`/`.queued` for the whole
-  render, and `prepHandoff` is never emitted.
-- **The Plex fresh chain is a registered Task, but its caller awaits it.** The Emby fresh Convert
-  chain runs inline and is unregistered (emby-49). Its sleeps swallow cancellation, and it uses
-  `URLSession.shared`, so it cannot be stubbed per test.
-- **A user pause on a task-less queued row is applied asynchronously.** The pause lands inside
-  `session.pause`'s `getAllTasks` callback. Season admission, and a single-item Jellyfin or Emby
-  chain past its last currency check, can start the row in that window (B64 and the skeptic gap).
-- **No end-to-end test drives a server-prep chain.** None of B62, B63, B64, B66, B67 or B72 is
-  pinned.
+Revision 2 takes ownership out of the coordinator:
 
-## P4a — admission coordinator
+- **Occupancy is observed, not owned.** A row occupies a lane exactly while its persisted
+  lifecycle is `admitted`, `serverPrep` or `transferring` and it is not deletion-pending. Its lane is
+  read from the row's current metadata. A handed-off Plex row is already stamped `.original`, so it
+  counts as static.
+- **Release is automatic.** It happens when the row leaves those states: pause, failure,
+  finalizing, a terminal state, or deletion. P3a's reducer already makes every one of those
+  transitions durable.
+- **There is no permit lifecycle to leak.** The only in-memory state is a **reservation** for a
+  start that the coordinator has spawned but whose row is not yet observable as active.
 
-### P4a.1 Policy (PMSKit, pure)
+**Revision 1 decisions that are dropped:**
+- **Attempt-keyed permits, and the permit gate in `acquireStartAttempt`.**
+- **Plex prep entering `serverPrep`/`.preparing`** (review finding 12). It fixes no listed bug and
+  ripples through the assertion helpers, the policies, the UI and older rows. Plex prep stays
+  persisted as `admitted`/`.queued`.
+- **Forwarding a stale Pause to the current attempt** (finding 9). The exact-attempt fence (pu-24)
+  stays.
+- **A new `userRequested` intent** (finding 11). A P3b build cannot decode it.
 
-`DownloadAdmissionPolicy` replaces `SeasonDownloadAdmissionPolicy`. It is evaluated from:
+### P4.1 Policy (PMSKit, pure)
 
-- the permits currently held, by lane;
-- the ordered waiting requests;
-- the queue gate.
+`DownloadAdmissionPolicy` replaces `SeasonDownloadAdmissionPolicy`. Lanes stay 2/1/1, total 3.
 
-**Lanes and caps** stay static 2, server prep 1, live forward 1, total 3.
+**Inputs:**
+- observed occupancy by lane;
+- live reservations by lane;
+- waiting requests, each with an origin, a request time and an eligibility time;
+- the queue gate;
+- per-row pause exemptions.
 
-**Lane derivation:**
-- A row's lane comes from its current phase, not from its metadata at plan time:
-  - server prep: Plex optimize before handoff, or an Emby Convert;
-  - static: a byte-range or as-is file transfer;
-  - live forward: a Jellyfin transcode or remux, or an Emby remux.
-- The existing `lane(backend:downloadLane:)` table is kept for rows that have not started.
+**Output:** an ordered list of rows to start.
 
-**Ordering.** Requests are served in two classes, first in first out within each:
-1. explicit user requests (a tap, or manual Resume or Retry on a row);
-2. everything else (season plan, Resume All, automatic recovery).
+**Rules:**
+- **Ordering.** Requests from explicit user actions (a tap, or a row's Resume or Retry) come
+  before automatic ones (season plan, Resume All, recovery). Within each class, oldest first.
+  Origin is in-memory only, so after a relaunch every waiting row is the same class.
+- **Caps.** A request is granted only if both its lane and the total stay within caps, counting
+  occupancy and reservations together.
+- **Queue pause.** While the queue is paused, only exempt rows are granted (P4.6).
+- **Handoff overflow (open question 4).** A server-prep row that hands off to a static transfer
+  becomes static occupancy in place. Static occupancy can therefore reach 3 for that whole
+  transfer. While it is over, nothing new is granted in that lane. This is documented, not "brief".
+- **Grandfathered occupancy.** A row the OS or a poller already owns at relaunch counts, even
+  when that puts a lane over its cap. Nothing new is granted until occupancy is back under the cap.
 
-**Global pause** grants nothing, with one exception: a manual Resume on a row while the queue is
-paused is granted for that row only, and the row shows that it is resumed during a paused queue.
+### P4.2 Coordinator (manager-owned, `@MainActor`)
 
-**Handoff.** At handoff a server-prep permit converts in place to a static permit. It is never
-released and re-acquired. If the static lane is full at that moment, the conversion still
-succeeds, so the static lane can briefly exceed 2 while the total stays at most 3. Rendered server
-output should not wait behind a cap that it already counted against.
+`DownloadAdmissionCoordinator` holds three things:
 
-### P4a.2 Coordinator (manager-owned, `@MainActor`)
+- **Reservations:** `[ratingKey: Reservation {generation: UUID, lane, origin}]`. A reservation is
+  keyed by the row, not the attempt, so attempt replacement inside a start chain needs no handoff.
+- **Waiting requests:** `[ratingKey: Request {origin, intent, requestedAt, eligibleAt, backoffStep}]`.
+- **Pause exemptions:** `[ratingKey]` (P4.6).
 
-`DownloadAdmissionCoordinator` owns the only permit table:
-`[DownloadAttemptKey: AdmissionPermit {lane, source, grantedAt}]`.
+**Grant.**
+1. Insert the reservation and spawn the start Task.
+2. The coordinator never awaits a start chain. This retires the admitting key that was held for
+   hours.
+3. The start path is the existing one for that row:
+   - a parked or planned row → `retry(record:)`, whose own retry transitions already accept
+     `planned`, `paused` and `failed`;
+   - a fresh tap → the backend `download*` call.
 
-**Permits are in-memory.** The persisted fact is the lifecycle:
-- `planned` means waiting;
-- `admitted`, `serverPrep` or `transferring` means the row holds a permit;
-- `finalizing`, `paused`, `failed`, `complete` and `unverified` hold none.
+   No `admissionGranted` is submitted before `retry` runs. This answers finding 1: each retry mode
+   keeps its own transition, checkpoint, blob, obligation and history rules.
 
-**Lifetime:**
-- **Grant.** A grant is synchronous: it inserts the permit and submits `admissionGranted`
-  (`planned` → `admitted`) before any start work runs (B72).
-- **Release.** A permit is released on:
-  - `bodyCaptured` (a finalizing row holds no network permit);
-  - pause, failure, delete and terminal states;
-  - a deferral (P4a.5).
+**Reservation end.** A reservation ends in one of three ways:
+- **Observed:** the row becomes active, so occupancy takes over.
+- **Deferred:** the start Task finishes and the row is not active (P4.4).
+- **Superseded:** a newer generation for the same row, or a delete or pause of the row.
 
-  Every release pumps the coordinator.
-- **Retry lineage.** A retry of a row that holds a permit (the stalled-stream restart, the static
-  range restart) transfers the permit to the new attempt. It does not re-admit.
-- **Relaunch.** Permits are rebuilt from rows found in `admitted`, `serverPrep` or `transferring`
-  that reattach or resume. A relaunch can exceed the caps; nothing new is granted until occupancy
-  is back under them, which restores the launch-surge protection. A row whose work cannot resume
-  is released through its usual path.
+The start Task closes its reservation only if the generation still matches. A stale continuation can
+never release or defer a successor's reservation (finding 2).
 
-**Pumping is event-driven:**
-- on request, release, queue resume, backend ready, startup ready, and a store refresh that sees a
-  `planned` row;
-- one coalesced pump Task;
-- the 2 s `seasonPlannerAdmissionTask` loop is deleted.
+**Pump.** One coalesced Task, triggered by:
+- a request;
+- a reservation ending;
+- any store refresh in which an occupying row has left the active states;
+- queue resume;
+- startup recovery complete;
+- backend ready;
+- the earliest `eligibleAt` timer, from an injectable clock.
 
-**A grant spawns the start and returns.** The coordinator never awaits a start chain, so the hours
-long admitting key goes away.
+The 2 s `seasonPlannerAdmissionTask` loop is deleted.
 
-### P4a.3 Waiting rows
+**Barriers.** The pump grants nothing:
+- while `seasonPlanCommitsInFlight > 0` (pu-05/06, finding 5);
+- until startup recovery has classified rows and reattached tasks (finding 4).
 
-- **Requests over capacity.** A request that cannot be granted persists its row as `planned` with
-  an `admissionIntent`. The intents are `seasonPlanned`, `retryRequested` and a new
-  `userRequested`.
-- **Starting a planned row.** It always goes through `retry(record:)`. Today's
-  `plannedSeasonRowAdmissionRunsRetry` path already re-derives the route from persisted metadata.
-- **Season planner.** It still re-validates its source through `SeasonPlanAdmissionAuthority`
-  before the retry.
-- **The season flag.** `seasonPlannerPendingAdmission` stops being written. On load, a flagged row
-  maps to `planned` + `seasonPlanned` (a structural read, as P3a does for older rows). The field
-  stays decodable for one release, and then P6 deletes it.
-- **Downgrade cost.** A P3b build would show such a row as failed with a Retry button. This is
-  accepted and stated in the PR.
+### P4.3 Entry points
 
-### P4a.4 Entry points rewired
+| Entry | P4 |
+|---|---|
+| Single tap (Plex, Jellyfin, Emby) | Request with user origin. If granted, the existing `download*` chain runs. Otherwise the seed row is persisted `planned` + `retryRequested` and shown waiting; it starts later through `retry`. |
+| Season commit | Rows `planned` + `seasonPlanned`, then pump. The commit barrier is kept, and season rollback restores lifecycle and history as well as rows (finding 5). |
+| Resume All (B63) | Each parked row gets a new reducer event `admissionRequested(intent)` (`paused`/`failed` → `planned`, intent `retryRequested`), then pump. |
+| Row Resume or Retry | Request with user origin. Granted immediately when there is capacity. While the queue is paused it is exempt (P4.6). |
+| Launch: `resumeInterruptedStaticByteRangeDownloads`, backend-ready static drains, `resumeStaticRangeWhenReady` | Request with automatic origin instead of calling `retry` directly. A static train restarted after relaunch is admitted, not grandfathered (finding 4). |
+| Launch: rows the OS or a poller still owns (reattached tasks, Emby convert polls, Plex prep reattach) | Grandfathered occupancy; no request. |
+| Prep scanner (B62) | Skips `planned` rows and rows holding the `seasonPlanned` intent. Only `admitted` prep rows reattach. |
+| Stalled-stream restart, the Plex original→optimize fallback | Stay inside the same row's start. The row is already occupying, so no new request is made; see P4.5 for lane changes. |
 
-| Entry | Today | P4a |
-|---|---|---|
-| Single tap (Plex, Jellyfin, Emby) | starts directly | requests a `userRequested` permit. Granted → start. Otherwise the seed row is persisted `planned` and shown waiting. |
-| `fallbackOriginalValidationFailureIfPossible` | re-takes the slot, no gate | keeps the permit of the attempt it replaces (lineage) |
-| Season commit | `.queued` + flag, then the 2 s worker | rows `planned` + `seasonPlanned`, then pump |
-| Resume All (B63) | `retry` on every paused or failed row | each parked row → `planned` + `retryRequested` (new reducer event `admissionRequested(intent)`), then pump |
-| Manual Resume or Retry on a row | `retry` directly | `userRequested`; the pause-exempt rule from P4a.1 applies |
-| Launch reattach, backend-ready drains, static range resume | `retry` / scanner | rebuild held permits; rows without a permit become requests |
-| Prep scanner (B62) | every queued Plex prep row | only rows that hold a permit reattach; `planned` rows belong to the coordinator |
-| Stalled-stream restart | `retry` | keeps its permit (lineage) |
+### P4.4 Deferral and backoff (B66, B67, finding 6)
 
-`acquireStartAttempt` additionally requires a permit for the attempt. That makes the permit the
-single admission gate, next to P3b's `attemptAdmitsWork`.
+**Classification.** When a start Task ends with its row still not active, the coordinator looks at
+the row and the start's typed result:
 
-### P4a.5 Grant until proven start (B66, B67)
+| Outcome | What happens |
+|---|---|
+| **Unavailable:** no session, a network or refresh failure, the backend not ready | `admissionDeferred(intent)`: `admitted`/`failed` → `planned`, intent kept. The request is re-queued with backoff 1, 5, 15, 30, 60 s (capped at 60), and also woken by backend-ready. |
+| **Definitive:** item gone, unsupported, storage refused | The row fails, as it does today. |
+| **Stale:** the generation is superseded, or the row is paused, deleting or owned by a newer start | Release the reservation only. The row is not rewritten. |
+| **Duplicate:** the slot is already held by a live chain | Release the reservation only. |
 
-- **Early returns defer.** After `admissionGranted`, any early return before the transfer or the
-  server create submits a new reducer event `admissionDeferred(cause)` (`admitted` → `planned`),
-  which keeps the intent, and releases the permit. Today's early returns are:
-  - no backend session;
-  - the season refresh failing;
-  - `acquireStartAttempt` returning nil;
-  - a currency loss.
-- **Temporary unavailability defers; it does not fail.** This covers a cold launch, an unreachable
-  server and a missing session. A deferred row is pumped again when its backend becomes ready.
-- **Only definitive outcomes fail a planned row:** the item is gone, the source is unsupported, or
-  storage is refused.
+**Typed start results.** Each start path returns a small `StartOutcome` enum instead of `Void`,
+so classification never infers from a missing row.
 
-### P4a.6 Pause (B64, B65, the skeptic gap)
+**What this fixes:**
+- **B66:** the season flag is no longer cleared before the start is proven. The intent is lifecycle
+  history, and `admissionDeferred` restores it.
+- **B67:** a cold launch or unreachable server defers the row with backoff instead of failing it.
+
+### P4.5 Lane changes before a server create (finding 7)
+
+A row admitted in one lane can turn into server-prep or encoder work. Examples:
+- a Plex original that fails preflight falls back to optimize;
+- an Emby negotiation reroutes to Convert.
+
+Before the create, the chain calls `coordinator.mayEnter(lane, ratingKey)`.
+
+- **Lane full.** The row is persisted `planned` + `retryRequested` with its negotiated route, and
+  the start ends **unavailable**.
+- **Cleanup authority.** Anything already negotiated keeps its cleanup authority through the
+  existing obligations: a live encoder goes through the ActiveEncoding intent, as today.
+- **Lane free.** The reservation's lane is updated in place.
+
+### P4.6 Pause (B64, B65, emby-33, finding 8)
 
 - **Synchronous pause.** Pausing a `planned` row, or an `admitted` row with no task, submits
-  `.pause(.user)` synchronously in the manager before `session.pause` runs. Then:
-  - the coordinator skips paused rows;
-  - the start chain's currency check already rejects `.paused`, and it is added right before
-    `beginBackgroundTransfer` and before every server create.
-- **Resuming a row paused while planned returns it to `planned`.** `history.admissionIntent`
-  survives the pause, and Resume re-requests with that intent. This retires B65, because the intent
-  is lifecycle history and every transition maintains it.
-- **Pause reaches the current attempt.** A pause whose rendered identity names an attempt that a
-  retry of the same row has just replaced targets the current owner of that row. Today it resolves
-  to nil and does nothing.
+  `.pause(.user)` synchronously, before `session.pause`. The start chain re-checks currency
+  immediately before `beginBackgroundTransfer` and before every server create. Its guard already
+  rejects `.paused`. This closes B64 and the "paused during PlaybackInfo" gap. The exact-attempt
+  fence is unchanged.
+- **Intent survives pause.** `history.admissionIntent` is kept through a pause. Resuming a row
+  that was paused while waiting re-requests it with that intent. This retires B65.
+- **Row exemption.**
+  - A row Resume or Retry while the queue is paused adds the row to the exemption set. The set is
+    keyed by rating key, so it survives attempt replacement and handoff.
+  - Another Pause All, or a delete, revokes the exemption.
+  - Retry gets the same exemption as Resume, because both are explicit row actions.
+- **emby-33 is preserved.** Convert polling continues during Pause All. The static handoff parks
+  unless the row is exempt.
 
-### P4a.7 Planner and presentation (B69, pu-33)
+### P4.7 Planner and presentation (B69, pu-33)
 
-- **B69.** The planner tells a probe failure (`probeFailed`, no session, a PlaybackInfo error)
-  apart from "original present but not offline-playable". A probe failure becomes a `planned` row
-  that is re-probed at admission. Only a definitive unsupported verdict becomes a failed row.
-- **pu-33.** A `planned` row shows as waiting, for example "Waiting for a download slot" or
-  "Waiting — queue paused". It keeps Pause and Remove. Fuller row UX is P7.
+- **B69.** The planner tells a probe failure apart from a definitive unsupported verdict. A probe
+  failure becomes a `planned` row that is re-probed at admission.
+- **pu-33.** A `planned` row shows "Waiting for a download slot", or "Waiting — queue paused", and
+  keeps Pause and Remove. Fuller row UX is P7.
 
-### P4a pins (written first)
+### P4.8 Legacy flag and downgrade (findings 10, 11)
 
-Each pin must fail on the current code:
-1. B63: Resume All with five parked rows grants at most the caps.
-2. B62: the prep scanner does not attach to a `planned` Plex row.
-3. B72: two passes with a retry in flight do not overgrant.
-4. B66: an early return after the grant leaves the row `planned` and requestable, not an orphaned
-   `.queued`.
-5. B67: a refresh failure during a cold launch defers the row; it does not fail it.
-6. B64: a pause between the grant and the start never starts the row.
-7. The pause-during-PlaybackInfo window never starts the row.
-8. A single tap over capacity waits, then starts when a permit frees.
-9. Relaunch with more than three active rows grants nothing new.
-10. A finalizing row frees its permit.
-11. The server-prep → static conversion does not release the permit.
-12. A row paused while planned resumes to `planned`.
-13. A manual Resume during a global pause starts that row only.
+**Writes.** `seasonPlannerPendingAdmission` is no longer written.
 
-## P4b — server-prep runners
+**Precedence on load:**
+- A flagged row that is `.queued` or `.failed` with no transfer evidence → `planned` +
+  `seasonPlanned`.
+- A flagged `.paused` row stays `paused` and gains the `seasonPlanned` intent.
+- Deletion capsules, finalizing rows, handed-off static metadata and every other authoritative
+  lifecycle win over the flag.
 
-### P4b.1 Plex: one routine
+**Intents.** Only the existing intents, `seasonPlanned` and `retryRequested`, are written, so a
+P3b build decodes every P4 index.
 
-`runPlexServerPrep(key, mode: .fresh | .resume)` replaces `runOptimizeAndDownload` and
-`resumePendingOptimizeDownload`. Each step is idempotent and gated on currency:
+**Downgrade cost, stated in the PR.** A P3b build shows a waiting row as failed with Retry.
 
-1. **Reconcile.** Seed the persisted deadline, then refetch the item.
-2. **Adopt existing (B35, plex-18).** A tier-matching Plex Version, including a pre-existing one,
-   is adopted before any create. This follows the bug list's finding that the comment refusing
-   implicit reuse is stale. It also matches Emby's reuse fidelity rules (emby-14). An explicit
-   "existing version" choice keeps its exact-Part path (plex-04/05).
-3. **Inspect the queue.**
-   - Fresh: create only when there is no item with our title.
-   - Resume: recreate only when the queue was inspected and the item is provably absent (plex-19).
-4. **Create.** Errors are no longer swallowed (B37, plex-28):
-   - an HTTP 400 duplicate re-runs step 2;
-   - any other failure, or a confirmed create whose item never appears, runs a bounded
-     "item never appeared" grace (a few minutes, persisted like the deadline);
-   - past the grace, the row gets `prepFailed(.server)` with its reason, not 24 h of
-     "Preparing on server".
-5. **Poll.** `pollForOptimizedPart` returns the Part together with the live lane it was observed
-   on.
-6. **Hand off (B33).** The rendered-Part URL is built from that live lane's server and token, not
-   from the enqueue-time snapshot. `prepHandoff` is emitted, and the permit converts to static.
+**Fixture.** A P4-written index containing completed rows and waiting rows of both intents must
+decode under the P3b codec and model.
 
-**Lifecycle.**
-- **Serverprep is now persisted.** Plex prep enters `serverPrep` (`prepReattached`) when the create
-  is confirmed or a queue item is adopted.
-- **Status changes.** As a result a Plex prep row's derived status becomes `.preparing` instead of
-  `.queued`, matching Emby.
-- **Follow-on updates.** `isPlexServerPrepResumeCandidate`, `DownloadPausePolicy`,
-  `ServerPrepRefreshPolicy` and the Plex delete-policy predicate are updated to read the lifecycle.
-  Their tests move with them.
-- **Older rows.** `.queued` Plex prep rows from older indexes map structurally.
+### P4.9 Server-prep runners
 
-### P4b.2 Emby: registered, cancellable
+**Plex (one routine for fresh and resume).** Each step is idempotent and gated on currency.
 
-- **Registered task (emby-49, #362).** The fresh Convert chain runs as a registered poller Task:
-  `beginServerPrepPoller`, `registerServerPrepPollerTask`, and `endServerPrepPoller` on exit. The
-  caller returns once the chain is registered.
-- **Relaunch tasks** also call `endServerPrepPoller`.
+1. **Reconcile.** Seed the deadline.
+2. **Adopt existing (B35).** Adopt a tier-matching, locally playable Plex Version before any
+   create, and say so in the logs.
+   - Source exclusion and the explicit exact-Part choices (plex-04/05) are preserved.
+   - This answers open question 3.
+3. **Typed queue lookup (finding 14).** The result is `present`, `inspectedAbsent` or
+   `unavailable`.
+   - Fresh: create only on `inspectedAbsent`.
+   - Resume: recreate only on `inspectedAbsent` (plex-19).
+   - `unavailable` never implies absence.
+4. **Create (B37, plex-28).**
+   - An HTTP 400 duplicate re-runs step 2.
+   - Any other error is reported, not swallowed.
+   - A **create-visibility grace** starts at dispatch: 3 minutes, persisted
+     (`plexOptimizeCreateDispatchedAtEpochSeconds`). If the queue item is `inspectedAbsent` past the
+     grace and no version is adoptable, the row gets `prepFailed(.server)`.
+   - The grace is separate from the 120 s completion grace and the 24 h deadline. Status-flap
+     disarming, metadata-inspection gating, the auth-dead budget and the bounded bg-key retries
+     are all kept.
+5. **Poll.** It returns the Part together with the live lane it was observed on.
+6. **Hand off (B33).** Build the URL from the live lane. Commit the exact Part, size, resume mode
+   and provenance before the transfer, as today.
+
+**Plex fresh chain.** It is still a registered Task, but the caller no longer awaits it. The
+coordinator's start returns once the Task is registered.
+
+**Emby (emby-49).**
+- **Registration.** The fresh Convert chain runs as a registered poller Task with its own Emby
+  token: `beginEmbyConvertPoller` and `endEmbyConvertPoller`. The relaunch Tasks use the same
+  token, which fixes the Plex-token mismatch (finding 3).
+- **One handoff operation, used by all four handoff branches** (fresh reuse, refreshed reuse,
+  resume reuse, completed conversion):
+  1. `endEmbyConvertPoller` without cancelling.
+  2. Release prep bookkeeping with `releaseInFlight(…, cancellationMode: .excludingCurrentPoller)`.
+     This is a new mode that skips cancelling the current poller Task.
+  3. Start the static leg through `downloadEmby(.existingVersion)` as today.
+  - The reservation is keyed by rating key, so it is unaffected.
 - **Cancellation.** Sleeps honour cancellation.
-- **Currency.** The checks add `attemptAdmitsWork` (P3b) to `embyConvertAttemptIsCurrent`.
-- **Handoff** emits `prepHandoff` and converts the permit to static.
-- **Injectable HTTP.** Emby HTTP goes through a manager-owned `URLSession` that defaults to
-  `.shared`; tests inject a stub session. The poll intervals (Plex 5 s, Emby 5 s) can be injected
-  for tests only.
+- **Currency.** The checks add `attemptAdmitsWork`.
+- **Testing seam.** Emby HTTP goes through an injectable `URLSession`, and the poll intervals can
+  be injected for tests.
 
-### P4b.3 Removals
+**Removed.** `retryPausedPlexOptimize`, which is dead code.
 
-- `retryPausedPlexOptimize`, which is dead code.
-- The duplicated catch arms of the two Plex chains.
+### Answers to the open questions
 
-### P4b pins (written first)
+1. **Single taps wait.** User origin changes ordering, not caps.
+2. **The flag is retired.** P4.8 resolves the paused-row precedence and the decodability concerns.
+3. **Adopt existing Plex output,** with source exclusion, the tier and playability gates, and exact
+   Part choices.
+4. **In-place static conversion,** counted accurately. Static occupancy can be 3 for a whole
+   transfer, and nothing new is granted in that lane meanwhile.
+5. **A persisted 3-minute create-visibility grace,** separate from the completion grace.
 
-1. A fresh Plex optimize with a tier-matching version already present adopts it and sends no POST.
-2. A failed create ends in `prepFailed` within the grace.
-3. A 400 duplicate adopts the existing version.
-4. The handoff URL uses the live lane's token after a token change during the poll.
-5. A fresh Plex or Emby start returns to the caller before the render completes.
-6. Deleting an Emby row during the fresh Convert poll cancels the registered task, and no handoff
-   follows.
-7. Plex prep is persisted `serverPrep` and survives relaunch as server prep.
-8. The permit converts to static at handoff.
+### Pins (written first; each fails on the current code unless marked "retained")
 
-### P4 commits
+**Admission:**
+1. Resume All with five parked rows grants at most the caps (B63).
+2. The prep scanner skips `planned` rows (B62).
+3. A start in flight, before its row is active, counts through its reservation (B72).
+4. An early return defers the row to `planned` with its intent (B66).
+5. A cold-launch refresh failure defers with backoff, does not fail, and does not busy-loop (B67).
+6. A pause between the grant and the start never starts the row (B64), and the same holds for a
+   pause during PlaybackInfo.
+7. A tap over capacity waits, then starts when a lane frees.
+8. Relaunch: grandfathered occupancy over the caps grants nothing new, and restarted static trains
+   are admitted.
+9. A finalizing row frees its lane.
+10. A row paused while waiting resumes to `planned`.
+11. A row Resume during Pause All starts that row only. The exemption survives a retry, and another
+    Pause All revokes it.
+12. A stale generation cannot release its successor's reservation.
+13. The season commit barrier holds, and rollback restores lifecycle.
+14. Lane full at a reroute: the row waits without losing its route.
+15. A granted retry succeeds through each mode: resume blob, static checkpoint, Plex prep
+    reattach, Emby known job and Emby ambiguous job.
+16. Legacy flag precedence: paused stays paused.
+17. Downgrade fixture.
 
-**P4a:**
-1. Pins.
-2. Policy and reducer events: `admissionRequested`, `admissionDeferred`, `userRequested`.
-3. Coordinator and the permit gate in `acquireStartAttempt`.
-4. Entry-point rewiring.
-5. Pause and planner fixes.
-6. Docs.
+**Runners:**
+18. Plex fresh with an adoptable version: no POST.
+19. Queue `unavailable` ≠ absent: no recreate and no grace failure.
+20. A failed create fails within the grace; a 400 duplicate adopts.
+21. The handoff URL uses the live lane's token.
+22. The fresh Plex and Emby starts return before the render completes.
+23. All four Emby handoffs start the static leg, and none cancels itself.
+24. Deleting during the fresh Convert poll cancels it and no handoff follows.
+25. Pause All during Convert: polling continues and the handoff parks (emby-33).
 
-**P4b:**
-1. Pins.
-2. Injectable HTTP and intervals.
-3. The Plex routine.
-4. The registered Emby chain.
-5. Lifecycle reads.
-6. Docs.
+**Retained.** Existing coverage for the untouched planner rows is kept as is: watched filtering,
+drafts, serialized probes, the probe transport, storage confirmation and presentation.
 
-### Open questions for the co-review
+### Commits
 
-1. Should a single tap wait when capacity is full, or is an explicit user tap exempt from the caps
-   and only counted toward them?
-2. Is dropping `seasonPlannerPendingAdmission` in favour of `planned` + intent acceptable, given
-   that a P3b build would then show waiting season rows as failed?
-3. Should Plex step 2 adopt a pre-existing tier-matching version (reuse), or exclude every
-   pre-existing Part and wait for our own render?
-4. Is a brief static overcommit at handoff right, or should the conversion wait for a static slot?
-5. How long should the "item never appeared" grace be, and should it be persisted?
+The pins are added in each commit together with the code they cover. They are not added red, so
+every commit builds and passes.
+
+1. **Policy, reducer events and codec.**
+   - Policy: `DownloadAdmissionPolicy`.
+   - Reducer events: `admissionRequested`, `admissionDeferred`.
+   - Codec: legacy-flag precedence and the downgrade fixture.
+2. **Coordinator, all entry points, typed start outcomes and pause changes,** activated together.
+3. **Plex routine:** typed queue lookup, grace, adopt, live-lane handoff.
+4. **Emby:** registered chain, handoff operation, injectable HTTP.
+5. **Planner B69 and the waiting captions.**
+6. **Docs.**
 
 ### Out of P4
 
-- Storage policy and the unknown-size reservation (P5).
-- Transport consolidation (P5).
+- Reuse-fidelity heuristics, multi-part items, Premiere detection.
+- Storage reservations (P5) and transport consolidation (P5).
 - Fuller row UX (P7).
-- Emby reuse fidelity (emby-14/16/30) is unchanged unless a P4b step touches it.
+- Plex `serverPrep` lifecycle. It can be revisited in P7 if row presentation needs it.
 
 ## Open gates (never claimed by this work)
 
