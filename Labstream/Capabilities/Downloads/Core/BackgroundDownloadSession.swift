@@ -1165,6 +1165,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
     }
 
+    /// Names one finished body: the same attempt re-finalizing the same bytes after a relaunch
+    /// is the same outcome.
+    static func finalizeOutcomeID(for key: DownloadAttemptKey, bytes: Int) -> String {
+        "\(key.attemptID.rawValue)#body-\(bytes)"
+    }
+
     private static func finalizeOutcome(
         _ outcome: DownloadCompletionValidation.CompletionOutcome
     ) -> DownloadFinalizeOutcome {
@@ -1181,9 +1187,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// from the row's current lifecycle.
     ///
     /// - Publishing a working body (`publishesWorkingFile`) from `.finalizing`: `finalizeOutcome`.
-    ///   A truncation strike was already recorded under this same outcome ID by
-    ///   `recordTruncationStrike`, so `finalizeOutcome(.truncated)` would be rejected as a replay;
-    ///   the failing (below-budget) truncation is written as `transferFailed(.validation)`.
+    ///   A truncation reaches here only when its `finalizeOutcome` was a replay (counted before a
+    ///   relaunch) while the row stayed finalizing; it is written as `transferFailed(.validation)`.
     /// - Revalidating a published body from `.complete`/`.unverified`: `publishedBodyRevalidated`.
     /// - Otherwise a failing verdict on a non-terminal row is `transferFailed(.validation)`.
     private func finalizeVerdictEvent(
@@ -3407,6 +3412,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         do {
             try? fileManager.removeItem(at: entry.workingURL)
             try fileManager.moveItem(at: location, to: entry.workingURL)
+            // P3a.6: make the rename durable before `bodyAtWorking` records it, so a recorded
+            // finalizing row never points at a body a power loss un-moved.
+            try? DownloadPromotionFilesystem.live.syncParentDirectory(entry.workingURL)
         } catch {
             // B26: a full volume is storage-full, with the same reason the range lane surfaces.
             let outOfSpace = DownloadDiskSpacePolicy.isOutOfSpace(error)
@@ -5349,12 +5357,23 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         guard acceptedAttemptSubmission(
             resolveLifecycleSubmission(store.submitProgress(for: key, bytes: bytes, progress: 1.0)),
             key: key, phase: "publish_finalizing") else { return false }
-        // P3a/B10: the body is complete at the attempt working path; persist `finalizing` so a
-        // relaunch before validation re-finalizes it instead of deleting it. A row that is
-        // already finalizing (recovery or revalidation) is left as is.
-        _ = store.submitLifecycleEvent(
+        // P3a/B10: the body is complete at the attempt working path; persist `finalizing` before
+        // validation starts so a relaunch re-finalizes it instead of deleting it. The working
+        // path is attempt-unique (`attemptStagingRelativePath`) and named by the row, so it is
+        // also the capture path of P3a.6. A terminal row (revalidation) rejects the event and
+        // keeps its state; a stale owner stops here.
+        switch store.submitLifecycleEvent(
             .bodyAtWorking, for: key, facts: DownloadRowFacts(route: .staticRange,
-                                                              body: .workingComplete))
+                                                              body: .workingComplete)) {
+        case .staleOrMissing:
+            return false
+        case .rejected:
+            break
+        case .accepted(_, let ticket):
+            guard acceptedAttemptSubmission(
+                .accepted(change: .applied, ticket: ticket),
+                key: key, phase: "publish_finalizing_lifecycle") else { return false }
+        }
         onChange?()
         return true
     }
@@ -5665,14 +5684,30 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                                            forwardOnly: forwardOnly)
         guard !Task.isCancelled else { return }
         // P3a/B54: strikes are persisted attempt history, inherited by a Retry of the same
-        // source and deduplicated by this finalizer request, so neither a relaunch nor a
-        // replayed outcome resets or double-counts them.
+        // source. The outcome ID names the body (attempt + byte count), not this finalizer run,
+        // so a relaunch that re-finalizes the same body replays its outcome instead of counting a
+        // second strike.
         guard !Task.isCancelled else { return }
-        let outcomeID = finalizationStateQueue.sync {
-            finalizerRequestIDsByAttempt[attemptKey]?.uuidString
-        } ?? "\(attemptKey.attemptID.rawValue)-\(validationLabel)"
+        let outcomeID = Self.finalizeOutcomeID(for: attemptKey, bytes: bytes)
+        // A working body still finalizing takes its verdict from the reducer: the strike, the
+        // unverified reason and the lifecycle commit in one revision.
+        let verdictThroughReducer = publishesWorkingFile
+            && store.lifecycleState(for: attemptKey)?.lifecycle == .finalizing
+        var truncationVerdictCommitted = false
         let truncationFailures: Int
         switch outcome {
+        case .truncated where verdictThroughReducer:
+            guard let source = store.truncationSourceKey(for: attemptKey) else { return }
+            switch resolveLifecycleSubmission(submitLifecycleEvent(
+                .finalizeOutcome(id: outcomeID, outcome: .truncated, source: source),
+                for: attemptKey, phase: "finalize_truncated_verdict")) {
+            case .staleOrMissing:
+                return
+            case .accepted(let change, _):
+                // `.noChange` is a replay: this body's outcome committed before a relaunch.
+                truncationVerdictCommitted = change == .applied
+            }
+            truncationFailures = store.truncationStrikes(for: attemptKey)
         case .truncated:
             guard let strikes = store.recordTruncationStrike(
                 for: attemptKey, outcomeID: outcomeID) else { return }
@@ -5680,6 +5715,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         case .complete:
             store.clearTruncationStrikes(for: attemptKey)
             truncationFailures = 0
+        case .unverified(let reason) where verdictThroughReducer:
+            // Records the probe-miss reason; lifecycle stays finalizing until promotion commits.
+            _ = submitLifecycleEvent(
+                .finalizeOutcome(id: outcomeID, outcome: .unverified(reason: reason),
+                                 source: store.truncationSourceKey(for: attemptKey)
+                                    ?? DownloadSourceKey(server: nil, account: nil, backend: nil,
+                                                         item: attemptKey.ratingKey,
+                                                         source: nil, profile: nil)),
+                for: attemptKey, phase: "finalize_unverified_reason")
+            truncationFailures = store.truncationStrikes(for: attemptKey)
         default:
             truncationFailures = store.truncationStrikes(for: attemptKey)
         }
@@ -5774,7 +5819,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 guard await promoteValidatedWorkingFile(
                     for: attemptKey, status: .unverified,
                     phase: "finalize_truncated_park_promote") else { return }
-            } else {
+            } else if !truncationVerdictCommitted {
                 guard acceptedAttemptSubmission(
                     resolveLifecycleSubmission(submitFinalizeVerdictStatus(
                     for: attemptKey, outcome: Self.finalizeOutcome(outcome),

@@ -642,6 +642,11 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     private var rows: [String: Row] = [:]          // ratingKey -> Row
+    /// Truncation strikes of a row a Retry removed before seeding its replacement, keyed by
+    /// rating key (guarded by `lock`). The replacement inherits them like an in-place
+    /// replacement would (R2-5), with the same in-process lifetime the pre-P3a session counter
+    /// had. A user Delete (deletion-pending removal) or a cancel never stashes strikes.
+    private var retiredTruncation: [String: DownloadTruncationHistory] = [:]
     private var sideAssetHydrationCache: [String: HydratedSideAssets] = [:] // guarded by `lock`
     private var lastProgressPersist = Date.distantPast   // guarded by `lock`
     private let baseDirectory: URL                  // Application Support/Downloads
@@ -2404,6 +2409,13 @@ final class DownloadStore: @unchecked Sendable {
             profile: nonEmpty(metadata?.requestedProfileLabel) ?? nonEmpty(metadata?.optimizeTargetName))
     }
 
+    /// The exact attempt's truncation source key; nil for a stale or missing attempt.
+    func truncationSourceKey(for key: DownloadAttemptKey) -> DownloadSourceKey? {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else { return nil }
+        return Self.truncationSourceKey(ratingKey: key.ratingKey, metadata: row.metadata)
+    }
+
     /// Persist one truncation strike for the exact attempt (deduplicated by `outcomeID`) and
     /// return the strike count it now carries; nil for a stale or missing attempt.
     func recordTruncationStrike(for key: DownloadAttemptKey, outcomeID: String) -> Int? {
@@ -2434,6 +2446,7 @@ final class DownloadStore: @unchecked Sendable {
     /// A complete verdict, or a user cancel that re-downloads from scratch, clears the strikes.
     func clearTruncationStrikes(for key: DownloadAttemptKey) {
         lock.lock()
+        retiredTruncation.removeValue(forKey: key.ratingKey)
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
               row.history.truncation != nil else {
             lock.unlock()
@@ -3298,8 +3311,10 @@ final class DownloadStore: @unchecked Sendable {
         )
         // R2-5: a replacement attempt inherits truncation strikes for the same source in this
         // same transaction, so a Retry cannot reset the two-strike park (B54).
-        if let existing {
-            newRow.history = existing.history.inherited(
+        let retired = retiredTruncation.removeValue(forKey: record.ratingKey)
+        if let inheritedFrom = existing?.history
+            ?? retired.map({ DownloadAttemptHistory(truncation: $0) }) {
+            newRow.history = inheritedFrom.inherited(
                 by: Self.truncationSourceKey(ratingKey: record.ratingKey, metadata: metadata))
         }
         rows[record.ratingKey] = newRow
@@ -4982,10 +4997,14 @@ final class DownloadStore: @unchecked Sendable {
             .flatMap { fileSize(at: baseDirectory.appendingPathComponent($0)) } ?? 0
         let resumeRelative = metadata?.resumeDataRelativePath
         let checkpoint: DownloadRowFacts.Checkpoint
-        if resumeRelative?.isEmpty == false {
-            checkpoint = .resumeBlob
-        } else if route == .staticRange, workingBytes > 0 {
+        // Pre-P3a reconcile precedence: an app-owned static partial is the checkpoint whether or
+        // not a resume manifest also exists, and a manifest counts only while its blob survives.
+        if route == .staticRange, workingBytes > 0 {
             checkpoint = .durablePartial(bytes: workingBytes)
+        } else if let resumeRelative, !resumeRelative.isEmpty,
+                  fileManager.fileExists(
+                      atPath: baseDirectory.appendingPathComponent(resumeRelative).path) {
+            checkpoint = .resumeBlob
         } else {
             checkpoint = .none
         }
@@ -5246,8 +5265,18 @@ final class DownloadStore: @unchecked Sendable {
             changed = true
         }
         lock.unlock()
+        guard changed else { return }
+        // The demotion commits before its bytes go: a failed index write keeps the files with the
+        // still-recoverable row, and a crash after the commit leaves bytes the failed row still
+        // names, which its Retry or Delete reclaims (the next relaunch repeats nothing).
+        let persistence = persist()
+        guard persistence.result.committed(through: persistence.ticket) else {
+            AppDiagnostics.record(.downloads, "downloads.reconcile_deletion_deferred", fields: [
+                "deletions": .int(deletions.count),
+            ])
+            return
+        }
         for url in deletions { try? fileManager.removeItem(at: url) }
-        if changed { persist() }
     }
 
     /// Attempt-conditional removal. A stale finalizer/delete for attempt A cannot remove attempt B
@@ -5316,6 +5345,9 @@ final class DownloadStore: @unchecked Sendable {
 
     private func stageRowDeletionLocked(row: inout Row, key: DownloadAttemptKey,
                                         requiresDeletionPending: Bool) -> RowDeletionSubmission {
+        if !requiresDeletionPending, let truncation = row.history.truncation {
+            retiredTruncation[key.ratingKey] = truncation
+        }
         var paths = artifactPathsReferenced(by: row)
         let stable = [row.relativePath] + sideAssetRelativePaths(for: row.metadata)
         for path in stable where Self.isSafeOneLevelRelativePath(path) {

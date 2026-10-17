@@ -31,6 +31,35 @@ struct ManagerLifecycleEventTests {
         #expect(store.record(for: key)?.status == .paused)
     }
 
+    @Test("Pause leaves a finalizing body and its finalizer alone")
+    func pauseLeavesFinalizingBodyAlone() async throws {
+        let directory = try makeDirectory("pause-finalizing")
+        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+        let store = DownloadStore(baseDirectory: directory)
+        let (manager, session) = makeManager(store: store)
+        defer { session.invalidateInjectedSessionForTesting() }
+        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        manager.setQueuePausedForTesting(false)
+        let key = try seedPlexPrepRow(in: store)
+        _ = store.submitLifecycleEvent(.bodyAtWorking, for: key,
+                                       facts: DownloadRowFacts(route: .plexPrep))
+        #expect(store.lifecycleState(for: key)?.lifecycle == .finalizing)
+        let finalizer = Task<Void, Never> {
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+        }
+        defer { finalizer.cancel() }
+        let token = manager.downloadWorkRegistry.register(finalizer, for: key, kind: .finalizer)
+        defer { _ = manager.downloadWorkRegistry.complete(key: key, token: token) }
+        manager.refreshRecords()
+
+        manager.pause(ratingKey: key.ratingKey)
+
+        #expect(store.lifecycleState(for: key)?.lifecycle == .finalizing)
+        #expect(!finalizer.isCancelled, "the finalizer publishes the finished body")
+        #expect(manager.downloadWorkRegistry.snapshot().attempts
+            .first(where: { $0.key == key })?.entries.map(\.kind) == [.finalizer])
+    }
+
     @Test("A queue-paused refresh parks an unattached prep row with the queue cause")
     func queuePausedRefreshRecordsQueueCause() async throws {
         let directory = try makeDirectory("queue-pause")

@@ -96,8 +96,14 @@ printf '== Download lifecycle writes go through the reducer ==\n'
 if git grep -n -E 'setAttemptStatus\(|\.submitStatus\(for:|\.setStatus\((for|ratingKey):' -- 'Labstream/*.swift'; then
   fail "download status written outside the lifecycle reducer; submit a DownloadLifecycleEvent instead"
 fi
-if git grep -n -E '\b(row|current|record)\.status = ' -- 'Labstream/Capabilities/Downloads/*.swift' | grep -v 'P3a-legacy-fixture'; then
+# Any `<name>.status = ` in the downloads capability (no `\b`: BSD/macOS git grep -E lacks it).
+if git grep -n -E '[A-Za-z_][A-Za-z0-9_]*\.status = ' -- 'Labstream/Capabilities/Downloads/*.swift' | grep -v 'P3a-legacy-fixture'; then
   fail "direct download row status assignment; submit a DownloadLifecycleEvent instead"
+fi
+# Lifecycle is assigned only from a reducer result (`next.lifecycle`) or the legacy decode bridge.
+if git grep -n -E '\.lifecycle = ' -- 'Labstream/*.swift' \
+    | grep -v -E '\.lifecycle = (next\.lifecycle|Self\.legacyLifecycle\()' | grep -v 'P3a-legacy-fixture'; then
+  fail "download lifecycle assigned outside the reducer; submit a DownloadLifecycleEvent instead"
 fi
 
 # The shared signing template is intentionally committed. Local overrides and
