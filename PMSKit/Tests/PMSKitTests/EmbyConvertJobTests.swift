@@ -251,14 +251,6 @@ struct EmbyConvertJobTests {
                                               persistedJobID: nil, createdJobID: 7) == .cancel)
     }
 
-    @Test("cleanup queue preserves multiple attempt UUIDs for the same rating key")
-    func cleanupTombstoneIDsAppendWithoutReplacement() {
-        let first = UUID()
-        let second = UUID()
-        #expect(EmbyConvertRecoveryPolicy.appendingCleanupTombstoneID(
-            second, to: [first]) == [first, second])
-    }
-
     @Test("recovery fails closed for zero, multiple, baseline, or inexact matches")
     func recoveryFailsClosed() {
         let fingerprint = EmbyConvertRecoveryPolicy.Fingerprint(

@@ -14,12 +14,12 @@ struct CleanupRunnerManagerTests {
         let directory = try makeDirectory("migrate")
         defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
         let store = DownloadStore(baseDirectory: directory)
-        guard case .committed(let convertible) = store.addEmbyConvertCleanupTombstone(
-                ratingKey: "emby:item", metadata: crashWindowMetadata(ratingKey: "emby:item")),
-              case .committed(let unconvertible) = store.addEmbyConvertCleanupTombstone(
-                ratingKey: "emby:legacy", metadata: OfflineMetadata(
-                    ratingKey: "emby:legacy", title: "Legacy", type: "movie", backendKind: .emby))
-        else { Issue.record("Expected tombstones"); return }
+        let convertible = LegacyEmbyTombstoneFixture.make(
+            ratingKey: "emby:item", metadata: crashWindowMetadata(ratingKey: "emby:item"))
+        let unconvertible = LegacyEmbyTombstoneFixture.make(
+            ratingKey: "emby:legacy", metadata: OfflineMetadata(
+                ratingKey: "emby:legacy", title: "Legacy", type: "movie", backendKind: .emby))
+        try LegacyEmbyTombstoneFixture.write([convertible, unconvertible], to: store)
         let (manager, journal, session) = makeManager(store: store, directory: directory)
         defer { session.invalidateInjectedSessionForTesting() }
         #expect(await waitUntil { manager.startupRecoveryState == .ready })
@@ -48,9 +48,9 @@ struct CleanupRunnerManagerTests {
         let directory = try makeDirectory("receipt")
         defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
         let store = DownloadStore(baseDirectory: directory)
-        guard case .committed(let tombstone) = store.addEmbyConvertCleanupTombstone(
+        let tombstone = LegacyEmbyTombstoneFixture.make(
             ratingKey: "emby:item", metadata: crashWindowMetadata(ratingKey: "emby:item"))
-        else { Issue.record("Expected a tombstone"); return }
+        try LegacyEmbyTombstoneFixture.write([tombstone], to: store)
         let (manager, journal, session) = makeManager(store: store, directory: directory)
         defer { session.invalidateInjectedSessionForTesting() }
         #expect(await waitUntil { manager.startupRecoveryState == .ready })
@@ -63,7 +63,7 @@ struct CleanupRunnerManagerTests {
         #expect(!manager.cleanupIntentIsBlocked(migrated))
 
         // Simulate a removal that did not become durable: the tombstone is still on disk.
-        #expect(store.addEmbyConvertCleanupTombstone(tombstone) == .committed(tombstone))
+        try LegacyEmbyTombstoneFixture.write([tombstone], to: store)
         #expect(manager.cleanupIntentIsBlocked(migrated))
     }
 

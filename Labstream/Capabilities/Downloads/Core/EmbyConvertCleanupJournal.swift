@@ -18,18 +18,15 @@ final class EmbyConvertCleanupJournal: @unchecked Sendable {
         let encode: @Sendable ([Tombstone]) throws -> Data
         /// Full durable replace (B18): temp write, full fsync, rename, directory fsync.
         let commit: @Sendable (Data, URL) throws -> Void
-        let syncDirectory: @Sendable (URL) throws -> Void
 
         init(
             read: @escaping @Sendable (URL) throws -> Data?,
             encode: @escaping @Sendable ([Tombstone]) throws -> Data,
-            commit: @escaping @Sendable (Data, URL) throws -> Void,
-            syncDirectory: @escaping @Sendable (URL) throws -> Void = DurableJournalCommit.liveSyncDirectory
+            commit: @escaping @Sendable (Data, URL) throws -> Void
         ) {
             self.read = read
             self.encode = encode
             self.commit = commit
-            self.syncDirectory = syncDirectory
         }
 
         static let live = Self(
@@ -67,11 +64,6 @@ final class EmbyConvertCleanupJournal: @unchecked Sendable {
         case failed(Failure)
     }
 
-    enum AddResult: Sendable, Equatable {
-        case committed(Tombstone)
-        case failed(Failure)
-    }
-
     enum RemoveResult: Sendable, Equatable {
         case committed(removed: Bool)
         case failed(Failure)
@@ -89,39 +81,6 @@ final class EmbyConvertCleanupJournal: @unchecked Sendable {
     func load() -> LoadResult {
         lock.lock(); defer { lock.unlock() }
         return readLocked()
-    }
-
-    @discardableResult
-    func add(_ tombstone: Tombstone) -> AddResult {
-        lock.lock(); defer { lock.unlock() }
-        var values: [Tombstone]
-        switch readLocked() {
-        case .loaded(let loaded): values = loaded
-        case .failed(let failure): return .failed(failure)
-        }
-        guard !values.contains(where: { $0.id == tombstone.id }) else {
-            // Possibly visible from an earlier ambiguous commit; make it durable before relying on it.
-            do {
-                try persistence.syncDirectory(fileURL)
-            } catch {
-                return .failed(Self.failure(.commit, error))
-            }
-            return .committed(tombstone)
-        }
-        let expectedIDs = EmbyConvertRecoveryPolicy.appendingCleanupTombstoneID(
-            tombstone.id, to: values.map(\.id))
-        values.append(tombstone)
-        assert(values.map(\.id) == expectedIDs)
-        let data: Data
-        do {
-            data = try persistence.encode(values)
-        } catch {
-            return .failed(Self.failure(.encode, error))
-        }
-        if let error = DurableJournalCommit.commit(data, to: fileURL, using: persistence.commit) {
-            return .failed(Self.failure(.commit, error))
-        }
-        return .committed(tombstone)
     }
 
     @discardableResult

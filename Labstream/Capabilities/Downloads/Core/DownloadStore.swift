@@ -308,7 +308,6 @@ final class DownloadStore: @unchecked Sendable {
     typealias EmbyConvertCleanupTombstone = EmbyConvertCleanupJournal.Tombstone
     typealias EmbyCleanupPersistence = EmbyConvertCleanupJournal.Persistence
     typealias EmbyCleanupLoadResult = EmbyConvertCleanupJournal.LoadResult
-    typealias EmbyCleanupAddResult = EmbyConvertCleanupJournal.AddResult
     typealias EmbyCleanupRemoveResult = EmbyConvertCleanupJournal.RemoveResult
 
     struct StaticRangeRecoveryEvidence: Sendable, Equatable {
@@ -1165,22 +1164,6 @@ final class DownloadStore: @unchecked Sendable {
     /// mistake an unreadable canonical queue for empty and erase orphan-cleanup intent.
     func loadEmbyConvertCleanupTombstones() -> EmbyCleanupLoadResult {
         embyCleanupJournal.load()
-    }
-
-    @discardableResult
-    func addEmbyConvertCleanupTombstone(ratingKey: String, metadata: OfflineMetadata)
-        -> EmbyCleanupAddResult {
-        addEmbyConvertCleanupTombstone(EmbyConvertCleanupTombstone(
-            id: UUID(), ratingKey: ratingKey, metadata: metadata
-        ))
-    }
-
-    /// Persist an EXISTING tombstone value (same id). Used to retry the durable write for
-    /// tombstones that were deferred in memory after a delete()-time persist failure.
-    @discardableResult
-    func addEmbyConvertCleanupTombstone(_ tombstone: EmbyConvertCleanupTombstone)
-        -> EmbyCleanupAddResult {
-        embyCleanupJournal.add(tombstone)
     }
 
     @discardableResult
