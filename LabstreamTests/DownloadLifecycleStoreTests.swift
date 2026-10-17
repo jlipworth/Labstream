@@ -351,6 +351,14 @@ struct DownloadLifecycleStoreTests {
                                            facts: DownloadRowFacts(route: .staticRange))
             #expect(FileManager.default.fileExists(atPath: body.path))
             #expect(store.lifecycleFacts(for: key).checkpoint == .none)
+            // Every same-attempt reader sees no body: no checkpoint, no recovery evidence, no
+            // promotion source.
+            #expect(store.durableStaticRangeCheckpointSize(for: key) == nil)
+            #expect(store.staticRangeRecoveryEvidence().allSatisfy { $0.ratingKey != key.ratingKey })
+            if case .immediate = store.submitValidatedPromotion(
+                for: key, terminalStatus: .unverified) {} else {
+                Issue.record("a condemned body must never be promoted")
+            }
 
             let retry = DownloadAttemptKey(ratingKey: key.ratingKey,
                                            attemptID: DownloadAttemptID(uuid: UUID()))

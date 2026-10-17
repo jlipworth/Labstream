@@ -1434,7 +1434,16 @@ final class DownloadStore: @unchecked Sendable {
         return .promoted(key, bytes: bytes, status: terminalStatus)
     }
 
+    /// The exact attempt's working body path. A condemned body (P3a `bodyCondemned`) has none:
+    /// every checkpoint reader, checkpoint write, recovery finalization and promotion goes through
+    /// here, so bytes a failed rename/delete left behind are invisible to all of them.
     private func workingRelativePath(for row: Row, key: DownloadAttemptKey) -> String? {
+        guard !row.history.isBodyCondemned else { return nil }
+        return uncheckedWorkingRelativePath(for: row, key: key)
+    }
+
+    /// The working path ignoring condemnation; only condemnation itself needs it.
+    private func uncheckedWorkingRelativePath(for row: Row, key: DownloadAttemptKey) -> String? {
         guard Self.isSafeOneLevelRelativePath(row.relativePath) else { return nil }
         let expected = Self.attemptStagingRelativePath(
             for: key, stableRelativePath: row.relativePath)
@@ -5222,7 +5231,7 @@ final class DownloadStore: @unchecked Sendable {
     func condemnWorkingBody(at url: URL, for key: DownloadAttemptKey) -> URL? {
         lock.withLock {
             guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
-                  workingRelativePath(for: row, key: key)
+                  uncheckedWorkingRelativePath(for: row, key: key)
                     .map({ baseDirectory.appendingPathComponent($0).standardizedFileURL })
                     == url.standardizedFileURL else { return nil }
             let condemned = baseDirectory.appendingPathComponent(Self.attemptStagingRelativePath(
