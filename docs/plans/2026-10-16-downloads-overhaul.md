@@ -1158,6 +1158,53 @@ migration therefore means:
 - journaling dropped rows' obligations;
 - bumping the version.
 
+### P3b revision 3 (2026-10-17, after P3a)
+
+P3a shipped authoritative lifecycle and history inside v4. This revision updates the protocol below
+for what P3a established and deferred. Where it conflicts with the earlier text, it wins.
+
+- **Admission.** A clean v4 index (it decodes with unique keys and no malformed rows) probes as
+  `.migratable(from: 4)`, and admission reports `.requiresMigration(from: 4)`. Anything else that
+  is v4 stays blocked as unreadable or malformed, as today.
+- **Drain.** The manager reuses the existing destructive-reset drain: the background session must
+  reach an empty task-list fixed point before the store migrates. No new drain primitive is
+  needed. While migration is incomplete, admission stays closed, so no session, manager or
+  cleanup-runner writer exists.
+- **Settle pending work.** Before migrating, the store runs the existing v4 artifact recovery to
+  completion: queued intents, pending validated promotions, and deletion-pending capsules. Each
+  canonical index write it makes is journaled in the receipt as `(beforeDigest, afterDigest)`.
+  Anything still unresolved blocks the migration fail-closed (`.migrationBlocked`) with the bytes
+  untouched.
+- **D1.**
+  - **Kept rows:** `complete` and `unverified`. An unverified row keeps its P3a reason, or gets
+    `migratedUnknown` if it has none.
+  - **Dropped rows:** every other lifecycle (planned, admitted, serverPrep, transferring,
+    finalizing, paused, failed).
+  - **Server obligations** of dropped rows are journaled as abandonments through the existing P2
+    producers: Plex optimize item, Emby Convert job, active encoder. The runner treats their
+    `rowState` as `.unknown` until the v5 commit is proven and loaded (R2-7).
+- **Commit.**
+  1. Write the candidate to a sibling file.
+  2. Persist its digest in the receipt.
+  3. Rename it over `index.json` and fsync the directory.
+  4. Prove the commit by digest.
+
+  Recovery precedence is unchanged (P3b.2).
+- **Reclaim.** After the commit, this deletes:
+  - files referenced only by dropped rows (working bodies, resume blobs, held segments, side
+    assets no kept row references);
+  - unreferenced attempt staging, which includes P3a's renamed condemned bodies.
+
+  A reclaim failure never blocks the commit or cleanup. The receipt step resumes on the next
+  launch.
+- **P3a deferrals answered here:**
+  - Retired condemned bodies are reclaimed by the migration sweep, and by P6 afterwards.
+  - Reconcile deletions as journaled artifact intents: proposed to stay deferred to P6 (physical
+    facet split), not added to P3b. A new intent case is safe only once v5 makes the index
+    unreadable to older binaries, and P3b should stay a pure transaction.
+- **Downgrade.** The P1 guard (#371) classifies v5 as unreadable and keeps it. Release ordering
+  is unchanged: a build containing the guard must ship before any v5 build.
+
 ### P3b.1 Probe
 
 `currentSchemaVersion = 5`, with a new `.migratable(from: 4)` probe case.
