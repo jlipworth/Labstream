@@ -49,10 +49,8 @@ struct P6PathLeaseTests {
             competitorFinished.signal()
         }
         let competedWhileAppendHeld = await p6Signal(competitorFinished, seconds: 0.3)
-        withKnownIssue("P6 red pin: P6.4 integration — append has not leased its path before \(reconcile ? "reconcile" : "Retry")") {
-            #expect(FileManager.default.fileExists(atPath: working.path))
-            if !reconcile { #expect(store.record(for: key.ratingKey)?.attemptID == key.attemptID) }
-        }
+        #expect(FileManager.default.fileExists(atPath: working.path))
+        if !reconcile { #expect(store.record(for: key.ratingKey)?.attemptID == key.attemptID) }
         hold.release.signal()
         try #require(await p6Signal(appendFinished))
         if !competedWhileAppendHeld { try #require(await p6Signal(competitorFinished)) }
@@ -60,9 +58,7 @@ struct P6PathLeaseTests {
             let successorKey = DownloadAttemptKey(ratingKey: successor.ratingKey, attemptID: successor.attemptID!)
             let copied = try #require(store.attemptWorkingFileURL(for: successorKey))
             let bytes = try Data(contentsOf: copied)
-            withKnownIssue("P6 red pin: P6.4 integration — append has not leased its path before Retry copy") {
-        #expect(bytes == Data([1, 2, 3, 4]))
-            }
+            #expect(bytes == Data([1, 2, 3, 4]))
         }
     }
     // Lead-owned half: exercise the store with an actual lease, independent of whether the
