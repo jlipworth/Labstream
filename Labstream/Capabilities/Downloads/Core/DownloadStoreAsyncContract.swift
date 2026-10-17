@@ -24,7 +24,7 @@ struct DownloadStoreDeadline: Sendable, Equatable {
 /// P6.2/P6.3 replace the compatibility worker with cheap lock-linearized submissions.
 final class DownloadStoreWork<Result: Sendable>: @unchecked Sendable {
     let epoch = UUID()
-    private let condition = NSCondition()
+    private let lock = NSLock()
     private var result: Result?
     private let workerQueue = DispatchQueue(label: "org.labstream.download-store-work", qos: .utility)
 
@@ -33,31 +33,15 @@ final class DownloadStoreWork<Result: Sendable>: @unchecked Sendable {
         self.timeoutResult = timeoutResult
         workerQueue.async { [self] in
             let value = operation()
-            condition.lock()
+            lock.lock()
             result = value
-            condition.broadcast()
-            condition.unlock()
-        }
-    }
-
-    /// Worker-only compatibility for code that has no typed expiry value. Production store
-    /// boundaries use the typed overload below; the frozen P6.1 bridge remains source-compatible.
-    func resolve(deadline: DownloadStoreDeadline) async -> Result {
-        if let timeoutResult { return await observe(deadline: deadline) ?? timeoutResult }
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async { [self] in
-                condition.lock()
-                while result == nil { condition.wait() }
-                let value = result!
-                condition.unlock()
-                continuation.resume(returning: value)
-            }
+            lock.unlock()
         }
     }
 
     /// Expiry releases only this waiter. The worker retains its epoch until physical completion.
     private func observedResult() -> Result? {
-        condition.lock(); defer { condition.unlock() }
+        lock.lock(); defer { lock.unlock() }
         return result
     }
 
@@ -141,12 +125,6 @@ extension DownloadStore {
 
     func resolveArtifact(_ ticket: DownloadArtifactLifecycleCoordinator.Ticket,
                          deadline: DownloadStoreDeadline) async -> DownloadArtifactLifecycleCoordinator.FlushResult {
-        await artifactResolutionAdapter(ticket, deadline: deadline)
-    }
-
-    private func artifactResolutionAdapter(_ ticket: DownloadArtifactLifecycleCoordinator.Ticket,
-                                          deadline: DownloadStoreDeadline) async
-        -> DownloadArtifactLifecycleCoordinator.FlushResult {
         await resolveArtifactDeadline(ticket, deadline: deadline)
     }
 
@@ -265,16 +243,6 @@ extension DownloadStore {
             deadline: .after(30), timedOut: { .persistenceFailed(self.timeoutFailure(self.currentPersistenceTicket())) })
     }
 
-    /// Session callbacks return onto the existing range queue. Callers must check exact attempt,
-    /// train epoch and halt fence THERE before append/refill/publication; acceptance is insufficient.
-    func resolve(_ submission: AttemptMutationSubmission, deadline: DownloadStoreDeadline,
-                 returningOn queue: DispatchQueue,
-                 completion: @escaping @Sendable (AttemptMutationResult) -> Void) {
-        Task {
-            let result = await resolve(submission, deadline: deadline)
-            queue.async { completion(result) }
-        }
-    }
 }
 
 /// Completion adapter shared by every typed resolve family above (resume/artifact/promotion/
