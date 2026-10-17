@@ -82,6 +82,27 @@ struct DownloadLifecycleStoreTests {
         }
     }
 
+    /// P4.8 precedence: a stale flag on a row whose start already ran (bytes, a Plex queue item)
+    /// never sends it back through a first start.
+    @Test("A stale season flag never overrides start evidence")
+    func staleFlagNeverOverridesStartEvidence() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            var queued = OfflineMetadata(ratingKey: "plex:prep", title: "Ep", type: "episode")
+            queued.seasonPlannerPendingAdmission = true
+            queued.optimizeQueueTitle = "Ep [Labstream 0000]"
+            let prep = try seed("plex:prep", status: .queued, metadata: queued, in: store)
+            var paused = OfflineMetadata(ratingKey: "plex:partial", title: "Ep", type: "episode")
+            paused.seasonPlannerPendingAdmission = true
+            paused.resumeDataRelativePath = "resume/partial.blob"
+            let partial = try seed("plex:partial", status: .paused, metadata: paused, in: store)
+            #expect(store.lifecycleState(for: prep)?.lifecycle == .admitted)
+            #expect(store.lifecycleState(for: prep)?.history.admissionIntent == nil)
+            #expect(store.lifecycleState(for: partial)?.lifecycle == .paused)
+            #expect(store.lifecycleState(for: partial)?.history.admissionIntent == nil)
+        }
+    }
+
     /// A P3b index wrote a flagged retry row as `planned` + `.failed`; it loads as a failed row
     /// waiting for its retry.
     @Test("A P3b planned retry row loads as failed with a retry request")

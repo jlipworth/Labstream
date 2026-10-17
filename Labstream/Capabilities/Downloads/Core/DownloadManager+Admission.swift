@@ -41,7 +41,10 @@ extension DownloadManager {
         var occupants: [DownloadAdmissionOccupant] = []
         var observed = Set<String>()
         for record in snapshot where occupiesAdmissionLane(record) {
-            occupants.append(.init(id: record.ratingKey, lane: admissionLane(for: record)))
+            // A supervised start's lane wins over metadata: a lane switch (P4.5) is authoritative
+            // before the route is stamped on the row.
+            let lane = admission.supervised[record.ratingKey]?.lane ?? admissionLane(for: record)
+            occupants.append(.init(id: record.ratingKey, lane: lane))
             observed.insert(record.ratingKey)
         }
         for (id, supervision) in admission.supervised where !observed.contains(id) {
@@ -104,7 +107,8 @@ extension DownloadManager {
         // Automatic static resumes keep a pending-resume marker while they wait for a lane; drain
         // them when the static lane has room after this pass's grants.
         if hasPendingStaticRangeResumes,
-           admissionHasRoom(for: "\u{1F}static-drain", lane: .staticFile) {
+           admissionHasRoom(for: "\u{1F}static-drain", lane: .staticFile,
+                            exemptFromQueuePause: true) {
             Task { @MainActor [weak self] in self?.drainPendingStaticRangeResumes() }
         }
     }
@@ -192,13 +196,19 @@ extension DownloadManager {
                     && applyLifecycleEvent(.admissionRequested(.retryRequested), for: key,
                                            context: "admission_deferred")
             }
-            if deferred { noteAdmissionDeferral(id, reason: "start_unproven") }
+            // Back off even when the deferral write failed, so a failing volume is not retried
+            // in a tight loop.
+            noteAdmissionDeferral(id, reason: deferred ? "start_unproven" : "defer_write_failed")
         case .planned?:
             noteAdmissionDeferral(id, reason: "still_planned")
         case .paused?:
             let cause = store.lifecycleState(for: key)?.history.pauseCause
             guard cause != DownloadPauseCause.user else {
+                // The granted start did not move the row: end the request rather than re-grant it.
                 admission.clearRequest(id)
+                if record.admissionIntent != nil {
+                    _ = applyLifecycleEvent(.admissionWithdrawn, for: key, context: "admission_no_start")
+                }
                 return
             }
             // Parked by the start itself (backend not ready, session mismatch): retry with backoff.
@@ -207,15 +217,34 @@ extension DownloadManager {
                                        context: "admission_deferred") {
                 noteAdmissionDeferral(id, reason: "parked")
             }
-        case .failed?, nil:
-            // A definitive refusal (signed out, source gone, storage) stays a visible failure and
-            // no longer waits (the reducer's failure clears the intent; withdraw any leftover).
+        case .failed?:
+            // A transient negotiation failure (server error, network) waits and retries with
+            // backoff, a bounded number of times; a definitive refusal (signed out, source gone,
+            // storage, validation) stays a visible failure and no longer waits.
+            let reason = store.lifecycleState(for: key)?.history.lastFailure
+            let deferrals = admission.requestStates[id]?.deferrals ?? 0
+            if reason == .server || reason == .network,
+               deferrals < Self.maximumTransientAdmissionDeferrals,
+               applyLifecycleEvent(.admissionRequested(.retryRequested), for: key,
+                                   context: "admission_transient_failure") {
+                noteAdmissionDeferral(id, reason: "transient_failure")
+                return
+            }
+            admission.clearRequest(id)
+            if record.admissionIntent != nil {
+                _ = applyLifecycleEvent(.admissionWithdrawn, for: key, context: "admission_refused")
+            }
+        case nil:
             admission.clearRequest(id)
             if record.admissionIntent != nil {
                 _ = applyLifecycleEvent(.admissionWithdrawn, for: key, context: "admission_refused")
             }
         }
     }
+
+    /// A start that keeps failing transiently stops waiting after this many deferrals (about
+    /// three minutes of backoff) and stays a visible, retryable failure.
+    static let maximumTransientAdmissionDeferrals = 6
 
     private func noteAdmissionDeferral(_ id: String, reason: String) {
         admission.recordDeferral(id)
@@ -252,6 +281,9 @@ extension DownloadManager {
                           exemptFromQueuePause: Bool = false) -> Bool {
         guard startupRecoveryState == .ready, admission.recoveryComplete,
               seasonPlanCommitsInFlight == 0, admission.supervised[id] == nil else { return false }
+        // A row that already holds a lane (a range train rebuilding its request, an adopted
+        // remainder) continues under its own admission.
+        if let current = store.record(for: id), occupiesAdmissionLane(current) { return true }
         let request = DownloadAdmissionRequest(id: id, lane: lane, origin: .user,
                                                requestedAt: admission.now())
         return !DownloadAdmissionPolicy.grants(
@@ -289,18 +321,38 @@ extension DownloadManager {
         let id = DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: backend)
         let lane = DownloadAdmissionPolicy.lane(
             backend: backend, downloadLane: DownloadChoicePolicy.downloadLane(for: choice))
-        if store.record(for: id) == nil, !admissionHasRoom(for: id, lane: lane) {
+        if !admissionHasRoom(for: id, lane: lane) {
+            if let existing = store.record(for: id) {
+                // An existing parked row waits through its own retry; anything else is refused
+                // visibly rather than started past the caps or Pause All.
+                if existing.lifecycle == .paused || existing.lifecycle == .failed
+                    || existing.lifecycle == .planned {
+                    requestAdmission(for: existing, origin: .user)
+                } else {
+                    lastError[id] = .transferFailed(
+                        "Every download slot is busy. Try again when a download finishes.")
+                }
+                refreshRecords()
+                return
+            }
             let plan = SeasonEpisodeDownloadPlan(
                 item: item, backend: backend, choice: choice, mediaIndex: mediaIndex,
                 partIndex: partIndex, audioStreamIndex: audioStreamIndex,
                 mediaSourceIDOverride: mediaSourceIDOverride, estimatedBytes: nil, shouldStart: true)
-            if let seed = plannedSeedRecord(for: plan),
-               case .applied = await persistPlannedSeeds([seed]) {
-                admission.noteRequest(id, origin: .user)
+            guard let seed = plannedSeedRecord(for: plan),
+                  case .applied = await persistPlannedSeeds([seed]) else {
+                recordDownloadDiagnostic("downloads.admission_wait_save_failed", fields: [
+                    "download_id": .identifier(id),
+                ])
+                lastError[id] = .transferFailed(
+                    "The download could not be queued. Check available storage and try again.")
                 refreshRecords()
-                scheduleAdmissionPump()
                 return
             }
+            admission.noteRequest(id, origin: .user)
+            refreshRecords()
+            scheduleAdmissionPump()
+            return
         }
         let generation = admission.beginSupervision(id, lane: lane, origin: .user)
         switch backend {
@@ -324,20 +376,60 @@ extension DownloadManager {
     /// lane has room; the supervised reservation then moves to that lane. When it is full the
     /// caller ends the start without work, and admission defers the row to retry later.
     func admissionMayEnterServerPrep(_ ratingKey: String) -> Bool {
+        admissionMayEnter(.serverPreparation, ratingKey: ratingKey)
+    }
+
+    func admissionMayEnter(_ lane: DownloadAdmissionLane, ratingKey: String) -> Bool {
+        if admission.supervised[ratingKey]?.lane == lane { return true }
         guard DownloadAdmissionPolicy.mayEnter(
-            .serverPreparation, id: ratingKey, occupants: admissionOccupants(store.records)) else {
+            lane, id: ratingKey, occupants: admissionOccupants(store.records)) else {
             recordDownloadDiagnostic("downloads.admission_lane_full", fields: [
                 "download_id": .identifier(ratingKey),
-                "lane": .label(DownloadAdmissionLane.serverPreparation.rawValue),
+                "lane": .label(lane.rawValue),
             ])
             return false
         }
         if let supervision = admission.supervised[ratingKey] {
-            admission.switchLane(ratingKey, generation: supervision.generation,
-                                 to: .serverPreparation)
+            admission.switchLane(ratingKey, generation: supervision.generation, to: lane)
         }
         scheduleAdmissionPump()
         return true
+    }
+
+    /// B69: re-plan an Original-quality first start whose planner probe failed. Returns nil when
+    /// the start must end without work: the probe failed again (admission defers it), the
+    /// original is definitively unsupported (the row fails visibly), or the resolved lane is full.
+    func resolveUnresolvedOriginalRoute(_ record: DownloadRecord, item: MediaItem,
+                                        backend: DownloadBackendKind,
+                                        planner: DownloadItemPlanner) async -> DownloadIntentChoice? {
+        let options = await planner.options(
+            for: item, preferredAudioLanguage: UserDefaults.standard.string(
+                forKey: PlaybackPreferences.Keys.preferredAudioLanguage),
+            existingVersionDiscovery: .fetchOnce, backend: backend)
+        guard let key = attemptKey(for: record), store.attemptAdmitsWork(key) else { return nil }
+        let choice: DownloadIntentChoice
+        switch SeasonDownloadOriginalQualityPolicy.resolve(
+            hasOriginal: options.original != nil,
+            plexOriginalPreset: backend == .plex
+                ? DownloadPresetPolicy.plexOriginalQualityPreset(in: options.presets) : nil,
+            hasCompatibleRemux: options.compatibleRemux != nil,
+            probeFailed: options.probeFailed) {
+        case .original: choice = .original
+        case .optimize(let target): choice = .optimize(targetName: target)
+        case .compatibleRemux: choice = .optimizeCompatible
+        case .unresolved:
+            return nil
+        case .unsupported:
+            lastError[record.ratingKey] = .transferFailed(
+                "This episode has no original that plays offline.")
+            _ = applyLifecycleEvent(.transferFailed(.validation), for: key,
+                                    context: "admission_original_unsupported")
+            return nil
+        }
+        let lane = DownloadAdmissionPolicy.lane(
+            backend: backend, downloadLane: DownloadChoicePolicy.downloadLane(for: choice))
+        guard admissionMayEnter(lane, ratingKey: record.ratingKey) else { return nil }
+        return choice
     }
 
     /// Pause and delete end a row's supervised start and forget its request and exemption.

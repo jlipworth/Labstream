@@ -595,6 +595,10 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// Durable one-time season-planner admission marker. It belongs to the ordinary episode row,
     /// not a batch entity, and is cleared before that row enters its normal backend lane.
     public var seasonPlannerPendingAdmission: Bool?
+    /// B69 (P4): a planned Original-quality row whose probe failed. Its route is resolved again at
+    /// admission (original, Plex original preset or compatible remux) instead of trusting the
+    /// placeholder `.original` it was saved with.
+    public var admissionRouteUnresolved: Bool?
     /// #169: HTTP validator (`ETag`, else `Last-Modified`) captured from the first static byte-range
     /// range body. Sent as `If-Range` on later static Range requests so that if the server-side
     /// resource changes mid-download the server returns the whole NEW resource (200) — which the
@@ -680,6 +684,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 embyConvertSnapshotIDs: [String]? = nil,
                 serverPreparedVersion: Bool? = nil,
                 seasonPlannerPendingAdmission: Bool? = nil,
+                admissionRouteUnresolved: Bool? = nil,
                 rangeValidator: String? = nil,
                 downloadAttemptID: String? = nil,
                 heldRangeSegments: [OfflineHeldRangeSegment]? = nil) {
@@ -751,6 +756,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.embyConvertSnapshotIDs = embyConvertSnapshotIDs
         self.serverPreparedVersion = serverPreparedVersion
         self.seasonPlannerPendingAdmission = seasonPlannerPendingAdmission
+        self.admissionRouteUnresolved = admissionRouteUnresolved
         self.rangeValidator = rangeValidator
         self.downloadAttemptID = downloadAttemptID
         self.heldRangeSegments = heldRangeSegments
@@ -834,6 +840,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         serverPreparedVersion = try c.decodeIfPresent(Bool.self, forKey: .serverPreparedVersion)
         seasonPlannerPendingAdmission = try c.decodeIfPresent(
             Bool.self, forKey: .seasonPlannerPendingAdmission)
+        admissionRouteUnresolved = try c.decodeIfPresent(Bool.self, forKey: .admissionRouteUnresolved)
         rangeValidator = try c.decodeIfPresent(String.self, forKey: .rangeValidator)
         downloadAttemptID = try c.decodeIfPresent(String.self, forKey: .downloadAttemptID)
         heldRangeSegments = try c.decodeIfPresent([OfflineHeldRangeSegment].self, forKey: .heldRangeSegments)

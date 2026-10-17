@@ -2391,7 +2391,10 @@ public final class DownloadManager {
         // P4: an automatic static resume takes a lane like any other start. Without room it keeps
         // its pending-resume marker; the admission pump drains pending resumes when the static
         // lane frees.
-        guard admissionHasRoom(for: ratingKey, lane: .staticFile) else {
+        guard admissionHasRoom(
+            for: ratingKey, lane: .staticFile,
+            exemptFromQueuePause: admission.isExempt(ratingKey)
+                || staticRangeRecovery.wasManuallyResumedWhileQueuePaused(ratingKey)) else {
             recordDownloadDiagnostic("downloads.range_resume_waiting_for_lane", fields: [
                 "download_id": .identifier(ratingKey),
                 "reason": .label(reason),
@@ -2666,6 +2669,15 @@ public final class DownloadManager {
                 for: retryAttemptKey).map { $0 > 0 } == true ? .staticCheckpoint : .freshAttempt
             guard applyLifecycleEvent(
                 .retry(staticMode), for: retryAttemptKey, context: "retry_static") else {
+                retryState.removeRetrying(ratingKey)
+                return nil
+            }
+        } else if store.lifecycleState(for: retryAttemptKey)?.lifecycle == .paused {
+            // P4: a paused forward-only stream restarts fresh. Left `.paused`, the backend chain's
+            // continuation guard reads the Resume as cancelled and silently no-ops (prep, Convert
+            // and resume-blob rows returned above with their own transitions).
+            guard applyLifecycleEvent(
+                .retry(.freshAttempt), for: retryAttemptKey, context: "retry_paused_fresh") else {
                 retryState.removeRetrying(ratingKey)
                 return nil
             }
@@ -3049,6 +3061,9 @@ public final class DownloadManager {
                 && backend == .emby
                 && record.metadata?.resolvedDownloadLane() == .optimize
                 && !activeJobs.contains(record.ratingKey)
+                // P4: a failed row waiting for its retry is admitted by the coordinator, never
+                // reattached here past the caps.
+                && !isWaitingForAdmission(record)
         }
         // P2: legacy tombstones are migrated into the cleanup journal at launch and executed by
         // the cleanup runner; this sweep only resumes Convert rows.

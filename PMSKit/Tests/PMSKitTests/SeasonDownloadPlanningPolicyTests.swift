@@ -80,5 +80,16 @@ struct SeasonDownloadPlanningPolicyTests {
     @Test func aFailedProbeIsPlannedNotFailedAsUnsupported() {
         #expect(SeasonDownloadOriginalQualityPolicy.shouldStartUnmatchedOriginal(probeFailed: true))
         #expect(!SeasonDownloadOriginalQualityPolicy.shouldStartUnmatchedOriginal(probeFailed: false))
+        let P = SeasonDownloadOriginalQualityPolicy.self
+        #expect(P.resolve(hasOriginal: true, plexOriginalPreset: "orig", hasCompatibleRemux: true,
+                          probeFailed: true) == .original)
+        #expect(P.resolve(hasOriginal: false, plexOriginalPreset: "orig", hasCompatibleRemux: true,
+                          probeFailed: false) == .optimize(targetName: "orig"))
+        #expect(P.resolve(hasOriginal: false, plexOriginalPreset: nil, hasCompatibleRemux: true,
+                          probeFailed: true) == .compatibleRemux)
+        #expect(P.resolve(hasOriginal: false, plexOriginalPreset: nil, hasCompatibleRemux: false,
+                          probeFailed: true) == .unresolved)
+        #expect(P.resolve(hasOriginal: false, plexOriginalPreset: nil, hasCompatibleRemux: false,
+                          probeFailed: false) == .unsupported)
     }
 }

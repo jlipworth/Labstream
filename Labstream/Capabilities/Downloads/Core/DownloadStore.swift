@@ -456,20 +456,41 @@ final class DownloadStore: @unchecked Sendable {
             guard metadata?.seasonPlannerPendingAdmission == true else { return }
             metadata?.seasonPlannerPendingAdmission = nil
             guard !deletionPending, !promotionPending else { return }
+            // Transfer or server-job evidence means the start already began: a stale flag never
+            // routes that attempt back through a first start (its retry resumes the work).
+            let started = hasStartEvidence
             switch lifecycle {
             case .admitted, .planned:
-                // Queued and flagged: the first start never began.
-                lifecycle = .planned
-                history.admissionIntent = history.admissionIntent ?? .seasonPlanned
+                if started {
+                    if lifecycle == .planned { lifecycle = .admitted }
+                } else {
+                    // Queued and flagged: the first start never began.
+                    lifecycle = .planned
+                    history.admissionIntent = history.admissionIntent ?? .seasonPlanned
+                }
             case .failed:
                 // A failed row the planner queued for retry stays failed until its retry runs.
                 history.admissionIntent = history.admissionIntent ?? .retryRequested
             case .paused:
-                // Paused while waiting (B65): Resume re-requests the same first start.
-                history.admissionIntent = history.admissionIntent ?? .seasonPlanned
+                // Paused while waiting (B65): Resume re-requests the same first start. A paused
+                // row with work resumes through its ordinary retry instead.
+                if !started { history.admissionIntent = history.admissionIntent ?? .seasonPlanned }
             case .serverPrep, .transferring, .finalizing, .complete, .unverified:
                 break
             }
+        }
+
+        /// Bytes, a resume blob, held range bodies, a server-prepared handoff, a Plex queue item or
+        /// an Emby Convert job: proof that this attempt's start already ran.
+        var hasStartEvidence: Bool {
+            if bytes > 0 || !heldRangeBodyDeletionIntents.isEmpty { return true }
+            guard let metadata else { return false }
+            return metadata.resumeDataRelativePath != nil
+                || !(metadata.heldRangeSegments ?? []).isEmpty
+                || metadata.optimizeQueueTitle != nil
+                || metadata.embyConvertJobID != nil
+                || metadata.hasEmbyConvertRecoveryIdentity
+                || (metadata.serverPreparedVersion == true && metadata.optimizeTargetName != nil)
         }
         // D5: snapshot of the source item + the locally-cached poster path. Both are
         // optional and decoded with `decodeIfPresent` so rows written before D5 load.
