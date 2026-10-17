@@ -4665,6 +4665,9 @@ final class DownloadStore: @unchecked Sendable {
         if row.status == .complete || row.status == .unverified {
             return fileSize(relativePath: row.relativePath) ?? 0
         }
+        // A condemned current owner has an empty usable checkpoint, not a missing owner: deferred
+        // Retry and backend-ready resume must restart it from zero rather than give up (P3a).
+        if row.history.isBodyCondemned { return 0 }
         guard let workingRelative = workingRelativePath(for: row, key: key) else { return nil }
         return fileSize(relativePath: workingRelative) ?? 0
     }
