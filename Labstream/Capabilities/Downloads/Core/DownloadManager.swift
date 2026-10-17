@@ -687,7 +687,8 @@ public final class DownloadManager {
         startupRecoveryRetryTask?.cancel()
         startupRecoveryRetryTask = nil
         startupRecoveryState = .preparing
-        continueStartupRecovery(with: store.startupIndexAdmission())
+        // B16/B21: re-examine the store instead of replaying the admission cached at launch.
+        continueStartupRecovery(with: store.reprobeBlockedIndex())
     }
 
     private func scheduleTransientStartupRecoveryRetry() {
@@ -726,6 +727,11 @@ public final class DownloadManager {
             } else {
                 activateDownloadsForCurrentStore()
             }
+        case .seasonCommitIndeterminate:
+            blockDownloadStartup(
+                affectedRatingKeys: [],
+                message: Self.seasonCommitIndeterminateMessage,
+                reason: "season_plan_persistence_indeterminate")
         case .malformedCurrentRows(let ratingKeys):
             blockDownloadStartup(
                 affectedRatingKeys: Set(ratingKeys),
@@ -857,9 +863,13 @@ public final class DownloadManager {
         pauseQueue()
         blockDownloadStartup(
             affectedRatingKeys: [],
-            message: "Download storage is inconsistent. Downloads are paused for safety.",
+            message: Self.seasonCommitIndeterminateMessage,
             reason: "season_plan_persistence_indeterminate")
     }
+
+    /// B21: an indeterminate season commit is not unreadable storage; say what Retry does.
+    static let seasonCommitIndeterminateMessage =
+        "A season download plan could not be confirmed as saved. Downloads are paused; Retry Recovery saves it again."
 
     private static func startupPersistenceFailureLabel(
         _ result: DownloadStore.PersistenceFlushResult
