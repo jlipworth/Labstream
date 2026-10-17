@@ -77,10 +77,7 @@ flowchart TD
 
 These pages describe the current source tree: how to build it, how to report problems safely, and
 how the major subsystems fit together. Repository-internal material stays outside the published
-navigation in explicit lanes: active plans under `docs/plans/`, unresolved investigations under
-`docs/research/`, immutable observations under `docs/evidence/`, and completed or superseded
-context under `docs/archive/`. The repository-root manual checklist remains a deliberate
-operational exception and is linked above from GitHub.
+navigation; see [Documentation information architecture](CONTRIBUTING.md#documentation-information-architecture).
 
 ## Repository
 

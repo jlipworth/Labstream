@@ -5,7 +5,6 @@ This lane contains privacy-safe, immutable observations used to support decision
 ## What belongs here
 
 - dated audit inventories, coverage matrices, and retained validation observations under [`audits/`](audits/);
-- small, reviewed profiling summaries under [`profiling/`](profiling/);
 - enough provenance to understand the source revision, environment, method, and limits of the observation.
 
 Do not put active implementation plans here (`docs/plans/`), unresolved questions here (`docs/research/`), resolved branch reviews here (`docs/archive/reviews/`), raw logs/traces/screenshots, or canonical product and contributor instructions.
