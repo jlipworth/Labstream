@@ -1279,6 +1279,10 @@ final class AuthManager {
     /// Maximum candidate servers whose connections are probed at once during discovery.
     static let plexServerProbeWindow = 4
 
+    /// How long better-ranked connections of one server may still answer after a direct
+    /// connection has answered (see `firstReachable`).
+    nonisolated static let plexConnectionProbeGrace: Duration = .milliseconds(500)
+
     /// Performs all suspension-prone Plex work without touching runtime or secure state.
     /// Callers can generation-check the result and then commit synchronously on MainActor.
     private func discoverPlexSession(token accountToken: String,
@@ -1432,11 +1436,20 @@ final class AuthManager {
     private func firstReachable(_ ranked: [PlexConnection],
                                 token: String,
                                 expectedMachineIdentifier: String?) async -> (url: URL, isLocal: Bool)? {
-        let candidates: [(base: URL, isLocal: Bool)] = ranked.compactMap { conn in
-            URL(string: conn.uri).map { ($0, conn.local) }
+        let candidates: [(base: URL, isLocal: Bool, relay: Bool)] = ranked.compactMap { conn in
+            URL(string: conn.uri).map { ($0, conn.local, conn.relay) }
         }
-        let winner = await PreferredProbe.firstSuccess(count: candidates.count) { index -> (URL, Bool)? in
-            let (base, isLocal) = candidates[index]
+        // Prefer local over remote, but do not let an advertised LAN address that is not
+        // routable from this network hold every launch for the full probe timeout: once a
+        // direct connection answers, better-ranked ones get a short grace to answer too.
+        // A working LAN answers well inside it. Relays (bandwidth-limited) never win early.
+        let relayFlags = candidates.map(\.relay)
+        let earlyAcceptance = PreferredProbe.EarlyAcceptance(grace: Self.plexConnectionProbeGrace) { index in
+            !relayFlags[index]
+        }
+        let winner = await PreferredProbe.firstSuccess(count: candidates.count,
+                                                       earlyAcceptance: earlyAcceptance) { index -> (URL, Bool)? in
+            let (base, isLocal, _) = candidates[index]
             var req = URLRequest(url: base.appendingPathComponent("identity"))
             req.setValue(token, forHTTPHeaderField: "X-Plex-Token")
             req.setValue("application/json", forHTTPHeaderField: "Accept")

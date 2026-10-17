@@ -125,6 +125,14 @@ user is completing. `AuthorizationPollingCoordinator` separately owns polling-ta
 rejects stale exact-owner finish/cancel requests, while `AuthAttemptAuthority` remains the only
 authority that admits state or credential publication.
 
+Plex discovery keeps the saved server first and probes at most four candidate servers at a time;
+the most-preferred reachable server wins and servers past the window are never contacted once it
+is decided. Within one server, connections rank local, then remote, then relay, and are probed
+concurrently through PMSKit `PreferredProbe`. A better-ranked connection gets a 500 ms grace after
+a direct (non-relay) connection answers, so an advertised LAN address that is not routable from the
+current network costs that grace rather than the 3 s probe timeout; a relay only wins once every
+better-ranked connection has failed. Losing probes are cancelled and never awaited.
+
 Token-free identities serve two different purposes:
 
 - a stable server/user key scopes persisted preferences such as library visibility;
