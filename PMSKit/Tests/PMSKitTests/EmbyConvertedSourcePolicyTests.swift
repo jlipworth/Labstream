@@ -172,6 +172,44 @@ struct EmbyConvertedSourcePolicyTests {
                                                              excludingSnapshotIDs: [])?.id == "def")
     }
 
+    // B45: the poll/finish chain used `item.media?.first?.id` as the primary MediaSource id. The
+    // canonical MediaBrowser mapping sets `Media.id` to index + 1, and a relaunch item rebuilt from
+    // metadata has no media at all, so the tier cap never found the real source and a 720p output
+    // of a 720p source was rejected for an "Original" (2160) request.
+    @Test("Primary source id comes from the persisted id or part key, never the synthesized Media.id")
+    func primarySourceIDIgnoresSynthesizedMediaID() throws {
+        let dto = try JSONDecoder().decode(EmbyBaseItemDto.self, from: Data(#"""
+        { "Id": "item-1", "Name": "Item", "Type": "Movie",
+          "MediaSources": [{ "Id": "5001", "Container": "mkv", "Width": 1280, "Height": 720 }] }
+        """#.utf8))
+        let item = try #require(dto.toMediaItem())
+        // The synthesized id is the bug's input; it does not name any server source.
+        #expect(item.media?.first?.id == 1)
+
+        #expect(EmbyConvertedSourcePolicy.primaryMediaSourceID(persisted: "5001", item: item) == "5001")
+        #expect(EmbyConvertedSourcePolicy.primaryMediaSourceID(persisted: nil, item: item) == "5001")
+        #expect(EmbyConvertedSourcePolicy.primaryMediaSourceID(persisted: "", item: item) == "5001")
+        // Relaunch rebuilds the item from metadata with no media: only the persisted id survives.
+        let relaunchItem = MediaItem(ratingKey: "item-1", title: "Item", type: "movie")
+        #expect(EmbyConvertedSourcePolicy.primaryMediaSourceID(persisted: "5001",
+                                                               item: relaunchItem) == "5001")
+        #expect(EmbyConvertedSourcePolicy.primaryMediaSourceID(persisted: nil, item: relaunchItem) == nil)
+
+        // With the real id the tier cap is min(request, source): a 720p output of a 720p source
+        // is accepted for an Original (2160) request. With the synthesized id it was rejected.
+        let sources = try mediaSources(#"""
+        { "Id": "5001", "Protocol": "File", "Container": "mkv", "Width": 1280, "Height": 720 },
+        { "Id": "5002", "Protocol": "File", "Container": "mp4", "Width": 1280, "Height": 720 }
+        """#)
+        let primary = EmbyConvertedSourcePolicy.primaryMediaSourceID(persisted: nil, item: item)
+        #expect(EmbyConvertedSourcePolicy.newConvertedSource(
+            sources, excludingSnapshotIDs: ["5001"], requestedHeight: 2160,
+            primaryMediaSourceID: primary)?.id == "5002")
+        #expect(EmbyConvertedSourcePolicy.newConvertedSource(
+            sources, excludingSnapshotIDs: ["5001"], requestedHeight: 2160,
+            primaryMediaSourceID: (item.media?.first?.id).map(String.init)) == nil)
+    }
+
     private func mediaSources(_ entries: String) throws -> [EmbyMediaSourceInfo] {
         let json = "{\"PlaySessionId\":\"s\",\"MediaSources\":[\n" + entries + "\n]}"
         return try EmbyPlaybackInfoResponse.decode(from: Data(json.utf8)).mediaSources

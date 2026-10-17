@@ -438,7 +438,9 @@ extension DownloadManager {
         refreshRecords()
 
         await pollAndDownloadEmbyConvertJob(item: item, ratingKey: ratingKey, jobId: job.id,
-                                            snapshotIds: snapshotIds, targetName: targetName,
+                                            snapshotIds: snapshotIds,
+                                            primaryMediaSourceID: metadata.mediaSourceID,
+                                            targetName: targetName,
                                             server: server, token: token, identity: identity,
                                             userId: userId, audioStreamIndex: audioStreamIndex,
                                             attemptKey: storeAttemptKey,
@@ -452,7 +454,9 @@ extension DownloadManager {
                                         fingerprint: EmbyConvertRecoveryPolicy.Fingerprint,
                                         attemptStartedAtEpochSeconds: Double,
                                         recoveryPhase: EmbyConvertRecoveryPolicy.Phase,
-                                        snapshotIds: Set<String>, targetName: String,
+                                        snapshotIds: Set<String>,
+                                        primaryMediaSourceID: String?,
+                                        targetName: String,
                                         server: URL, token: String,
                                         identity: EmbyClientIdentity, userId: String,
                                         audioStreamIndex: Int?,
@@ -531,6 +535,7 @@ extension DownloadManager {
 
         await pollAndDownloadEmbyConvertJob(
             item: item, ratingKey: ratingKey, jobId: jobId, snapshotIds: snapshotIds,
+            primaryMediaSourceID: primaryMediaSourceID,
             targetName: targetName, server: server, token: token, identity: identity,
             userId: userId, audioStreamIndex: audioStreamIndex,
             attemptKey: storeAttemptKey, attemptID: attemptID)
@@ -540,7 +545,9 @@ extension DownloadManager {
     /// plumbing ("Preparing on server… N%"), then hand the converted source to the resumable
     /// `.original` lane. Shared by the initial trigger and the relaunch-resume path.
     func pollAndDownloadEmbyConvertJob(item: MediaItem, ratingKey: String, jobId: Int,
-                                               snapshotIds: Set<String>, targetName: String,
+                                               snapshotIds: Set<String>,
+                                               primaryMediaSourceID: String?,
+                                               targetName: String,
                                                server: URL, token: String,
                                                identity: EmbyClientIdentity, userId: String,
                                                audioStreamIndex: Int? = nil,
@@ -551,12 +558,9 @@ extension DownloadManager {
         // that reusable server-prepared source before entering the long job-status loop so rows that
         // were at "Preparing on server… 100%" do not sit there until the user retries manually.
         let requestedHeight = EmbyConvertedSourcePolicy.presetOutputHeight(forLabel: targetName)
-        let primaryMediaSourceId: String?
-        if let id = item.media?.first?.id {
-            primaryMediaSourceId = String(id)
-        } else {
-            primaryMediaSourceId = nil
-        }
+        // B45: the real source id (persisted on the row), never the synthesized `Media.id`.
+        let primaryMediaSourceId = EmbyConvertedSourcePolicy.primaryMediaSourceID(
+            persisted: primaryMediaSourceID, item: item)
         let resumedReusableSource = await refreshAndPollReusableEmbyConvertedSource(
             server: server, token: token, identity: identity, userId: userId, itemId: item.ratingKey,
             ratingKey: ratingKey, requestedHeight: requestedHeight,
@@ -717,7 +721,9 @@ extension DownloadManager {
                     markServerPrepFinalizing(ratingKey: ratingKey)
                     refreshRecords()
                     await finishEmbyConvert(item: item, ratingKey: ratingKey, jobId: jobId,
-                                            snapshotIds: snapshotIds, targetName: targetName,
+                                            snapshotIds: snapshotIds,
+                                            primaryMediaSourceId: primaryMediaSourceId,
+                                            targetName: targetName,
                                             server: server, token: token, identity: identity,
                                             userId: userId, audioStreamIndex: audioStreamIndex,
                                             attemptKey: storeAttemptKey,
@@ -861,7 +867,9 @@ extension DownloadManager {
     /// then hand off to the resumable `.original` static lane via `downloadEmby(…override:)`. The
     /// converted file is KEPT (no Sync-job cleanup) so #126's reuse serves the next download.
     private func finishEmbyConvert(item: MediaItem, ratingKey: String, jobId: Int,
-                                   snapshotIds: Set<String>, targetName: String,
+                                   snapshotIds: Set<String>,
+                                   primaryMediaSourceId: String?,
+                                   targetName: String,
                                    server: URL, token: String,
                                    identity: EmbyClientIdentity, userId: String,
                                    audioStreamIndex: Int?,
@@ -886,8 +894,8 @@ extension DownloadManager {
         var newSource: EmbyMediaSourceInfo?
         // Tier facts for the pickup sanity gate: a source with known dimensions far below what this
         // job could have rendered is a foreign sibling, not our output.
+        // `primaryMediaSourceId` is the real source id resolved by the poll chain (B45).
         let requestedHeight = EmbyConvertedSourcePolicy.presetOutputHeight(forLabel: targetName)
-        let primaryMediaSourceId = (item.media?.first?.id).map(String.init)
         markServerPrepFinalizing(ratingKey: ratingKey)
         recordDownloadDiagnostic("downloads.convert_finalizing", fields: [
             "download_id": .identifier(ratingKey),

@@ -2975,7 +2975,9 @@ public final class DownloadManager {
                     guard let self else { return }
                     await self.pollAndDownloadEmbyConvertJob(
                         item: item, ratingKey: ratingKey, jobId: jobId,
-                        snapshotIds: resumeSnapshot, targetName: targetName, server: server,
+                        snapshotIds: resumeSnapshot,
+                        primaryMediaSourceID: metadata.mediaSourceID,
+                        targetName: targetName, server: server,
                         token: token, identity: identity, userId: userId,
                         audioStreamIndex: metadata.audioStreamIndex,
                         attemptKey: key, attemptID: attemptID)
@@ -3009,6 +3011,7 @@ public final class DownloadManager {
                         item: item, ratingKey: ratingKey, baselineJobIDs: Set(baseline),
                         fingerprint: fingerprint, attemptStartedAtEpochSeconds: startedAt,
                         recoveryPhase: recoveryPhase, snapshotIds: resumeSnapshot,
+                        primaryMediaSourceID: metadata.mediaSourceID,
                         targetName: targetName, server: server, token: token, identity: identity,
                         userId: userId, audioStreamIndex: metadata.audioStreamIndex,
                         attemptKey: key, attemptID: attemptID)
