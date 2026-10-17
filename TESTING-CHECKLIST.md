@@ -329,6 +329,11 @@ background-session registration, or migration/recovery work.
       unambiguous backend badges.
 - [ ] Pause/Resume, Pause All/Resume All, Retry, Delete, completed-only deletion, queue pause,
       cellular permission, and storage-limit rejection leave coherent durable rows.
+- [ ] Storage (P5): with a storage limit set, retrying a large partial download is not refused
+      for counting its partial twice. A Jellyfin or Emby Original shows its real size in the
+      download sheet. An item whose size is unknown says so. A Plex Original that falls back to
+      an optimized render is refused before the server starts rendering when it would exceed the
+      limit.
 - [ ] Plan a season on Emby (and separately on Plex) that mixes one new Convert/optimize episode
       with an episode that already has a converted/optimized version and a directly playable
       original. While the conversion is still preparing, the static episodes are admitted and
