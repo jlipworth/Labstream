@@ -432,6 +432,32 @@ Acceptance is a phase's pins and inventory rows staying green.
     single intent on the main actor, as before P2. Moving them off-main changes their ordering
     contracts and belongs with the store-internals work in P6.
 
+- **2026-10-17 — P3a implemented** on `downloads/p3-lifecycle`, stacked on P2.
+  - **Persisted lifecycle and history.** Rows carry an authoritative lifecycle and attempt
+    history as additive v4 fields; `status` is derived from them. Rows written by older binaries
+    are rebuilt structurally on load.
+  - **One reducer.** Every production status change goes through `DownloadLifecycleReducer`: the
+    session's ~40 writes, the manager's and extensions' writes, the store's own promotion and
+    progress writes, and reconcile. Reconcile's file deletions now run outside the store lock.
+    `ci-hygiene` rejects legacy status writes and direct row-status assignment.
+  - **Bugs fixed:** B09, B10, B54 (cross-relaunch half), B16, B21 and B61.
+  - **Conversion work.** The session and manager call sites were converted by two parallel
+    agents. Their four reducer gaps were closed with reducer rules: `requeued`, Plex prep landing
+    on `admitted`, planned rows retrying like failed ones, and a complete body re-entering
+    finalizing.
+  - **Season admission stays authoritative in the legacy flag.** A planned row leaves through
+    Retry and stays visibly failed meanwhile. P4's admission coordinator owns `admissionGranted`.
+  - **Deviations from revision 2.1:**
+    - The pins that need the new store API landed with the commits that made them expressible,
+      not up front.
+    - Not yet written:
+      - the B02 pause-during-rebuild pin;
+      - the season commit → every resume entry point pin (B62/B63);
+      - a P1/P2 re-encode pin with pending artifact effects.
+    - Durable effects are executed by the existing call sites, chosen by the reducer, rather than
+      through a new effect queue. Every effect maps onto an existing artifact recipe, or onto
+      reconcile's post-lock deletions.
+
 ## P2 detailed plan — cleanup foundation
 
 *Revision 3.1 (2026-10-17). The round-3 co-review approved it with three changes, applied here:
