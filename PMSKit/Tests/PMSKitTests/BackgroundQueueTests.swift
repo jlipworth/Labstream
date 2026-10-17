@@ -243,6 +243,22 @@ func decodesTranscodeSpeed(job: String, expected: Double?) throws {
     #expect(titled.attributedJob(ratingKey: "101", title: "Mine", isActiveConversion: false)?.progress == 12)
 }
 
+@Test func attributedJobNeverOverridesAContradictoryJobRatingKey() {
+    // B39: the queue snapshot and the job list are separate requests and can straddle a queue
+    // transition. A sole job that explicitly names another item is never ours.
+    let other = BackgroundTranscodeJobs(jobs: [
+        .init(progress: 80, state: "running", ratingKey: "202", title: "Mine"),
+    ])
+    #expect(other.attributedJob(ratingKey: "101", title: "Mine", isActiveConversion: true) == nil)
+    #expect(other.attributedJob(ratingKey: "101", title: "Mine", isActiveConversion: false) == nil)
+    // An unidentified title match still wins next to a job naming another item.
+    let mixed = BackgroundTranscodeJobs(jobs: [
+        .init(progress: 80, state: "running", ratingKey: "202", title: "Mine"),
+        .init(progress: 30, state: "running", title: "Mine"),
+    ])
+    #expect(mixed.attributedJob(ratingKey: "101", title: "Mine", isActiveConversion: false)?.progress == 30)
+}
+
 @Test func decodesSingleBackgroundJobObjectAndRatingKeyVariants() throws {
     let json = """
     {"MediaContainer":{"size":1,"TranscodeJob":
