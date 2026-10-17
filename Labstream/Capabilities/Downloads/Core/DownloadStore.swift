@@ -321,6 +321,9 @@ final class DownloadStore: @unchecked Sendable {
     enum AttemptStaticCheckpointSubmission: Sendable, Equatable {
         case accepted(ticket: DownloadArtifactLifecycleCoordinator.Ticket)
         case notStatic(bytes: Int)
+        /// The current owner's body is condemned (P3a): zero usable bytes, already applied to
+        /// the row. Callers schedule a restart from zero exactly as for an empty checkpoint.
+        case condemned(PersistenceTicket)
         case staleOrMissing
     }
 
@@ -1059,10 +1062,7 @@ final class DownloadStore: @unchecked Sendable {
         guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !Self.hasPendingRowDeletion(row),
               row.status != .complete, row.status != .unverified,
-              let working = row.attemptWorkingRelativePath,
-              Self.isSafeOneLevelRelativePath(row.relativePath),
-              working == Self.attemptStagingRelativePath(
-                for: key, stableRelativePath: row.relativePath) else { return nil }
+              let working = workingRelativePath(for: row, key: key) else { return nil }
         return AttemptWorkingFileLayout(
             key: key,
             stableURL: baseDirectory.appendingPathComponent(row.relativePath),
@@ -4409,6 +4409,13 @@ final class DownloadStore: @unchecked Sendable {
                 for: key, stableRelativePath: row.relativePath)
             stable = row.relativePath
             temporary = ".\(working).checkpoint-\(UUID().uuidString)"
+        } else if row.history.isBodyCondemned {
+            // Never read or rewrite the condemned bytes; the usable checkpoint is empty.
+            row.bytes = 0
+            row.progress = 0
+            rows[key.ratingKey] = row
+            let ticket = enqueueAttemptPersistenceLocked()
+            lock.unlock(); return .condemned(ticket)
         } else {
             guard let existing = workingRelativePath(for: row, key: key) else {
                 lock.unlock(); return .staleOrMissing
@@ -4450,6 +4457,10 @@ final class DownloadStore: @unchecked Sendable {
         switch submission {
         case .staleOrMissing: return .staleOrMissing
         case .notStatic(let bytes): return .notStatic(bytes: bytes)
+        case .condemned(let ticket):
+            let persistence = waitForPersistence(through: ticket)
+            return persistence.result.committed(through: persistence.ticket)
+                ? .applied(bytes: 0) : .persistenceFailed(bytes: 0, persistence.result)
         case .accepted(let ticket):
             let outcome = artifactLifecycle.waitSynchronously(for: ticket)
             if let result = lock.withLock({ () -> AttemptStaticRangeCheckpointResetResult? in
