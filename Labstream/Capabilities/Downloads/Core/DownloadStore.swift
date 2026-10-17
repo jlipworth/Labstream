@@ -93,10 +93,13 @@ final class DownloadStore: @unchecked Sendable {
     struct IndexPersistence: Sendable {
         let read: @Sendable (URL) throws -> Data
         let atomicWrite: @Sendable (Data, URL) throws -> Void
+        let didDecode: @Sendable () -> Void
 
         init(read: @escaping @Sendable (URL) throws -> Data = { try Data(contentsOf: $0) },
+             didDecode: @escaping @Sendable () -> Void = {},
              atomicWrite: @escaping @Sendable (Data, URL) throws -> Void) {
             self.read = read
+            self.didDecode = didDecode
             self.atomicWrite = atomicWrite
         }
 
@@ -719,7 +722,7 @@ final class DownloadStore: @unchecked Sendable {
     /// corresponding metadata mutation. Only files inventoried at Store initialization can be
     /// startup orphans; a later launch can collect newly-born files if no row ever adopts them.
     private var startupStagingIdentities: [String: CondemnedFileIdentity] = [:]
-    private var startupStagingInventory: Set<String>
+    private var startupStagingInventory: Set<String> = []
     private let indexURL: URL                        // baseDirectory/index.json
     private let cleanupAuthorityDirectory: URL       // survives destructive Downloads-root reset
     private let fileManager: FileManager
@@ -764,7 +767,9 @@ final class DownloadStore: @unchecked Sendable {
     private let artifactWorkerQueue = DispatchQueue(
         label: "com.visionplay.download-artifact-lifecycle", qos: .utility)
     private var nextPersistenceRevision: UInt64 = 0 // guarded by `lock`
-    private var startupSchemaProbe: DownloadIndexCoding.StartupProbe // guarded by `lock`
+    /// Nil until the worker publishes classification AND the loaded row map. An unloaded map
+    /// is never a missing/current index; admission, cleanup and persistence remain closed.
+    private var startupSchemaProbe: DownloadIndexCoding.StartupProbe? // guarded by `lock`
     private let startupReprobeWorkerLock = NSLock()
     private var startupReprobeEpoch = UUID() // guarded by `lock`
     private var seasonCommitIndeterminate = false // guarded by `lock`
@@ -834,14 +839,6 @@ final class DownloadStore: @unchecked Sendable {
             .appendingPathComponent("Downloads", isDirectory: true)
         self.baseDirectory = dir
         let indexURL = dir.appendingPathComponent("index.json")
-        let pendingQuarantine = dir.deletingLastPathComponent().appendingPathComponent(
-            ".\(dir.lastPathComponent)-unsupported-reset-pending", isDirectory: true)
-        let (startupProbe, startupIndexData) = Self.classifyIndex(
-            at: indexURL, pendingQuarantine: pendingQuarantine,
-            read: indexPersistence.read, fileManager: fileManager)
-        self.startupSchemaProbe = startupProbe
-        self.startupStagingInventory = Self.stagingInventory(
-            in: dir, probe: startupProbe, fileManager: fileManager)
         self.indexURL = indexURL
         let authority = dir.deletingLastPathComponent().appendingPathComponent(
             ".\(dir.lastPathComponent)-download-authority", isDirectory: true)
@@ -861,27 +858,40 @@ final class DownloadStore: @unchecked Sendable {
                       failure.errorType)
             }
         )
-        // Probe above is deliberately the first filesystem interaction that can affect admission.
-        // Unsupported/unreadable roots remain byte-for-byte untouched until the session drain.
-        guard startupProbe == .missing || startupProbe == .current else { return }
         if startupOnWorker {
             initialStartupSubmission = RecoverySubmission { [self] in
-                startupReprobeWorkerLock.lock()
-                defer { startupReprobeWorkerLock.unlock() }
-                startupRepairWillBegin()
-                captureStartupStagingIdentities()
-                completeAdmissibleStartup(probe: startupProbe, indexData: startupIndexData)
-                return startupIndexAdmission()
+                performInitialStartup(startupRepairWillBegin: startupRepairWillBegin)
             }
         } else {
-            captureStartupStagingIdentities()
-            completeAdmissibleStartup(probe: startupProbe, indexData: startupIndexData)
+            _ = performInitialStartup(startupRepairWillBegin: startupRepairWillBegin)
         }
+    }
+
+    private func performInitialStartup(startupRepairWillBegin: @Sendable () -> Void) -> StartupIndexAdmission {
+        startupReprobeWorkerLock.lock()
+        defer { startupReprobeWorkerLock.unlock() }
+        startupRepairWillBegin()
+        let pendingQuarantine = baseDirectory.deletingLastPathComponent().appendingPathComponent(
+            ".\(baseDirectory.lastPathComponent)-unsupported-reset-pending", isDirectory: true)
+        let (probe, decoded) = Self.classifyIndex(
+            at: indexURL, pendingQuarantine: pendingQuarantine,
+            read: rootIndexPersistence.read, didDecode: rootIndexPersistence.didDecode, fileManager: fileManager)
+        // Inventory and file identities precede directory creation, authority migration, repair,
+        // or any other work that could create files. B86's checkpoint-copy grammar is unchanged.
+        let inventory = Self.stagingInventory(in: baseDirectory, probe: probe, fileManager: fileManager)
+        lock.withLock { startupStagingInventory = inventory }
+        captureStartupStagingIdentities()
+        if probe == .missing || probe == .current {
+            completeAdmissibleStartup(probe: probe, decoded: decoded)
+        } else {
+            lock.withLock { startupSchemaProbe = probe }
+        }
+        return startupIndexAdmission()
     }
 
     private func captureStartupStagingIdentities() {
         var identities: [String: CondemnedFileIdentity] = [:]
-        for path in startupStagingInventory {
+        for path in lock.withLock({ startupStagingInventory }) {
             identities[path] = condemnedFileIdentity(at: baseDirectory.appendingPathComponent(path))
         }
         lock.withLock { startupStagingIdentities = identities }
@@ -892,8 +902,9 @@ final class DownloadStore: @unchecked Sendable {
         at indexURL: URL,
         pendingQuarantine: URL,
         read: (URL) throws -> Data?,
+        didDecode: () -> Void,
         fileManager: FileManager
-    ) -> (DownloadIndexCoding.StartupProbe, Data?) {
+    ) -> (DownloadIndexCoding.StartupProbe, DownloadIndexCoding.DecodeResult<Row>?) {
         var probe: DownloadIndexCoding.StartupProbe
         var indexData: Data?
         if fileManager.fileExists(atPath: indexURL.path) {
@@ -912,14 +923,18 @@ final class DownloadStore: @unchecked Sendable {
         } else {
             probe = .missing
         }
+        var decodedRows: DownloadIndexCoding.DecodeResult<Row>?
         if probe == .current, let indexData {
+            didDecode()
             let decoded = DownloadIndexCoding.decode(Row.self, from: indexData)
             let keys = decoded.rows.map(\.ratingKey)
             if decoded.skippedRowCount > 0 || Set(keys).count != keys.count {
                 probe = .unreadable
+            } else {
+                decodedRows = decoded
             }
         }
-        return (probe, indexData)
+        return (probe, decodedRows)
     }
 
     private static func stagingInventory(
@@ -937,7 +952,7 @@ final class DownloadStore: @unchecked Sendable {
     /// load, and artifact recovery. Runs on the startup worker in production, or from `reprobeBlockedIndex` once an index
     /// that was unreadable at launch reads cleanly (B16).
     private func completeAdmissibleStartup(
-        probe startupProbe: DownloadIndexCoding.StartupProbe, indexData startupIndexData: Data?
+        probe startupProbe: DownloadIndexCoding.StartupProbe, decoded: DownloadIndexCoding.DecodeResult<Row>?
     ) {
         let dir = baseDirectory
         let authority = cleanupAuthorityDirectory
@@ -974,9 +989,9 @@ final class DownloadStore: @unchecked Sendable {
         try? DownloadArtifactFileCommitter.cleanupAbandonedResumeTemps(
             in: dir,
             fileManager: fileManager)
-        // B15: decode the exact bytes the probe classified. A second read could fail transiently
-        // and admit an empty `.current` store whose next snapshot overwrites the real index.
-        load(indexData: startupProbe == .current ? startupIndexData : nil)
+        // B15: reuse the exact classified rows. Neither a second read nor a second decode can
+        // substitute an empty library for the real index. Publication happens with the row map.
+        load(decoded: decoded, probe: startupProbe)
         lock.withLock {
             startupArtifactCleanupIntentIDs = Set(
                 rows.values.flatMap { $0.pendingArtifactIntents.map(\.id) })
@@ -989,7 +1004,7 @@ final class DownloadStore: @unchecked Sendable {
             fileManager: fileManager)
     }
 
-    var startupIndexProbe: DownloadIndexCoding.StartupProbe {
+    var startupIndexProbe: DownloadIndexCoding.StartupProbe? {
         lock.withLock { startupSchemaProbe }
     }
 
@@ -1630,7 +1645,8 @@ final class DownloadStore: @unchecked Sendable {
     func unreferencedAttemptStagingURLs(
         additionalReferencedRelativePaths: Set<String> = []
     ) -> [URL] {
-        let inventory = lock.withLock { startupStagingInventory }
+        let inventory = lock.withLock { startupSchemaProbe == nil ? [] : startupStagingInventory }
+        guard !inventory.isEmpty else { return [] }
         storeFilesystem.before(.enumerate, baseDirectory)
         let urls = (try? fileManager.contentsOfDirectory(at: baseDirectory,
             includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsSubdirectoryDescendants])) ?? []
@@ -2316,6 +2332,8 @@ final class DownloadStore: @unchecked Sendable {
     /// SwiftUI is creating the scene. Keep hydration cheap and avoid stat'ing every poster, BIF,
     /// trickplay tile, chapter image, and subtitle on each read; large headset libraries can carry
     /// enough sidecars to trip the scene-create watchdog.
+    /// While startupIndexProbe is nil this is an unpublished snapshot, NOT an empty library.
+    /// UI and Offline gating retain `.preparing` / `.unresolved` until the worker publishes it.
     var records: [DownloadRecord] {
         lock.lock()
         let snapshot = Array(rows.values)
@@ -2360,6 +2378,7 @@ final class DownloadStore: @unchecked Sendable {
     func startChainAdmits(ratingKey: String, attemptID: DownloadAttemptID,
                           expectedPreviousOwner: DownloadAttemptID?) -> Bool {
         lock.lock(); defer { lock.unlock() }
+        guard startupSchemaProbe != nil else { return false }
         guard let row = rows[ratingKey] else { return true }
         guard let owner = row.attemptID else {
             // A legacy terminal row without an owner is replaced by an unowned compare-and-swap.
@@ -2992,6 +3011,7 @@ final class DownloadStore: @unchecked Sendable {
     /// to wipe the metadata/poster captured earlier.
     func upsert(_ record: DownloadRecord) {
         lock.lock()
+        guard startupSchemaProbe != nil else { lock.unlock(); return }
         let rel = record.localURL.lastPathComponent
         let existing = rows[record.ratingKey]
         let incomingAttemptID = record.attemptID ?? existing?.attemptID
@@ -3085,6 +3105,7 @@ final class DownloadStore: @unchecked Sendable {
         guard !records.isEmpty || !retryAttempts.isEmpty else {
             return .applied(inserted: 0, retried: 0)
         }
+        guard lock.withLock({ startupSchemaProbe != nil }) else { return .staleInput }
         // Pre-plan authority is captured before the lock: it only classifies a failed rollback,
         // and that classification tolerates a stale copy (a mismatch degrades to indeterminate).
         let oldIndexData = try? Data(contentsOf: indexURL)
@@ -3257,6 +3278,12 @@ final class DownloadStore: @unchecked Sendable {
         }
         lock.lock()
         let existing = rows[record.ratingKey]
+        guard startupSchemaProbe != nil else {
+            lock.unlock()
+            return .rejectedOwnership(expectedPreviousOwner: expectedPreviousOwner.map {
+                DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: $0)
+            }, actualOwner: nil, reason: .artifactLifecyclePending)
+        }
         if let expectedGeneration, rowMutationGenerations[record.ratingKey, default: 0] != expectedGeneration {
             lock.unlock()
             return .rejectedOwnership(expectedPreviousOwner: expectedPreviousOwner.map {
@@ -4459,6 +4486,9 @@ final class DownloadStore: @unchecked Sendable {
     func startupIndexAdmission() -> StartupIndexAdmission {
         lock.lock(); defer { lock.unlock() }
         if seasonCommitIndeterminate { return .seasonCommitIndeterminate }
+        // An unresolved probe uses the existing closed admission answer. Callers distinguish
+        // loading from failure via startupIndexProbe == nil and keep recovery `.preparing`.
+        guard let startupSchemaProbe else { return .unreadableIndex }
         switch startupSchemaProbe {
         case .unsupported(let schemaVersion):
             return .requiresDestructiveReset(schemaVersion: schemaVersion)
@@ -4517,22 +4547,23 @@ final class DownloadStore: @unchecked Sendable {
         } else if unreadableAtLaunch {
             let pendingQuarantine = baseDirectory.deletingLastPathComponent().appendingPathComponent(
                 ".\(baseDirectory.lastPathComponent)-unsupported-reset-pending", isDirectory: true)
-            let (probe, data) = Self.classifyIndex(
+            let (probe, decoded) = Self.classifyIndex(
                 at: indexURL, pendingQuarantine: pendingQuarantine,
-                read: rootIndexPersistence.read, fileManager: fileManager)
+                read: rootIndexPersistence.read, didDecode: rootIndexPersistence.didDecode, fileManager: fileManager)
             let inventory = Self.stagingInventory(in: baseDirectory, probe: probe, fileManager: fileManager)
             var identities: [String: CondemnedFileIdentity] = [:]
             for path in inventory { identities[path] = condemnedFileIdentity(at: baseDirectory.appendingPathComponent(path)) }
             let current = lock.withLock { () -> Bool in
                 guard startupReprobeEpoch == epoch, rows.isEmpty, startupSchemaProbe == .unreadable else { return false }
-                startupSchemaProbe = probe
+                // Do not publish an admissible probe over an unloaded row map.
+                startupSchemaProbe = (probe == .current || probe == .missing) ? nil : probe
                 startupStagingInventory = inventory
                 startupStagingIdentities = identities
                 return true
             }
             guard current else { return startupIndexAdmission() }
             if probe == .current || probe == .missing {
-                completeAdmissibleStartup(probe: probe, indexData: data)
+                completeAdmissibleStartup(probe: probe, decoded: decoded)
             }
         }
         return startupIndexAdmission()
@@ -5965,24 +5996,19 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
-    private func load(indexData: Data?) {
-        lock.lock(); defer { lock.unlock() }
-        guard let data = indexData else { return }
-        // #135 H8: decode the index row-by-row so a single corrupt/forward-incompatible
-        // row can't drop the user's whole offline library (the old all-or-nothing
-        // `decode([Row].self)` did exactly that). A non-zero skip is logged rather than
-        // swallowed — silent truncation is the failure mode this guards against.
-        let result = DownloadIndexCoding.decode(Row.self, from: data)
-        indexSchemaVersion = result.schemaVersion
-        loadedSchemaVersion = result.schemaVersion
+    private func load(decoded result: DownloadIndexCoding.DecodeResult<Row>?,
+                      probe: DownloadIndexCoding.StartupProbe) {
+        guard let result else {
+            lock.withLock { startupSchemaProbe = probe }
+            return
+        }
         if result.skippedRowCount > 0 {
             NSLog("DownloadStore: skipped %d corrupt offline-index row(s) on load (schemaVersion %d); %d row(s) preserved",
                   result.skippedRowCount, result.schemaVersion, result.rows.count)
         }
         var seen: Set<String> = []
         guard result.rows.allSatisfy({ seen.insert($0.ratingKey).inserted }) else {
-            startupSchemaProbe = .unreadable
-            rows = [:]
+            lock.withLock { startupSchemaProbe = .unreadable }
             return
         }
         var normalizedPreparedStaticRows = 0
@@ -6028,7 +6054,11 @@ final class DownloadStore: @unchecked Sendable {
             }
             loaded[repaired.ratingKey] = repaired
         }
+        lock.lock(); defer { lock.unlock() }
+        indexSchemaVersion = result.schemaVersion
+        loadedSchemaVersion = result.schemaVersion
         rows = loaded
+        startupSchemaProbe = probe
         if !retiredSideAssetPaths.isEmpty {
             var stillReferenced: Set<String> = []
             for row in rows.values {
@@ -6081,6 +6111,9 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     private func enqueuePersistenceLocked() -> PersistenceTicket {
+        // Defense in depth for legacy/global write entry points (including schema stamping):
+        // no snapshot can overwrite the real index before the startup worker has loaded it.
+        guard startupSchemaProbe != nil else { return PersistenceTicket(revision: nextPersistenceRevision) }
         nextPersistenceRevision += 1
         let ticket = PersistenceTicket(revision: nextPersistenceRevision)
         indexWriter.submit(revision: ticket.revision, snapshot: IndexSnapshot(

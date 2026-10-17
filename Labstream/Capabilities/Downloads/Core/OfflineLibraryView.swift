@@ -129,7 +129,10 @@ public struct OfflineLibraryView: View {
 
     @ViewBuilder
     private func offlineRowsOrEmpty(snapshot: OfflineLibrarySnapshot) -> some View {
-        if snapshot.rows.isEmpty {
+        if snapshot.rows.isEmpty && manager.startupRecoveryState == .preparing {
+            ProgressView("Restoring downloads…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if snapshot.rows.isEmpty {
             ContentUnavailableView(
                 "No Offline Downloads",
                 systemImage: "arrow.down.circle",

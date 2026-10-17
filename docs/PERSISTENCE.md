@@ -184,9 +184,11 @@ memory, not durable; timeout abandons only the waiter. It never cancels the phys
 rolls back a possible commit, frees an artifact head or releases a writer's lease. After suspension,
 callers compare the captured owner, action generation, source and exact server handle again before
 starting work or clearing metadata. Pause and Delete install immediate admission fences before
-asynchronous persistence. The admissible startup load/repair tail and recovery journal work run on
-workers; initial classification/protection and some off-lock lookups still perform synchronous I/O.
-This is not an actor conversion or a claim of zero synchronous filesystem access.
+asynchronous persistence. Startup classification, staging inventory, index decoding/loading and
+repair run on a worker. The store remains admission-closed and Offline availability unresolved
+until that load publishes; classification and loading reuse one decoded snapshot. Recovery journal
+work also runs on workers; some off-lock lookups still perform synchronous I/O. This is not an actor
+conversion or a claim of zero synchronous filesystem access.
 
 Filesystem observations copy row authority and mutation generation, run outside the store lock,
 then revalidate before mutation. Process-local path leases reserve every source and destination

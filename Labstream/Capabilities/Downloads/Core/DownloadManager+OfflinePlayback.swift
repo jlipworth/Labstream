@@ -86,6 +86,10 @@ extension DownloadManager: OfflinePlaybackLaunchFactory {
     }
 
     func refreshOfflineAvailability(force: Bool = false) {
+        // The initial empty snapshot is unpublished while the worker reads the index. Preserve
+        // P7.5's unresolved scan rather than claiming that the durable library is empty.
+        guard store.startupIndexProbe != nil,
+              startupRecoveryState != .preparing || store.initialStartupSubmission == nil else { return }
         let candidates = records.filter { row in
             guard let attemptID = row.attemptID else { return false }
             return store.ownsAttempt(.init(ratingKey: row.ratingKey, attemptID: attemptID))

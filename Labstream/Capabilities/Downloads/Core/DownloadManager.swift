@@ -531,7 +531,9 @@ public final class DownloadManager {
 
     init(appModel: AppModel,
          store injectedStore: DownloadStore? = nil,
+         storeConstruction: () -> DownloadStore = { DownloadStore(startupOnWorker: true) },
          session injectedSession: BackgroundDownloadSession? = nil,
+         sessionConstruction: (DownloadStore) -> BackgroundDownloadSession = { BackgroundDownloadSession(store: $0) },
          cleanupIntentJournal injectedCleanupIntentJournal: DownloadCleanupIntentJournal? = nil,
          sideAssetFetchCoordinator injectedSideAssetFetchCoordinator: SideAssetFetchCoordinator? = nil,
          backgroundCompletionRegistry: BackgroundDownloadCompletionRegistry = .shared,
@@ -544,9 +546,9 @@ public final class DownloadManager {
         let downloadStoreSpan = PerformanceInstrumentation.begin(.runtimeDownloadStore,
                                                                   backend: "App")
         #endif
-        let store = injectedStore ?? DownloadStore(startupOnWorker: true)
-        // The production store runs its admissible load/repair tail on a worker. Install the
-        // dormant session and its callbacks now; activation awaits that tail's durability proof.
+        let store = injectedStore ?? storeConstruction()
+        // The production store starts unresolved and runs classification, inventory and load on
+        // its worker. Install the dormant session/callbacks now; activation awaits load durability.
         let startupAdmission = store.startupIndexAdmission()
         #if PERFORMANCE_AUDIT
         downloadStoreSpan.end(fields: ["default_store": injectedStore == nil ? 1 : 0])
@@ -554,7 +556,7 @@ public final class DownloadManager {
         self.store = store
         self.upgradeNotice = DownloadUpgradeNotice.load(
             from: store.durableCleanupAuthorityDirectory)
-        self.session = injectedSession ?? BackgroundDownloadSession(store: store)
+        self.session = injectedSession ?? sessionConstruction(store)
         self.backgroundCompletionRegistry = backgroundCompletionRegistry
         let keepaliveSession = self.session
         self.keepaliveCoordinator = DownloadKeepaliveCoordinator(
@@ -862,7 +864,7 @@ public final class DownloadManager {
         with admission: DownloadStore.StartupIndexAdmission,
         deferCurrentActivation: Bool = false
     ) {
-        guard !startupRecoveryInFlight else { return }
+        guard !startupRecoveryInFlight, store.startupIndexProbe != nil else { return }
         switch admission {
         case .requiresDestructiveReset:
             activateDownloadsAfterUnsupportedSchemaReset()
@@ -1026,8 +1028,8 @@ public final class DownloadManager {
     private func publishCurrentStoreReady() {
         startupRecoveryInFlight = false
         records = store.records
-        refreshOfflineAvailability()
         startupRecoveryState = .ready
+        refreshOfflineAvailability()
         startupRecoveryRetryTask?.cancel()
         startupRecoveryRetryTask = nil
         startupRecoveryRetryCount = 0
