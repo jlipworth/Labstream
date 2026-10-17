@@ -254,20 +254,69 @@ public struct BackgroundProcessingItems: Decodable, Sendable, Equatable {
     }
 
     public let items: [Item]
+    /// False when the response lacked a `MediaContainer` or carried an `Item` value that did not
+    /// decode. The lenient `items` stays empty for existing callers, but an empty malformed list
+    /// is not evidence that a queue item is absent (P2 cleanup).
+    public let isWellFormed: Bool
 
     enum RootKeys: String, CodingKey { case mediaContainer = "MediaContainer" }
     enum ContainerKeys: String, CodingKey { case item = "Item" }
 
-    public init(items: [Item]) { self.items = items }
+    public init(items: [Item], isWellFormed: Bool = true) {
+        self.items = items
+        self.isWellFormed = isWellFormed
+    }
 
     public init(from decoder: Decoder) throws {
         guard let root = try? decoder.container(keyedBy: RootKeys.self),
               let container = try? root.nestedContainer(keyedBy: ContainerKeys.self,
                                                         forKey: .mediaContainer) else {
             self.items = []
+            self.isWellFormed = false
             return
         }
-        self.items = (try? container.decodeIfPresent([Item].self, forKey: .item)) ?? []
+        guard container.contains(.item) else {
+            self.items = []
+            self.isWellFormed = true
+            return
+        }
+        if let items = try? container.decode([Item].self, forKey: .item) {
+            self.items = items
+            self.isWellFormed = true
+        } else {
+            self.items = []
+            self.isWellFormed = false
+        }
+    }
+
+    /// What a delete-time cleanup may do with this row's queue item (P2.3).
+    public enum CleanupOutcome: Equatable, Sendable {
+        /// The response could not establish the queue contents.
+        case malformed
+        /// A well-formed list holds no item with this exact title.
+        case absent
+        /// The item finished; deleting it would delete the rendered version (D2 keeps it).
+        case completed
+        /// One exact match in a known active or failed state.
+        case cancellable(id: String)
+        /// Duplicate titles, a missing id, or a missing/unrecognized state.
+        case uncertain
+    }
+
+    /// States known to be safe to cancel: still queued/running, or failed.
+    static let cancellableStates: Set<String> = [
+        "pending", "queued", "waiting", "processing", "transcoding", "running",
+        "inprogress", "in_progress", "error", "failed",
+    ]
+
+    public func cleanupOutcome(queueTitle: String) -> CleanupOutcome {
+        guard isWellFormed else { return .malformed }
+        let matches = items.filter { $0.title == queueTitle }
+        guard let item = matches.first else { return .absent }
+        guard matches.count == 1, let id = item.id, !id.isEmpty,
+              let state = item.state?.lowercased(), !state.isEmpty else { return .uncertain }
+        if Self.completedStates.contains(state) { return .completed }
+        return Self.cancellableStates.contains(state) ? .cancellable(id: id) : .uncertain
     }
 
     /// PMS states that mean the job finished. Deleting a completed background-processing item

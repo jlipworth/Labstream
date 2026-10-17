@@ -122,10 +122,13 @@ public struct DurableDownloadCleanupIntent: Codable, Equatable, Sendable, Identi
     public let provenance: Provenance?
     /// Present only for `plexOptimize`.
     public let plexCreate: PlexCreateEvidence?
+    /// When the intent was first journaled; bounds how long an unresolvable Plex item is retained.
+    public let recordedAtEpochSeconds: Double?
 
     public init?(id: UUID = UUID(), attemptKey: DownloadAttemptKey,
                  backend: DownloadBackendKind, server: ServerIdentity, operation: Operation,
-                 provenance: Provenance? = nil, plexCreate: PlexCreateEvidence? = nil) {
+                 provenance: Provenance? = nil, plexCreate: PlexCreateEvidence? = nil,
+                 recordedAtEpochSeconds: Double? = nil) {
         guard !attemptKey.ratingKey.isEmpty else { return nil }
         switch operation {
         case .activeEncoding(let playSessionID):
@@ -144,6 +147,7 @@ public struct DurableDownloadCleanupIntent: Codable, Equatable, Sendable, Identi
         if case .abandonment(let origin) = provenance {
             guard !origin.ratingKey.isEmpty else { return nil }
         }
+        if let recordedAtEpochSeconds { guard recordedAtEpochSeconds.isFinite else { return nil } }
         self.version = Self.currentVersion
         self.id = id
         self.attemptKey = attemptKey
@@ -152,13 +156,15 @@ public struct DurableDownloadCleanupIntent: Codable, Equatable, Sendable, Identi
         self.operation = operation
         self.provenance = provenance
         self.plexCreate = plexCreate
+        self.recordedAtEpochSeconds = recordedAtEpochSeconds
     }
 
     /// The same authority with its provenance settled (legacy classification) or its create
     /// evidence upgraded once the item has been seen.
     public func with(provenance: Provenance?, plexCreate: PlexCreateEvidence? = nil) -> Self? {
         Self(id: id, attemptKey: attemptKey, backend: backend, server: server,
-             operation: operation, provenance: provenance, plexCreate: plexCreate ?? self.plexCreate)
+             operation: operation, provenance: provenance, plexCreate: plexCreate ?? self.plexCreate,
+             recordedAtEpochSeconds: recordedAtEpochSeconds)
     }
 
     /// A stale completion can clear only the exact durable entry it executed.
@@ -176,7 +182,7 @@ public struct DurableDownloadCleanupIntent: Codable, Equatable, Sendable, Identi
         case version, id, attemptKey, backend, server, operationType
         case playSessionID, embyConvertMode, embyConvertJobID, baselineJobIDs
         case fingerprint, attemptStartedAtEpochSeconds, phase
-        case queueTitle, plexCreate, provenance, provenanceOriginAttempt
+        case queueTitle, plexCreate, provenance, provenanceOriginAttempt, recordedAtEpochSeconds
     }
     private enum OperationType: String, Codable { case activeEncoding, embyConvert, plexOptimize }
     private enum ProvenanceTag: String, Codable { case rowDeletion, terminalRelease, abandonment }
@@ -209,6 +215,7 @@ public struct DurableDownloadCleanupIntent: Codable, Equatable, Sendable, Identi
             try c.encode(queueTitle, forKey: .queueTitle)
             try c.encodeIfPresent(plexCreate, forKey: .plexCreate)
         }
+        try c.encodeIfPresent(recordedAtEpochSeconds, forKey: .recordedAtEpochSeconds)
         switch provenance {
         case nil: break
         case .rowDeletion: try c.encode(ProvenanceTag.rowDeletion, forKey: .provenance)
@@ -260,7 +267,9 @@ public struct DurableDownloadCleanupIntent: Codable, Equatable, Sendable, Identi
         guard let value = Self(id: id, attemptKey: attemptKey, backend: backend,
                                server: server, operation: operation, provenance: provenance,
                                plexCreate: try c.decodeIfPresent(PlexCreateEvidence.self,
-                                                                 forKey: .plexCreate)) else {
+                                                                 forKey: .plexCreate),
+                               recordedAtEpochSeconds: try c.decodeIfPresent(
+                                Double.self, forKey: .recordedAtEpochSeconds)) else {
             throw DecodingError.dataCorruptedError(forKey: .operationType, in: c,
                                                     debugDescription: "Invalid cleanup intent")
         }

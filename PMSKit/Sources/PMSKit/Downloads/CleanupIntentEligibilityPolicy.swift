@@ -63,3 +63,43 @@ public enum CleanupIntentEligibilityPolicy {
         }
     }
 }
+
+/// Retry pacing and retention bounds for journaled cleanup (P2.3/P2.6).
+public enum CleanupIntentRetryPolicy {
+    public static let initialBackoffSeconds: Double = 30
+    public static let maximumBackoffSeconds: Double = 30 * 60
+    /// After a day of non-actionable Plex responses the runner slows down…
+    public static let slowPlexAfterSeconds: Double = 24 * 60 * 60
+    public static let slowPlexBackoffSeconds: Double = 6 * 60 * 60
+    /// …and after a week it retires the intent with a diagnostic.
+    public static let plexRetentionSeconds: Double = 7 * 24 * 60 * 60
+
+    /// Exponential backoff after `failures` consecutive unsuccessful runs (1-based).
+    public static func backoffSeconds(afterFailures failures: Int) -> Double {
+        guard failures > 0 else { return 0 }
+        let exponent = Double(min(failures - 1, 16))
+        return min(initialBackoffSeconds * pow(2, exponent), maximumBackoffSeconds)
+    }
+
+    public enum PlexRetention: Equatable, Sendable {
+        case retire
+        case retain(minimumDelaySeconds: Double)
+    }
+
+    /// For a Plex queue response that cannot cancel or retire the intent on its own: an absent
+    /// item whose create PUT is unresolved, a malformed list, or an uncertain match. `absent` with
+    /// a confirmed create retires immediately and never reaches this function.
+    public static func plexRetention(
+        recordedAtEpochSeconds: Double?,
+        nowEpochSeconds: Double
+    ) -> PlexRetention {
+        // Every Plex intent this build writes is timestamped; one without a timestamp is never
+        // auto-retired.
+        guard let recorded = recordedAtEpochSeconds else {
+            return .retain(minimumDelaySeconds: 0)
+        }
+        let age = nowEpochSeconds - recorded
+        if age >= plexRetentionSeconds { return .retire }
+        return .retain(minimumDelaySeconds: age >= slowPlexAfterSeconds ? slowPlexBackoffSeconds : 0)
+    }
+}
