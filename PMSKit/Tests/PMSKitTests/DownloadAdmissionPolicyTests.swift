@@ -112,6 +112,26 @@ struct DownloadAdmissionPolicyTests {
         #expect(!P.mayEnter(.liveForward, id: "row", occupants: full))
     }
 
+    /// pu-33: waiting rows say why they wait; started or plainly parked rows do not.
+    @Test func waitingRowsReadAsWaiting() {
+        let C = DownloadRowStatusCaptionPolicy.self
+        #expect(C.admissionWaitingCaption(lifecycle: .planned, intent: .seasonPlanned,
+                                          isQueuePaused: false, isExempt: false)
+            == "Waiting for a download slot…")
+        #expect(C.admissionWaitingCaption(lifecycle: .paused, intent: .retryRequested,
+                                          isQueuePaused: true, isExempt: false)
+            == "Waiting — downloads paused")
+        #expect(C.admissionWaitingCaption(lifecycle: .paused, intent: .retryRequested,
+                                          isQueuePaused: true, isExempt: true)
+            == "Waiting for a download slot…")
+        #expect(C.admissionWaitingCaption(lifecycle: .paused, intent: .seasonPlanned,
+                                          isQueuePaused: false, isExempt: false) == nil)
+        #expect(C.admissionWaitingCaption(lifecycle: .failed, intent: nil,
+                                          isQueuePaused: false, isExempt: false) == nil)
+        #expect(C.admissionWaitingCaption(lifecycle: .transferring, intent: nil,
+                                          isQueuePaused: false, isExempt: false) == nil)
+    }
+
     @Test func backendLanesPreserveExistingTransferBehavior() {
         #expect(P.lane(backend: .plex, downloadLane: .optimize) == .serverPreparation)
         #expect(P.lane(backend: .emby, downloadLane: .optimize) == .serverPreparation)

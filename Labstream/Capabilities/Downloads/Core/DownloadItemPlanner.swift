@@ -168,7 +168,8 @@ struct DownloadItemPlanner {
         }
         return .init(item: item, original: original, compatibleRemux: remux,
                      presets: DownloadPresetPolicy.bitratePresetNames, probeFailed: failed,
-                     originalStreamableButOfflineUnsupported: original == nil && remux == nil,
+                     // B69: a failed probe is not an "unsupported original" verdict.
+                     originalStreamableButOfflineUnsupported: !failed && original == nil && remux == nil,
                      existingVersions: [])
     }
 

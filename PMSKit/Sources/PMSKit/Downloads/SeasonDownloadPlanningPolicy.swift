@@ -180,54 +180,14 @@ public enum SeasonDownloadStoragePolicy {
     }
 }
 
-public enum SeasonDownloadAdmissionLane: String, Sendable, Equatable, Codable {
-    case staticFile
-    case serverPreparation
-    case liveForward
-}
-
-public struct SeasonDownloadAdmissionCandidate: Sendable, Equatable {
-    public let id: String
-    public let lane: SeasonDownloadAdmissionLane
-
-    public init(id: String, lane: SeasonDownloadAdmissionLane) {
-        self.id = id
-        self.lane = lane
-    }
-}
-
-public enum SeasonDownloadAdmissionPolicy {
-    public static let maximumTotal = 3
-    public static let maximumByLane: [SeasonDownloadAdmissionLane: Int] = [
-        .staticFile: 2,
-        .serverPreparation: 1,
-        .liveForward: 1,
-    ]
-
-    public static func lane(backend: DownloadBackendKind,
-                            downloadLane: DownloadLane) -> SeasonDownloadAdmissionLane {
-        switch downloadLane {
-        case .original: return .staticFile
-        case .compatibleRemux: return .liveForward
-        case .optimize:
-            return backend == .jellyfin ? .liveForward : .serverPreparation
-        }
-    }
-
-    public static func admitted(pending: [SeasonDownloadAdmissionCandidate],
-                                active: [SeasonDownloadAdmissionCandidate])
-        -> [SeasonDownloadAdmissionCandidate] {
-        var counts = Dictionary(grouping: active, by: \.lane).mapValues(\.count)
-        var total = active.count
-        var result: [SeasonDownloadAdmissionCandidate] = []
-        for candidate in pending {
-            guard total < maximumTotal else { break }
-            let limit = maximumByLane[candidate.lane] ?? 1
-            guard counts[candidate.lane, default: 0] < limit else { continue }
-            result.append(candidate)
-            counts[candidate.lane, default: 0] += 1
-            total += 1
-        }
-        return result
+/// Original quality for an episode with no locally playable original, no Plex original preset
+/// and no compatible remux (B69).
+public enum SeasonDownloadOriginalQualityPolicy {
+    /// A definitive "not offline-playable" verdict keeps the episode as its own failed row. A
+    /// probe that failed (no session, a PlaybackInfo or network error) proves nothing: the row is
+    /// planned anyway and re-probed when admission starts it, which fails it then if the original
+    /// really is unsupported.
+    public static func shouldStartUnmatchedOriginal(probeFailed: Bool) -> Bool {
+        probeFailed
     }
 }
