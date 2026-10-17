@@ -423,6 +423,11 @@ Acceptance is a phase's pins and inventory rows staying green.
     - **Migration barriers.** They run before every runner pass and keep a wake while
       unfinished.
     - **Hydration.** It also counts legacy quarantine files.
+  - **After-review round 3** found that an encoder abandonment could still be stranded when an
+    interrupted handoff left the origin's persisted PlaySessionId in place. A forward-only
+    encoder is never resumed, so for `activeEncoding` the origin claims only while its transfer
+    is active. The executor's exact clear after the stop then replays the handoff. Convert and
+    Plex keep the stricter reference rule.
   - **Remaining deviation:** one-off producers (delete, expiry, abandonments) still commit their
     single intent on the main actor, as before P2. Moving them off-main changes their ordering
     contracts and belongs with the store-internals work in P6.

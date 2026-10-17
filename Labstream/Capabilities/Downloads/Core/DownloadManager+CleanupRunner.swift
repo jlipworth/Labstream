@@ -317,7 +317,12 @@ extension DownloadManager {
     /// failed-but-retryable) leaves the reference in place and the intent waits. Row status cannot
     /// prove a handoff; the reference can. A terminal release or deletion never counts its own
     /// row: releasing that row's handle is the intent's purpose.
-    private func claimingRecords(for intent: DurableDownloadCleanupIntent) -> [DownloadRecord] {
+    ///
+    /// Encoders differ: a forward-only encoder is never resumed (a paused, failed or finished row
+    /// negotiates a new PlaySessionId), so an encoder abandonment's origin claims only while its
+    /// transfer is active. The executor then clears the exact persisted reference itself, which
+    /// makes an interrupted producer handoff replayable after relaunch.
+    func claimingRecords(for intent: DurableDownloadCleanupIntent) -> [DownloadRecord] {
         store.records.filter { record in
             guard let attemptID = record.attemptID,
                   let metadata = record.metadata,
@@ -326,8 +331,12 @@ extension DownloadManager {
             let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
             guard !store.isDeletionPending(for: key) else { return false }
             if key == intent.attemptKey {
-                if case .abandonment = intent.provenance { return true }
-                return false
+                guard case .abandonment = intent.provenance else { return false }
+                if case .activeEncoding = intent.operation {
+                    return record.status == .downloading || record.status == .queued
+                        || record.status == .preparing
+                }
+                return true
             }
             return true
         }
