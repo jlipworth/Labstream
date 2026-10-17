@@ -54,28 +54,6 @@ struct P7DownloadRowsTests {
         withKnownIssue("P7 red pin: 15") { #expect(versions.allSatisfy { $0 == "1.8.0" }) }
     }
 
-    #if os(macOS)
-    @Test(arguments: [DownloadLifecycle.planned, .serverPrep, .finalizing, .paused, .unverified, .failed])
-    func macSheetUsesListPhase(lifecycle: DownloadLifecycle) async throws {
-        let f = try await P7PlaybackFixture(status: .paused)
-        var row = f.record
-        row.lifecycle = lifecycle
-        row.status = lifecycle.derivedStatus
-        row.admissionIntent = lifecycle == .planned ? .seasonPlanned : nil
-        let expected = DownloadRowStatusCaptionPolicy.admissionWaitingCaption(
-            lifecycle: row.lifecycle, intent: row.admissionIntent,
-            isQueuePaused: false, isExempt: false)
-            ?? DownloadRowStatusCaptionPolicy.caption(.init(record: row,
-                displayFraction: nil, isActive: lifecycle == .serverPrep || lifecycle == .finalizing,
-                isBackendConfigured: true, isTranscodeLimited: false,
-                serverPrepState: nil, serverPrepProgress: nil, serverPrepETA: nil,
-                downloadETA: nil, downloadSpeedBytesPerSecond: nil, isRetrying: false,
-                failureCaption: nil))
-        let actual = DownloadOptionsSheet.macExistingStatusText(row)
-        do { #expect(actual == expected) }
-        await f.finish()
-    }
-    #endif
     @Test(arguments: [5_000, 30_000, 599_000])
     func libraryUsesFactoryRewindOnceAndPassesCapturedEvents(position: Int) async throws {
         let f = try await P7PlaybackFixture(status: .complete, position: position)
@@ -152,12 +130,18 @@ struct P7DownloadRowsTests {
         var row = f.record
         row.lifecycle = lifecycle
         row.status = lifecycle.derivedStatus
+        row.admissionIntent = lifecycle == .planned ? .seasonPlanned : nil
         let libraryRow = DownloadOptionsModel.existingRow(row)
         let library = OfflineLibrarySnapshot(rows: [libraryRow], queueToolbarAction: nil,
             isQueuePaused: false, aggregateStats: .empty)
         let list = OfflineLibraryView.rowPresentation(libraryRow)
         let sheet = DownloadOptionsSheet.existingPresentation(row, library: library)
         #expect(sheet == list)
+        if lifecycle == .planned {
+            #expect(libraryRow.statusCaption == DownloadRowStatusCaptionPolicy.admissionWaitingCaption(
+                lifecycle: row.lifecycle, intent: row.admissionIntent,
+                isQueuePaused: false, isExempt: false))
+        }
         #expect(libraryRow.statusCaption.isEmpty || sheet.accessibleStatus.contains(libraryRow.statusCaption))
         for action in sheet.actions { #expect(sheet.actionLabel(action).contains(libraryRow.title)) }
         await f.finish()

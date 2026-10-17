@@ -269,11 +269,6 @@ struct DownloadOptionsSheet: View {
         }
     }
 
-    /// Semantic adapter for the native wrapper, using the same snapshot as the other surfaces.
-    static func macExistingStatusText(_ record: DownloadRecord) -> String {
-        DownloadOptionsModel.existingRow(record).statusCaption
-    }
-
     @ViewBuilder
     private func macExistingContent(_ record: DownloadRecord) -> some View {
         macSelectionSection(title: "Current download", footer: nil) {
