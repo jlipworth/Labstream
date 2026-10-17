@@ -194,10 +194,25 @@ struct SeasonDownloadPlannerSheet: View {
     private var selectedOptions: [DownloadItemPlanningOptions] { resolvedOptions }
 
     private var rowDispositions: [String: SeasonPlannerRowDisposition] {
-        Dictionary(uniqueKeysWithValues: selectedOptions.map {
+        Self.firstEntryPerKey(selectedOptions.map {
             ($0.item.ratingKey, downloadManager.seasonPlannerRowDisposition(
                 itemID: $0.item.ratingKey, backend: backend))
         })
+    }
+
+    /// B71: `Dictionary(uniqueKeysWithValues:)` trapped in a computed view property when a server
+    /// payload returned the same item id twice. Keep the first entry instead.
+    nonisolated static func firstEntryPerKey<Value>(_ pairs: [(String, Value)]) -> [String: Value] {
+        Dictionary(pairs, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// B71: one plan row per rating key (first wins). Duplicate keys would otherwise make the
+    /// atomic season commit reject the whole plan as stale on every review.
+    nonisolated static func firstOptionPerRatingKey(
+        _ options: [DownloadItemPlanningOptions]
+    ) -> [DownloadItemPlanningOptions] {
+        var seen = Set<String>()
+        return options.filter { seen.insert($0.item.ratingKey).inserted }
     }
 
     private var rowActions: [String: SeasonDownloadExistingRowAction] {
@@ -212,7 +227,7 @@ struct SeasonDownloadPlannerSheet: View {
     }
 
     private var nearestExistingSelections: [String: Int?] {
-        Dictionary(uniqueKeysWithValues: selectedOptions.map { option in
+        Self.firstEntryPerKey(selectedOptions.map { option in
             let source = option.item.media?.first
             let requested = requestedQualityPoint(source: source)
             let candidates = option.existingVersions.map {
@@ -414,7 +429,7 @@ struct SeasonDownloadPlannerSheet: View {
             return options
         }
         guard let results, !Task.isCancelled else { return }
-        resolvedOptions = results
+        resolvedOptions = Self.firstOptionPerRatingKey(results)
         useExistingVersions = false
     }
 
