@@ -279,14 +279,10 @@ final class DownloadKeepaliveCoordinator {
                 }
             }
             var sentPlaying = false
-            // N2/F2c: report an advancing position, not a stationary one. Forward-only rows have
-            // no progress fraction (no Content-Length), so `positionTicks(progress:)` pinned every
-            // ping to 0 and the server saw a frozen session it could idle-kill mid-download — the
-            // very truncation these keepalives exist to prevent. Derive position from received
-            // bytes vs the transcode size estimate, falling back to elapsed wall clock, kept
-            // monotonic across pings.
-            let keepaliveStartedAt = Date()
-            var lastReportedTicks = 0
+            // D3 interim: Playing/Progress report a FIXED position of 0. The superseded N2/F2c
+            // advancing position (bytes vs estimate, else wall clock) moved the user's resume
+            // point for a file download (B55). Whether the keepalive becomes Ping-only is pending
+            // the live A/B probe; do not remove Playing/Progress until that decision lands.
             var lastTickOutcome: JellyfinKeepaliveTickOutcome?
             var transferGate = DownloadKeepaliveTransferGate()
             while !Task.isCancelled {
@@ -326,15 +322,7 @@ final class DownloadKeepaliveCoordinator {
                 let server = liveSession.baseURL
                 let token = liveSession.token
                 let liveUserId = liveSession.userID ?? enqueueUserId
-                let progress = max(0, min(record.progress, 1))
-                let positionTicks = JellyfinDownloadKeepalivePolicy.reportedPositionTicks(
-                    progress: progress,
-                    bytes: record.bytes,
-                    estimatedTotalBytes: DownloadPresetPolicy.estimatedTranscodeBytes(for: record),
-                    elapsedSeconds: Date().timeIntervalSince(keepaliveStartedAt),
-                    durationMs: durationMs,
-                    lastReportedTicks: lastReportedTicks)
-                lastReportedTicks = positionTicks
+                let positionTicks = JellyfinDownloadKeepalivePolicy.reportedPositionTicks
                 var statuses: [Int?] = []
                 do {
                     if !sentPlaying {
