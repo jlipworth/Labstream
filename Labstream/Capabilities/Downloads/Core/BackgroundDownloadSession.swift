@@ -5369,7 +5369,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         case .staleOrMissing:
             return false
         case .rejected:
-            break
+            // Only a published body being revalidated may proceed without entering finalizing.
+            // Anything else (notably a condemned body) stops before probing or publication.
+            let lifecycle = store.lifecycleState(for: key)?.lifecycle
+            guard lifecycle == .complete || lifecycle == .unverified else {
+                AppDiagnostics.record(.downloads, "downloads.finalize_refused", fields: [
+                    "download_id": .identifier(key.ratingKey),
+                    "lifecycle": .label(lifecycle?.rawValue ?? "missing"),
+                ])
+                return false
+            }
         case .accepted(_, let ticket):
             guard acceptedAttemptSubmission(
                 .accepted(change: .applied, ticket: ticket),

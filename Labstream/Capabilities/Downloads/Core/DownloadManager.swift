@@ -2384,7 +2384,10 @@ public final class DownloadManager {
             refreshRecords()
             return
         }
-        let persistedResumeData = store.resumeData(for: retryAttemptKey)
+        // A condemned attempt (P3a) is never continued in place: its Retry takes the replacement
+        // path and starts from zero, even if a resume blob survives.
+        let persistedResumeData = store.lifecycleState(for: retryAttemptKey)?.history
+            .isBodyCondemned == true ? nil : store.resumeData(for: retryAttemptKey)
         let supportsPersistedResumeData =
             record.metadata?.resolvedResumeMode(ratingKey: ratingKey) != .liveForwardOnly
         if DownloadRetryPreparationPolicy.shouldResumePersistedURLSessionData(
