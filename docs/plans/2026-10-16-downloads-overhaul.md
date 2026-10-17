@@ -540,6 +540,23 @@ Acceptance is a phase's pins and inventory rows staying green.
     so it downloads again from zero. The strike itself is still inherited. Pins cover a blocked
     commit (body kept, Retry starts at zero with no working file) and a committed verdict
     (exactly that body deleted; no ticket, no deletion).
+- **2026-10-17 — P3a after-review, round 5: not ready, 2 findings (P2).** The verdict-ticket
+  commit evidence was confirmed. Both findings came from keeping a condemned body at its working
+  path, where its condemnation depended on mutable row state. That design was dropped.
+  - **Condemn by rename.** A truncation verdict now takes the body off its working path at once:
+    `condemnWorkingBody` atomically renames it to a fresh attempt-staging name that no row
+    references. A later failure reason, a pause or a Retry therefore can never see it as a
+    checkpoint, a recovery source or a clone source. The `.truncated` reason and the inheritance
+    exclusion remain as a second guard.
+  - **Prompt reclamation.** `deleteCondemnedBody` waits up to 30 s for the verdict's commit and
+    then deletes the condemned file whatever the outcome, provided its identity is unchanged.
+    The next launch's staging sweep is the backstop for a crash. An unproven commit is logged
+    (`downloads.truncated_verdict_unproven`).
+  - **Accepted cost:** a crash before any index commit can lose that one strike, as before P3a.
+    The same bytes can never be counted twice.
+  - **Pins:** a blocked commit followed by an overwriting `retryRejected` still leaves Retry at
+    0 bytes with no working file while inheriting the strike, and the space is freed. A
+    committed verdict deletes exactly the condemned body. A stale owner cannot condemn the path.
 
 ## P2 detailed plan — cleanup foundation
 
