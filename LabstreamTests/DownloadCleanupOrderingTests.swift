@@ -379,6 +379,107 @@ struct DownloadCleanupOrderingTests {
         #expect(pending.map(\.operation) == [.embyConvert(.knownJob(jobID: 42))])
     }
 
+    enum FailedConvertAuthority: String, Sendable, CaseIterable {
+        case knownJob = "failed-convert-known"
+        case crashWindow = "failed-convert-crash-window"
+
+        func metadata(for key: DownloadAttemptKey) -> OfflineMetadata {
+            let fingerprint = EmbyConvertRecoveryPolicy.Fingerprint(
+                itemId: "item", quality: "Custom", profile: "profile", bitrate: 4_000_000,
+                userId: "user-1")
+            return OfflineMetadata(
+                ratingKey: key.ratingKey, title: "Convert", type: "movie",
+                backendKind: .emby, backendBaseURLString: "https://emby.example",
+                backendServerID: "server-1", backendUserID: "user-1",
+                playSessionID: "session-A",
+                downloadLane: .optimize, resumeMode: .serverPrepThenStatic,
+                embyConvertJobID: self == .knownJob ? 42 : nil,
+                embyConvertJobBaselineIDs: self == .crashWindow ? [1, 2] : nil,
+                embyConvertRecoveryFingerprint: self == .crashWindow ? fingerprint : nil,
+                embyConvertRecoveryStartedAtEpochSeconds: self == .crashWindow ? 123 : nil,
+                embyConvertRecoveryPhase: self == .crashWindow ? .dispatchAmbiguous : nil)
+        }
+    }
+
+    // B44/B49: a failed Convert row (poll-health budget or 401/403) still owns a live server job,
+    // or a crash-window identity that recovery re-enters. The launch/backend-switch sweep must not
+    // journal Convert cleanup for it, so Retry resumes polling instead of re-converting. The
+    // forward-only ActiveEncoding handle is still cleaned up because it cannot resume.
+    @Test(arguments: FailedConvertAuthority.allCases) @MainActor
+    func launchSweepKeepsFailedConvertAuthoritySoRetryResumesPolling(
+        _ authority: FailedConvertAuthority
+    ) async throws {
+        let directory = try makeTemporaryDirectory(authority.rawValue)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let key = attemptKey("attempt-A")
+        let store = DownloadStore(baseDirectory: directory)
+        let metadata = authority.metadata(for: key)
+        let record = DownloadRecord(
+            ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Convert",
+            localURL: store.destinationURL(ratingKey: key.ratingKey, ext: "mp4"),
+            status: .failed, metadata: metadata)
+        #expect(store.createAttemptOwnedRecord(record, attemptID: key.attemptID) == .committed(key))
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+        defer { session.invalidateInjectedSessionForTesting() }
+        let journal = DownloadCleanupIntentJournal(directory: directory)
+        let manager = DownloadManager(
+            appModel: AppModel(identity: PlatformClientIdentity.make(
+                clientIdentifier: authority.rawValue), activeBackend: .emby),
+            store: store, session: session, cleanupIntentJournal: journal,
+            registerForBackgroundEvents: false)
+        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+
+        // Backend-switch edge: the same sweep that ran at launch.
+        manager.teardownOrphanedEncodersOnLaunch()
+
+        guard case .loaded(let intents) = journal.load() else {
+            Issue.record("Expected a readable cleanup journal"); return
+        }
+        #expect(intents.map(\.operation) == [.activeEncoding(playSessionID: "session-A")])
+        let kept = try #require(store.metadata(for: key.ratingKey))
+        #expect(kept.embyConvertJobID == metadata.embyConvertJobID)
+        #expect(kept.hasEmbyConvertCrashWindowIdentity == metadata.hasEmbyConvertCrashWindowIdentity)
+
+        manager.retry(ratingKey: key.ratingKey)
+
+        #expect(store.record(for: key)?.status == .preparing)
+        #expect(store.metadata(for: key.ratingKey)?.embyConvertJobID == metadata.embyConvertJobID)
+    }
+
+    // B44 scope: a completed Convert row's server job is finished work, so the sweep still
+    // journals its cleanup.
+    @Test @MainActor
+    func launchSweepStillCleansUpCompletedConvertJob() async throws {
+        let directory = try makeTemporaryDirectory("complete-convert")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let key = attemptKey("attempt-A")
+        let store = DownloadStore(baseDirectory: directory)
+        let record = DownloadRecord(
+            ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Convert",
+            localURL: store.destinationURL(ratingKey: key.ratingKey, ext: "mp4"),
+            status: .complete, metadata: FailedConvertAuthority.knownJob.metadata(for: key))
+        #expect(store.createAttemptOwnedRecord(record, attemptID: key.attemptID) == .committed(key))
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+        defer { session.invalidateInjectedSessionForTesting() }
+        let journal = DownloadCleanupIntentJournal(directory: directory)
+        let manager = DownloadManager(
+            appModel: AppModel(identity: PlatformClientIdentity.make(
+                clientIdentifier: "complete-convert"), activeBackend: .emby),
+            store: store, session: session, cleanupIntentJournal: journal,
+            registerForBackgroundEvents: false)
+        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+
+        manager.teardownOrphanedEncodersOnLaunch()
+
+        guard case .loaded(let intents) = journal.load() else {
+            Issue.record("Expected a readable cleanup journal"); return
+        }
+        let operations = intents.map(\.operation)
+        #expect(operations.count == 2)
+        #expect(operations.contains(.activeEncoding(playSessionID: "session-A")))
+        #expect(operations.contains(.embyConvert(.knownJob(jobID: 42))))
+    }
+
     enum LeakBranch: String, Sendable {
         case activeEncoding = "leak-active"
         case embyConvert = "leak-convert"
