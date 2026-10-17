@@ -367,6 +367,164 @@ Acceptance is a phase's pins and inventory rows staying green.
   - **Live A/B pending:** the Jellyfin keepalive reports a fixed position of 0 until D3 decides.
   - **Test fixtures:** PMSKit fixtures still use media-like titles outside Downloads; this is left
     to a separate hygiene pass.
+- **2026-10-17 — P1 after-review (GPT-6.1-Sol, high).** It reported six findings, and all six were
+  valid.
+  - **B00:** ownership gaps at the tracking handoff. Fixed: a finish hold is taken under the
+    extraction lock, and live plus pending ownership are read together.
+  - **B09:** a park left sibling segments running. Fixed: the whole train parks.
+  - **B07:** a failed activation aborted owned holds. Fixed: a live transport now releases wakes
+    through finish-events.
+  - **B39:** a job explicitly naming another item could still be attributed. Fixed: such jobs
+    are never attributed.
+  - **D3 probe:** it misclassified its own teardown. Fixed: the verdict comes from a snapshot
+    taken before cleanup.
+  - **Docs:** they overclaimed the keepalive interim. Reworded.
+  - **Pins:** each lifecycle fix has a behavioural pin, and each pin fails with its fix removed.
+  - **Deferred to P7:** the B70 test is still a source-text check. A behavioural test for a
+    mounted sheet needs view-inspection infrastructure.
+
+## P2 detailed plan — cleanup foundation
+
+Today seven kinds of server cleanup exist. Three are journaled (Jellyfin/Emby `activeEncoding`,
+Emby Convert `knownJob` and `ambiguousCreate`). One uses a separate tombstone file (the Emby
+24-hour crash-window expiry). Three are fire-and-forget with no durable record:
+
+- Plex optimize removal on delete (B28);
+- the two `cancelEmbyConvertJob` sites (B50);
+- the superseded-negotiation encoder stop.
+
+P2 puts all of them in one journal, makes that journal durable, and gives it one runner.
+
+### P2.1 Durable writes (B18)
+
+- Both journals write through `DownloadIndexFileCommitter`: an exclusive temp file, full fsync,
+  rename, and directory fsync. This replaces `Data.write(.atomic)`.
+- The authority directory gets protection and backup exclusion when it is created. The journal
+  file gets them on every write, not only on migration.
+- `cleanupAbandonedTemps` also sweeps the authority directory.
+- The existing "after a throw, re-read and confirm the exact value" proofs stay. They map onto
+  `replacementMayHaveOccurred`.
+- The journal keeps its own lock and stays off the index lock (st-41).
+- The committer needs free space for one temp file, as `.atomic` already did, so sd-21 does not
+  get worse. The "delete when the volume is full" case gets a pin.
+
+### P2.2 One operation set
+
+`DurableDownloadCleanupIntent.Operation` gains `plexOptimize(queueTitle:)`.
+
+- The `backend != .plex` initializer guard becomes per-operation: `plexOptimize` requires
+  `.plex`, the other two require Jellyfin or Emby.
+- **Plex server identity** is the persisted base URL plus `backendServerID` (the machine
+  identifier), and the account id where the row has one.
+  - If Plex rows do not persist these today, dispatch starts persisting them. P2 verifies this in
+    code.
+  - A Plex row with no identity is handled like Jellyfin/Emby today: no intent is written, the
+    local delete proceeds, and the row discloses the leak.
+- The wire format adds `operationType=plexOptimize` with a `queueTitle` key.
+- `version` stays 1. An older build reading a newer file fails closed through the existing
+  element quarantine, which is acceptable for a downgrade.
+
+### P2.3 Every cancel journals first, then runs through the executor
+
+- **Plex delete (B28, D2).**
+  - The Plex intent joins the candidates passed to `prepareForDestructiveDeletion`, alongside
+    the other intents.
+  - It executes only after `resolveRowDeletion == .removed`, like the rest.
+  - The fire-and-forget `Task` at `DownloadManager.swift:3789-3815` goes away.
+  - `plexOptimizeCancelDecision` also covers **paused** prep rows.
+  - The executor runs GET queue → `cancellableItemID` → DELETE. A missing or completed item
+    retires the intent, so completed renders stay on the server (D2).
+- **Plex abandoned seed removal** (`DownloadManager+PlexOptimize.swift:385-409`) journals the
+  same intent before removing the row.
+- **Emby stale-create and duplicate-job cancels (B50).**
+  - Both `cancelEmbyConvertJob` sites write a `knownJob` intent, then execute it.
+  - The executor's exact-clear already no-ops when the row's job id differs. The duplicate-job
+    case cancels the duplicate while the row keeps the job it reused; a test pins this.
+- **Superseded-negotiation encoder stops** (six call sites).
+  - These write an `activeEncoding` intent for the superseded PlaySessionId, then execute it.
+  - The exact `clearPlaySessionID(expected:)` cannot clear the current session.
+  - Without persisted server identity, the call keeps today's fire-and-forget stop and records a
+    `not_durable` diagnostic.
+
+### P2.4 Retire the tombstone engine
+
+- `.expireRecovery` writes an `embyConvert(.ambiguousCreate)` intent built from the row's
+  crash-window identity. This replaces the tombstone.
+- **Legacy migration.** At launch, read `emby-convert-cleanup.json`. For each tombstone:
+  1. build the intent from its metadata snapshot;
+  2. `ensure` it;
+  3. remove the tombstone after the commit.
+  - A tombstone without the identity needed for an intent is dropped, with a diagnostic.
+  - The file is deleted once it is empty.
+  - Only a minimal legacy reader survives. It goes in P6 or later.
+- **Removed:**
+  - `deferredEmbyCleanupTombstones`;
+  - `embyCleanupTombstonesInFlight`;
+  - `recoverAndCancelEmbyConvertTombstone`;
+  - the tombstone preamble in `resumePendingEmbyConvertDownloads`;
+  - the tombstone add and remove wrappers on the store.
+- **Behaviour parity.** The ambiguous intent executor already excludes live-row jobs and applies
+  the same `cleanupAction`. Each tombstone test is ported to the intent path before the engine
+  is deleted.
+
+### P2.5 One runner
+
+A `CleanupIntentRunner` owned by `DownloadManager` replaces the separate launch replay,
+in-memory replay and tombstone preamble.
+
+- **Single flight.** Each intent id runs at most once at a time (emby-38).
+- **Triggers:** launch reattach, `backend_ready`, a backend switch, a session change, and
+  `refreshRecords`.
+  - Durable journal entries are replayed on all of these.
+  - Today the launch path alone replays the journal; in-memory entries replay on refresh.
+- **Session mismatch** leaves the intent journaled, with no retry storm. Each trigger re-checks
+  it.
+- **Fallback capsule.** The in-memory `deferredCleanupIntents` map stays only as the fallback
+  for intents held in a row's deletion-pending capsule while the journal is failing (st-26).
+- `DownloadDeletePolicy.embyConvertCancelDecision` is deleted (dead code), along with its tests.
+
+### P2.6 Launch sweep rule in one place
+
+- `CleanupObligationPolicy` (PMSKit) decides which terminal rows journal on launch:
+  - Jellyfin/Emby play sessions: yes;
+  - Convert jobs: yes, unless `shouldKeepEmbyConvertAuthorityForRetry` (the P1 B44/B49
+    containment);
+  - Plex: never. Completed renders stay on the server, and a failed row keeps its job for
+    Retry.
+- The B49 ordering race (`ContentView` against reattach) is structurally P4. P2 keeps the P1
+  containment and pins it.
+
+### P2.7 UI note (D2)
+
+- The delete confirmation for a Plex row says that completed optimized versions stay on the
+  server.
+- It also says that a job still in prep is cancelled where the backend supports it.
+
+### Pins written first
+
+- Journal writes: commit-stage faults, the directory sync, and backup exclusion surviving a
+  rewrite.
+- Tombstone-to-intent migration:
+  - success;
+  - a crash between `ensure` and tombstone removal (resulting in one intent);
+  - a tombstone missing identity.
+- **Plex:**
+  - a delete while in prep, while paused, and after completion (no cancel);
+  - a session mismatch (stays journaled);
+  - a DELETE failure (stays journaled);
+  - a relaunch replay.
+- **Emby:**
+  - a stale-create cancel journaled before the DELETE;
+  - a duplicate-job cancel leaving the reused job id intact.
+- **Superseded encoder stop:** journaled, and cannot clear the current PlaySessionId.
+- **Runner:** single flight under overlapping triggers, and replay on `backend_ready`.
+- **Delete on a full volume:** today's behaviour is preserved.
+
+### Out of P2
+
+- Facets and the v5 migration (P3).
+- Runner registration for prep pollers (P4).
+- A legacy reader drop (P6).
 
 ## Open gates (never claimed by this work)
 
