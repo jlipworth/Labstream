@@ -47,42 +47,77 @@ flowchart TD
 
 ## Transfer lifecycle
 
+Each download row persists a **lifecycle** and an **attempt history**. Every change to them goes
+through one pure reducer, `DownloadLifecycleReducer`. The serialized `DownloadStatus` that the
+UI, diagnostics and older app versions read is derived from the lifecycle.
+
 ```mermaid
 stateDiagram-v2
-  accTitle: Persisted download row states
-  accDescr: A persisted row begins queued. Emby Convert is the only route that serializes preparing. Plex optimize stays queued until the static handoff. Bytes download next. Interruption can pause a row, errors can fail it, and validation ends as complete or unverified when the file is retained but the local playback probe is inconclusive.
-  state "queued" as Queued
-  state "preparing" as Preparing
-  state "downloading" as Downloading
+  accTitle: Download lifecycle
+  accDescr: A row is planned or admitted, may prepare on the server, transfers bytes, and enters finalizing once a complete body exists. Finalizing ends complete or unverified after publication, or failed. Interruptions pause a row with a recorded cause; errors fail it with a recorded reason. Retry modes choose where a paused or failed row resumes.
+  state "planned" as Planned
+  state "admitted" as Admitted
+  state "serverPrep" as ServerPrep
+  state "transferring" as Transferring
+  state "finalizing" as Finalizing
   state "paused" as Paused
   state "failed" as Failed
   state "complete" as Complete
   state "unverified" as Unverified
-  [*] --> Queued
-  Queued --> Preparing: Emby Convert job
-  Queued --> Downloading: transfer starts
-  Preparing --> Downloading: prepared source ready
-  Preparing --> Paused: recoverable interruption
-  Preparing --> Failed: preparation fails
-  Downloading --> Paused: recoverable interruption
-  Downloading --> Failed: transfer or validation fails
-  Downloading --> Complete: file validated and playable
-  Downloading --> Unverified: file retained; playback probe inconclusive
-  Paused --> Queued: resume or retry
-  Failed --> Queued: retry
+  [*] --> Planned
+  [*] --> Admitted
+  Planned --> Admitted: admission granted
+  Admitted --> ServerPrep: Plex optimize or Emby Convert
+  ServerPrep --> Admitted: prepared source handed off
+  Admitted --> Transferring: transfer starts
+  Transferring --> Finalizing: complete body at the working path
+  Finalizing --> Complete: validated and published
+  Finalizing --> Unverified: published; probe inconclusive or repeated truncation
+  Finalizing --> Failed: validation fails
+  Transferring --> Paused: interruption (cause recorded)
+  Transferring --> Failed: transfer fails (reason recorded)
+  Paused --> Admitted: resume or retry
+  Paused --> Transferring: resume blob
+  Paused --> ServerPrep: prep reattach or Convert resume
+  Failed --> Admitted: retry
+  Unverified --> Complete: local playback or revalidation
   Complete --> [*]
   Unverified --> [*]
 ```
 
-These labels are the serialized `DownloadStatus` values, not UI-only phases. `.preparing` is
-Emby Convert only: that row carries a server-side Sync job and launch reconciliation keeps
-polling it. Plex optimizer rows stay `.queued` until they hand off to a static transfer;
-recovery and pause treat that Plex prep as queued server-prep, not `.preparing`. In particular,
-there is no persisted `verifying` state: finalization rewrites HEVC `hev1` to `hvc1` and then
-transitions the active `downloading` row to `complete`, `unverified`, or `failed`. Both
-terminal success states retain the local file; `unverified` records that the startup probe
-could not prove playability. The opaque and static-range pipelines share that completion
-path.
+| Lifecycle | Serialized status |
+| --- | --- |
+| `planned`, `admitted` | `queued` (a season row awaiting admission still projects `failed` with the admission flag) |
+| `serverPrep` | `preparing` for Emby Convert; Plex optimizer rows stay `admitted`/`queued` until the handoff |
+| `transferring`, `finalizing` | `downloading` |
+| `complete`, `unverified`, `paused`, `failed` | the same name |
+
+**Attempt history** records what no status can:
+- truncation strikes;
+- the reason a row is `unverified`;
+- the last failure;
+- why a row paused (user, queue paused, system interruption, awaiting a session, storage,
+  deferred resume).
+
+Rules that follow from this:
+
+- **Progress never promotes a paused, failed or finalizing row.** It only records the bytes
+  (B09).
+- **`finalizing` is persisted** as soon as a complete body reaches the attempt working path. A
+  relaunch before validation re-finalizes that body instead of deleting it (B10). A forward-only
+  body exists at the working path only once its whole transfer finished, so the same rule covers
+  a finished forward-only body whose task was lost.
+- **Truncation strikes persist** with the row and survive a relaunch.
+  - A Retry of the same server, account, item, source and profile inherits them, and a replayed
+    validation outcome is not counted twice.
+  - The second strike keeps the body as `unverified` and publishes it.
+  - Revalidating a published body never fails or deletes it for truncation (B54).
+- **Relaunch reconciliation** applies the reducer to each row's facts: route, durable checkpoint,
+  body, pending artifact intents, deletion state and live task. Any file deletion it decides runs
+  outside the store lock.
+
+Finalization still rewrites HEVC `hev1` to `hvc1` before validation, and both terminal success
+states keep the local file. The opaque and static-range pipelines share the completion path.
 
 ## Background downloads and sleeping devices
 
