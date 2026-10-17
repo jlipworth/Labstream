@@ -2387,6 +2387,39 @@ final class DownloadStore: @unchecked Sendable {
         return !Self.hasPendingRowDeletion(row)
     }
 
+    /// P3b (rev 8): may new work start or continue for this exact attempt? Ownership alone is not
+    /// enough: a deletion-pending capsule still owns its row and files (cleanup authority), but
+    /// admits no transfer, finalizer, prep or season work.
+    func attemptAdmitsWork(_ key: DownloadAttemptKey) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return attemptAdmitsWorkLocked(key)
+    }
+
+    /// Lock-held variant for store transactions (season apply) that already hold `lock`.
+    private func attemptAdmitsWorkLocked(_ key: DownloadAttemptKey) -> Bool {
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else { return false }
+        return !Self.hasPendingRowDeletion(row) && !row.deletionPending
+    }
+
+    /// P3b (rev 9): phase-aware admission for a start chain that minted `attemptID` before the
+    /// store owns it. Before the seed the key must be empty or held by the exact expected
+    /// previous owner, which must itself admit work; after the seed the exact attempt must admit
+    /// work. `createAttemptOwnedRecord`'s compare-and-swap stays authoritative.
+    func startChainAdmits(ratingKey: String, attemptID: DownloadAttemptID,
+                          expectedPreviousOwner: DownloadAttemptID?) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[ratingKey] else { return true }
+        guard let owner = row.attemptID else {
+            // A legacy terminal row without an owner is replaced by an unowned compare-and-swap.
+            return expectedPreviousOwner == nil && !row.deletionPending
+                && !Self.hasPendingRowDeletion(row)
+        }
+        if owner == attemptID || owner == expectedPreviousOwner {
+            return attemptAdmitsWorkLocked(DownloadAttemptKey(ratingKey: ratingKey, attemptID: owner))
+        }
+        return false
+    }
+
     /// Where an attempt's row stands for server-cleanup eligibility (P2.2). Absence in memory is
     /// not proof of deletion: `executeRowDeletion` drops the row before its terminal revision
     /// commits and restores it if that commit fails, so that window and any staged deletion read

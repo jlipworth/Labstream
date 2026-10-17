@@ -175,9 +175,13 @@ extension DownloadManager {
         if seasonPlanCommitsInFlight > 0 { return true }
         if isQueuePaused { return records.contains { $0.metadata?.seasonPlannerPendingAdmission == true } }
         let snapshot = store.records
-        let pendingRecords = snapshot.filter {
-            $0.metadata?.seasonPlannerPendingAdmission == true
-                && ($0.status == .queued || $0.status == .failed)
+        let pendingRecords = snapshot.filter { record in
+            record.metadata?.seasonPlannerPendingAdmission == true
+                && (record.status == .queued || record.status == .failed)
+                // P3b: rows being deleted (barrier or capsule) are never admitted.
+                && (record.attemptID.map {
+                    store.attemptAdmitsWork(DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: $0))
+                } ?? false)
         }
         guard !pendingRecords.isEmpty else { return false }
         // A row occupies admission capacity while it holds a live in-flight slot OR while its
@@ -248,6 +252,9 @@ extension DownloadManager {
             && SeasonPlanAdmissionAuthority.accepts(
                 expected: record.attemptID, current: current?.attemptID,
                 status: current?.status)
+            && (record.attemptID.map {
+                store.attemptAdmitsWork(DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: $0))
+            } ?? false)
     }
 
     private func startSeasonPlannedRecord(_ record: DownloadRecord) async {

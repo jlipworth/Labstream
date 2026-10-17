@@ -1455,6 +1455,16 @@ public final class DownloadManager {
         }
         let existingRecord = store.record(for: ratingKey)
         let enteredWithExistingRow = existingRecord != nil
+        // P3b: a row being deleted (barrier or capsule) never seeds a replacement start.
+        if let existingKey = existingRecord.flatMap({ attemptKey(for: $0) }),
+           !store.attemptAdmitsWork(existingKey) {
+            recordDownloadDiagnostic("downloads.start_blocked", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label(backend),
+                "reason": .label("row_deleting"),
+            ])
+            return nil
+        }
         guard acquireInFlightSlotForStart(ratingKey: ratingKey,
                                           backend: backend,
                                           allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) else {
@@ -1485,7 +1495,22 @@ public final class DownloadManager {
             enteredWithExistingRow: handle.enteredWithExistingRow,
             rowIsPresent: row != nil,
             rowStatus: row?.status)
-        guard case .superseded(let reason) = verdict else { return true }
+        guard case .superseded(let reason) = verdict else {
+            // P3b (rev 9): the conjunct the guard policy cannot see. Before the seed, the key is
+            // empty or held by the expected previous owner; after it, the exact attempt. Neither
+            // may be deleting (barrier or capsule).
+            guard store.startChainAdmits(ratingKey: handle.ratingKey, attemptID: handle.attemptID,
+                                         expectedPreviousOwner: handle.expectedPreviousOwner) else {
+                recordDownloadDiagnostic("downloads.start_superseded_after_await", fields: [
+                    "download_id": .identifier(handle.ratingKey),
+                    "backend": .label(backend),
+                    "phase": .label(phase),
+                    "reason": .label("row_deleting"),
+                ])
+                return false
+            }
+            return true
+        }
         recordDownloadDiagnostic("downloads.start_superseded_after_await", fields: [
             "download_id": .identifier(handle.ratingKey),
             "backend": .label(backend),
@@ -2638,11 +2663,12 @@ public final class DownloadManager {
         let attemptIsCurrent = token.map {
             retryState.isCurrentRetryAttempt(key.ratingKey, id: $0)
         } ?? retryState.isRetrying(key.ratingKey)
+        // P3b: a retry never continues on an attempt that is being deleted (barrier or capsule).
         return DownloadRetryPreparationPolicy.attemptCanContinue(
             isRetrying: attemptIsCurrent,
             rowIsPresent: row != nil,
             rowStatus: row?.status
-        )
+        ) && (row == nil || store.attemptAdmitsWork(key))
     }
 
     private func resolveStaticRetryTarget(record: DownloadRecord,
@@ -3405,7 +3431,10 @@ public final class DownloadManager {
                 do {
                     try await triggerOptimize(item: currentItem, targetName: targetName,
                                               queueTitle: queueTitle,
-                                              server: server, token: token, identity: identity)
+                                              server: server, token: token, identity: identity,
+                                              isStillCurrent: { [weak self] in
+                                                  self?.store.attemptAdmitsWork(key) == true
+                                              })
                     markPlexOptimizeCreateConfirmed(for: key, queueTitle: queueTitle)
                 } catch {
                     // Same policy as fresh optimize starts: a recreate failure should not briefly
@@ -3526,7 +3555,8 @@ public final class DownloadManager {
     /// superseded chain must not run terminal cleanup against the newer attempt's state.
     func resumeOptimizePollerIsCurrent(for key: DownloadAttemptKey, pollerID: UUID, phase: String) -> Bool {
         let ratingKey = key.ratingKey
-        guard serverPrepAttempts.isCurrentPlexPoller(for: key, id: pollerID) else {
+        guard serverPrepAttempts.isCurrentPlexPoller(for: key, id: pollerID),
+              store.attemptAdmitsWork(key) else {
             recordDownloadDiagnostic("downloads.optimize_release_skipped_stale_poller", fields: [
                 "download_id": .identifier(ratingKey),
                 "phase": .label(phase),
@@ -3631,7 +3661,21 @@ public final class DownloadManager {
         return true
     }
 
-    private func delete(record rowToDelete: DownloadRecord) {
+    /// What a Delete handed off before it returned (P3b, rev 8). The schema upgrade counts only
+    /// `barriered` and `capsule`; the UI ignores the value.
+    enum DeleteHandoff: Sendable, Equatable {
+        /// The row-deletion barrier is installed; the artifact queue finishes removal.
+        case barriered
+        /// Journaling was unavailable; a durable deletion-pending reservation holds the row.
+        case capsule
+        /// The deletion could not be saved; the row is unchanged.
+        case persistenceFailed
+        /// A replacement owns the rating key, or the row has no exact owner.
+        case stale
+    }
+
+    @discardableResult
+    private func delete(record rowToDelete: DownloadRecord) -> DeleteHandoff {
         let ratingKey = rowToDelete.ratingKey
         let rowAttemptKey = rowToDelete.attemptID.map {
             DownloadAttemptKey(ratingKey: ratingKey, attemptID: $0)
@@ -3731,8 +3775,10 @@ public final class DownloadManager {
                     "authority": .label("index_deletion_pending"),
                 ])
                 refreshRecords()
-                return
+                return .capsule
             case .indexPersistenceFailed(_, let persistence):
+                // The reservation may be dirty in memory; stop process-owned work either way.
+                haltManagerOwnedWorkForPendingDeletion(rowAttemptKey)
                 lastError[ratingKey] = .transferFailed(
                     "Deletion could not be saved. Free storage if needed, then tap Delete to retry.")
                 recordDownloadDiagnostic("downloads.delete_deferred", fields: [
@@ -3741,17 +3787,17 @@ public final class DownloadManager {
                     "authority": .label("existing_row_unchanged"),
                 ])
                 refreshRecords()
-                return
+                return .persistenceFailed
             case .staleOrMissing:
                 recordDownloadDiagnostic("downloads.delete_deferred", fields: [
                     "download_id": .identifier(ratingKey),
                     "reason": .label("cleanup_owner_changed"),
                 ])
                 refreshRecords()
-                return
+                return .stale
             }
         }
-        guard let deletedAttemptKey = rowAttemptKey else { return }
+        guard let deletedAttemptKey = rowAttemptKey else { return .stale }
         let deletionSubmission = wasDeletionPending
             ? store.submitCompletePendingDeletion(for: deletedAttemptKey)
             : store.submitRemove(for: deletedAttemptKey)
@@ -3764,13 +3810,21 @@ public final class DownloadManager {
                 "reason": .label("delete_owner_changed"),
             ])
             refreshRecords()
-            return
+            return .stale
         }
-        session.cancel(ratingKey: ratingKey)
+        // The barrier makes `ownsAttempt` false, so an ownership-checked Cancel would be a no-op
+        // here: stop exactly this attempt's tasks, tracked or not (P3b, rev 8).
+        session.haltForDeletion(attemptKey: deletedAttemptKey)
         // The durable terminal barrier now rejects every tail publication. Cancel side caches,
         // finalizers, and other exact cancellable work immediately so they cannot create new
         // unlisted staging bytes while the off-lock deletion worker is still running.
         _ = downloadWorkRegistry.cancelCancellableWork(for: deletedAttemptKey)
+        // Stop process-owned server work now (prep pollers, keepalive) rather than after the
+        // asynchronous removal. Cleanup authority stays with the journaled intents; the encoder
+        // teardown in `releaseInFlight` still runs once removal is proven.
+        _ = serverPrepAttempts.releaseAll(for: deletedAttemptKey)
+        serverPrepPollerTasks.removeValue(forKey: deletedAttemptKey)?.cancel()
+        keepaliveCoordinator.cancel(deletedAttemptKey)
         recordDownloadDiagnostic("downloads.cancel_or_delete", fields: [
             "download_id": .identifier(ratingKey),
         ])
@@ -3806,7 +3860,10 @@ public final class DownloadManager {
         // deleted row's stale "Preparing on server… N%" caption and seeds the ETA estimator with
         // dead samples. (`releaseInFlight` below also clears it — kept explicit here because the
         // leak was delete-shaped.)
-            clearOptimizeProgress(ratingKey: ratingKey)
+            // Rating-key-wide: never clear a replacement attempt's progress (P3b, rev 9).
+            if store.downloadAttemptIdentity(ratingKey: ratingKey) == nil {
+                clearOptimizeProgress(ratingKey: ratingKey)
+            }
         // Releasing the in-flight protection here matters because the row is now GONE, so the
         // terminal-status sweep in `refreshRecords` (which keys off `.complete`/`.failed` rows)
         // can no longer find it to release — without this, a cancelled/deleted job would leak
@@ -3817,6 +3874,7 @@ public final class DownloadManager {
             releaseInFlight(for: deletedAttemptKey, rowSnapshot: rowToDelete)
             refreshRecords()
         }
+        return .barriered
     }
 
     func recordDownloadDiagnostic(_ name: String,
@@ -4808,7 +4866,9 @@ public final class DownloadManager {
             // race this loop before/without a registered Task handle, and a concurrent reap can
             // remove the queue row entirely. Re-check LIVE app state every iteration and stop
             // polling the server the moment this download no longer exists or lost its slot.
-            let rowExists = store.contains(ratingKey: ratingKey)
+            // P3b: a row being deleted (barrier or capsule) counts as gone for polling.
+            let rowExists = store.record(for: ratingKey)
+                .flatMap { attemptKey(for: $0) }.map(store.attemptAdmitsWork) ?? false
             guard ServerPrepRefreshPolicy.plexPrepPollerShouldContinue(
                 rowExists: rowExists,
                 slotActive: activeJobs.contains(ratingKey)
