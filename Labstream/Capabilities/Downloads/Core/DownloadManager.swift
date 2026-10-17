@@ -4953,6 +4953,12 @@ public final class DownloadManager {
     }
 
     private func statusCaption(for record: DownloadRecord, backend: DownloadBackendKind) -> String {
+        // pu-33: a row waiting for admission says so instead of reading as active work.
+        if let waiting = DownloadRowStatusCaptionPolicy.admissionWaitingCaption(
+            lifecycle: record.lifecycle, intent: record.admissionIntent,
+            isQueuePaused: isQueuePaused, isExempt: admission.isExempt(record.ratingKey)) {
+            return waiting
+        }
         let isActive = activeJobs.contains(record.ratingKey) || record.status == .downloading
         let failureCaption = record.status == .failed ? lastError[record.ratingKey].map(message(for:)) : nil
         return DownloadRowStatusCaptionPolicy.caption(.init(

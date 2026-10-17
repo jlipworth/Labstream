@@ -197,6 +197,19 @@ public enum DownloadRowStatusCaptionPolicy {
         return resumeMode == .serverPrepThenStatic ? "Preparing on server…" : "Queued…"
     }
 
+    /// pu-33 (P4): a row waiting for an admission lane (planned, or parked with a retry request)
+    /// reads as waiting, with the reason, never as active work or a plain failure.
+    public static func admissionWaitingCaption(lifecycle: DownloadLifecycle?,
+                                               intent: DownloadAdmissionIntent?,
+                                               isQueuePaused: Bool,
+                                               isExempt: Bool) -> String? {
+        let waiting = lifecycle == .planned
+            || ((lifecycle == .paused || lifecycle == .failed) && intent == .retryRequested)
+        guard waiting else { return nil }
+        if isQueuePaused && !isExempt { return "Waiting — downloads paused" }
+        return "Waiting for a download slot…"
+    }
+
     public static func caption(_ context: Context) -> String {
         switch phase(context) {
         case .failed(let isRetrying):

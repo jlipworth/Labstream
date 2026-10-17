@@ -286,8 +286,10 @@ struct SeasonDownloadPlannerSheet: View {
                 } else {
                     // Keep the unsupported episode visible as its own ordinary failed row. Do not
                     // substitute a materially unrelated bitrate rendition for Original quality.
+                    // B69: a failed probe proves nothing; plan it and re-probe at admission.
                     choice = .original
-                    shouldStart = false
+                    shouldStart = SeasonDownloadOriginalQualityPolicy.shouldStartUnmatchedOriginal(
+                        probeFailed: option.probeFailed)
                 }
                 estimate = downloadManager.estimatedBytes(
                     for: option.item, choice: choice, mediaIndex: mediaIndex, partIndex: 0,
