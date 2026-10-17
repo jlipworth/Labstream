@@ -231,6 +231,17 @@ capacity across concurrent handoffs; a refusal keeps the predecessor's owner and
 the existing storage-full message. Aggregate diagnostics count copy bytes, sweep reclamation and
 space refusals, without paths or identifiers.
 
+A performance review of the whole stack judged it net better than `main` for launch, recovery and
+steady-state cost, and P7 fixed its four pre-release findings. Cold launch no longer classifies,
+inventories or decodes the index on MainActor: the startup worker does it once and reuses the
+result, while the store stays admission-closed and Offline shows its restoring state until load
+completes. Cleanup abandonment journals through the bounded worker seam, with one commit per
+stale-title sweep. Row phase and fraction are published values, with resume-presence evidence
+cached per exact attempt and artifact generation, so rendering performs no stats. Foreground
+side-asset repair builds one off-main inventory per pass, revalidated against exact attempt and
+source before dispatch. Two findings are follow-up issues: side-asset fetches can queue completed
+payloads behind slow preparation (a cheap B83 improvement), and P6 async waits poll every 10 ms.
+
 ## Verification checkpoint
 
 These are inherited journal results, not tests rerun by this documentation lane:
