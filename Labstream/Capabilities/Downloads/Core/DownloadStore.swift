@@ -424,7 +424,24 @@ final class DownloadStore: @unchecked Sendable {
         var pendingValidatedPromotionStatus: DownloadStatus?
         var bytes: Int
         var progress: Double
-        var status: DownloadStatus
+        /// P3a: where the attempt is. Authoritative; `status` is derived from it.
+        var lifecycle: DownloadLifecycle
+        /// P3a: facts no status can hold (truncation strikes, unverified reason, pause cause).
+        var history: DownloadAttemptHistory
+        /// Derived for older binaries, diagnostics and the UI. The setter is the temporary P3a
+        /// legacy shim: a status write maps onto lifecycle without losing what status cannot
+        /// express (finalizing, planned). Call sites move to reducer events; the shim is removed
+        /// by the end of P3a.
+        var status: DownloadStatus {
+            // `planned` keeps today's `.failed` + admission-flag projection until the season
+            // planner converts to reducer events, so behaviour and older binaries are unchanged.
+            get { lifecycle == .planned ? .failed : lifecycle.derivedStatus }
+            set { lifecycle = Self.legacyLifecycle(for: newValue, current: lifecycle,
+                                                   admissionPending: admissionPending) }
+        }
+        /// Season-planner admission stays authoritative in metadata during P3a so P1/P2 binaries
+        /// keep enforcing it after a rollback (R2-3).
+        var admissionPending: Bool { metadata?.seasonPlannerPendingAdmission == true }
         // D5: snapshot of the source item + the locally-cached poster path. Both are
         // optional and decoded with `decodeIfPresent` so rows written before D5 load.
         var metadata: OfflineMetadata?
@@ -455,6 +472,7 @@ final class DownloadStore: @unchecked Sendable {
             case ratingKey, attemptID, title, relativePath, attemptWorkingRelativePath
             case pendingValidatedPromotionStatus
             case bytes, progress, status, metadata
+            case lifecycle, history
             case deletionPending
             case deletionPendingCleanupIntents
             case heldRangeBodyDeletionIntents
@@ -477,7 +495,7 @@ final class DownloadStore: @unchecked Sendable {
                 DownloadStatus.self, forKey: .pendingValidatedPromotionStatus)
             bytes = try c.decode(Int.self, forKey: .bytes)
             progress = try c.decode(Double.self, forKey: .progress)
-            status = try c.decode(DownloadStatus.self, forKey: .status)
+            let decodedStatus = try c.decode(DownloadStatus.self, forKey: .status)
             metadata = try c.decodeIfPresent(OfflineMetadata.self, forKey: .metadata)
             let nestedAttemptID = metadata?.downloadAttemptID.flatMap(DownloadAttemptID.init(rawValue:))
             attemptID = topLevelAttemptID
@@ -493,6 +511,24 @@ final class DownloadStore: @unchecked Sendable {
                 UInt64.self, forKey: .sideAssetGeneration) ?? 0
             pendingArtifactIntents = try c.decodeIfPresent(
                 [ArtifactIntent].self, forKey: .pendingArtifactIntents) ?? []
+            // R2-6: a row without lifecycle (written before P3a, or re-encoded by an older binary)
+            // derives it structurally from status alone. A lifecycle that disagrees with the
+            // status an older binary wrote afterwards also yields to that status, structurally.
+            let decodedLifecycle = try c.decodeIfPresent(DownloadLifecycle.self, forKey: .lifecycle)
+            let admission = metadata?.seasonPlannerPendingAdmission == true
+            let promotionPending = pendingArtifactIntents.first.map {
+                if case .validatedPromotion = $0.operation { return true }
+                return false
+            } ?? false
+            if let decodedLifecycle, decodedLifecycle.derivedStatus == decodedStatus
+                || (decodedLifecycle == .planned && decodedStatus == .failed) {
+                lifecycle = decodedLifecycle
+            } else {
+                lifecycle = DownloadLifecycle.structural(
+                    from: decodedStatus, admissionPending: admission,
+                    finalizingEvidence: promotionPending)
+            }
+            history = try c.decodeIfPresent(DownloadAttemptHistory.self, forKey: .history) ?? .empty
             decodedTopLevelAttemptIDPresent = topLevelAttemptID != nil
             decodedAttemptIdentityDisagrees = topLevelAttemptID != nil
                 && nestedAttemptID != nil
@@ -519,8 +555,11 @@ final class DownloadStore: @unchecked Sendable {
             self.pendingValidatedPromotionStatus = pendingValidatedPromotionStatus
             self.bytes = bytes
             self.progress = progress
-            self.status = status
             self.metadata = metadata
+            self.lifecycle = Self.legacyLifecycle(
+                for: status, current: nil,
+                admissionPending: metadata?.seasonPlannerPendingAdmission == true)
+            self.history = .empty
             self.deletionPending = deletionPending
             self.deletionPendingCleanupIntents = deletionPendingCleanupIntents
             self.heldRangeBodyDeletionIntents = heldRangeBodyDeletionIntents
@@ -543,6 +582,8 @@ final class DownloadStore: @unchecked Sendable {
             try c.encode(bytes, forKey: .bytes)
             try c.encode(progress, forKey: .progress)
             try c.encode(status, forKey: .status)
+            try c.encode(lifecycle, forKey: .lifecycle)
+            if history != .empty { try c.encode(history, forKey: .history) }
             try c.encodeIfPresent(metadata, forKey: .metadata)
             if deletionPending { try c.encode(true, forKey: .deletionPending) }
             if !deletionPendingCleanupIntents.isEmpty {
@@ -562,6 +603,22 @@ final class DownloadStore: @unchecked Sendable {
             if !pendingArtifactIntents.isEmpty {
                 try c.encode(pendingArtifactIntents, forKey: .pendingArtifactIntents)
             }
+        }
+
+        /// The P3a legacy shim mapping (Appendix C): a status write keeps the lifecycle detail it
+        /// cannot express — `finalizing` stays finalizing under `.downloading`, and a failed
+        /// season row awaiting admission is `planned`.
+        static func legacyLifecycle(
+            for status: DownloadStatus,
+            current: DownloadLifecycle?,
+            admissionPending: Bool
+        ) -> DownloadLifecycle {
+            if let current, current.derivedStatus == status
+                || (current == .planned && status == .failed && admissionPending) {
+                return current
+            }
+            return DownloadLifecycle.structural(
+                from: status, admissionPending: admissionPending, finalizingEvidence: false)
         }
     }
 
@@ -2294,6 +2351,13 @@ final class DownloadStore: @unchecked Sendable {
         }
         lock.unlock()
         return stagedDeletion ? .retiring : .present(hydratedRecord(row))
+    }
+
+    /// The exact attempt's P3a lifecycle and history.
+    func lifecycleState(for key: DownloadAttemptKey) -> DownloadLifecycleState? {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else { return nil }
+        return DownloadLifecycleState(lifecycle: row.lifecycle, history: row.history)
     }
 
     func isDeletionPending(for key: DownloadAttemptKey) -> Bool {
@@ -5421,3 +5485,21 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 }
+
+#if DEBUG
+/// Exposes the private row's P3a legacy-shim mapping to tests.
+enum DownloadStoreTestHooks {
+    static func legacyLifecycle(for status: DownloadStatus, current: DownloadLifecycle?,
+                                admissionPending: Bool) -> DownloadLifecycle {
+        DownloadStore.legacyLifecycleForTesting(
+            for: status, current: current, admissionPending: admissionPending)
+    }
+}
+
+extension DownloadStore {
+    static func legacyLifecycleForTesting(for status: DownloadStatus, current: DownloadLifecycle?,
+                                          admissionPending: Bool) -> DownloadLifecycle {
+        Row.legacyLifecycle(for: status, current: current, admissionPending: admissionPending)
+    }
+}
+#endif

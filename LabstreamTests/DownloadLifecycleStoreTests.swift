@@ -1,0 +1,124 @@
+#if !os(tvOS)
+import Foundation
+import PMSKit
+import Testing
+@testable import Labstream
+
+/// P3a store pins: additive lifecycle/history in the v4 envelope, structural derivation for rows
+/// written without them, and rollback compatibility with binaries that drop them (R2-3, R2-6).
+@Suite("Download lifecycle store compatibility", .serialized)
+struct DownloadLifecycleStoreTests {
+    @Test("Lifecycle is written next to the derived status and survives a reload")
+    func lifecycleIsPersisted() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let key = try seed("plex:one", status: .paused, in: store)
+            let index = try indexRows(directory)
+            #expect(index.first?["lifecycle"] as? String == "paused")
+            #expect(index.first?["status"] as? String == "paused")
+            #expect(DownloadStore(baseDirectory: directory).lifecycleState(for: key)?.lifecycle
+                    == .paused)
+        }
+    }
+
+    @Test("A row re-encoded by an older binary derives its lifecycle structurally")
+    func olderBinaryReencodeDerivesStructurally() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let key = try seed("plex:two", status: .complete, in: store)
+            // An older binary drops the unknown keys when it rewrites the row.
+            try rewriteRows(directory) { row in
+                row.removeValue(forKey: "lifecycle")
+                row.removeValue(forKey: "history")
+            }
+            let reloaded = DownloadStore(baseDirectory: directory)
+            #expect(reloaded.lifecycleState(for: key)?.lifecycle == .complete)
+            #expect(reloaded.record(for: key)?.status == .complete)
+        }
+    }
+
+    @Test("A status changed by an older binary wins over a stale lifecycle")
+    func staleLifecycleYieldsToOlderBinaryStatus() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let key = try seed("plex:three", status: .paused, in: store)
+            try rewriteRows(directory) { row in row["status"] = "failed" }
+            let reloaded = DownloadStore(baseDirectory: directory)
+            #expect(reloaded.lifecycleState(for: key)?.lifecycle == .failed)
+        }
+    }
+
+    @Test("A season row awaiting admission is planned and still projects .failed + flag")
+    func plannedSeasonRowKeepsTheLegacyProjection() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            var metadata = OfflineMetadata(ratingKey: "plex:ep", title: "Ep", type: "episode")
+            metadata.seasonPlannerPendingAdmission = true
+            let key = try seed("plex:ep", status: .failed, metadata: metadata, in: store)
+            #expect(store.lifecycleState(for: key)?.lifecycle == .planned)
+            #expect(store.record(for: key)?.status == .failed)
+            let index = try indexRows(directory)
+            #expect(index.first?["status"] as? String == "failed")
+            let metadataObject = index.first?["metadata"] as? [String: Any]
+            #expect(metadataObject?["seasonPlannerPendingAdmission"] as? Bool == true)
+            #expect(DownloadStore(baseDirectory: directory).lifecycleState(for: key)?.lifecycle
+                    == .planned)
+        }
+    }
+
+    @Test("A legacy status write keeps finalizing under .downloading")
+    func legacyShimKeepsFinalizing() {
+        #expect(DownloadStoreTestHooks.legacyLifecycle(
+            for: .downloading, current: .finalizing, admissionPending: false) == .finalizing)
+        #expect(DownloadStoreTestHooks.legacyLifecycle(
+            for: .paused, current: .finalizing, admissionPending: false) == .paused)
+        #expect(DownloadStoreTestHooks.legacyLifecycle(
+            for: .failed, current: .planned, admissionPending: true) == .planned)
+        #expect(DownloadStoreTestHooks.legacyLifecycle(
+            for: .failed, current: .planned, admissionPending: false) == .failed)
+    }
+
+    // MARK: - Fixtures
+
+    private func seed(_ ratingKey: String, status: DownloadStatus,
+                      metadata: OfflineMetadata? = nil,
+                      in store: DownloadStore) throws -> DownloadAttemptKey {
+        let id = DownloadAttemptID(uuid: UUID())
+        let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: id)
+        let url = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
+        if status == .complete { try Data([1]).write(to: url) }
+        let record = DownloadRecord(
+            ratingKey: ratingKey, attemptID: id, title: "Item", localURL: url,
+            bytes: status == .complete ? 1 : 0, progress: status == .complete ? 1 : 0,
+            status: status,
+            metadata: metadata ?? OfflineMetadata(ratingKey: ratingKey, title: "Item", type: "movie"))
+        #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
+        return key
+    }
+
+    private func indexRows(_ directory: URL) throws -> [[String: Any]] {
+        let data = try Data(contentsOf: directory.appendingPathComponent("index.json"))
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        return try #require(object["rows"] as? [[String: Any]])
+    }
+
+    private func rewriteRows(_ directory: URL, _ edit: (inout [String: Any]) -> Void) throws {
+        let url = directory.appendingPathComponent("index.json")
+        var object = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        var rows = try #require(object["rows"] as? [[String: Any]])
+        for index in rows.indices { edit(&rows[index]) }
+        object["rows"] = rows
+        try JSONSerialization.data(withJSONObject: object).write(to: url)
+    }
+
+    private func withDirectory(_ body: (URL) throws -> Void) throws {
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lifecycle-store-\(UUID().uuidString)", isDirectory: true)
+        let directory = parent.appendingPathComponent("Downloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        try body(directory)
+    }
+}
+#endif
