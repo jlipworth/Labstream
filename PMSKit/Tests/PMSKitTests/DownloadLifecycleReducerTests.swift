@@ -160,6 +160,15 @@ struct DownloadLifecycleReducerTests {
                 == [.resetBytesToDurableCheckpoint])
     }
 
+    @Test func aCompleteBodyOnAParkedRowReentersFinalizing() {
+        for lifecycle: DownloadLifecycle in [.paused, .failed] {
+            #expect(R.reduce(state(lifecycle), .bodyAtWorking, facts: staticFacts).state?.lifecycle
+                    == .finalizing)
+        }
+        #expect(R.reduce(state(.complete), .bodyAtWorking, facts: staticFacts)
+                == .rejected(.illegal))
+    }
+
     // MARK: - Retry modes and admission
 
     @Test func retryModesChooseTheirDestination() {
