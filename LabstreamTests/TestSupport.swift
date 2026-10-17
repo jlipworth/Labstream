@@ -1,4 +1,6 @@
 import Foundation
+import Observation
+import Testing
 
 /// Lock-backed test state that can safely be captured by `@Sendable` closures.
 final class TestLockedBox<Value>: @unchecked Sendable {
@@ -39,6 +41,35 @@ actor TestGate {
         waiters.removeAll()
         pending.forEach { $0.resume() }
     }
+}
+
+/// Minimal async counter for observing how many times a closure ran.
+actor TestCounter {
+    private(set) var value = 0
+    func increment() { value += 1 }
+}
+
+/// Observe actual transitions on the caller's actor; timeout only bounds a broken test.
+@MainActor
+func waitForObservedState(_ condition: @escaping @MainActor () -> Bool) async throws {
+    let events = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+    let timeout = Task {
+        do { try await Task.sleep(for: .seconds(30)) } catch { return }
+        events.continuation.finish()
+    }
+    defer {
+        timeout.cancel()
+        events.continuation.finish()
+    }
+    var iterator = events.stream.makeAsyncIterator()
+    while !Task.isCancelled {
+        let ready = withObservationTracking { condition() } onChange: {
+            events.continuation.yield(())
+        }
+        if ready { return }
+        guard await iterator.next() != nil else { break }
+    }
+    try #require(condition(), "Observed controller state did not transition before outer test guard")
 }
 
 /// Monotonic manual nanosecond clock suitable for dependency closures.

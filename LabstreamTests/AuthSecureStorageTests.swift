@@ -265,11 +265,11 @@ struct AuthSecureStorageTests {
                 writes.record(account)
                 return true
             })
-        let gate = AuthResponseGate()
+        let gate = HeldContinuation<(Data, URLResponse)>()
         let identity = PlatformClientIdentity.make(clientIdentifier: "test-auth-attempt")
         let model = AppModel(identity: identity, activeBackend: .plex)
-        let manager = AuthManager(appModel: model, keychain: store) { request in
-            await gate.hold(request: request)
+        let manager = AuthManager(appModel: model, keychain: store) { _ in
+            await gate.hold()
         }
         let server = try #require(URL(string: "https://media.example.invalid"))
 
@@ -278,7 +278,7 @@ struct AuthSecureStorageTests {
         }
         await gate.waitUntilHeld()
         #expect(manager.selectBackend(.plex))
-        await gate.releaseJellyfinSuccess()
+        await gate.release(returning: heldJellyfinSuccess())
         await attemptA.value
 
         #expect(model.activeBackend == .plex)
@@ -321,10 +321,10 @@ struct AuthSecureStorageTests {
         let store = KeychainStore(service: "com.visionplay.tests.cancel.\(UUID().uuidString)",
                                   synchronizesPlexToken: false,
                                   writeInterceptor: { _, _ in true })
-        let gate = AuthResponseGate()
+        let gate = HeldContinuation<(Data, URLResponse)>()
         let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "cancel-test"))
-        let manager = AuthManager(appModel: model, keychain: store) { request in
-            await gate.hold(request: request)
+        let manager = AuthManager(appModel: model, keychain: store) { _ in
+            await gate.hold()
         }
         let server = try #require(URL(string: "https://media.example.invalid"))
         let task = Task {
@@ -332,7 +332,7 @@ struct AuthSecureStorageTests {
         }
         await gate.waitUntilHeld()
         task.cancel()
-        await gate.releaseJellyfinSuccess()
+        await gate.release(returning: heldJellyfinSuccess())
         await task.value
 
         #expect(manager.state == .idle)
@@ -353,16 +353,16 @@ struct AuthSecureStorageTests {
         #expect(store.saveToken("saved-token"))
         #expect(store.saveSelectedBackend(.plex))
         writes.reset()
-        let gate = PlexDiscoveryGate()
+        let gate = HeldContinuation<PlexSessionDiscovery>()
         let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "plex-attempt"))
         let manager = AuthManager(appModel: model, keychain: store,
-                                  plexSessionDiscoverer: { token in
-                                      await gate.hold(token: token)
+                                  plexSessionDiscoverer: { _ in
+                                      await gate.hold()
                                   })
         let restore = Task { await manager.restoreSession() }
         await gate.waitUntilHeld()
         #expect(manager.selectBackend(.jellyfin))
-        await gate.releaseSuccess()
+        await gate.release(returning: heldPlexDiscovery())
         #expect(await restore.value == false)
 
         #expect(model.activeBackend == .jellyfin)
@@ -493,7 +493,7 @@ struct AuthSecureStorageTests {
             servers: [server], selectedServer: server, serverToken: "server-token",
             baseURL: URL(string: "https://server.invalid")!, isLocal: false,
             accountProfile: nil)
-        let profileGate = PlexProfileGate()
+        let profileGate = HeldContinuation<PlexAccountProfile?>()
         let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "plex-milestones"))
         let manager = AuthManager(appModel: model, keychain: store,
                                   plexSessionDiscoverer: { _ in discovery },
@@ -505,7 +505,7 @@ struct AuthSecureStorageTests {
         #expect(model.plexAccountProfile == nil)
 
         await profileGate.waitUntilHeld()
-        await profileGate.release()
+        await profileGate.release(returning: PlexAccountProfile(username: "stale"))
         let deadline = ContinuousClock.now.advanced(by: .seconds(1))
         while model.plexAccountProfile == nil, ContinuousClock.now < deadline {
             await Task.yield()
@@ -617,7 +617,7 @@ struct AuthSecureStorageTests {
     }
 
     @Test func loginTaskCancellationRejectsHeldUICompletion() async {
-        let gate = VoidGate()
+        let gate = HeldContinuation<Void>()
         let events = LoginEventRecorder()
         let coordinator = LoginAuthTaskCoordinator()
         coordinator.launch {
@@ -627,7 +627,7 @@ struct AuthSecureStorageTests {
         }
         await gate.waitUntilHeld()
         coordinator.cancel()
-        await gate.release()
+        await gate.release(returning: ())
         for _ in 0..<10 { await Task.yield() }
         #expect(events.values.isEmpty)
     }
@@ -639,13 +639,13 @@ struct AuthSecureStorageTests {
         #expect(store.saveToken("token"))
         let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "refresh"),
                              token: "token")
-        let gate = PlexDiscoveryGate()
+        let gate = HeldContinuation<PlexSessionDiscovery>()
         let manager = AuthManager(appModel: model, keychain: store,
-                                  plexSessionDiscoverer: { token in await gate.hold(token: token) })
+                                  plexSessionDiscoverer: { _ in await gate.hold() })
         let refresh = Task { try await manager.refreshServers() }
         await gate.waitUntilHeld()
         manager.signOut()
-        await gate.releaseSuccess()
+        await gate.release(returning: heldPlexDiscovery())
         do {
             try await refresh.value
             Issue.record("Expected canceled refresh")
@@ -664,13 +664,13 @@ struct AuthSecureStorageTests {
         #expect(store.saveToken("token"))
         let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "refresh-cancel"),
                              token: "token")
-        let gate = PlexDiscoveryGate()
+        let gate = HeldContinuation<PlexSessionDiscovery>()
         let manager = AuthManager(appModel: model, keychain: store,
-                                  plexSessionDiscoverer: { token in await gate.hold(token: token) })
+                                  plexSessionDiscoverer: { _ in await gate.hold() })
         let refresh = Task { try await manager.refreshServers() }
         await gate.waitUntilHeld()
         refresh.cancel()
-        await gate.releaseSuccess()
+        await gate.release(returning: heldPlexDiscovery())
         do {
             try await refresh.value
             Issue.record("Expected canceled refresh")
@@ -722,13 +722,13 @@ struct AuthSecureStorageTests {
         let server = PlexDevice(name: "Server", clientIdentifier: "server-id",
                                 provides: "server", connections: [connection])
         model.plexServers = [server]
-        let gate = PlexConnectionGate()
+        let gate = HeldContinuation<(url: URL, isLocal: Bool)?>()
         let manager = AuthManager(appModel: model, keychain: store,
                                   plexConnectionResolver: { _, _, _ in await gate.hold() })
         let selection = Task { try await manager.selectPlexServer(id: server.id) }
         await gate.waitUntilHeld()
         manager.signOut()
-        await gate.release()
+        await gate.release(returning: (URL(string: "https://server.invalid")!, false))
         do {
             try await selection.value
             Issue.record("Expected canceled selection")
@@ -744,13 +744,13 @@ struct AuthSecureStorageTests {
                                   writeInterceptor: { _, _ in true })
         let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "profile-race"),
                              token: "token")
-        let gate = PlexProfileGate()
+        let gate = HeldContinuation<PlexAccountProfile?>()
         let manager = AuthManager(appModel: model, keychain: store,
                                   plexProfileLoader: { _ in await gate.hold() })
         let refresh = Task { await manager.refreshPlexAccountProfile() }
         await gate.waitUntilHeld()
         manager.signOut()
-        await gate.release()
+        await gate.release(returning: PlexAccountProfile(username: "stale"))
         await refresh.value
         #expect(model.plexAccountProfile == nil)
     }
@@ -1029,10 +1029,11 @@ private final class StorageFaults {
     }
 }
 
-private actor AuthResponseGate {
-    private var continuation: CheckedContinuation<(Data, URLResponse), Never>?
+/// Holds one async dependency call until the test releases it with a value.
+private actor HeldContinuation<Value: Sendable> {
+    private var continuation: CheckedContinuation<Value, Never>?
 
-    func hold(request: URLRequest) async -> (Data, URLResponse) {
+    func hold() async -> Value {
         await withCheckedContinuation { continuation = $0 }
     }
 
@@ -1040,35 +1041,26 @@ private actor AuthResponseGate {
         while continuation == nil { await Task.yield() }
     }
 
-    func releaseJellyfinSuccess() {
-        let data = Data(#"{"User":{"Id":"stale-user"},"AccessToken":"stale-token","ServerId":"server"}"#.utf8)
-        let url = URL(string: "https://media.example.invalid")!
-        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
-        continuation?.resume(returning: (data, response))
+    func release(returning value: Value) {
+        continuation?.resume(returning: value)
         continuation = nil
     }
 }
 
-private actor PlexDiscoveryGate {
-    private var continuation: CheckedContinuation<PlexSessionDiscovery, Never>?
+private func heldJellyfinSuccess() -> (Data, URLResponse) {
+    let data = Data(#"{"User":{"Id":"stale-user"},"AccessToken":"stale-token","ServerId":"server"}"#.utf8)
+    let url = URL(string: "https://media.example.invalid")!
+    let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+    return (data, response)
+}
 
-    func hold(token: String) async -> PlexSessionDiscovery {
-        await withCheckedContinuation { continuation = $0 }
-    }
-
-    func waitUntilHeld() async {
-        while continuation == nil { await Task.yield() }
-    }
-
-    func releaseSuccess() {
-        let server = PlexDevice(name: "Held server", clientIdentifier: "held-server",
-                                provides: "server", connections: [])
-        continuation?.resume(returning: PlexSessionDiscovery(
-            servers: [server], selectedServer: server, serverToken: "held-token",
-            baseURL: URL(string: "https://held.invalid")!, isLocal: false,
-            accountProfile: nil))
-        continuation = nil
-    }
+private func heldPlexDiscovery() -> PlexSessionDiscovery {
+    let server = PlexDevice(name: "Held server", clientIdentifier: "held-server",
+                            provides: "server", connections: [])
+    return PlexSessionDiscovery(
+        servers: [server], selectedServer: server, serverToken: "held-token",
+        baseURL: URL(string: "https://held.invalid")!, isLocal: false,
+        accountProfile: nil)
 }
 
 private actor EmbyConnectLoaderGate {
@@ -1125,37 +1117,6 @@ private actor EmbyConnectMultiServerLoader {
         let response = HTTPURLResponse(url: request.url!, statusCode: 200,
                                        httpVersion: nil, headerFields: nil)!
         return (Data(json.utf8), response)
-    }
-}
-
-private actor VoidGate {
-    private var continuation: CheckedContinuation<Void, Never>?
-    func hold() async { await withCheckedContinuation { continuation = $0 } }
-    func waitUntilHeld() async { while continuation == nil { await Task.yield() } }
-    func release() { continuation?.resume(); continuation = nil }
-}
-
-private actor PlexConnectionGate {
-    private var continuation: CheckedContinuation<(url: URL, isLocal: Bool)?, Never>?
-    func hold() async -> (url: URL, isLocal: Bool)? {
-        await withCheckedContinuation { continuation = $0 }
-    }
-    func waitUntilHeld() async { while continuation == nil { await Task.yield() } }
-    func release() {
-        continuation?.resume(returning: (URL(string: "https://server.invalid")!, false))
-        continuation = nil
-    }
-}
-
-private actor PlexProfileGate {
-    private var continuation: CheckedContinuation<PlexAccountProfile?, Never>?
-    func hold() async -> PlexAccountProfile? {
-        await withCheckedContinuation { continuation = $0 }
-    }
-    func waitUntilHeld() async { while continuation == nil { await Task.yield() } }
-    func release() {
-        continuation?.resume(returning: PlexAccountProfile(username: "stale"))
-        continuation = nil
     }
 }
 

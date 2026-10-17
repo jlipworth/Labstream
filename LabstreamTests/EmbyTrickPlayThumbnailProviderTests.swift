@@ -190,8 +190,8 @@ final class EmbyTrickPlayThumbnailProviderTests: XCTestCase {
         // SideAssetFetchCoordinator, which coalesces on its own and so masks a provider-level
         // single-flight regression. This gates the loader so all callers are in-flight at once.
         let bif = makeBIF(payload: Data("bif-frame".utf8))
-        let loadCount = LoaderInvocationCounter()
-        let gate = LoaderGate()
+        let loadCount = TestCounter()
+        let gate = TestGate()
         let provider = BIFBackedTrickPlayThumbnailProvider {
             await loadCount.increment()
             await gate.wait()
@@ -207,7 +207,7 @@ final class EmbyTrickPlayThumbnailProviderTests: XCTestCase {
         // shared task before releasing the gate.
         while await loadCount.value == 0 { await Task.yield() }
         for _ in 0..<50 { await Task.yield() }
-        gate.open()
+        await gate.open()
 
         var frames: [TrickPlayThumbnail?] = []
         for caller in callers { frames.append(await caller.value) }
@@ -355,40 +355,6 @@ private final class TrickPlayURLProtocol: URLProtocol, @unchecked Sendable {
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
-}
-
-private actor LoaderInvocationCounter {
-    private(set) var value = 0
-    func increment() { value += 1 }
-}
-
-/// One-shot async gate: callers awaiting `wait()` before `open()` suspend until it is opened.
-private final class LoaderGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var opened = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    func wait() async {
-        await withCheckedContinuation { continuation in
-            lock.lock()
-            if opened {
-                lock.unlock()
-                continuation.resume()
-            } else {
-                waiters.append(continuation)
-                lock.unlock()
-            }
-        }
-    }
-
-    func open() {
-        lock.lock()
-        opened = true
-        let pending = waiters
-        waiters = []
-        lock.unlock()
-        pending.forEach { $0.resume() }
-    }
 }
 
 private func makeBIF(payload: Data) -> Data {

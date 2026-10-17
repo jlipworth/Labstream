@@ -114,28 +114,6 @@ struct PlaybackVideoTranscodeConsentTests {
         #expect(cleanupWasCancelled == false)
     }
 
-    /// Observe actual transitions on the caller's actor; timeout only bounds a broken test.
-    private func waitForObservedState(_ condition: @escaping @MainActor () -> Bool) async throws {
-        let events = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        let timeout = Task {
-            do { try await Task.sleep(for: .seconds(30)) } catch { return }
-            events.continuation.finish()
-        }
-        defer {
-            timeout.cancel()
-            events.continuation.finish()
-        }
-        var iterator = events.stream.makeAsyncIterator()
-        while !Task.isCancelled {
-            let ready = withObservationTracking { condition() } onChange: {
-                events.continuation.yield(())
-            }
-            if ready { return }
-            guard await iterator.next() != nil else { break }
-        }
-        try #require(condition(), "Observed controller state did not transition before outer test guard")
-    }
-
     private func waitUntil(_ condition: () -> Bool) async throws {
         let start = ContinuousClock.now
         let deadline = start.advanced(by: .seconds(5))
