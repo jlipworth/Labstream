@@ -651,6 +651,8 @@ struct BackgroundDownloadStartupAdmissionTests {
         case malformedCurrentRow
         /// Bytes that are not JSON at all.
         case notJSON
+        /// A newer schema written by a later app version, then downgraded: keep it, never reset.
+        case newerSchema
 
         func bytes() throws -> Data {
             switch self {
@@ -661,11 +663,16 @@ struct BackgroundDownloadStartupAdmissionTests {
                 ])
             case .notJSON:
                 return Data("not-json".utf8)
+            case .newerSchema:
+                return try JSONSerialization.data(withJSONObject: [
+                    "schemaVersion": DownloadIndexCoding.currentSchemaVersion + 1,
+                    "rows": [],
+                ])
             }
         }
     }
 
-    @Test(arguments: [UnreadableIndex.malformedCurrentRow, .notJSON])
+    @Test(arguments: [UnreadableIndex.malformedCurrentRow, .notJSON, .newerSchema])
     func unreadableIndexFailsClosedUntouchedAndCannotRequestDestructiveReset(
         _ input: UnreadableIndex
     ) throws {

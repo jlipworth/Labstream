@@ -20,8 +20,10 @@ public enum DownloadIndexCoding {
 
     /// A mutation-free startup classification. The app must run this before constructing any
     /// persistence writer, cleaning temporary files, or creating/protecting the Downloads root.
-    /// Only an absent index and an exact current envelope are admissible. Older/forward schemas
-    /// are reset as one opaque root; unreadable data is kept in place and fails closed.
+    /// Only an absent index and an exact current envelope are admissible. Older schemas are reset
+    /// as one opaque root. A NEWER schema (written by a later app version, then downgraded) is
+    /// classified unreadable: it is kept in place and fails closed, never reset, so reinstalling
+    /// the newer app recovers every download.
     public enum StartupProbe: Sendable, Equatable {
         case missing
         case current
@@ -45,9 +47,9 @@ public enum DownloadIndexCoding {
               envelope["rows"] is [Any] else {
             return .unreadable
         }
-        return version == currentSchemaVersion
-            ? .current
-            : .unsupported(schemaVersion: version)
+        if version == currentSchemaVersion { return .current }
+        if version > currentSchemaVersion { return .unreadable }
+        return .unsupported(schemaVersion: version)
     }
 
     /// Outcome of a current-envelope load: the rows that decoded, the schema version, and how many rows were
