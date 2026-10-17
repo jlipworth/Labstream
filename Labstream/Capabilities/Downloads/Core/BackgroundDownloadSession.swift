@@ -5863,13 +5863,44 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // purge held bodies, replace resume data, change status, or start replacement tasks.
             guard stillOwnsAttempt(
                 rangeEntry.attemptKey, phase: "range_error_completion") else { return }
+            // B09: an OS-initiated -999 is an interruption. App pause/cancel/supersede removed
+            // this entry (and installed a halt) before cancelling, so it never reaches here as one.
+            let isSystemInitiatedCancel = error.map(
+                BackgroundSystemCancellationPolicy.isSystemInitiatedCancel) == true
+                && !isRangeHalted(for: rangeEntry.attemptKey)
             let rangeDisposition = BackgroundRangeCompletionPolicy.disposition(
                 hasError: error != nil,
                 errorCode: error.map { ($0 as NSError).code },
-                hasRequest: rangeEntry.request != nil
+                hasRequest: rangeEntry.request != nil,
+                isSystemInitiatedCancel: isSystemInitiatedCancel
             )
             guard let error else { return } // success already handled in finishRangeRemainder
             let nsError = error as NSError
+            if case .parkSystemInterrupted = rangeDisposition {
+                // Park at the durable checkpoint without an immediate blob/transient retry: the
+                // system just refused background work, so re-issuing now would be cancelled again.
+                let rangeResumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data
+                if rangeEntry.segmentLength == nil, let rangeResumeData, !rangeResumeData.isEmpty {
+                    let displayBytes = rangeEntry.baseOffset
+                        + max(rangeEntry.bodyBytesWritten, Int(max(task.countOfBytesReceived, 0)))
+                    resolveLifecycleSubmission(store.submitResumeData(
+                        for: rangeEntry.attemptKey, rangeResumeData, displayBytes: displayBytes))
+                }
+                guard let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
+                    for: rangeEntry.attemptKey, expectedBytes: rangeEntry.expectedBytes,
+                    context: "system_cancel_park"
+                ) else { return }
+                AppDiagnostics.record(.downloads, "downloads.range_system_cancel_parked", fields: [
+                    "download_id": .identifier(rangeEntry.ratingKey),
+                    "cancel_reason": .int(
+                        (nsError.userInfo[NSURLErrorBackgroundTaskCancelledReasonKey] as? Int) ?? -1),
+                    "bytes": .bytes(durableBytes),
+                ])
+                _ = resolveLifecycleSubmission(store.submitStatus(for: rangeEntry.attemptKey, .paused))
+                onError?(rangeEntry.ratingKey, .interruptedResumable)
+                onChange?()
+                return
+            }
             if case .cancelled = rangeDisposition {
                 downloadLog.info("range-cancelled ratingKey=\(rangeEntry.ratingKey, privacy: .public) bytes=\(rangeEntry.totalBytes, privacy: .public)")
                 AppDiagnostics.record(.downloads, "downloads.range_cancelled", fields: [
@@ -5996,7 +6027,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let opaqueDisposition = BackgroundOpaqueCompletionPolicy.disposition(
             errorCode: nsError.code,
             hasResumeData: hasResumeData,
-            supportsPersistedResumeData: supportsResumeData
+            supportsPersistedResumeData: supportsResumeData,
+            // B09: app cancels remove the inflight entry first; an OS cancel arrives still tracked.
+            isSystemInitiatedCancel: BackgroundSystemCancellationPolicy.isSystemInitiatedCancel(nsError)
         )
         // A cancel is not a failure. Any other error keeps a `.failed` row (D3) with a
         // surfaced reason, rather than silently erasing it so the UI can offer retry.
@@ -6007,6 +6040,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             AppDiagnostics.record(.downloads, "downloads.cancelled", fields: [
                 "download_id": .identifier(entry.ratingKey),
             ])
+        case .failSystemInterrupted:
+            // B09: the system stopped a forward-only transfer. Fail retryable with the real reason
+            // instead of a silent cancel that leaves the row `.downloading` with no task.
+            AppDiagnostics.record(.downloads, "downloads.transfer_system_cancelled", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "cancel_reason": .int(
+                    (nsError.userInfo[NSURLErrorBackgroundTaskCancelledReasonKey] as? Int) ?? -1),
+                "bytes_received": .bytes(Int(task.countOfBytesReceived)),
+            ])
+            clearRetryCount(for: entry.attemptKey)
+            setFailedPurgingHeldSegments(for: entry.attemptKey)
+            onError?(entry.ratingKey, .transferFailed(
+                "The system stopped this download in the background. Retry will restart it from the beginning."))
         case .pauseWithResumeData, .failNonResumableStream, .fail:
             if retryTransientFailure(nsError, task: task, entry: entry) {
                 return

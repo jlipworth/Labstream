@@ -4,6 +4,9 @@ public enum BackgroundOpaqueCompletionDisposition: Sendable, Equatable {
     case cancelled
     case pauseWithResumeData
     case failNonResumableStream
+    /// B09: the OS cancelled a forward-only task. Fail retryable with a real reason rather than
+    /// treating it as a user cancel that leaves the row `.downloading` with no task.
+    case failSystemInterrupted
     case fail
 }
 
@@ -17,9 +20,26 @@ public enum BackgroundOpaqueCompletionDisposition: Sendable, Equatable {
 public enum BackgroundOpaqueCompletionPolicy {
     public static func disposition(errorCode: Int,
                                    hasResumeData: Bool,
-                                   supportsPersistedResumeData: Bool) -> BackgroundOpaqueCompletionDisposition {
-        guard errorCode != NSURLErrorCancelled else { return .cancelled }
+                                   supportsPersistedResumeData: Bool,
+                                   isSystemInitiatedCancel: Bool = false) -> BackgroundOpaqueCompletionDisposition {
+        if errorCode == NSURLErrorCancelled {
+            guard isSystemInitiatedCancel else { return .cancelled }
+            return hasResumeData && supportsPersistedResumeData
+                ? .pauseWithResumeData : .failSystemInterrupted
+        }
         guard hasResumeData else { return .fail }
         return supportsPersistedResumeData ? .pauseWithResumeData : .failNonResumableStream
+    }
+}
+
+/// B09: distinguishes an OS-initiated background cancellation from an app-initiated one. The
+/// system stamps `NSURLErrorBackgroundTaskCancelledReasonKey` on the -999 it delivers when it
+/// cancels background tasks itself; app pause/cancel/supersede never carries it.
+public enum BackgroundSystemCancellationPolicy {
+    public static func isSystemInitiatedCancel(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain
+            && nsError.code == NSURLErrorCancelled
+            && nsError.userInfo[NSURLErrorBackgroundTaskCancelledReasonKey] != nil
     }
 }
