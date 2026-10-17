@@ -74,19 +74,53 @@ enum DownloadStartupWakeState: Sendable, Equatable {
     case active(generation: UInt64)
 }
 
-extension BackgroundDownloadSession {
-    /// P6.1 replay adapter; P6.4 carries receipt time through to wake/timer ownership.
-    func noteBackgroundCompletionHandlerStored(_ receipt: DownloadWakeHandlerReceipt) {
-        noteBackgroundCompletionHandlerStored(identifier: receipt.identifier, token: receipt.token)
+extension DownloadWakeBudget {
+    static func deadline(from instant: UInt64, after seconds: TimeInterval) -> UInt64 {
+        let delta = UInt64(min(max(0, seconds.isFinite ? seconds : 0) * 1_000_000_000,
+                               Double(UInt64.max - instant) / 2))
+        return instant + delta
     }
+}
 
-    /// P6.1 receiver adapter. P6.2 publishes the current startup generation; P6.4 remembers terminal
-    /// pre-construction failure for late/pre-registration handlers, without constructing transport.
-    func noteStartupWakeState(_ state: DownloadStartupWakeState) {
-        switch state {
-        case .blockedBeforeTransport, .failedAfterTransport:
-            releaseBackgroundCompletionAfterStartupFailure()
-        case .deferred, .activating, .active: break
+extension DownloadWakeClockHooks {
+    static let live = Self(
+        now: { DispatchTime.now().uptimeNanoseconds },
+        register: { timer, action in
+            DispatchQueue.global(qos: .utility).asyncAfter(
+                deadline: DispatchTime(uptimeNanoseconds: timer.deadline), execute: action)
+        },
+        terminalAcknowledged: { acknowledgement in
+            AppDiagnostics.record(.downloads, "downloads.background_wake_terminal", fields: [
+                "outcome": .label(acknowledgement.outcome.diagnosticLabel),
+                "handler_count": .int(acknowledgement.batches.reduce(0) { $0 + $1.tokens.count }),
+            ])
+        })
+}
+
+extension DownloadStartupWakeState {
+    var generation: UInt64? {
+        switch self {
+        case .deferred: nil
+        case .activating(let value), .blockedBeforeTransport(let value),
+             .failedAfterTransport(let value), .active(let value): value
+        }
+    }
+    func supersedes(_ previous: Self?) -> Bool {
+        guard let previous else { return true }
+        if let old = previous.generation {
+            guard let new = generation else { return false }
+            return new >= old
+        }
+        return true
+    }
+}
+
+extension DownloadWakeTerminalAcknowledgement.Outcome {
+    var diagnosticLabel: String {
+        switch self {
+        case .drained: "drained"
+        case .timedOut: "timed_out"
+        case .startupBlocked: "startup_blocked"
         }
     }
 }

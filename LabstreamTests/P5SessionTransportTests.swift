@@ -49,7 +49,7 @@ struct P5SessionTransportTests {
                                        expectedBytes: total) == .storageRefused)
             #expect(store.resumeData(for: key) == blob)
             #expect(store.resumeDisplayBytes(for: key) == 4096)
-            #expect(store.lifecycleState(for: key)?.history.lastFailure == .storage)
+            #expect(await waitUntil { store.lifecycleState(for: key)?.history.lastFailure == .storage })
             #expect(requests.count == 0)
         }
     }

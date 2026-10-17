@@ -356,6 +356,26 @@ Acceptance is a phase's pins and inventory rows staying green.
 
 ## Progress journal
 
+- **2026-10-17 — P6.4 delegate lane implemented** on `downloads/p6-wake-lane`. Pins 06–09 and
+  the session half of Amendment 3 are green: the registry retains startup generations and receipt
+  deadlines (including a no-registration fallback); every production hold captures an idempotent
+  operation handle; one 25-second wake remains supervised through a covering persistence proof,
+  with 20-second operation/grace watchdogs and up to five seconds for persistence. Normal release
+  requires finish-events, settled required work and proof of its resulting boundary. Timeout claims
+  exact tokens without cancelling physical workers, releasing their leases or discarding bodies,
+  checkpoints or durable intents. Session submissions use deadline-aware async resolvers in both
+  contexts; network resumes wait for committed prerequisites and recheck attempt/train/halt/retry
+  authority on the range queue. Append reserves source/destination through handle closure and
+  revalidates exact ownership and file identity. The existing wake/session tests now observe proof
+  or timeout rather than assuming synchronous release. No store-contract delta or lead implementation
+  edit; Retry/reconcile's lease participation and remaining store/manager pins stay with the lead.
+  Validation: PMSKit 1,615 tests (one existing expected issue); hygiene 386 tooling tests plus strict
+  documentation/link/Mermaid checks passed. Clean full Mac-host run: 897 test entries, zero
+  unexpected failures, 15 lead-owned expected failures and two disabled manager tests; all 14
+  dedicated wake functions and the session-only lease function pass. The Mac run disables parallel
+  test execution to avoid the deliberately held workers starving unrelated callbacks. No simulator,
+  push, PR or merge was performed; physical-device background acceptance remains open.
+
 - **2026-10-16 — P1 implemented** on `downloads/manager-overhaul`. These were fixed with
   regression tests: B00 (plus a rebuild-grace ownership guard), B01, B02, B05, B07, B09, B11, B15,
   B25, B26, B34, B36, B38, B39, B42, B43, B44/B49 (containment), B45, B46, B47, B48, B52, B54

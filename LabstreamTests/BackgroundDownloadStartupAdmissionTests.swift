@@ -1255,34 +1255,41 @@ struct UnverifiedRevalidationLifecycleTests {
         #expect(!duplicateFire)
     }
 
-    @Test func pendingBackgroundHandlerDefersWithoutClaimingProbeAndDrainPublishesExactKeysOnce() throws {
-        try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
-            let session = BackgroundDownloadSession(store: store, protocolClasses: [])
-            defer { session.invalidateInjectedSessionForTesting() }
-            let first = try seedUnverified("plex:first", in: store)
-            let second = try seedUnverified("plex:second", in: store)
-            let drained = LockedRevalidationDrainBox()
-            session.onBackgroundCompletionGateDrained = { drained.append($0) }
-            session.noteBackgroundCompletionHandlerStored(identifier: "wake")
-
-            #expect(session.revalidateCompletedDownload(
-                ratingKey: first.ratingKey, validationLabel: "test") == .deferredForBackgroundWake)
-            #expect(session.revalidateCompletedDownload(
-                ratingKey: second.ratingKey, validationLabel: "test") == .deferredForBackgroundWake)
-            #expect(session.backgroundDeferredRevalidationKeysForTesting() == [first, second])
-
-            // Models scene-active arriving during the same wake: it remains a cheap exact-key
-            // deferral, not an AVFoundation finalizer claim or a second drain notification.
-            #expect(session.revalidateCompletedDownload(
-                ratingKey: first.ratingKey, validationLabel: "scene") == .deferredForBackgroundWake)
-            session.finishBackgroundEventsForTesting(identifier: "wake")
-            #expect(drained.values == [[first, second]])
-            #expect(session.backgroundDeferredRevalidationKeysForTesting().isEmpty)
-
-            session.finishBackgroundEventsForTesting(identifier: "wake")
-            #expect(drained.values == [[first, second]])
+    @Test func pendingBackgroundHandlerDefersWithoutClaimingProbeAndDrainPublishesExactKeysOnce() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("wake-proof-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DownloadStore(baseDirectory: directory)
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+        defer { session.invalidateInjectedSessionForTesting() }
+        let first = try seedUnverified("plex:first", in: store)
+        let second = try seedUnverified("plex:second", in: store)
+        let drained = LockedRevalidationDrainBox()
+        let releaseEligible = DispatchSemaphore(value: 0)
+        session.onBackgroundCompletionGateDrained = {
+            drained.append($0)
+            releaseEligible.signal()
         }
+        session.noteBackgroundCompletionHandlerStored(identifier: "wake")
+
+        #expect(session.revalidateCompletedDownload(
+            ratingKey: first.ratingKey, validationLabel: "test") == .deferredForBackgroundWake)
+        #expect(session.revalidateCompletedDownload(
+            ratingKey: second.ratingKey, validationLabel: "test") == .deferredForBackgroundWake)
+        #expect(session.backgroundDeferredRevalidationKeysForTesting() == [first, second])
+
+        // Models scene-active arriving during the same wake: it remains a cheap exact-key
+        // deferral, not an AVFoundation finalizer claim or a second drain notification.
+        #expect(session.revalidateCompletedDownload(
+            ratingKey: first.ratingKey, validationLabel: "scene") == .deferredForBackgroundWake)
+        session.finishBackgroundEventsForTesting(identifier: "wake")
+        // Finish-events now retains supervision through the covering persistence proof.
+        #expect(await p6Signal(releaseEligible, seconds: 10))
+        #expect(drained.values == [[first, second]])
+        #expect(session.backgroundDeferredRevalidationKeysForTesting().isEmpty)
+
+        session.finishBackgroundEventsForTesting(identifier: "wake")
+        #expect(drained.values == [[first, second]])
     }
 
     @Test func realProbeAdmissionDeduplicatesUntilExactClaimReleases() throws {

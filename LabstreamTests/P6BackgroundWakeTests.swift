@@ -52,10 +52,8 @@ struct P6BackgroundWakeTests {
         registry.noteStartupWakeState(.blockedBeforeTransport(generation: 1), identifier: BackgroundDownloadSession.identifier)
         let token = registry.store(identifier: BackgroundDownloadSession.identifier) { fired.withLock { $0 += 1 } }
         if lateRegistration { registry.register(session) }
-        withKnownIssue("P6 red pin: P6.4 — pre-construction failure is forgotten before late token delivery") {
-            #expect(fired.withLock { $0 } == 1)
-            #expect(!registry.hasPendingHandler(identifier: BackgroundDownloadSession.identifier))
-        }
+        #expect(fired.withLock { $0 } == 1)
+        #expect(!registry.hasPendingHandler(identifier: BackgroundDownloadSession.identifier))
         #expect(!session.startupAdmissionIsActiveForTesting)
         #expect(constructions.withLock { $0 } == 0)
         // Exact-token drain remains idempotent, including if timeout and normal completion race.
@@ -75,9 +73,7 @@ struct P6BackgroundWakeTests {
         #expect(coordinator.finishEvents(identifier: "wake") == .none)
         try clock.requireWakeTimers()
         clock.advance(to: 21)
-        withKnownIssue("P6 red pin: P6.4 — anonymous operation has no expiry or release eligibility") {
-            #expect(!coordinator.hasPendingHandler)
-        }
+        #expect(!coordinator.hasPendingHandler)
         // Once A is claimed, B's hold cannot be consumed by A's late/duplicate completion.
         _ = coordinator.abortAwaitingHandlers() // fixture cleanup, not the proposed timeout path
         coordinator.storeHandler(identifier: "wake", token: .init())
@@ -86,9 +82,7 @@ struct P6BackgroundWakeTests {
         _ = coordinator.finishEvents(identifier: "wake")
         _ = coordinator.endOperation(operationA)
         _ = coordinator.endOperation(operationA) // duplicate delayed A end
-        withKnownIssue("P6 red pin: P6.4 — stale anonymous end consumes the new wake's hold") {
-            #expect(coordinator.hasPendingHandler)
-        }
+        #expect(coordinator.hasPendingHandler)
     }
 
     @Test("P6-pin-07 grace expiry is bounded and rearmed generations reject stale timers")
@@ -101,9 +95,7 @@ struct P6BackgroundWakeTests {
         _ = coordinator.finishEvents(identifier: "wake")
         try clock.requireWakeTimers()
         clock.advance(to: 21)
-        withKnownIssue("P6 red pin: P6.4 — a grace operation cannot expire under the injected clock") {
-            #expect(!coordinator.hasPendingHandler)
-        }
+        #expect(!coordinator.hasPendingHandler)
         let b = coordinator.beginGrace(for: key)
         #expect(a.generation != b.generation)
         #expect(!coordinator.endGrace(for: key, generation: a.generation).ended)
@@ -122,10 +114,8 @@ struct P6BackgroundWakeTests {
         clock.advance(to: 24)
         _ = coordinator.beginOperation(kind: .append)
         let operation = clock.state.withLock { $0.timers.first { $0.0.kind == .operation }?.0.deadline }
-        withKnownIssue("P6 red pin: P6.4 — session registration slides receipt deadline and operation watchdog is not capped") {
-            #expect(absolute == 25_000_000_000)
-            #expect(operation == 25_000_000_000)
-        }
+        #expect(absolute == 25_000_000_000)
+        #expect(operation == 25_000_000_000)
     }
 
     @Test("P6-pin-08 balanced operations cannot slide the one absolute wake deadline")
@@ -142,9 +132,7 @@ struct P6BackgroundWakeTests {
             clock.advance(to: UInt64(second))
         }
         clock.advance(to: 25)
-        withKnownIssue("P6 red pin: P6.4 — continuously occupied wake outlives its absolute budget") {
-            #expect(!coordinator.hasPendingHandler)
-        }
+        #expect(!coordinator.hasPendingHandler)
         #expect(coordinator.snapshot.pendingOperationCount == 1) // physical work is retained
     }
 
@@ -167,9 +155,7 @@ struct P6BackgroundWakeTests {
         #expect(coordinator.hasPendingHandler)
         #expect(coordinator.snapshot.pendingOperationCount == 0)
         clock.advance(to: 25)
-        withKnownIssue("P6 red pin: P6.4 — missing finish-events outlives absolute deadline after successful flush") {
-            #expect(!coordinator.hasPendingHandler)
-        }
+        #expect(!coordinator.hasPendingHandler)
     }
 
     private func blockedAppend(finishEvents: Bool, verifyRecovery: Bool = false) async throws {
@@ -189,7 +175,7 @@ struct P6BackgroundWakeTests {
         try Data([4, 5]).write(to: source)
         let hold = P6Hold()
         let clock = P6WakeClock()
-        let registry = await MainActor.run { BackgroundDownloadCompletionRegistry() }
+        let registry = await MainActor.run { BackgroundDownloadCompletionRegistry(clockHooks: clock.hooks) }
         let fired = Mutex(0)
         let session = BackgroundDownloadSession(store: store, protocolClasses: [], wakeClockHooks: clock.hooks,
             appendWillPerformIO: { _, _ in hold.hit() },
@@ -223,12 +209,10 @@ struct P6BackgroundWakeTests {
         clock.advance(to: 25)
         let terminal = clock.state.withLock { $0.acknowledgements }
         let stillPending = await MainActor.run { registry.hasPendingHandler(identifier: BackgroundDownloadSession.identifier) }
-        withKnownIssue("P6 red pin: P6.4 — \(finishEvents ? "blocked append" : "missing finish-events") has no absolute terminal timeout") {
-            #expect(!stillPending)
-            #expect(fired.withLock { $0 } == 1)
-            #expect(terminal.count == 1)
-            #expect(terminal.first?.outcome == .timedOut)
-        }
+        #expect(!stillPending)
+        #expect(fired.withLock { $0 } == 1)
+        #expect(terminal.count == 1)
+        #expect(terminal.first?.outcome == .timedOut)
         // P6-pin-09: expiry never drops actual attempt/body ownership or committed checkpoint.
         #expect(store.ownsAttempt(key))
         #expect(session.claimedRangeBodiesForTesting().contains(source.standardizedFileURL))
@@ -260,7 +244,7 @@ struct P6BackgroundWakeTests {
             try DownloadIndexFileCommitter().commit(data, to: url)
         })
         let clock = P6WakeClock()
-        let registry = await MainActor.run { BackgroundDownloadCompletionRegistry() }
+        let registry = await MainActor.run { BackgroundDownloadCompletionRegistry(clockHooks: clock.hooks) }
         let fired = Mutex(0)
         let session = BackgroundDownloadSession(store: store, protocolClasses: [], wakeClockHooks: clock.hooks,
             releaseBackgroundCompletion: { registry.fireCompletions(in: $0) })
@@ -276,13 +260,102 @@ struct P6BackgroundWakeTests {
         session.finishBackgroundEventsForTesting(identifier: BackgroundDownloadSession.identifier)
         clock.advance(to: 25)
         let pending = await MainActor.run { registry.hasPendingHandler(identifier: BackgroundDownloadSession.identifier) }
-        withKnownIssue("P6 red pin: P6.4 — gate drain removes an in-flight flush from deadline supervision") {
-            #expect(!pending)
-            #expect(fired.withLock { $0 } == 1)
-        }
+        #expect(!pending)
+        #expect(fired.withLock { $0 } == 1)
         #expect(clock.state.withLock { $0.timers.isEmpty }) // no new five-second budget at expiry
         hold.release.signal()
         _ = await store.flushPersistence(through: store.currentPersistenceTicket(), timeout: 2)
+    }
+
+    @Test("Normal release waits for a proof of the last settled operation, including work during flush")
+    func proofMustCoverResultingBoundary() throws {
+        let clock = P6WakeClock()
+        let coordinator = BackgroundDownloadWakeCoordinator(clockHooks: clock.hooks)
+        let first = BackgroundDownloadCompletionHandlerToken()
+        coordinator.storeHandler(identifier: "wake", token: first)
+        let early = try #require(coordinator.finishEvents(identifier: "wake").flush)
+        #expect(coordinator.hasPendingHandler) // a flush does not claim the tokens
+        let operation = coordinator.beginOperation(kind: .heldLifecycle)
+        #expect(coordinator.persistenceFinished(early, committed: true) == .none)
+        #expect(coordinator.hasPendingHandler)
+        let resulting = try #require(coordinator.endOperation(operation).flush)
+        #expect(resulting.epoch != early.epoch)
+        let terminal = coordinator.persistenceFinished(resulting, committed: true)
+        #expect(terminal.completionBatches == [.init(identifier: "wake", tokens: [first])])
+        #expect(terminal.outcome == .drained)
+        #expect(!coordinator.hasPendingHandler)
+        #expect(clock.state.withLock { $0.acknowledgements.map(\.outcome) } == [.drained])
+        #expect(coordinator.persistenceFinished(resulting, committed: true) == .none)
+    }
+
+    @Test("Expired A remains physically owned but cannot hold or expire successor wake B")
+    func expiredOperationCannotJoinSuccessor() throws {
+        let clock = P6WakeClock()
+        let coordinator = BackgroundDownloadWakeCoordinator(clockHooks: clock.hooks)
+        coordinator.storeHandler(identifier: "wake", token: .init())
+        let old = coordinator.beginOperation(kind: .append)
+        clock.advance(to: 20)
+        #expect(!coordinator.hasPendingHandler)
+        #expect(coordinator.snapshot.pendingOperationCount == 1)
+        let successor = BackgroundDownloadCompletionHandlerToken()
+        coordinator.storeHandler(identifier: "wake", token: successor)
+        let flush = try #require(coordinator.finishEvents(identifier: "wake").flush)
+        clock.advance(to: 25) // the old absolute timer cannot claim B
+        #expect(coordinator.hasPendingHandler)
+        #expect(coordinator.endOperation(old) == .none)
+        #expect(coordinator.endOperation(old) == .none)
+        let terminal = coordinator.persistenceFinished(flush, committed: true)
+        #expect(terminal.completionBatches == [.init(identifier: "wake", tokens: [successor])])
+        #expect(terminal.outcome == .drained)
+    }
+
+    @Test("A new token during normal flush needs its own finish event and cannot enter the old proof")
+    func newTokenDuringFlush() throws {
+        let clock = P6WakeClock()
+        let coordinator = BackgroundDownloadWakeCoordinator(clockHooks: clock.hooks)
+        coordinator.storeHandler(identifier: "wake", token: .init())
+        let early = try #require(coordinator.finishEvents(identifier: "wake").flush)
+        coordinator.storeHandler(identifier: "wake", token: .init())
+        #expect(coordinator.persistenceFinished(early, committed: true) == .none)
+        #expect(coordinator.hasPendingHandler)
+        let resulting = try #require(coordinator.finishEvents(identifier: "wake").flush)
+        let terminal = coordinator.persistenceFinished(resulting, committed: true)
+        #expect(terminal.completionBatches.reduce(0) { $0 + $1.tokens.count } == 2)
+        #expect(terminal.outcome == .drained)
+    }
+
+    @Test("Registry receipt survives delayed registration and deferred startup without transport")
+    @MainActor func deferredStartupBudget() async throws {
+        let fixture = try P6Fixture()
+        let clock = P6WakeClock()
+        let registry = BackgroundDownloadCompletionRegistry(clockHooks: clock.hooks)
+        let fired = Mutex(0)
+        registry.store(identifier: BackgroundDownloadSession.identifier) { fired.withLock { $0 += 1 } }
+        clock.advance(to: 10)
+        let session = BackgroundDownloadSession(store: fixture.store(), protocolClasses: [], wakeClockHooks: clock.hooks,
+            releaseBackgroundCompletion: { registry.fireCompletions(in: $0) })
+        defer { session.invalidateInjectedSessionForTesting() }
+        registry.register(session)
+        clock.advance(to: 25)
+        for _ in 0..<100 where registry.hasPendingHandler(identifier: BackgroundDownloadSession.identifier) {
+            await Task.yield()
+        }
+        #expect(fired.withLock { $0 } == 1)
+        #expect(!registry.hasPendingHandler(identifier: BackgroundDownloadSession.identifier))
+        #expect(clock.state.withLock { $0.acknowledgements.map(\.outcome) } == [.timedOut])
+        #expect(!session.startupAdmissionIsActiveForTesting)
+    }
+
+    @Test("Registry fallback bounds a wake that never registers a session")
+    @MainActor func registryWithoutRegistration() async {
+        let clock = P6WakeClock()
+        let registry = BackgroundDownloadCompletionRegistry(clockHooks: clock.hooks)
+        let fired = Mutex(0)
+        registry.store(identifier: "wake") { fired.withLock { $0 += 1 } }
+        clock.advance(to: 25)
+        for _ in 0..<100 where registry.hasPendingHandler(identifier: "wake") { await Task.yield() }
+        #expect(fired.withLock { $0 } == 1)
+        #expect(!registry.hasPendingHandler(identifier: "wake"))
     }
 
     @Test("P6-pin-09 timeout retains a physically active owner and does not consume a new token")

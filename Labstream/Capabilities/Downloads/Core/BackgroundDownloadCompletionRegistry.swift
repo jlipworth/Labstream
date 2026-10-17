@@ -23,7 +23,15 @@ final class BackgroundDownloadCompletionRegistry {
     private var sessions: [String: BackgroundDownloadSession] = [:]
 
     /// Production uses `shared`; internal construction keeps handler-cardinality tests isolated.
-    init() {}
+    private let clock: DownloadWakeClockHooks
+    private let budget: DownloadWakeBudget
+    private var receipts: [BackgroundDownloadCompletionHandlerToken: DownloadWakeHandlerReceipt] = [:]
+    private var startupStates: [String: DownloadStartupWakeState] = [:]
+
+    init(clockHooks: DownloadWakeClockHooks? = nil, budget: DownloadWakeBudget = .application) {
+        clock = clockHooks ?? .live
+        self.budget = budget
+    }
 
     /// Record a live session so the delegate's identifier resolves to it. Registration is
     /// deliberately activation-neutral: during schema migration the session is dormant, and
@@ -37,11 +45,11 @@ final class BackgroundDownloadCompletionRegistry {
                 for: BackgroundDownloadSession.identifier
             )),
         ])
+        if let state = startupStates[BackgroundDownloadSession.identifier] {
+            session.noteStartupWakeState(state)
+        }
         for token in handlers.pendingTokens(for: BackgroundDownloadSession.identifier) {
-            session.noteBackgroundCompletionHandlerStored(
-                identifier: BackgroundDownloadSession.identifier,
-                token: token
-            )
+            if let receipt = receipts[token] { session.noteBackgroundCompletionHandlerStored(receipt) }
         }
     }
 
@@ -58,20 +66,57 @@ final class BackgroundDownloadCompletionRegistry {
             "has_session": .bool(sessions[identifier] != nil),
             "handler_count": .int(handlers.count(for: identifier)),
         ])
-        sessions[identifier]?.noteBackgroundCompletionHandlerStored(
-            identifier: identifier,
-            token: token
-        )
-        // Active sessions need their lazy URLSession bound so the OS can finish delivering events.
-        // This is a safe no-op while startup admission is dormant; never reattach autonomously.
-        sessions[identifier]?.ensureSessionReady()
+        let now = clock.now()
+        let deadline = receipts.values.filter { $0.identifier == identifier }
+            .map(\.absoluteDeadline).min()
+            ?? DownloadWakeBudget.deadline(from: now, after: budget.wholeWake)
+        let receipt = DownloadWakeHandlerReceipt(identifier: identifier, token: token,
+                                                receivedAt: now, absoluteDeadline: deadline)
+        receipts[token] = receipt
+        if case .blockedBeforeTransport = startupStates[identifier],
+           sessions[identifier]?.canReleaseStartupWithoutTransport != false {
+            if let session = sessions[identifier] {
+                session.noteBackgroundCompletionHandlerStored(receipt)
+            } else {
+                clock.terminalAcknowledged(.init(generation: .init(id: UUID()), outcome: .startupBlocked,
+                    batches: [.init(identifier: identifier, tokens: [token])]))
+            }
+            fireCompletions(in: .init(identifier: identifier, tokens: [token]))
+        } else if let session = sessions[identifier] {
+            session.noteBackgroundCompletionHandlerStored(receipt)
+            session.ensureSessionReady()
+        }
+        // Registration may never happen. Preserve the registry receipt rather than starting a
+        // fresh budget when a session eventually appears. The session owns supervision thereafter.
+        clock.register(.init(id: UUID(), deadline: deadline, kind: .absoluteDeadline)) { [weak self] in
+            Task { @MainActor in
+                guard let self, self.sessions[identifier] == nil, self.receipts[token] != nil else { return }
+                let tokens = self.receipts.values.filter {
+                    $0.identifier == identifier && $0.absoluteDeadline <= deadline
+                }.map(\.token)
+                let batch = BackgroundDownloadCompletionReleaseBatch(identifier: identifier, tokens: tokens)
+                self.clock.terminalAcknowledged(.init(generation: .init(id: UUID()), outcome: .timedOut,
+                                                       batches: [batch]))
+                self.fireCompletions(in: batch)
+            }
+        }
         return token
     }
 
-    /// P6.1 notification receiver. P6.4 retains terminal pre-construction state even when no
-    /// session is registered; this compatibility adapter currently forwards only to a live session.
+    /// Terminal pre-construction state survives both late registration and late OS delivery.
     func noteStartupWakeState(_ state: DownloadStartupWakeState, identifier: String) {
+        guard state.supersedes(startupStates[identifier]) else { return }
+        startupStates[identifier] = state
         sessions[identifier]?.noteStartupWakeState(state)
+        if case .blockedBeforeTransport = state,
+           sessions[identifier]?.canReleaseStartupWithoutTransport != false {
+            let tokens = handlers.pendingTokens(for: identifier)
+            if sessions[identifier] == nil, !tokens.isEmpty {
+                clock.terminalAcknowledged(.init(generation: .init(id: UUID()), outcome: .startupBlocked,
+                    batches: [.init(identifier: identifier, tokens: tokens)]))
+            }
+            fireCompletions(in: .init(identifier: identifier, tokens: tokens))
+        }
     }
 
     func hasPendingHandler(identifier: String) -> Bool {
@@ -82,6 +127,7 @@ final class BackgroundDownloadCompletionRegistry {
     /// A newer handler using the same stable identifier has a different token and remains queued.
     func fireCompletions(in batch: BackgroundDownloadCompletionReleaseBatch) {
         let pendingHandlers = handlers.drain(batch: batch)
+        for token in batch.tokens { receipts.removeValue(forKey: token) }
         guard !pendingHandlers.isEmpty else { return }
         AppDiagnostics.record(.downloads, "downloads.background_completion_fired", fields: [
             "session": .label(batch.identifier),
