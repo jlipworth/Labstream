@@ -64,5 +64,19 @@ struct BackgroundOpaqueCompletionPolicyTests {
         #expect(!BackgroundSystemCancellationPolicy.isSystemInitiatedCancel(app))
         #expect(!BackgroundSystemCancellationPolicy.isSystemInitiatedCancel(other))
     }
+
+    // B26: a full disk on the forward-only lane is storage-full, never a "will resume" pause, a
+    // "can't resume" stream failure, or a generic "system code 640" failure.
+    @Test("Out-of-space completions classify as storage-full before any other disposition")
+    func outOfSpaceIsStorageFull() {
+        for (hasResumeData, supports) in [(false, false), (true, false), (true, true)] {
+            #expect(BackgroundOpaqueCompletionPolicy.disposition(
+                errorCode: NSURLErrorCannotWriteToFile, hasResumeData: hasResumeData,
+                supportsPersistedResumeData: supports, isOutOfSpace: true) == .failStorageFull)
+        }
+        #expect(BackgroundOpaqueCompletionPolicy.disposition(
+            errorCode: NSURLErrorCannotWriteToFile, hasResumeData: false,
+            supportsPersistedResumeData: false, isOutOfSpace: false) == .fail)
+    }
 }
 

@@ -7,6 +7,9 @@ public enum BackgroundOpaqueCompletionDisposition: Sendable, Equatable {
     /// B09: the OS cancelled a forward-only task. Fail retryable with a real reason rather than
     /// treating it as a user cancel that leaves the row `.downloading` with no task.
     case failSystemInterrupted
+    /// B26: the disk filled (`DownloadDiskSpacePolicy.isOutOfSpace`). Fail with the storage-full
+    /// reason the range lane uses; resuming into the same full disk only fails again.
+    case failStorageFull
     case fail
 }
 
@@ -21,7 +24,9 @@ public enum BackgroundOpaqueCompletionPolicy {
     public static func disposition(errorCode: Int,
                                    hasResumeData: Bool,
                                    supportsPersistedResumeData: Bool,
-                                   isSystemInitiatedCancel: Bool = false) -> BackgroundOpaqueCompletionDisposition {
+                                   isSystemInitiatedCancel: Bool = false,
+                                   isOutOfSpace: Bool = false) -> BackgroundOpaqueCompletionDisposition {
+        if isOutOfSpace, errorCode != NSURLErrorCancelled { return .failStorageFull }
         if errorCode == NSURLErrorCancelled {
             guard isSystemInitiatedCancel else { return .cancelled }
             return hasResumeData && supportsPersistedResumeData

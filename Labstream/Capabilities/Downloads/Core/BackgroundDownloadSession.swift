@@ -3225,12 +3225,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             try? fileManager.removeItem(at: entry.workingURL)
             try fileManager.moveItem(at: location, to: entry.workingURL)
         } catch {
+            // B26: a full volume is storage-full, with the same reason the range lane surfaces.
+            let outOfSpace = DownloadDiskSpacePolicy.isOutOfSpace(error)
             AppDiagnostics.record(.downloads, "downloads.move_failed", fields: [
                 "download_id": .identifier(entry.ratingKey),
                 "error": .error(error),
+                "storage_full": .bool(outOfSpace),
             ])
             setFailedPurgingHeldSegments(for: entry.attemptKey)
-            onError?(entry.ratingKey, .transferFailed(
+            onError?(entry.ratingKey, outOfSpace ? .storageFull : .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer")))
             onChange?()
             return
@@ -6029,7 +6032,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             hasResumeData: hasResumeData,
             supportsPersistedResumeData: supportsResumeData,
             // B09: app cancels remove the inflight entry first; an OS cancel arrives still tracked.
-            isSystemInitiatedCancel: BackgroundSystemCancellationPolicy.isSystemInitiatedCancel(nsError)
+            isSystemInitiatedCancel: BackgroundSystemCancellationPolicy.isSystemInitiatedCancel(nsError),
+            // B26: classify a full disk before resume-data/transient handling can re-drive it.
+            isOutOfSpace: DownloadDiskSpacePolicy.isOutOfSpace(nsError)
         )
         // A cancel is not a failure. Any other error keeps a `.failed` row (D3) with a
         // surfaced reason, rather than silently erasing it so the UI can offer retry.
@@ -6040,6 +6045,21 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             AppDiagnostics.record(.downloads, "downloads.cancelled", fields: [
                 "download_id": .identifier(entry.ratingKey),
             ])
+        case .failStorageFull:
+            var fields: [String: DiagnosticFieldValue] = [
+                "download_id": .identifier(entry.ratingKey),
+                "context": .label("task_completion"),
+                "bytes_received": .bytes(Int(task.countOfBytesReceived)),
+            ]
+            if let measured = availableStorageMeasurement() {
+                fields["free_bytes"] = .bytes(Int(measured.bytes))
+                fields["free_bytes_exact"] = .int(Int(measured.bytes))
+                fields["free_space_source"] = .label(measured.source.rawValue)
+            }
+            AppDiagnostics.record(.downloads, "downloads.transfer_storage_full", fields: fields)
+            clearRetryCount(for: entry.attemptKey)
+            setFailedPurgingHeldSegments(for: entry.attemptKey)
+            onError?(entry.ratingKey, .storageFull)
         case .failSystemInterrupted:
             // B09: the system stopped a forward-only transfer. Fail retryable with the real reason
             // instead of a silent cancel that leaves the row `.downloading` with no task.
