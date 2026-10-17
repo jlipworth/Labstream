@@ -716,9 +716,7 @@ struct DownloadOptionsSheet: View {
     /// verification, error detail and exact action identity.
     @ViewBuilder
     private func sharedExistingContent(_ record: DownloadRecord) -> some View {
-        let row = DownloadOptionsModel.existingRow(record, library: downloadManager.offlineLibrarySnapshot)
-        let presentation = Self.existingPresentation(record, library: downloadManager.offlineLibrarySnapshot,
-                                                     phase: downloadManager.rowPhase(for: row))
+        let presentation = Self.existingPresentation(record, library: downloadManager.offlineLibrarySnapshot)
         DownloadRowContent(presentation: presentation)
         ForEach(presentation.actions.filter { $0 != .play }, id: \.rawValue) { action in
             if action == .delete {

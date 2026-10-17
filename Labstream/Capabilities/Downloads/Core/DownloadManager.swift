@@ -275,6 +275,8 @@ public final class DownloadManager {
     /// errors directly from SwiftUI. Under Observation that makes every progress tick invalidate a
     /// broad part of the list. Keep the hot derived strings/fractions in one snapshot so the view
     /// observes a single value and row bodies stay manager-free.
+    @ObservationIgnored var resumePresenceEvidence: [DownloadStore.ResumePresenceIdentity: Bool] = [:]
+    @ObservationIgnored var resumePresenceWorkers: [DownloadStore.ResumePresenceIdentity: Task<Void, Never>] = [:]
     var offlineLibrarySnapshot: OfflineLibrarySnapshot = .empty
 
     var hasPlayableOfflineContent: Bool { offlineAvailabilityCache.hasPlayableFile }
@@ -5140,7 +5142,7 @@ public final class DownloadManager {
         let live = liveDisplayBytes(for: record)
         let resumeBytes = record.metadata?.resumeDisplayBytes
         let hasExactResumeData = attemptKey(for: record).map {
-            store.hasResumeData(for: $0)
+            cachedResumePresence(for: $0)
         } ?? false
         let resumableStatus = record.status == .paused
             || record.status == .downloading
@@ -5160,11 +5162,14 @@ public final class DownloadManager {
         DownloadExpectedBytesPolicy.staticRangeExpectedBytes(for: record)
     }
 
-    private func makeOfflineLibrarySnapshot(from records: [DownloadRecord]) -> OfflineLibrarySnapshot {
-        OfflineLibrarySnapshotBuilder.make(
+    func makeOfflineLibrarySnapshot(from records: [DownloadRecord]) -> OfflineLibrarySnapshot {
+        refreshResumePresenceEvidence(records: records)
+        return OfflineLibrarySnapshotBuilder.make(
             records: records,
             isQueuePaused: isQueuePaused,
             downloadSpeed: downloadSpeed,
+            phase: { record in publishedRowPhase(for: record) },
+            displayFraction: { record in displayFraction(for: record) },
             displayBytes: { record in displayBytes(for: record) },
             trustworthyExpectedBytes: { record in
                 liveRangeProgress[record.ratingKey]?.expectedBytes
@@ -5192,6 +5197,19 @@ public final class DownloadManager {
         )
     }
 
+
+    func publishedRowPhase(for record: DownloadRecord) -> DownloadJobPhase? {
+        DownloadRowStatusCaptionPolicy.phase(.init(record: record,
+            displayFraction: displayFraction(for: record),
+            isActive: activeJobs.contains(record.ratingKey) || record.status == .downloading,
+            isBackendConfigured: isBackendConfigured(for: record),
+            isTranscodeLimited: DownloadDisplayClassifier.isLiveTranscoderSourced(record),
+            serverPrepState: optimizeState[record.ratingKey],
+            serverPrepProgress: optimizeProgress[record.ratingKey], serverPrepETA: optimizeETA[record.ratingKey],
+            downloadETA: downloadETA[record.ratingKey], downloadSpeedBytesPerSecond: downloadSpeed[record.ratingKey],
+            isRetrying: retryState.isPresentingRetry(record.ratingKey),
+            failureCaption: nil))
+    }
 
     private func rowDisplayProgress(for record: DownloadRecord) -> Double? {
         DownloadRowDisplayPolicy.displayProgress(for: record,

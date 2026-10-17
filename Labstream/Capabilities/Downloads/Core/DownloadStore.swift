@@ -3736,6 +3736,32 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
+    /// Ephemeral observation key: replacing or clearing a blob advances the artifact generation
+    /// before the file effect. No cached presence from an earlier generation can serve that row.
+    struct ResumePresenceIdentity: Hashable, Sendable {
+        let key: DownloadAttemptKey
+        let artifactGeneration: UInt64
+        let relativePath: String
+    }
+
+    func resumePresenceIdentity(for key: DownloadAttemptKey) -> ResumePresenceIdentity? {
+        lock.withLock {
+            guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
+                  !row.deletionPending, let path = row.metadata?.resumeDataRelativePath,
+                  Self.isSafeOneLevelRelativePath(path) else { return nil }
+            return ResumePresenceIdentity(key: key, artifactGeneration: row.artifactGeneration,
+                                          relativePath: path)
+        }
+    }
+
+    /// Observational only. Call on a worker; resume admission still reads the exact blob itself.
+    func observeResumePresence(_ identity: ResumePresenceIdentity) -> Bool? {
+        guard resumePresenceIdentity(for: identity.key) == identity else { return nil }
+        let exists = storeFilesystem.exists(
+            atPath: baseDirectory.appendingPathComponent(identity.relativePath).path, using: fileManager)
+        return resumePresenceIdentity(for: identity.key) == identity ? exists : nil
+    }
+
     /// #95: whether a row has a persisted resume blob ON DISK (used by launch reconciliation to
     /// decide if a `.paused` row stays resumable). FS-checked without reading the blob.
     func hasResumeData(ratingKey: String) -> Bool {

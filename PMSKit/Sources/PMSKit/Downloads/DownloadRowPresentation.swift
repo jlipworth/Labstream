@@ -17,6 +17,7 @@ public struct DownloadRowPresentation: Sendable, Equatable {
 
     public init(row: OfflineDownloadRowSnapshot, phase: DownloadJobPhase? = nil) {
         self.row = row
+        let phase = phase ?? row.phase
         self.phase = phase
         if row.isWaitingForAdmission { lifecycle = .planned }
         else if phase == .queued || phase == .waitingForBackend || phase == .serverPrepQueued {

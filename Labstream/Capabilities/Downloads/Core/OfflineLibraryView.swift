@@ -491,7 +491,7 @@ public struct OfflineLibraryView: View {
 
     @ViewBuilder
     private func row(for rowSnapshot: OfflineDownloadRowSnapshot) -> some View {
-        let presentation = Self.rowPresentation(rowSnapshot, phase: manager.rowPhase(for: rowSnapshot))
+        let presentation = Self.rowPresentation(rowSnapshot)
         HStack(spacing: 16) {
             OfflinePosterTile(source: rowSnapshot.artwork.flatMap(OfflineArtworkSource.init),
                 isComplete: rowSnapshot.isComplete,

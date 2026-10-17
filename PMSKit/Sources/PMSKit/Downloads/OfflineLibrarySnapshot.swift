@@ -56,6 +56,8 @@ public struct OfflineDownloadRowSnapshot: Identifiable, Sendable, Equatable {
     public let showBackendBadge: Bool
     public let backendName: String
     public let errorMessage: String?
+    public let phase: DownloadJobPhase?
+    public let displayFraction: DownloadProgressDisplay.Fraction?
     public let displayProgress: Double?
     public let progressIsEstimated: Bool
     public let statusCaption: String
@@ -77,7 +79,9 @@ public struct OfflineDownloadRowSnapshot: Identifiable, Sendable, Equatable {
                 isRetrying: Bool,
                 lifecycle: DownloadLifecycle? = nil,
                 isWaitingForAdmission: Bool = false,
-                progressIsEstimated: Bool = false) {
+                progressIsEstimated: Bool = false,
+                phase: DownloadJobPhase? = nil,
+                displayFraction: DownloadProgressDisplay.Fraction? = nil) {
         self.id = id
         self.attemptID = attemptID
         self.title = title
@@ -91,6 +95,8 @@ public struct OfflineDownloadRowSnapshot: Identifiable, Sendable, Equatable {
         self.showBackendBadge = showBackendBadge
         self.backendName = backendName
         self.errorMessage = errorMessage
+        self.phase = phase
+        self.displayFraction = displayFraction
         self.displayProgress = displayProgress
         self.progressIsEstimated = progressIsEstimated
         self.statusCaption = statusCaption
