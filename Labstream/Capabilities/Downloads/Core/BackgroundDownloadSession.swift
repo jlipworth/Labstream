@@ -1896,9 +1896,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // Pre-flight storage check: refuse if free space can't plausibly hold the
         // file. Sized against the expected bytes (plus headroom for the OS and the
         // temp-then-move copy) when known, so a 5 GB download with 600 MB free fails
-        // here rather than mid-transfer.
-        let headroom: Int64 = 500_000_000
-        let required = max(headroom, Int64(expectedBytes ?? 0) + headroom)
+        // here rather than mid-transfer. B01: a static byte-range resume needs only the bytes
+        // remaining past its durable working-file checkpoint, like the continuation preflight.
+        let durableCheckpointBytes = byteRangeCheckpoint ? fileSize(at: workingDestination) : nil
+        let required = DownloadDiskSpacePolicy.requiredFreeBytesToStart(
+            expectedBytes: expectedBytes, durableCheckpointBytes: durableCheckpointBytes)
         if let measured = availableStorageMeasurement(), measured.bytes < required {
             AppDiagnostics.record(.downloads, "downloads.transfer_start_failed", fields: [
                 "download_id": .identifier(ratingKey),
