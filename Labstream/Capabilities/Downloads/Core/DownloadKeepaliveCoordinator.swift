@@ -17,10 +17,16 @@ final class DownloadKeepaliveCoordinator {
     private var embyTasks: [DownloadAttemptKey: TaskHandle] = [:]
     private var jellyfinAuthQuarantine: [String: String] = [:]
     private var embyAuthQuarantine: [String: String] = [:]
+    /// B60 / IC-4: whether the transport currently tracks a live transfer for this exact attempt.
+    /// Store status alone let a `.queued` row with no task keep an encoder alive indefinitely.
+    private let isTrackingTransfer: @MainActor (DownloadAttemptKey) -> Bool
 
-    init(appModel: AppModel, store: DownloadStore) {
+    init(appModel: AppModel,
+         store: DownloadStore,
+         isTrackingTransfer: @escaping @MainActor (DownloadAttemptKey) -> Bool) {
         self.appModel = appModel
         self.store = store
+        self.isTrackingTransfer = isTrackingTransfer
     }
 
     func reconcile(records: [DownloadRecord]) {
@@ -79,7 +85,8 @@ final class DownloadKeepaliveCoordinator {
             }
             guard let candidate = JellyfinDownloadKeepalivePolicy.candidate(
                 for: record,
-                hasExistingTask: jellyfinTasks[key] != nil)
+                hasExistingTask: jellyfinTasks[key] != nil),
+                DownloadKeepaliveTransferGate.shouldStart(isTrackingTransfer: isTrackingTransfer(key))
             else { continue }
 
             startJellyfinDownloadKeepalive(
@@ -116,7 +123,8 @@ final class DownloadKeepaliveCoordinator {
             }
             guard let candidate = EmbyDownloadKeepalivePolicy.candidate(
                 for: record,
-                hasExistingTask: embyTasks[key] != nil)
+                hasExistingTask: embyTasks[key] != nil),
+                DownloadKeepaliveTransferGate.shouldStart(isTrackingTransfer: isTrackingTransfer(key))
             else { continue }
 
             startEmbyDownloadKeepalive(
@@ -152,11 +160,28 @@ final class DownloadKeepaliveCoordinator {
                 }
             }
             var lastTickOutcome: JellyfinKeepaliveTickOutcome?
+            var transferGate = DownloadKeepaliveTransferGate()
             while !Task.isCancelled {
                 guard !self.store.isDeletionPending(for: attemptKey),
                       let record = self.store.record(for: attemptKey),
                       EmbyDownloadKeepalivePolicy.candidate(for: record, hasExistingTask: false) != nil
                 else { return }
+                switch transferGate.evaluate(isTrackingTransfer: self.isTrackingTransfer(attemptKey)) {
+                case .send:
+                    break
+                case .skip:
+                    do {
+                        try await Task.sleep(for: .seconds(EmbyDownloadKeepalivePolicy.intervalSeconds))
+                    } catch { return }
+                    continue
+                case .stop:
+                    self.recordDownloadDiagnostic("downloads.emby_keepalive_degraded", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "reason": .label("no_tracked_transfer"),
+                        "action": .label("stopped"),
+                    ])
+                    return
+                }
                 // Re-resolve every tick so token rotation, sign-out, or server replacement stops
                 // the old control plane rather than silently pinging with stale credentials.
                 guard let liveSession = self.appModel.backendSession(for: .emby),
@@ -263,10 +288,29 @@ final class DownloadKeepaliveCoordinator {
             let keepaliveStartedAt = Date()
             var lastReportedTicks = 0
             var lastTickOutcome: JellyfinKeepaliveTickOutcome?
+            var transferGate = DownloadKeepaliveTransferGate()
             while !Task.isCancelled {
                 guard !self.store.isDeletionPending(for: attemptKey),
                       let record = self.store.record(for: attemptKey),
                       record.status == .queued || record.status == .downloading else { return }
+                // B60 / IC-4: a row with no tracked transfer for this exact attempt must not keep
+                // the encoder alive. Tolerate one untracked tick (start / stall-restart handoff).
+                switch transferGate.evaluate(isTrackingTransfer: self.isTrackingTransfer(attemptKey)) {
+                case .send:
+                    break
+                case .skip:
+                    do {
+                        try await Task.sleep(for: .seconds(JellyfinDownloadKeepalivePolicy.intervalSeconds))
+                    } catch { return }
+                    continue
+                case .stop:
+                    self.recordDownloadDiagnostic("downloads.jellyfin_keepalive_degraded", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "reason": .label("no_tracked_transfer"),
+                        "action": .label("stopped"),
+                    ])
+                    return
+                }
                 // A-2 (audit lens 8): re-resolve the Jellyfin lane per tick — token rotation or a
                 // re-login mid-download must not keep pinging with the enqueue-time snapshot (the
                 // server sees silence and idle-kills the encoder with no diagnostic trail).

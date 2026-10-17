@@ -472,7 +472,16 @@ public final class DownloadManager {
         self.store = store
         self.session = injectedSession ?? BackgroundDownloadSession(store: store)
         self.backgroundCompletionRegistry = backgroundCompletionRegistry
-        self.keepaliveCoordinator = DownloadKeepaliveCoordinator(appModel: appModel, store: store)
+        let keepaliveSession = self.session
+        self.keepaliveCoordinator = DownloadKeepaliveCoordinator(
+            appModel: appModel,
+            store: store,
+            isTrackingTransfer: { [weak keepaliveSession, weak store] key in
+                // B60: the session tracks transfers per row; the store fences the exact attempt.
+                guard let keepaliveSession, let store else { return false }
+                return store.ownsAttempt(key)
+                    && keepaliveSession.isTrackingTransfer(ratingKey: key.ratingKey)
+            })
         self.sideAssetFetchCoordinator = injectedSideAssetFetchCoordinator ?? .shared
         self.cleanupIntentJournal = injectedCleanupIntentJournal
             ?? DownloadCleanupIntentJournal(directory: store.durableCleanupAuthorityDirectory)
