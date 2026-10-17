@@ -73,6 +73,50 @@ extension DownloadManager {
         return Set(intents.map(\.backend))
     }
 
+    // MARK: - Producers
+
+    /// Journal that `originAttempt` abandons a server resource and kick the runner. Identity
+    /// comes from the session the abandoning work captured, so it needs no surviving row.
+    /// Returns false when the intent could not be made durable; each caller decides its fallback.
+    @discardableResult
+    func journalCleanupAbandonment(
+        _ operation: DurableDownloadCleanupIntent.Operation,
+        originAttempt: DownloadAttemptKey,
+        session: BackendSession,
+        plexCreate: DurableDownloadCleanupIntent.PlexCreateEvidence? = nil,
+        reason: String
+    ) -> Bool {
+        guard let server = DurableDownloadCleanupIntent.ServerIdentity(
+                baseURL: session.baseURL, serverID: session.serverID,
+                userID: session.kind == .plex ? nil : session.userID),
+              let intent = DurableDownloadCleanupIntent(
+                attemptKey: originAttempt, backend: session.kind, server: server,
+                operation: operation, provenance: .abandonment(originAttempt: originAttempt),
+                plexCreate: plexCreate, recordedAtEpochSeconds: Date().timeIntervalSince1970),
+              case .committed = cleanupIntentJournal.ensure(intent) else {
+            recordDownloadDiagnostic("downloads.cleanup_abandonment_not_durable", fields: [
+                "download_id": .identifier(originAttempt.ratingKey),
+                "operation": .label(Self.cleanupOperationLabel(operation)),
+                "reason": .label(reason),
+            ])
+            return false
+        }
+        cleanupRunner?.kick(reason: reason)
+        return true
+    }
+
+    /// The live session for `kind` when it targets `server`; otherwise a session for that server
+    /// carrying the caller's credentials (identity only — never used to pick a different server).
+    func cleanupSession(kind: DownloadBackendKind, server: URL, token: String,
+                        userID: String?) -> BackendSession {
+        if let live = appModel.backendSession(for: kind),
+           BackendURLIdentity.sameBaseURL(live.baseURL, server) {
+            return live
+        }
+        return BackendSession(kind: kind, baseURL: server, token: token, userID: userID,
+                              serverID: nil)
+    }
+
     // MARK: - Launch barriers
 
     /// Runs once per process after startup recovery is ready: migrate legacy tombstones and

@@ -114,6 +114,115 @@ struct CleanupRunnerManagerTests {
         #expect(store.metadata(for: key.ratingKey)?.hasEmbyConvertCrashWindowIdentity == true)
     }
 
+    @Test("Deleting a paused Plex prep row journals its queue-item cleanup first (D2)")
+    func plexPausedPrepDeleteJournals() async throws {
+        let directory = try makeDirectory("plex-delete")
+        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+        let store = DownloadStore(baseDirectory: directory)
+        let key = DownloadAttemptKey(ratingKey: "plex:101", attemptID: DownloadAttemptID(uuid: UUID()))
+        let metadata = OfflineMetadata(
+            ratingKey: key.ratingKey, title: "Item", type: "movie",
+            optimizeTargetName: "Medium", optimizeQueueTitle: "Item [Labstream abcd1234]",
+            backendKind: .plex, backendBaseURLString: "https://plex.example.internal:32400",
+            backendServerID: "machine-1", downloadLane: .optimize,
+            resumeMode: .serverPrepThenStatic)
+        let record = DownloadRecord(
+            ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Item",
+            localURL: store.destinationURL(ratingKey: key.ratingKey, ext: "mp4"),
+            status: .paused, metadata: metadata)
+        #expect(store.createAttemptOwnedRecord(record, attemptID: key.attemptID) == .committed(key))
+        let (manager, journal, session) = makeManager(store: store, directory: directory)
+        defer { session.invalidateInjectedSessionForTesting() }
+        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+
+        manager.delete(ratingKey: key.ratingKey)
+        #expect(await waitUntil { store.record(for: key) == nil })
+
+        guard case .loaded(let intents) = journal.load() else {
+            Issue.record("Expected a readable journal"); return
+        }
+        let intent = try #require(intents.first)
+        #expect(intent.operation == .plexOptimize(queueTitle: "Item [Labstream abcd1234]"))
+        #expect(intent.provenance == .rowDeletion)
+        #expect(intent.plexCreate == .unresolved)
+        #expect(intent.server.serverID == "machine-1")
+        // The row leaves memory before its terminal commit; that window reads as retiring.
+        #expect(await waitUntil { manager.cleanupRowState(for: intent) == .committedAbsent })
+    }
+
+    @Test("A superseded encoder stop is journaled from the captured session, with no row")
+    func supersededStopJournalsFromCapturedSession() async throws {
+        let directory = try makeDirectory("superseded")
+        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+        let store = DownloadStore(baseDirectory: directory)
+        let (manager, journal, session) = makeManager(store: store, directory: directory)
+        defer { session.invalidateInjectedSessionForTesting() }
+        let key = DownloadAttemptKey(
+            ratingKey: "jellyfin:gone", attemptID: DownloadAttemptID(uuid: UUID()))
+        let captured = BackendSession(
+            kind: .jellyfin, baseURL: URL(string: "https://jellyfin.example")!, token: "token",
+            userID: "user-1", serverID: "server-1")
+
+        manager.stopSupersededMediaBrowserEncoder(
+            attemptKey: key, ratingKey: key.ratingKey, playSessionID: "minted-1",
+            backendKind: .jellyfin, backendSession: captured)
+
+        guard case .loaded(let intents) = journal.load() else {
+            Issue.record("Expected a readable journal"); return
+        }
+        let intent = try #require(intents.first)
+        #expect(intent.operation == .activeEncoding(playSessionID: "minted-1"))
+        #expect(intent.provenance == .abandonment(originAttempt: key))
+        #expect(intent.server.userID == "user-1")
+    }
+
+    @Test("A launch-sweep intent reused by delete becomes runnable once the removal commits")
+    func terminalReleaseReusedByDeleteRuns() async throws {
+        let directory = try makeDirectory("reuse")
+        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+        let store = DownloadStore(baseDirectory: directory)
+        let key = DownloadAttemptKey(
+            ratingKey: "jellyfin:done", attemptID: DownloadAttemptID(uuid: UUID()))
+        let url = store.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
+        try Data([1]).write(to: url)
+        let record = DownloadRecord(
+            ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Done", localURL: url,
+            bytes: 1, progress: 1, status: .complete,
+            metadata: OfflineMetadata(
+                ratingKey: key.ratingKey, title: "Done", type: "movie", backendKind: .jellyfin,
+                backendBaseURLString: "https://jellyfin.example", backendServerID: "server-1",
+                backendUserID: "user-1", playSessionID: "session-A"))
+        #expect(store.createAttemptOwnedRecord(record, attemptID: key.attemptID) == .committed(key))
+        let (manager, journal, session) = makeManager(store: store, directory: directory)
+        defer { session.invalidateInjectedSessionForTesting() }
+        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+
+        // Launch sweep: no Jellyfin session, so the intent is journaled and stays.
+        manager.teardownOrphanedEncodersOnLaunch()
+        guard case .loaded(let swept) = journal.load(), let release = swept.first else {
+            Issue.record("Expected the terminal-release intent"); return
+        }
+        #expect(release.provenance == .terminalRelease)
+
+        manager.delete(ratingKey: key.ratingKey)
+        #expect(await waitUntil { store.record(for: key) == nil })
+        #expect(await waitUntil { store.cleanupDisposition(for: key) == .committedAbsent })
+        guard case .loaded(let after) = journal.load() else { return }
+        #expect(after.map(\.id) == [release.id], "delete reuses the existing intent")
+        let reused = try #require(after.first)
+        #expect(CleanupIntentEligibilityPolicy.decision(
+            provenance: reused.provenance, rowState: manager.cleanupRowState(for: reused)) == .run)
+    }
+
+    @Test("Stale-sweep attempt keys are stable per title and never contain it")
+    func staleSweepKeys() {
+        let title = "Some Title [Labstream 1234abcd]"
+        let first = DownloadManager.staleSweepAttemptKey(queueTitle: title)
+        #expect(first == DownloadManager.staleSweepAttemptKey(queueTitle: title))
+        #expect(first != DownloadManager.staleSweepAttemptKey(queueTitle: title + "x"))
+        #expect(!first.attemptID.rawValue.contains("Title"))
+    }
+
     // MARK: - Fixtures
 
     private func crashWindowMetadata(
