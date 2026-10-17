@@ -253,6 +253,11 @@ extension DownloadManager {
         case .startTransfer:
             break
         case .rerouteConvert(let targetName):
+            // P4.5: a Convert is server-prep work; it needs room in the prep lane.
+            guard admissionMayEnterServerPrep(ratingKey) else {
+                releaseInFlight(for: attemptKey)
+                return
+            }
             await triggerConvertAndDownload(item: item, targetName: targetName,
                                             metadata: metadata, session: backendSession,
                                             attemptKey: attemptKey,
@@ -399,7 +404,10 @@ extension DownloadManager {
                                mediaSourceId: subtitleMediaSourceID, part: part,
                                server: server, token: token, identity: identity, userId: userId)
 
-        if deferStaticStartWhenQueuePaused, isQueuePaused, route == .original {
+        // emby-33: a Convert handoff parks while the queue is paused, unless the user resumed this
+        // row during the pause (P4.6 exemption).
+        if deferStaticStartWhenQueuePaused, isQueuePaused, route == .original,
+           !admission.isExempt(ratingKey) {
             guard applyQueuePause(for: attemptKey, context: "emby_queue_paused") else { return }
             lastError[ratingKey] = .interruptedResumable
             releaseInFlight(for: attemptKey)

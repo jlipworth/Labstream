@@ -1083,6 +1083,12 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
     public var progress: Double
     public var status: DownloadStatus
     public var metadata: OfflineMetadata?
+    /// P4: the attempt's lifecycle (`status` is derived from it). Filled by the app store; nil for
+    /// records built outside it.
+    public var lifecycle: DownloadLifecycle?
+    /// P4: why a waiting row waits for an admission lane (a planned first start, or a parked row
+    /// queued for its retry). Nil once the row has started.
+    public var admissionIntent: DownloadAdmissionIntent?
     public var posterURL: URL?
     public var plexBIFURL: URL?
     public var embyBIFURL: URL?
@@ -1113,6 +1119,8 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
                 progress: Double = 0,
                 status: DownloadStatus = .queued,
                 metadata: OfflineMetadata? = nil,
+                lifecycle: DownloadLifecycle? = nil,
+                admissionIntent: DownloadAdmissionIntent? = nil,
                 posterURL: URL? = nil,
                 plexBIFURL: URL? = nil,
                 embyBIFURL: URL? = nil,
@@ -1127,6 +1135,8 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
         self.progress = progress
         self.status = status
         self.metadata = metadata
+        self.lifecycle = lifecycle
+        self.admissionIntent = admissionIntent
         self.posterURL = posterURL
         self.plexBIFURL = plexBIFURL
         self.embyBIFURL = embyBIFURL

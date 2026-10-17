@@ -96,53 +96,19 @@ extension DownloadManager {
         var records: [DownloadRecord] = []
         for plan in plans {
             guard store.record(for: plan.recordKey) == nil,
-                  let session = appModel.backendSession(for: plan.backend) else {
+                  let record = plannedSeedRecord(for: plan) else {
                 return .init(added: 0, retried: 0,
                              failureMessage: "The season plan changed before it could be saved. Review it again.")
             }
-            let selected = DownloadMediaSelectionPolicy.selection(
-                item: plan.item, mediaIndex: plan.mediaIndex, partIndex: plan.partIndex)
-            let metadata = DownloadOfflineMetadataBuilder.metadata(
-                from: plan.item,
-                resolutionLabel: DownloadPresetPolicy.displayResolutionLabel(
-                    choice: plan.choice, chosenMedia: selected.media),
-                requestedProfileLabel: DownloadChoicePolicy.requestedProfileLabel(for: plan.choice),
-                mediaIndex: plan.mediaIndex,
-                partIndex: plan.partIndex,
-                optimizeTargetName: {
-                    if case .optimize(let target) = plan.choice { return target }
-                    return nil
-                }(),
-                session: session,
-                mediaSourceID: plan.mediaSourceIDOverride ?? selected.mediaSourceID,
-                audioStreamIndex: plan.audioStreamIndex,
-                downloadLane: DownloadChoicePolicy.downloadLane(for: plan.choice),
-                serverPreparedVersion: DownloadChoicePolicy.isServerPreparedVersion(for: plan.choice),
-                seasonPlannerPendingAdmission: plan.shouldStart)
-            let attemptID = DownloadAttemptID.generated()
-            records.append(DownloadRecord(
-                ratingKey: plan.recordKey,
-                attemptID: attemptID,
-                title: plan.item.title,
-                localURL: store.destinationURL(ratingKey: plan.recordKey, ext: "mp4"),
-                bytes: 0, progress: 0, status: plan.shouldStart ? .queued : .failed,
-                metadata: metadata))
+            records.append(record)
         }
-        seasonPlanCommitsInFlight += 1
-        defer { seasonPlanCommitsInFlight -= 1 }
-        let store = store
-        let plannedRecords = records
-        let applied = await Task.detached(priority: .userInitiated) {
-            store.applySeasonPlanAtomically(
-                newRecords: plannedRecords, retryAttempts: retryAttempts)
-        }.value
+        let applied = await persistPlannedSeeds(records, retryAttempts: retryAttempts)
         guard case .applied(let inserted, let retried) = applied else {
             let message: String
             switch applied {
             case .staleInput:
                 message = "The season plan changed before it could be saved. Review it again."
             case .persistenceIndeterminate:
-                blockAfterIndeterminateSeasonPersistence()
                 message = "Download storage could not prove the saved plan. Downloads are paused for safety."
             case .persistenceFailed, .applied:
                 message = "The complete season plan could not be saved safely. Nothing was started."
@@ -150,100 +116,66 @@ extension DownloadManager {
             return .init(added: 0, retried: 0, failureMessage: message)
         }
         refreshRecords()
-        scheduleSeasonPlannerAdmission()
+        scheduleAdmissionPump()
         return .init(added: inserted, retried: retried, failureMessage: nil)
     }
 
-    func scheduleSeasonPlannerAdmission() {
-        guard startupRecoveryState == .ready,
-              seasonPlannerAdmissionTask == nil else { return }
-        seasonPlannerAdmissionTask = Task { [weak self] in
-            defer { self?.seasonPlannerAdmissionTask = nil }
-            while !Task.isCancelled {
-                guard let self else { return }
-                let hasPending = await self.admitSeasonPlannerRowsOnce()
-                if !hasPending { return }
-                try? await Task.sleep(for: .seconds(2))
-            }
-        }
+    /// The durable seed of a planned first start: a season episode, or a tap that waits for a
+    /// lane (P4.3). It carries the exact source binding (Part or MediaSource), requested route,
+    /// preset and audio selection; the store absorbs the planner flag into lifecycle `planned`.
+    func plannedSeedRecord(for plan: SeasonEpisodeDownloadPlan) -> DownloadRecord? {
+        guard let session = appModel.backendSession(for: plan.backend) else { return nil }
+        let selected = DownloadMediaSelectionPolicy.selection(
+            item: plan.item, mediaIndex: plan.mediaIndex, partIndex: plan.partIndex)
+        let metadata = DownloadOfflineMetadataBuilder.metadata(
+            from: plan.item,
+            resolutionLabel: DownloadPresetPolicy.displayResolutionLabel(
+                choice: plan.choice, chosenMedia: selected.media),
+            requestedProfileLabel: DownloadChoicePolicy.requestedProfileLabel(for: plan.choice),
+            mediaIndex: plan.mediaIndex,
+            partIndex: plan.partIndex,
+            optimizeTargetName: {
+                if case .optimize(let target) = plan.choice { return target }
+                return nil
+            }(),
+            session: session,
+            mediaSourceID: plan.mediaSourceIDOverride ?? selected.mediaSourceID,
+            audioStreamIndex: plan.audioStreamIndex,
+            downloadLane: DownloadChoicePolicy.downloadLane(for: plan.choice),
+            serverPreparedVersion: DownloadChoicePolicy.isServerPreparedVersion(for: plan.choice),
+            seasonPlannerPendingAdmission: plan.shouldStart)
+        return DownloadRecord(
+            ratingKey: plan.recordKey,
+            attemptID: DownloadAttemptID.generated(),
+            title: plan.item.title,
+            localURL: store.destinationURL(ratingKey: plan.recordKey, ext: "mp4"),
+            bytes: 0, progress: 0, status: plan.shouldStart ? .queued : .failed,
+            metadata: metadata)
     }
 
-    /// Returns true while durable pending rows remain (including rows waiting for an occupied lane).
-    private func admitSeasonPlannerRowsOnce() async -> Bool {
-        // A commit's rows are published before their durability is proven; a failed commit
-        // withdraws them. Keep polling instead of admitting anything mid-commit.
-        if seasonPlanCommitsInFlight > 0 { return true }
-        if isQueuePaused { return records.contains { $0.metadata?.seasonPlannerPendingAdmission == true } }
-        let snapshot = store.records
-        let pendingRecords = snapshot.filter { record in
-            record.metadata?.seasonPlannerPendingAdmission == true
-                && (record.status == .queued || record.status == .failed)
-                // P3b: rows being deleted (barrier or capsule) are never admitted.
-                && (record.attemptID.map {
-                    store.attemptAdmitsWork(DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: $0))
-                } ?? false)
+    /// Persist planned seeds atomically. Admission stays closed (`seasonPlanCommitsInFlight`)
+    /// until durability is proven, so a published-but-unproven row is never granted (pu-05/06).
+    func persistPlannedSeeds(_ records: [DownloadRecord],
+                             retryAttempts: [DownloadAttemptKey] = []) async -> DownloadStore.SeasonPlanStoreApplyResult {
+        seasonPlanCommitsInFlight += 1
+        defer {
+            seasonPlanCommitsInFlight -= 1
+            scheduleAdmissionPump()
         }
-        guard !pendingRecords.isEmpty else { return false }
-        // A row occupies admission capacity while it holds a live in-flight slot OR while its
-        // admission start is still running (the metadata refresh happens before the start
-        // acquires its slot). Counting both keeps the 2-second loop from over-admitting rows
-        // whose starts run concurrently.
-        let active = snapshot.filter {
-            activeJobs.contains($0.ratingKey) || seasonPlannerAdmittingKeys.contains($0.ratingKey)
-        }.map {
-            SeasonDownloadAdmissionCandidate(id: $0.ratingKey, lane: seasonAdmissionLane(for: $0))
+        let store = store
+        let applied = await Task.detached(priority: .userInitiated) {
+            store.applySeasonPlanAtomically(newRecords: records, retryAttempts: retryAttempts)
+        }.value
+        if case .persistenceIndeterminate = applied {
+            blockAfterIndeterminateSeasonPersistence()
         }
-        let pending = pendingRecords.map {
-            SeasonDownloadAdmissionCandidate(id: $0.ratingKey, lane: seasonAdmissionLane(for: $0))
-        }
-        let admittedIDs = Set(SeasonDownloadAdmissionPolicy.admitted(
-            pending: pending, active: active).map(\.id))
-        for record in pendingRecords where admittedIDs.contains(record.ratingKey) {
-            guard let attemptID = record.attemptID else { continue }
-            let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
-            seasonPlannerAdmittingKeys.insert(record.ratingKey)
-            switch store.updateMetadata(for: key, mutate: {
-                $0.seasonPlannerPendingAdmission = nil
-            }) {
-            case .applied, .noChange:
-                if record.status == .failed {
-                    // P3a-TODO: the matrix maps admission to `admissionGranted` (planned →
-                    // admitted), but that is deliberately not submitted for these rows yet:
-                    // - In process they are failed attempts the planner flagged for retry; their
-                    //   lifecycle is `failed`, and only a pre-P3a index load derives `planned`.
-                    // - `admitted` shows `.queued` before the retry chain re-acquires a task.
-                    //   The admitting key is released right below, so the queued, task-less row
-                    //   becomes visible to the Plex prep scanner (`.queued` + no poller) and the
-                    //   stale-queued detectors while Retry is still preflighting; legacy kept it
-                    //   `.failed` through that window.
-                    // - A retry row that kept a resume blob or a Convert job would then be
-                    //   refused: the reducer has no admitted → transferring/serverPrep retry.
-                    // Admission becomes `admissionGranted` once P4's coordinator owns the slot
-                    // for the whole retry chain. Until then a planned row stays `planned` (shown
-                    // `.failed`) until Retry replaces or fails it.
-                    retry(ratingKey: record.ratingKey, allowReplacingExistingActiveRow: true)
-                    seasonPlannerAdmittingKeys.remove(record.ratingKey)
-                } else {
-                    // #362: never await a start inline. A server-prep start (Emby Convert, Plex
-                    // optimize) does not return until the server job finishes and hands off to
-                    // the static lane, which can take hours. Awaiting it here stalled every other
-                    // admitted row and the whole admission loop, so static/original episodes
-                    // waited behind a conversion despite free static/live lanes. Each start now
-                    // owns only its own lane slot; the admitting key is held until it returns.
-                    let ratingKey = record.ratingKey
-                    Task { [weak self] in
-                        guard let self else { return }
-                        await self.startSeasonPlannedRecord(record)
-                        self.seasonPlannerAdmittingKeys.remove(ratingKey)
-                        self.refreshRecords()
-                    }
-                }
-            case .staleOrMissing, .persistenceFailed:
-                seasonPlannerAdmittingKeys.remove(record.ratingKey)
-            }
-        }
-        refreshRecords()
-        return store.records.contains { $0.metadata?.seasonPlannerPendingAdmission == true }
+        return applied
+    }
+
+    /// The 2 s season worker is gone (P4): planned rows are admitted by the one event-driven
+    /// coordinator. Kept as the season planner's entry name.
+    func scheduleSeasonPlannerAdmission() {
+        scheduleAdmissionPump()
     }
 
     private func seasonAdmissionStillCurrent(_ record: DownloadRecord) -> Bool {
@@ -257,7 +189,10 @@ extension DownloadManager {
             } ?? false)
     }
 
-    private func startSeasonPlannedRecord(_ record: DownloadRecord) async {
+    /// A granted planned first start (a season episode or a waiting tap): refresh the item, re-find
+    /// the exact persisted source, then run the backend entry point. A refresh outage returns
+    /// without failing the row; admission defers it with backoff (B67).
+    func startPlannedRecord(_ record: DownloadRecord) async {
         guard let metadata = record.metadata,
               seasonAdmissionStillCurrent(record) else { return }
         let backend = metadata.resolvedBackendKind(ratingKey: record.ratingKey)
@@ -270,14 +205,9 @@ extension DownloadManager {
                 operation: { try await planner.refreshedItem(snapshotItem, backend: backend) }) else { return }
             item = refreshed
         } catch {
-            guard seasonAdmissionStillCurrent(record) else { return }
-            if let attemptID = record.attemptID {
-                _ = applyLifecycleEvent(
-                    .transferFailed(.server),
-                    for: DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID),
-                    context: "season_plan_refresh")
-            }
-            refreshRecords()
+            recordDownloadDiagnostic("downloads.admission_refresh_unavailable", fields: [
+                "download_id": .identifier(record.ratingKey),
+            ])
             return
         }
         // Refresh suspends before a start-attempt exists. Deletion/replacement must
@@ -332,13 +262,6 @@ extension DownloadManager {
                                mediaSourceIDOverride: metadata.mediaSourceID,
                                allowReplacingExistingActiveRow: true)
         }
-    }
-
-    private func seasonAdmissionLane(for record: DownloadRecord) -> SeasonDownloadAdmissionLane {
-        guard let metadata = record.metadata else { return .serverPreparation }
-        return SeasonDownloadAdmissionPolicy.lane(
-            backend: metadata.resolvedBackendKind(ratingKey: record.ratingKey),
-            downloadLane: metadata.resolvedDownloadLane())
     }
 }
 

@@ -77,9 +77,12 @@ public enum DownloadLifecycleEvent: Sendable, Equatable {
     /// backend session, or a Plex prep row resuming (Plex prep is persisted queued).
     case requeued
     case admissionGranted
-    /// P4: a parked row asks the admission coordinator for a lane again (Resume All). The row
-    /// waits as `planned` with this intent until a lane frees.
+    /// P4: a row asks the admission coordinator for a lane. `retryRequested` (Resume All, a
+    /// capacity-delayed Resume or Retry) keeps a paused or failed row's lifecycle, so its retry
+    /// still routes from its own facts; `seasonPlanned` (a first start) waits as `planned`.
     case admissionRequested(DownloadAdmissionIntent)
+    /// P4: the user withdrew a waiting retry (Pause on a row waiting for a lane).
+    case admissionWithdrawn
     /// P4: a granted start ended before its work was proven (backend unavailable, no session).
     /// The row waits again with its intent instead of failing (B66, B67).
     case admissionDeferred(DownloadAdmissionIntent)
@@ -171,6 +174,8 @@ public enum DownloadLifecycleReducer {
             let result = to(.failed, effects)
             guard case .applied(var failed, let fx) = result else { return result }
             failed.history.lastFailure = reason
+            // P4: a failure answers a waiting request; the row waits again only when asked.
+            failed.history.admissionIntent = nil
             return .applied(failed, fx)
         }
         func pause(_ cause: DownloadPauseCause, _ effects: [DownloadLifecycleEffect] = [])
@@ -190,6 +195,11 @@ public enum DownloadLifecycleReducer {
                     || lifecycle == .finalizing else { return illegal }
             // A finalizing body is finished: pausing never discards it; finalization resumes.
             if lifecycle == .finalizing { return .applied(next, []) }
+            // A user pause withdraws a waiting retry; a waiting first start keeps its intent so
+            // Resume re-requests it (B65).
+            if cause == .user, next.history.admissionIntent == .retryRequested {
+                next.history.admissionIntent = nil
+            }
             return pause(cause)
 
         case .retry(let mode):
@@ -236,7 +246,17 @@ public enum DownloadLifecycleReducer {
                 return illegal
             }
             next.history.admissionIntent = intent
-            return to(.planned)
+            switch intent {
+            case .retryRequested where lifecycle != .planned:
+                return .applied(next, [])
+            case .retryRequested, .seasonPlanned:
+                return to(.planned)
+            }
+
+        case .admissionWithdrawn:
+            guard lifecycle == .paused || lifecycle == .failed else { return illegal }
+            next.history.admissionIntent = nil
+            return .applied(next, [])
 
         case .admissionDeferred(let intent):
             // An unproven start (or orphaned active residue) waits again. A user pause, finalizing

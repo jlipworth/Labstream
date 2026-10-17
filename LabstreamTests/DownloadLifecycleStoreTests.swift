@@ -48,21 +48,58 @@ struct DownloadLifecycleStoreTests {
         }
     }
 
-    @Test("A season row awaiting admission is planned and still projects .failed + flag")
-    func plannedSeasonRowKeepsTheLegacyProjection() throws {
+    /// P4.8: the legacy season flag is absorbed on load and no longer written. A queued first
+    /// start becomes `planned` (shown `.queued`); a failed row the planner queued for retry stays
+    /// failed with a `retryRequested` intent; a paused row keeps its pause (B65).
+    @Test("The legacy season flag becomes lifecycle and an admission intent")
+    func legacySeasonFlagIsAbsorbedIntoLifecycle() throws {
         try withDirectory { directory in
             let store = DownloadStore(baseDirectory: directory)
             var metadata = OfflineMetadata(ratingKey: "plex:ep", title: "Ep", type: "episode")
             metadata.seasonPlannerPendingAdmission = true
-            let key = try seed("plex:ep", status: .failed, metadata: metadata, in: store)
-            #expect(store.lifecycleState(for: key)?.lifecycle == .planned)
-            #expect(store.record(for: key)?.status == .failed)
-            let index = try indexRows(directory)
-            #expect(index.first?["status"] as? String == "failed")
-            let metadataObject = index.first?["metadata"] as? [String: Any]
-            #expect(metadataObject?["seasonPlannerPendingAdmission"] as? Bool == true)
-            #expect(DownloadStore(baseDirectory: directory).lifecycleState(for: key)?.lifecycle
-                    == .planned)
+            let queued = try seed("plex:ep", status: .queued, metadata: metadata, in: store)
+            var retryMetadata = OfflineMetadata(ratingKey: "plex:retry", title: "Ep", type: "episode")
+            retryMetadata.seasonPlannerPendingAdmission = true
+            let failed = try seed("plex:retry", status: .failed, metadata: retryMetadata, in: store)
+            var pausedMetadata = OfflineMetadata(ratingKey: "plex:paused", title: "Ep", type: "episode")
+            pausedMetadata.seasonPlannerPendingAdmission = true
+            let paused = try seed("plex:paused", status: .paused, metadata: pausedMetadata, in: store)
+
+            #expect(store.lifecycleState(for: queued)?.lifecycle == .planned)
+            #expect(store.lifecycleState(for: queued)?.history.admissionIntent == .seasonPlanned)
+            #expect(store.record(for: queued)?.status == .queued)
+            #expect(store.lifecycleState(for: failed)?.lifecycle == .failed)
+            #expect(store.lifecycleState(for: failed)?.history.admissionIntent == .retryRequested)
+            #expect(store.lifecycleState(for: paused)?.lifecycle == .paused)
+            #expect(store.lifecycleState(for: paused)?.history.admissionIntent == .seasonPlanned)
+            for row in try indexRows(directory) {
+                let metadataObject = row["metadata"] as? [String: Any]
+                #expect(metadataObject?["seasonPlannerPendingAdmission"] == nil)
+            }
+            let reloaded = DownloadStore(baseDirectory: directory)
+            #expect(reloaded.lifecycleState(for: queued)?.lifecycle == .planned)
+            #expect(reloaded.lifecycleState(for: failed)?.history.admissionIntent == .retryRequested)
+        }
+    }
+
+    /// A P3b index wrote a flagged retry row as `planned` + `.failed`; it loads as a failed row
+    /// waiting for its retry.
+    @Test("A P3b planned retry row loads as failed with a retry request")
+    func p3bPlannedRetryRowLoadsAsFailedWaiting() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let key = try seed("plex:ep", status: .failed,
+                               metadata: OfflineMetadata(ratingKey: "plex:ep", title: "Ep",
+                                                         type: "episode"), in: store)
+            try rewriteRows(directory) { row in
+                row["lifecycle"] = "planned"
+                var metadata = row["metadata"] as? [String: Any] ?? [:]
+                metadata["seasonPlannerPendingAdmission"] = true
+                row["metadata"] = metadata
+            }
+            let reloaded = DownloadStore(baseDirectory: directory)
+            #expect(reloaded.lifecycleState(for: key)?.lifecycle == .failed)
+            #expect(reloaded.lifecycleState(for: key)?.history.admissionIntent == .retryRequested)
         }
     }
 

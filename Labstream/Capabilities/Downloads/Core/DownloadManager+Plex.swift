@@ -158,6 +158,11 @@ extension DownloadManager {
                     "download_id": .identifier(ratingKey),
                     "target": .label(fallback),
                 ])
+                // P4.5: the fallback creates a server job; it needs room in the prep lane.
+                guard admissionMayEnterServerPrep(ratingKey) else {
+                    releaseInFlight(for: attemptKey)
+                    return
+                }
                 await selectPlexAudioForPreparedDownloadIfNeeded(
                     part: part, audioStreamIndex: audioStreamIndex,
                     server: server, token: token)
@@ -302,6 +307,9 @@ extension DownloadManager {
             hasPlexSession: backendSession != nil),
             let metadata = record?.metadata,
             let backendSession else { return }
+        // P4.5: the fallback creates a server job; without prep-lane room the row keeps its
+        // validation failure and a later Retry takes the fallback through admission.
+        guard admissionMayEnterServerPrep(ratingKey) else { return }
         let item = metadata.makeMediaItem()
         let target = Self.originalFallbackOptimizeTarget()
         recordDownloadDiagnostic("downloads.original_validation_fallback", fields: [

@@ -235,10 +235,11 @@ public final class DownloadManager {
     #if DEBUG
     @ObservationIgnored private(set) var startupActivationSubmissionCountForTesting = 0
     #endif
-    /// Short-lived worker for ordinary episode rows carrying the durable one-time planner marker.
-    /// No season/batch entity is retained; relaunch simply rediscovers marked rows.
-    @ObservationIgnored var seasonPlannerAdmissionTask: Task<Void, Never>?
-    @ObservationIgnored var seasonPlannerAdmittingKeys: Set<String> = []
+    /// P4: the one admission window every download start goes through.
+    @ObservationIgnored let admission = DownloadAdmissionCoordinator()
+    @ObservationIgnored var admissionPumpTask: Task<Void, Never>?
+    @ObservationIgnored var admissionWakeTask: Task<Void, Never>?
+    @ObservationIgnored var lastAdmissionOccupancySignature = ""
     /// Season-plan commits publish their rows atomically but await durability off the main actor.
     /// While one is in flight, the admission worker must not admit rows whose plan has not yet
     /// proven durable (a failed commit withdraws them again).
@@ -1027,6 +1028,10 @@ public final class DownloadManager {
                         liveKeys: liveKeys
                     )
                 }
+                // P4: admission opens only after tasks and pollers were reattached, so surviving
+                // work is counted before anything new is granted.
+                self.admission.recoveryComplete = true
+                self.scheduleAdmissionPump()
             }
         }
     }
@@ -1723,6 +1728,19 @@ public final class DownloadManager {
     private func pause(record: DownloadRecord) {
         let ratingKey = record.ratingKey
         guard let releaseKey = attemptKey(for: record) else { return }
+        // P4.6: a pause ends the row's supervised start and forgets its request, so no granted
+        // continuation can start it afterwards (B64).
+        withdrawAdmission(ratingKey: ratingKey)
+        if isWaitingForAdmission(record) {
+            // A planned row parks synchronously and keeps its first-start intent (B65); a parked
+            // row waiting for its retry just withdraws the request.
+            let event: DownloadLifecycleEvent = record.lifecycle == .planned
+                ? .pause(.user) : .admissionWithdrawn
+            _ = applyLifecycleEvent(event, for: releaseKey, context: "user_pause_waiting")
+            lastError[ratingKey] = .interruptedResumable
+            refreshRecords()
+            return
+        }
         let pauseAction = DownloadPausePolicy.rowAction(
             status: record.status,
             isStaticRangeRecord: StaticRangeRecoveryPolicy.isStaticRangeRecord(record),
@@ -1761,6 +1779,13 @@ public final class DownloadManager {
                   applyLifecycleEvent(.pause(.user), for: key, context: "user_pause") else { return }
             session.pause(ratingKey: ratingKey)
         case .cancelTaskOnly:
+            // B64: a task-less admitted row (a granted start still negotiating) parks
+            // synchronously; the session's no-task path would otherwise land later and a start
+            // chain past its last check could begin the transfer first.
+            if !session.isTrackingTransfer(ratingKey: ratingKey),
+               store.lifecycleState(for: releaseKey)?.lifecycle == .admitted {
+                _ = applyLifecycleEvent(.pause(.user), for: releaseKey, context: "user_pause")
+            }
             session.pause(ratingKey: ratingKey)
         case .parkPreparing:
             guard let key = attemptKey(for: record),
@@ -1808,6 +1833,8 @@ public final class DownloadManager {
     /// Pause all non-terminal work and persist the queue gate across relaunch.
     public func pauseQueue() {
         isQueuePaused = true
+        // P4.6: another Pause All revokes every row's manual-resume exemption.
+        admission.revokeAllExemptions()
         staticRangeRecovery.removeAllManualQueueResumes()
         UserDefaults.standard.set(true, forKey: Self.queuePausedDefaultsKey)
         for record in records where DownloadPausePolicy.shouldPauseDuringQueuePause(record) {
@@ -1827,10 +1854,13 @@ public final class DownloadManager {
         isQueuePaused = false
         staticRangeRecovery.removeAllManualQueueResumes()
         UserDefaults.standard.set(false, forKey: Self.queuePausedDefaultsKey)
-        let retryKeys = records
-            .filter { DownloadQueueToolbarPolicy.shouldRetryWhenResumingQueue($0.status) }
-            .map(\.ratingKey)
-        for key in retryKeys { retry(ratingKey: key) }
+        admission.revokeAllExemptions()
+        // B63: Resume All queues every parked row for a lane instead of starting them all at once.
+        for record in store.records
+        where DownloadQueueToolbarPolicy.shouldRetryWhenResumingQueue(record.status)
+            && record.lifecycle != .planned {
+            requestAdmission(for: record, origin: .automatic)
+        }
         rehydrateMissingOptionalSideAssetsForCompletedRows(reason: "queue_resumed")
         resumePendingServerPrepDownloads()
         resumePendingStaticRangeDownloads()
@@ -1945,7 +1975,7 @@ public final class DownloadManager {
         return session
     }
 
-    private func attemptKey(for record: DownloadRecord) -> DownloadAttemptKey? {
+    func attemptKey(for record: DownloadRecord) -> DownloadAttemptKey? {
         guard let attemptID = record.attemptID else { return nil }
         return DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
     }
@@ -1956,7 +1986,7 @@ public final class DownloadManager {
         attemptKey(for: record).flatMap { store.attemptWorkingFileURL(for: $0) }
     }
 
-    private func isDeletionPending(_ record: DownloadRecord) -> Bool {
+    func isDeletionPending(_ record: DownloadRecord) -> Bool {
         guard let key = attemptKey(for: record) else { return false }
         return store.isDeletionPending(for: key)
     }
@@ -2357,9 +2387,39 @@ public final class DownloadManager {
         if StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: reason) {
             staticRangeRecovery.preserveRestartCountersForNextStart(ratingKey)
         }
+        // P4: an automatic static resume takes a lane like any other start. Without room it keeps
+        // its pending-resume marker; the admission pump drains pending resumes when the static
+        // lane frees.
+        guard admissionHasRoom(for: ratingKey, lane: .staticFile) else {
+            recordDownloadDiagnostic("downloads.range_resume_waiting_for_lane", fields: [
+                "download_id": .identifier(ratingKey),
+                "reason": .label(reason),
+            ])
+            return
+        }
         refreshRecords()
-        retry(ratingKey: ratingKey,
-              allowReplacingExistingActiveRow: StaticRangeRecoveryPolicy.shouldMarkSystemResumeInactiveBeforeRetry(record))
+        let generation = admission.beginSupervision(ratingKey, lane: .staticFile, origin: .automatic)
+        let work = retry(
+            record: store.record(for: ratingKey) ?? record,
+            allowReplacingExistingActiveRow: StaticRangeRecoveryPolicy.shouldMarkSystemResumeInactiveBeforeRetry(record))
+        Task { @MainActor [weak self] in
+            await work?.value
+            self?.finishAdmittedStart(ratingKey, generation: generation, intent: .retryRequested)
+        }
+    }
+
+    /// True while a static range resume waits for a lane (or its backend).
+    var hasPendingStaticRangeResumes: Bool {
+        !staticRangeRecovery.resumablePendingKeys(isQueuePaused: isQueuePaused).isEmpty
+    }
+
+    /// Drain pending static resumes once the static lane has room (P4 pump).
+    func drainPendingStaticRangeResumes() {
+        resumePendingStaticRangeDownloads()
+    }
+
+    func hasRegisteredServerPrepPoller(ratingKey: String) -> Bool {
+        serverPrepPollerTasks.keys.contains { $0.ratingKey == ratingKey }
     }
 
     func consumeRangeRestartCounterPreservation(ratingKey: String) -> Bool {
@@ -2407,9 +2467,11 @@ public final class DownloadManager {
     /// from the persisted `OfflineMetadata` snapshot (real type + media/part index) and
     /// re-run the probe-driven download path — re-probing so a now-compatible file goes
     /// direct. Rows persisted before D5 lack a snapshot, so we fall back to a minimal movie.
+    /// A user Retry or Resume on a row. P4: it goes through admission (granted at once when a lane
+    /// has room, exempt from Pause All for this row only; otherwise it waits as a request).
     public func retry(ratingKey: String, allowReplacingExistingActiveRow: Bool = false) {
-        guard let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
-        retry(record: record, allowReplacingExistingActiveRow: allowReplacingExistingActiveRow)
+        guard let record = store.record(for: ratingKey) else { return }
+        admitRowAction(record)
     }
 
     /// Execute a rendered row's retry/resume only while its exact persisted attempt still owns
@@ -2420,23 +2482,27 @@ public final class DownloadManager {
         allowReplacingExistingActiveRow: Bool = false
     ) -> Bool {
         guard let record = currentRecord(for: identity) else { return false }
-        retry(record: record, allowReplacingExistingActiveRow: allowReplacingExistingActiveRow)
+        admitRowAction(record)
         return true
     }
 
-    private func retry(record: DownloadRecord, allowReplacingExistingActiveRow: Bool) {
+    /// Returns the spawned retry work, when there is any, so P4 admission can supervise a granted
+    /// start until its nested async work has finished (`nil` once the retry completed or refused
+    /// synchronously).
+    @discardableResult
+    func retry(record: DownloadRecord, allowReplacingExistingActiveRow: Bool) -> Task<Void, Never>? {
         let ratingKey = record.ratingKey
         guard startupRecoveryState == .ready else {
             lastError[ratingKey] = .transferFailed(
                 "Downloads are paused while recovery is completed. Retry recovery first."
             )
-            return
+            return nil
         }
-        guard !retryState.isRetrying(ratingKey) else { return }
+        guard !retryState.isRetrying(ratingKey) else { return nil }
         guard let currentKey = attemptKey(for: record),
-              !store.isDeletionPending(for: currentKey) else { return }
+              !store.isDeletionPending(for: currentKey) else { return nil }
         setOptionalSideAssetHydrationParked(false, for: currentKey)
-        guard record.status != .complete, record.status != .unverified else { return }
+        guard record.status != .complete, record.status != .unverified else { return nil }
         let shouldPromotePausedStatic = StaticRangeRecoveryPolicy.shouldMarkPausedRowInactiveBeforeBackendRetry(record)
         let shouldReplacePersistedActiveStatic = allowReplacingExistingActiveRow
             || StaticRangeRecoveryPolicy.shouldMarkSystemResumeInactiveBeforeRetry(record)
@@ -2460,10 +2526,10 @@ public final class DownloadManager {
             ])
         }
         if finalizeCompletedStaticRangeIfNeeded(record: record, reason: "manual_retry") {
-            return
+            return nil
         }
         if deferStaticRangeRetryIfBackendUnavailable(record: record, reason: "retry_backend_not_ready") {
-            return
+            return nil
         }
         // Lens 6 F5: retry continuations are attempt-scoped. Each begin mints a token the async
         // bodies below verify, so a pause→resume (which re-begins) cannot revive THIS chain after
@@ -2471,7 +2537,7 @@ public final class DownloadManager {
         let retryToken = retryState.begin(ratingKey)
         guard let retryAttemptKey = attemptKey(for: record) else {
             retryState.removeRetrying(ratingKey)
-            return
+            return nil
         }
         recordDownloadDiagnostic("downloads.retry", fields: [
             "download_id": .identifier(ratingKey),
@@ -2493,11 +2559,11 @@ public final class DownloadManager {
             guard applyLifecycleEvent(
                 .retry(.convertResume), for: retryAttemptKey, context: "retry_emby_convert") else {
                 retryState.removeRetrying(ratingKey)
-                return
+                return nil
             }
             resumePendingEmbyConvertDownloads()
             refreshRecords()
-            return
+            return nil
         }
         // A condemned attempt (P3a) is never continued in place: its Retry takes the replacement
         // path and starts from zero, even if a resume blob survives.
@@ -2519,19 +2585,19 @@ public final class DownloadManager {
                 break
             case .staleOrMissing:
                 retryState.removeRetrying(ratingKey)
-                return
+                return nil
             case .persistenceFailed(let failure):
                 recordDownloadDiagnostic("downloads.resume_manifest_clear_failed", fields: [
                     "download_id": .identifier(ratingKey),
                     "failure": .label(Self.startupPersistenceFailureLabel(failure)),
                 ])
                 retryState.removeRetrying(ratingKey)
-                return
+                return nil
             }
             guard applyLifecycleEvent(
                 .retry(.resumeBlob), for: retryAttemptKey, context: "resume_blob") else {
                 retryState.removeRetrying(ratingKey)
-                return
+                return nil
             }
             // #227: static range rows with persisted resume data MUST resume on the
             // range lane; the opaque lane would treat the blob task's partial-body temp as a
@@ -2561,7 +2627,7 @@ public final class DownloadManager {
                                                     attemptKey: retryAttemptKey,
                                                     reason: "transfer_resume")
                 refreshRecords()
-                return
+                return nil
             }
             // The blob was refused/stale — fall through to a clean restart below (for range rows
             // the durable partial remains the checkpoint; only the blob's temp is lost).
@@ -2569,7 +2635,7 @@ public final class DownloadManager {
                 .transferFailed(.validation), for: retryAttemptKey,
                 context: "resume_blob_refused") else {
                 retryState.removeRetrying(ratingKey)
-                return
+                return nil
             }
         }
         if DownloadRetryPreparationPolicy.shouldResumePausedPlexServerPrep(
@@ -2582,7 +2648,7 @@ public final class DownloadManager {
                 record, durablePartialURL: durableStaticPartialURL(for: record))
         ), let targetName = record.metadata?.optimizeTargetName {
             resumePausedPlexServerPrep(record: record, targetName: targetName)
-            return
+            return nil
         }
         // #131/#146/#168/#169 live checks: paused static-byte-range rows may have only the durable
         // partial file as their checkpoint (no URLSession resume blob), or may have no durable bytes
@@ -2600,18 +2666,16 @@ public final class DownloadManager {
             guard applyLifecycleEvent(
                 .retry(staticMode), for: retryAttemptKey, context: "retry_static") else {
                 retryState.removeRetrying(ratingKey)
-                return
+                return nil
             }
         }
         if DownloadRecordIdentity.isJellyfinRecordKey(ratingKey) {
-            retryJellyfin(record: record, allowReplacingExistingActiveRow: allowActiveRowReplacement,
-                          attemptToken: retryToken)
-            return
+            return retryJellyfin(record: record, allowReplacingExistingActiveRow: allowActiveRowReplacement,
+                                 attemptToken: retryToken)
         }
         if DownloadRecordIdentity.isEmbyRecordKey(ratingKey) {
-            retryEmby(record: record, allowReplacingExistingActiveRow: allowActiveRowReplacement,
-                      attemptToken: retryToken)
-            return
+            return retryEmby(record: record, allowReplacingExistingActiveRow: allowActiveRowReplacement,
+                             attemptToken: retryToken)
         }
         let metadata = record.metadata
         let item = metadata?.makeMediaItem()
@@ -2623,7 +2687,7 @@ public final class DownloadManager {
         // the optimizer using the user's explicit default preset. Keep the
         // failed row visible until after auth/server preflight succeeds; otherwise tapping retry
         // while disconnected/not-ready removes the only visible retry affordance.
-        Task { [weak self] in
+        return Task { [weak self] in
             guard let self else { return }
             // #84: resolve the Plex session from its own lane (not `activeBackend`); a row whose
             // lane is unconfigured stays `.failed`/retryable with the accurate not-signed-in reason.
@@ -2875,15 +2939,16 @@ public final class DownloadManager {
         }
     }
 
+    @discardableResult
     private func retryJellyfin(record: DownloadRecord, allowReplacingExistingActiveRow: Bool = false,
-                               attemptToken: UUID) {
-        guard let key = attemptKey(for: record) else { return }
+                               attemptToken: UUID) -> Task<Void, Never>? {
+        guard let key = attemptKey(for: record) else { return nil }
         let retryIntent = DownloadBackendRetryIntentPolicy.jellyfinIntent(
             for: record,
             fallbackItemID: DownloadRecordIdentity.jellyfinItemID(fromRecordKey: record.ratingKey),
             fallbackOriginalIsLocallyPlayable: false)
 
-        Task { [weak self] in
+        return Task { [weak self] in
             guard let self else { return }
             // #84: gate on the Jellyfin lane being configured (resolved from its own session),
             // independent of `activeBackend`; an unconfigured lane stays retryable with the
@@ -2945,14 +3010,15 @@ public final class DownloadManager {
         }
     }
 
+    @discardableResult
     private func retryEmby(record: DownloadRecord, allowReplacingExistingActiveRow: Bool = false,
-                           attemptToken: UUID) {
-        guard let key = attemptKey(for: record) else { return }
+                           attemptToken: UUID) -> Task<Void, Never>? {
+        guard let key = attemptKey(for: record) else { return nil }
         let retryIntent = DownloadBackendRetryIntentPolicy.embyIntent(
             for: record,
             fallbackItemID: DownloadRecordIdentity.embyItemID(fromRecordKey: record.ratingKey))
 
-        Task { [weak self] in
+        return Task { [weak self] in
             guard let self else { return }
             // #84: gate on the Emby lane being configured (resolved from its own session),
             // independent of `activeBackend`; an unconfigured lane stays retryable with the
@@ -3235,7 +3301,8 @@ public final class DownloadManager {
         // before asking the prep scanner to attach a poller.
         let serverPrepRows = store.records
             .filter(DownloadRetryPolicy.isPlexServerPrepResumeCandidate)
-            .filter { !isDeletionPending($0) }
+            // B62: a planned row (shown `.queued`) belongs to admission, never to the scanner.
+            .filter { !isDeletionPending($0) && !isWaitingForAdmission($0) }
         let candidates = serverPrepRows.filter {
             guard let key = attemptKey(for: $0) else { return false }
             return !serverPrepAttempts.hasPlexPoller(for: key)
@@ -3766,6 +3833,8 @@ public final class DownloadManager {
 
     @discardableResult
     private func delete(record rowToDelete: DownloadRecord) -> DeleteHandoff {
+        // P4: a delete ends the row's supervised start and forgets its request and exemption.
+        withdrawAdmission(ratingKey: rowToDelete.ratingKey)
         let ratingKey = rowToDelete.ratingKey
         let rowAttemptKey = rowToDelete.attemptID.map {
             DownloadAttemptKey(ratingKey: ratingKey, attemptID: $0)
@@ -4219,8 +4288,8 @@ public final class DownloadManager {
         let now = Date()
         var fresh = store.records
         let staleQueuedStaticPartials = fresh.filter { record in
-            guard !isDeletionPending(record), !seasonPlannerAdmittingKeys.contains(record.ratingKey),
-                  record.metadata?.seasonPlannerPendingAdmission != true else { return false }
+            guard !isDeletionPending(record), admission.supervised[record.ratingKey] == nil,
+                  !isWaitingForAdmission(record) else { return false }
             return DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
                 record,
                 // B00: a queued append, delayed range retry, or claimed finalizer is still live
@@ -4302,13 +4371,13 @@ public final class DownloadManager {
             fresh = store.records
         }
         let serverPrepKickIsRecent = lastServerPrepRefreshKickAt.map { now.timeIntervalSince($0) < 5 } ?? false
-        // Season-planned rows are durably queued but intentionally have no task/poller until the
-        // bounded admission worker selects them. Ordinary stale/relaunch recovery must not race
-        // that marker and start the entire season at once.
+        // Rows waiting for admission (planned, or parked with a retry request) intentionally have
+        // no task/poller until the coordinator grants them, and a supervised start owns its row.
+        // Ordinary stale/relaunch recovery must not race either and start them all at once.
         let recoveryEligibleFresh = fresh.filter {
             !isDeletionPending($0)
-                && !seasonPlannerAdmittingKeys.contains($0.ratingKey)
-                && $0.metadata?.seasonPlannerPendingAdmission != true
+                && admission.supervised[$0.ratingKey] == nil
+                && !isWaitingForAdmission($0)
         }
         let serverPrepKeysByRatingKey = Dictionary(uniqueKeysWithValues: recoveryEligibleFresh.compactMap { record in
             attemptKey(for: record).map { (record.ratingKey, $0) }
@@ -4326,7 +4395,9 @@ public final class DownloadManager {
             }
         )
         if isQueuePaused {
-            for ratingKey in serverPrepRefreshPlan.parkWhileQueuePausedKeys {
+            // P4.6: a row the user resumed during Pause All stays exempt until the next Pause All.
+            for ratingKey in serverPrepRefreshPlan.parkWhileQueuePausedKeys
+            where !admission.isExempt(ratingKey) {
                 if let record = fresh.first(where: { $0.ratingKey == ratingKey }),
                    record.status != .paused, let key = attemptKey(for: record) {
                     _ = applyQueuePause(for: key, context: "queue_pause_prep")
@@ -4503,9 +4574,7 @@ public final class DownloadManager {
                 self?.restartStalledForwardOnlyStream(restart)
             }
         }
-        if fresh.contains(where: { $0.metadata?.seasonPlannerPendingAdmission == true }) {
-            scheduleSeasonPlannerAdmission()
-        }
+        noteAdmissionOccupancy(fresh)
     }
 
     private func detectForwardOnlyStreamStalls(in records: [DownloadRecord],
@@ -4544,7 +4613,10 @@ public final class DownloadManager {
         // and a persistent wedge restarts the encoder from byte 0 every stall timeout forever.
         forwardOnlyStallTracker.seedRestartAttempts(ratingKey, attempts: restart.attempt)
         refreshRecords()
-        retry(ratingKey: ratingKey)
+        // P4: the restart goes through admission like any other start (it just freed its lane).
+        if let failed = store.record(for: key) {
+            requestAdmission(for: failed, origin: .automatic)
+        }
     }
 
     private func updateDownloadWatchdog(for records: [DownloadRecord]) {
