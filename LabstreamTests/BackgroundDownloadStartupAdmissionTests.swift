@@ -22,6 +22,36 @@ struct BackgroundDownloadStartupAdmissionTests {
             hasCurrentMarker: true, taskKey: healthy, ownsAttempt: true))
     }
 
+    /// B07: after an activation fails once the URLSession is built, the live session's callbacks
+    /// for healthy current-attempt tasks must not be cancelled and have their bodies deleted while
+    /// the manager waits to retry. Non-owned callbacks are still rejected.
+    @Test func failedPostConstructionActivationStillAdmitsOnlyOwnedCallbacks() throws {
+        let healthy = DownloadAttemptKey(
+            ratingKey: "plex:healthy",
+            attemptID: try #require(DownloadAttemptID(rawValue: "healthy-attempt")))
+        #expect(BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: false, isPurging: false, isPermanentlyRejected: false,
+            hasCurrentMarker: true, taskKey: healthy, ownsAttempt: true,
+            isDormantAfterFailedActivation: true))
+        #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: false, isPurging: false, isPermanentlyRejected: false,
+            hasCurrentMarker: true, taskKey: healthy, ownsAttempt: false,
+            isDormantAfterFailedActivation: true))
+        #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: false, isPurging: false, isPermanentlyRejected: false,
+            hasCurrentMarker: false, taskKey: healthy, ownsAttempt: true,
+            isDormantAfterFailedActivation: true))
+        #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: false, isPurging: false, isPermanentlyRejected: true,
+            hasCurrentMarker: true, taskKey: healthy, ownsAttempt: true,
+            isDormantAfterFailedActivation: true))
+        // A never-activated dormant session keeps rejecting everything.
+        #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: false, isPurging: false, isPermanentlyRejected: false,
+            hasCurrentMarker: true, taskKey: healthy, ownsAttempt: true,
+            isDormantAfterFailedActivation: false))
+    }
+
     @Test func dormantSessionRejectsStartWithoutCreatingWork() throws {
         try withTemporaryDirectory { directory in
             let store = DownloadStore(baseDirectory: directory)
