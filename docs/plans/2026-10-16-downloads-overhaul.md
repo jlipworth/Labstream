@@ -242,6 +242,14 @@ side-asset repair builds one off-main inventory per pass, revalidated against ex
 source before dispatch. Two findings are follow-up issues: side-asset fetches can queue completed
 payloads behind slow preparation (a cheap B83 improvement), and P6 async waits poll every 10 ms.
 
+After-implementation review round 2 found two P2s in that work, both fixed: a startup load that
+outlives its deadline now resolves Offline availability terminally (so recovery controls show) and
+still publishes a late completion under generation fencing; and the side-asset repair inventory
+now observes every owned asset, so a missing first Jellyfin tile can no longer drop references to
+existing tiles. The iPhone-simulator lane exposed fixture races (premature encoder cleanup,
+startup reconciliation of synthetic transfers, overlapping foreground stats) that hung or failed
+only there; those fixtures now use bounded acknowledgements.
+
 ## Verification checkpoint
 
 These are inherited journal results, not tests rerun by this documentation lane:
