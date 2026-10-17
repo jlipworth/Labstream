@@ -4898,7 +4898,8 @@ final class DownloadStore: @unchecked Sendable {
             body = fileManager.fileExists(
                 atPath: baseDirectory.appendingPathComponent(row.relativePath).path)
                 ? .published : .none
-        } else if row.lifecycle == .finalizing, workingBytes > 0 {
+        } else if workingBytes > 0, row.lifecycle == .finalizing || route == .forwardOnly {
+            // A forward-only body reaches the working path only once its transfer finished.
             body = .workingComplete
         } else {
             body = .none
@@ -5079,151 +5080,73 @@ final class DownloadStore: @unchecked Sendable {
     /// existed when the task snapshot was requested: rows seeded on the main actor after that
     /// point are skipped entirely, or a brand-new `.queued` row (or a static row mid retry
     /// rebuild) would be demoted against a snapshot that predates it.
+    /// Relaunch/foreground recovery (P3a): each eligible row's facts go through the reducer's
+    /// `relaunchObserved`. Lifecycle and byte accounting change under the lock; file deletions are
+    /// durable decisions executed after it is released (st-41).
     func reconcile(liveRatingKeys: Set<String>, snapshotRatingKeys: Set<String>) {
         lock.lock()
         var changed = false
-        for (key, var row) in rows {
-            // A deletion-pending row is a sealed recovery capsule. Reconcile must not demote it,
-            // rewrite its checkpoint counters, or delete main/resume artifacts while the cleanup
-            // journal is unavailable; cleanup migration is the only path allowed to unseal it.
-            guard !row.deletionPending else { continue }
-            // A row with pending artifact intents is owned by the durable artifact queue: intent
-            // replay runs asynchronously on the artifact worker queue with no ordering barrier
-            // against this reconcile, and a staged `.validatedPromotion` head leaves the row
-            // `.downloading` while the working file IS the fully-validated body. Demoting the row
-            // or deleting its working/resume files here would destroy the intent's source, so
-            // replay/abandonment is the only authority allowed to resolve these rows.
-            guard row.pendingArtifactIntents.isEmpty else { continue }
-            guard DownloadStatus.reconcileEligible(ratingKey: key,
-                                                   snapshotRatingKeys: snapshotRatingKeys) else { continue }
-            let hasLiveTask = liveRatingKeys.contains(key)
-            let isTerminal = row.status == .complete || row.status == .unverified
-            let evidenceURL: URL? = {
-                if isTerminal { return baseDirectory.appendingPathComponent(row.relativePath) }
-                guard let attemptID = row.attemptID,
-                      let working = workingRelativePath(
-                        for: row,
-                        key: DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: attemptID))
-                else { return nil }
-                return baseDirectory.appendingPathComponent(working)
-            }()
-            let partialBytes = evidenceURL.flatMap(fileSize(at:)) ?? 0
-            let fileExists = evidenceURL.map {
-                partialBytes > 0 || fileManager.fileExists(atPath: $0.path)
-            } ?? false
-            // #95: does a persisted resume blob survive for this row? A `.paused` row stays
-            // resumable only while it does (checked WITHOUT reading the blob).
-            let resumeRelative = row.metadata?.resumeDataRelativePath
-            let hasResumeData = (resumeRelative?.isEmpty == false)
-                && fileManager.fileExists(
-                    atPath: baseDirectory.appendingPathComponent(resumeRelative!).path)
-            let resumeMode = row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey)
-                ?? DownloadResumeMode.resolved(
-                    backend: row.metadata?.resolvedBackendKind(ratingKey: row.ratingKey)
-                        ?? DownloadBackendKind(ratingKeyPrefix: row.ratingKey),
-                    lane: row.metadata?.resolvedDownloadLane() ?? .original)
-            let hasServerPrepCheckpoint = resumeMode == .serverPrepThenStatic
-                && row.status == .paused
-                && (row.metadata?.optimizeTargetName?.isEmpty == false
-                    || row.metadata?.embyConvertJobID != nil)
-            let hasAppRangeCheckpoint = resumeMode == .staticByteRange
-                && (row.status == .paused || row.status == .queued || row.status == .downloading)
-                && partialBytes > 0
-            let staticRangeExpectedBytes = Self.expectedBytesEstimate(row: row)
-            let staticRangeProgress = Self.progressForDurableBytes(
-                partialBytes,
-                expectedBytes: staticRangeExpectedBytes
-            )
-            // Only Plex has a server-side "prepare then static download" optimize queue that can
-            // resume after relaunch. Jellyfin AND Emby transcoded rows are LIVE streams from a
-            // URLSession task (Emby additionally renders via a server FFmpeg encoder), so a
-            // missing task means the render is gone — they must demote to retryable `.failed`, not
-            // resume as `.queued`. Hence both backend prefixes are excluded here.
-            let isPlexServerPrepOptimizedJob = !hasLiveTask
-                && (row.status == .queued || row.status == .downloading)
-                && resumeMode == .serverPrepThenStatic
-                && row.metadata?.optimizeTargetName?.isEmpty == false
-                && !row.ratingKey.hasPrefix("jellyfin:")
-                && !row.ratingKey.hasPrefix("emby:")
-            let hasLiveStaticRangeTask = hasLiveTask
-                && resumeMode == .staticByteRange
-                && (row.status == .paused || row.status == .queued || row.status == .downloading)
-            // P3a/B10: a forward-only body reaches the attempt working path only once its whole
-            // transfer finished (opaque tasks write to the system temp until then), and a
-            // persisted `finalizing` row has a complete body by definition. Without a live task,
-            // keep the row finalizing with its body for re-finalization, never fail and delete it.
-            let hasCompleteBodyAwaitingFinalization = !hasLiveTask && fileExists && partialBytes > 0
-                && (row.lifecycle == .finalizing
-                    || (resumeMode == .liveForwardOnly
-                        && (row.status == .queued || row.status == .downloading)))
-            if hasCompleteBodyAwaitingFinalization {
-                if row.lifecycle != .finalizing {
-                    row.lifecycle = .finalizing
-                    rows[key] = row
-                    changed = true
-                }
-                continue
-            }
-            let newStatus: DownloadStatus
-            if isPlexServerPrepOptimizedJob {
-                newStatus = .queued
-            } else if hasLiveStaticRangeTask {
-                // A reattached background Range task is authoritative live work. Do not park the row
-                // as `.paused` merely because a durable partial exists: that made the UI offer Resume
-                // while nsurlsessiond was still delivering callbacks, allowing a duplicate Range task
-                // to start at the same checkpoint.
-                newStatus = .downloading
-            } else if hasServerPrepCheckpoint || hasAppRangeCheckpoint {
-                newStatus = .paused
-            } else {
-                newStatus = DownloadStatus.reconciledStatus(
-                    current: row.status, fileExists: fileExists,
-                    hasLiveTask: hasLiveTask, hasResumeData: hasResumeData,
-                    canRestartFromStaticCheckpoint: resumeMode == .staticByteRange)
-            }
-            let shouldResetOptimizedProgress = isPlexServerPrepOptimizedJob
-                && (row.bytes != 0 || row.progress != 0)
-            let shouldResetRangeProgress = hasAppRangeCheckpoint
-                && (row.bytes != partialBytes || abs(row.progress - staticRangeProgress) > 0.000_001)
-            let shouldResetMissingRangeProgress = resumeMode == .staticByteRange
-                && !hasLiveTask
-                && !hasAppRangeCheckpoint
-                && (row.status == .paused || row.status == .queued
-                    || row.status == .downloading || row.status == .failed)
-                && (row.bytes != 0 || row.progress != 0)
-            guard newStatus != row.status
-                    || shouldResetOptimizedProgress
-                    || shouldResetRangeProgress
-                    || shouldResetMissingRangeProgress else { continue }
-            // A non-live queued/downloading row that we're demoting to `.failed` may have left a
-            // partial file behind. Delete it so dead bytes don't sit invisibly on disk — a retry
-            // rebuilds the file from scratch regardless. #95: but a row that STAYS resumable
-            // (`.paused` with a surviving resume blob) must KEEP its partial, or the resume data
-            // is useless; only delete when we're actually demoting to a non-resumable terminal state.
-            let isStayingResumable = (newStatus == .paused)
-            if (row.status == .queued || row.status == .downloading || row.status == .paused)
-                && !hasLiveTask && !isStayingResumable {
-                if let evidenceURL { try? fileManager.removeItem(at: evidenceURL) }
-                if resumeRelative?.isEmpty == false {
-                    try? fileManager.removeItem(
-                        at: baseDirectory.appendingPathComponent(resumeRelative!))
+        var deletions: [URL] = []
+        for (ratingKey, var row) in rows {
+            // A deletion-pending row is a sealed recovery capsule, and a row with pending artifact
+            // intents is owned by the durable artifact queue (a staged `.validatedPromotion` head
+            // leaves the working file as the validated body). Neither is reconciled.
+            guard !row.deletionPending, row.pendingArtifactIntents.isEmpty,
+                  DownloadStatus.reconcileEligible(ratingKey: ratingKey,
+                                                   snapshotRatingKeys: snapshotRatingKeys)
+            else { continue }
+            // Legacy unowned rows are still reconciled; their facts simply have no working body.
+            let key = DownloadAttemptKey(
+                ratingKey: ratingKey,
+                attemptID: row.attemptID ?? DownloadAttemptID(rawValue: "unowned-legacy-row")!)
+            let hasLiveTask = liveRatingKeys.contains(ratingKey)
+            let facts = lifecycleFactsLocked(row: row, key: key, liveTask: hasLiveTask)
+            guard case .applied(let next, let effects) = DownloadLifecycleReducer.reduce(
+                DownloadLifecycleState(lifecycle: row.lifecycle, history: row.history),
+                .relaunchObserved, facts: facts) else { continue }
+            let workingURL = workingRelativePath(for: row, key: key)
+                .map { baseDirectory.appendingPathComponent($0) }
+            let partialBytes = workingURL.flatMap(fileSize(at:)) ?? 0
+            var newBytes = row.bytes
+            var newProgress = row.progress
+            for effect in effects {
+                switch effect {
+                case .resetBytesToZero:
+                    newBytes = 0
+                    newProgress = 0
+                case .resetBytesToDurableCheckpoint:
+                    newBytes = partialBytes
+                    newProgress = Self.progressForDurableBytes(
+                        partialBytes, expectedBytes: Self.expectedBytesEstimate(row: row))
+                case .deleteWorkingBody:
+                    if let workingURL { deletions.append(workingURL) }
+                case .clearResumeBlob:
+                    if let resume = row.metadata?.resumeDataRelativePath, !resume.isEmpty {
+                        deletions.append(baseDirectory.appendingPathComponent(resume))
+                    }
+                case .deletePublishedBody, .publish, .requestFinalization:
+                    break // Relaunch never publishes; finalization is re-requested by the manager.
                 }
             }
-            row.status = newStatus
-            if isPlexServerPrepOptimizedJob {
-                row.bytes = 0
-                row.progress = 0
-            } else if hasAppRangeCheckpoint {
-                row.bytes = partialBytes
-                row.progress = staticRangeProgress
-            } else if shouldResetMissingRangeProgress {
-                row.bytes = 0
-                row.progress = 0
+            // A static row with no durable bytes left carries no stale byte count.
+            if case .staticRange = facts.route, !hasLiveTask, partialBytes == 0,
+               next.lifecycle != .complete, next.lifecycle != .unverified,
+               next.lifecycle != .finalizing {
+                newBytes = 0
+                newProgress = 0
             }
-            rows[key] = row
+            guard next != DownloadLifecycleState(lifecycle: row.lifecycle, history: row.history)
+                    || newBytes != row.bytes || abs(newProgress - row.progress) > 0.000_001
+            else { continue }
+            row.lifecycle = next.lifecycle
+            row.history = next.history
+            row.bytes = newBytes
+            row.progress = newProgress
+            rows[ratingKey] = row
             changed = true
         }
         lock.unlock()
+        for url in deletions { try? fileManager.removeItem(at: url) }
         if changed { persist() }
     }
 

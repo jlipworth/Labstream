@@ -230,10 +230,21 @@ struct DownloadLifecycleReducerTests {
         // A resume blob keeps any route paused.
         #expect(relaunch(.paused, DownloadRowFacts(route: .forwardOnly, checkpoint: .resumeBlob))
             .state?.lifecycle == .paused)
-        // A Plex prep row without a task goes back to server prep with bytes reset.
+        // A Plex prep row without a task goes back to queued (admitted) with bytes reset.
         let prep = relaunch(.transferring, DownloadRowFacts(route: .plexPrep))
-        #expect(prep.state?.lifecycle == .serverPrep)
+        #expect(prep.state?.lifecycle == .admitted)
         #expect(prep.effects == [.resetBytesToZero])
+        // A preparing (Emby Convert) row is unchanged.
+        #expect(relaunch(.serverPrep, DownloadRowFacts(route: .embyConvert(hasJobOrIdentity: false)))
+            .state?.lifecycle == .serverPrep)
+        // A paused static row with no bytes stays restartable.
+        #expect(relaunch(.paused, DownloadRowFacts(route: .staticRange)).state?.lifecycle == .paused)
+        // A queued forward-only row with a blob but no task fails, as today.
+        #expect(relaunch(.admitted, DownloadRowFacts(route: .forwardOnly, checkpoint: .resumeBlob))
+            .state?.lifecycle == .failed)
+        // A finished forward-only body becomes finalizing (B10).
+        #expect(relaunch(.transferring, DownloadRowFacts(route: .forwardOnly, body: .workingComplete))
+            .effects == [.requestFinalization])
         // Nothing resumable: fail and clean up, as effects (executed outside the lock).
         let lost = relaunch(.transferring, DownloadRowFacts(route: .forwardOnly))
         #expect(lost.state?.lifecycle == .failed)
