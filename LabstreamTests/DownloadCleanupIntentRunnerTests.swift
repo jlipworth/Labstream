@@ -141,15 +141,33 @@ struct DownloadCleanupIntentRunnerTests {
         #expect(wake.timeIntervalSinceNow > 3_000)
     }
 
-    @Test("An unreadable journal is retried by the runner's own timer")
+    @Test("An unreadable journal is retried by the runner's own timer, never in a tight loop")
     func loadFailureRetries() async throws {
-        let fake = FakeCleanupWorld(intents: [])
-        fake.loadFails = true
+        let waiting = try intent(.rowDeletion)
+        let fake = FakeCleanupWorld(intents: [waiting])
+        fake.rowStates[waiting.id] = .retiring
         let runner = fake.makeRunner()
         runner.enable()
         await runner.waitUntilIdle()
-        #expect(runner.nextWakeForTesting != nil)
+
+        fake.loadFails = true
+        runner.kick(reason: "load_fails_now")
+        await runner.waitUntilIdle()
+        let wake = try #require(runner.nextWakeForTesting)
+        #expect(wake.timeIntervalSinceNow
+            > DownloadCleanupIntentRunner.loadFailureRetrySeconds - 5)
         #expect(fake.executed.isEmpty)
+    }
+
+    @Test("Unfinished migration barriers keep the runner's wake scheduled")
+    func unfinishedBarriersKeepAWake() async throws {
+        let fake = FakeCleanupWorld(intents: [])
+        fake.barriersComplete = false
+        let runner = fake.makeRunner()
+        runner.enable()
+        await runner.waitUntilIdle()
+        #expect(fake.barrierRuns == 1)
+        #expect(runner.nextWakeForTesting != nil)
     }
 
     private func intent(
@@ -174,6 +192,8 @@ private final class FakeCleanupWorld {
     var blocked: Set<UUID> = []
     var hasSession = true
     var outcome: DownloadCleanupIntentRunner.ExecutionOutcome = .retired
+    var barriersComplete = true
+    private(set) var barrierRuns = 0
     var executionDelay: Double = 0
     var loadDelay: Double {
         get { journal.withLock { $0.loadDelay } }
@@ -197,6 +217,10 @@ private final class FakeCleanupWorld {
 
     func makeRunner(backoff: Double? = nil) -> DownloadCleanupIntentRunner {
         var dependencies = DownloadCleanupIntentRunner.Dependencies(
+            runBarriers: { [unowned self] in
+                self.barrierRuns += 1
+                return self.barriersComplete
+            },
             load: { [journal] in
                 let (delay, fails) = journal.withLock { state -> (Double, Bool) in
                     state.loads += 1

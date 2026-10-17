@@ -260,6 +260,37 @@ struct CleanupRunnerManagerTests {
         #expect(await manager.executeCleanupIntent(intent) == .waiting)
     }
 
+    @Test("An abandonment cannot cancel a job its failed-but-retryable origin row kept")
+    func failedOriginKeepsItsJob() async throws {
+        let directory = try makeDirectory("failed-origin")
+        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+        let store = DownloadStore(baseDirectory: directory)
+        let key = DownloadAttemptKey(
+            ratingKey: "emby:kept", attemptID: DownloadAttemptID(uuid: UUID()))
+        var metadata = crashWindowMetadata(ratingKey: key.ratingKey)
+        metadata.clearEmbyConvertRecoveryIdentity()
+        metadata.adoptEmbyConvertJobID(42)
+        let record = DownloadRecord(
+            ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Convert",
+            localURL: store.destinationURL(ratingKey: key.ratingKey, ext: "mp4"),
+            status: .failed, metadata: metadata)
+        #expect(store.createAttemptOwnedRecord(record, attemptID: key.attemptID) == .committed(key))
+        let (manager, _, session) = makeManager(store: store, directory: directory)
+        defer { session.invalidateInjectedSessionForTesting() }
+        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        signInEmby(manager.appModel)
+        // The duplicate-job abandonment write looked failed, so the row kept polling, then
+        // parked as failed with its job preserved for Retry. The visible entry must not run.
+        let server = try #require(DurableDownloadCleanupIntent.ServerIdentity(
+            baseURL: URL(string: "https://emby.example")!, serverID: "server-1", userID: "user-1"))
+        let intent = try #require(DurableDownloadCleanupIntent(
+            attemptKey: key, backend: .emby, server: server,
+            operation: .embyConvert(.knownJob(jobID: 42)),
+            provenance: .abandonment(originAttempt: key)))
+
+        #expect(await manager.executeCleanupIntent(intent) == .waiting)
+    }
+
     @Test("Ownership claims are scoped to the persisted server and user")
     func claimsAreServerAndUserScoped() throws {
         let server = try #require(DurableDownloadCleanupIntent.ServerIdentity(

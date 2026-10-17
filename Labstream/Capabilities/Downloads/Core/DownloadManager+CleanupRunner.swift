@@ -49,6 +49,7 @@ extension DownloadManager {
     func makeCleanupRunnerDependencies() -> DownloadCleanupIntentRunner.Dependencies {
         let journal = cleanupIntentJournal
         return DownloadCleanupIntentRunner.Dependencies(
+            runBarriers: { [weak self] in self?.runCleanupBarriers() ?? true },
             load: { journal.load() },
             replace: { journal.replace($0) },
             rowState: { [weak self] intent in self?.cleanupRowState(for: intent) ?? .unknown },
@@ -89,6 +90,10 @@ extension DownloadManager {
         if case .loaded(let tombstones) = store.loadEmbyConvertCleanupTombstones(),
            !tombstones.isEmpty {
             backends.insert(.emby)
+        }
+        // Legacy quarantined Plex intents are imported by the sweep that runs after hydration.
+        if cleanupIntentJournal.hasLegacyQuarantineFiles() {
+            backends.insert(.plex)
         }
         return backends
     }
@@ -153,17 +158,25 @@ extension DownloadManager {
     /// intents behind an unfinished barrier stay blocked meanwhile.
     func prepareCleanupRunnerIfNeeded() {
         guard startupRecoveryState == .ready else { return }
-        migrateLegacyEmbyCleanupTombstones()
+        _ = runCleanupBarriers()
+        cleanupRunner?.enable()
+    }
+
+    /// Migrate legacy tombstones and import legacy quarantined Plex intents. Idempotent and
+    /// cheap when there is nothing left; the runner calls it before every pass so a transient
+    /// failure retries on the runner's own timer. Returns true once both barriers are complete.
+    func runCleanupBarriers() -> Bool {
+        let tombstonesDone = migrateLegacyEmbyCleanupTombstones()
         legacyCleanupImport = cleanupIntentJournal.importLegacyQuarantinedPlexIntents()
-        if legacyCleanupImport.importedCount > 0 || legacyCleanupImport.blocksAllPlex
-            || !legacyCleanupImport.blockedIDs.isEmpty {
+        let importDone = !legacyCleanupImport.blocksAllPlex && legacyCleanupImport.blockedIDs.isEmpty
+        if legacyCleanupImport.importedCount > 0 || !importDone {
             recordDownloadDiagnostic("downloads.cleanup_legacy_plex_import", fields: [
                 "imported": .int(legacyCleanupImport.importedCount),
                 "blocked": .int(legacyCleanupImport.blockedIDs.count),
                 "blocks_all": .bool(legacyCleanupImport.blocksAllPlex),
             ])
         }
-        cleanupRunner?.enable()
+        return tombstonesDone && importDone
     }
 
     /// P2.5: each legacy tombstone becomes an `ambiguousCreate` abandonment intent with the
@@ -171,9 +184,13 @@ extension DownloadManager {
     /// is durable the runner skips the intent (`cleanupIntentIsBlocked`), so a retained tombstone
     /// can never recreate an intent that already drained. Tombstones that cannot be converted are
     /// kept as evidence; an unreadable tombstone file is left untouched.
-    func migrateLegacyEmbyCleanupTombstones() {
-        guard case .loaded(let tombstones) = store.loadEmbyConvertCleanupTombstones(),
-              !tombstones.isEmpty else { return }
+    /// Returns true when no convertible tombstone remains (an unreadable file is not done).
+    @discardableResult
+    func migrateLegacyEmbyCleanupTombstones() -> Bool {
+        guard case .loaded(let tombstones) = store.loadEmbyConvertCleanupTombstones() else {
+            return false
+        }
+        guard !tombstones.isEmpty else { return true }
         var migrated = 0
         var unconvertible = 0
         for tombstone in tombstones {
@@ -193,6 +210,8 @@ extension DownloadManager {
             "unconvertible": .int(unconvertible),
             "remaining": .int(tombstones.count - migrated),
         ])
+        // Unconvertible tombstones stay as evidence and are not retried.
+        return migrated + unconvertible == tombstones.count
     }
 
     nonisolated static func legacyTombstoneIntent(
@@ -290,9 +309,14 @@ extension DownloadManager {
     }
 
     /// Rows that may still claim the intent's server resource, read at the moment of the call:
-    /// rows on the same persisted server and user, not being deleted. The intent's own attempt
-    /// counts only while its row is still active work — so an abandonment whose journal write
-    /// looked failed to its producer (which then kept the resource) can never cancel it.
+    /// rows on the same persisted server and user, not being deleted.
+    ///
+    /// For an abandonment the origin row claims too, by the same persisted reference. Producers
+    /// hand authority over by clearing their own reference only after the intent commits, so a
+    /// write that looked failed (the producer kept the resource, and may later park the row as
+    /// failed-but-retryable) leaves the reference in place and the intent waits. Row status cannot
+    /// prove a handoff; the reference can. A terminal release or deletion never counts its own
+    /// row: releasing that row's handle is the intent's purpose.
     private func claimingRecords(for intent: DurableDownloadCleanupIntent) -> [DownloadRecord] {
         store.records.filter { record in
             guard let attemptID = record.attemptID,
@@ -302,8 +326,8 @@ extension DownloadManager {
             let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
             guard !store.isDeletionPending(for: key) else { return false }
             if key == intent.attemptKey {
-                return !(record.status == .complete || record.status == .failed
-                    || record.status == .unverified)
+                if case .abandonment = intent.provenance { return true }
+                return false
             }
             return true
         }
@@ -496,14 +520,15 @@ extension DownloadManager {
     }
 
     private func plexClaimedTitles(for intent: DurableDownloadCleanupIntent) -> Set<String> {
-        // Prep attempts register their title before any row exists; the intent's own attempt is
-        // only excluded once its row is gone or terminal (the same rule as `claimingRecords`).
-        let ownRowActive = claimingRecords(for: intent).contains {
-            $0.ratingKey == intent.attemptKey.ratingKey && $0.attemptID == intent.attemptKey.attemptID
+        // Prep attempts register their title before a row exists. The intent's own registration
+        // counts on the same terms as its row in `claimingRecords`.
+        let ownRegistrationClaims: Bool
+        if case .abandonment = intent.provenance { ownRegistrationClaims = true } else {
+            ownRegistrationClaims = false
         }
         return Set(claimingRecords(for: intent).compactMap { $0.metadata?.optimizeQueueTitle })
             .union(serverPrepAttempts.protectedQueueTitles(
-                excluding: ownRowActive ? [] : [intent.attemptKey]))
+                excluding: ownRegistrationClaims ? [] : [intent.attemptKey]))
     }
 
     private func executePlexOptimizeCleanup(
