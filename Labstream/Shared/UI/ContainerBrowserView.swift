@@ -26,6 +26,8 @@ struct ContainerBrowserView: View {
     @State private var collectionPaging = LibraryPagingModel()
     #if !os(tvOS)
     @State private var showingSeasonDownloadPlanner = false
+    /// B70: the backend the season planner was opened for, captured at the tap.
+    @State private var seasonDownloadPlannerBackend: DownloadBackendKind = .plex
     #endif
 
     private var columns: [GridItem] {
@@ -81,13 +83,14 @@ struct ContainerBrowserView: View {
             ) {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Download Season", systemImage: "arrow.down.circle") {
+                        seasonDownloadPlannerBackend = appModel.activeBackend
                         showingSeasonDownloadPlanner = true
                     }
                 }
             }
         }
         .sheet(isPresented: $showingSeasonDownloadPlanner) {
-            SeasonDownloadPlannerSheet(season: container)
+            SeasonDownloadPlannerSheet(season: container, backend: seasonDownloadPlannerBackend)
         }
         #endif
         .id(container.ratingKey)
