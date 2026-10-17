@@ -579,6 +579,19 @@ Acceptance is a phase's pins and inventory rows staying green.
     - store: an unmoved condemned body is not a checkpoint and does not seed a Retry.
   - **Still open:** a session-level pin with a blocked writer (the sequencing is covered at the
     store and reducer levels).
+- **2026-10-17 — P3a after-review, round 7: not ready, 2 P2s and 1 P3.** Round 6's ordering
+  (rename before any wait) and its bounded deletion retries were confirmed. Both P2s required
+  the rename and the in-place delete to fail together.
+  - **Same-attempt readers bypassed the fence.** The fence now sits at the single choke point:
+    `workingRelativePath(for:key:)` returns nil for a condemned row. Checkpoint sizing,
+    checkpoint reset and write, durable-partial evidence, recovery finalization and validated
+    promotion all go through it and see no body. Only condemnation itself uses the unchecked
+    path. A condemned attempt's Retry ignores a surviving resume blob and takes the replacement
+    path from zero.
+  - **Rejected `bodyAtWorking` no longer continues.** Only a published body under revalidation
+    may proceed without entering finalizing. Any other rejection stops before probing or
+    publication (`downloads.finalize_refused`).
+  - **The downgrade loss** of the fence is now stated next to the strike and reason loss.
 
 ## P2 detailed plan — cleanup foundation
 
@@ -882,8 +895,10 @@ optional on decode.
 - A row without them is a legacy row. Its lifecycle is derived from `status` plus facts by the
   same reducer rule, `relaunchObserved`, the first time the store loads it after an upgrade.
 - An older binary that re-encodes the row drops both fields. The next newer load re-derives
-  them. Strikes and reasons lost that way restart; this is a stated, bounded downgrade loss, and
-  the B54 containment still keeps published bodies.
+  them. Strikes, reasons and a `bodyCondemned` fence lost that way restart; this is a stated,
+  bounded downgrade loss, and the B54 containment still keeps published bodies. A lost fence
+  matters only if both the rename and the in-place delete of that body failed, and older
+  binaries never had the fence.
 - `status` is still written, derived from lifecycle, so older binaries and diagnostics read a
   consistent value.
 - **(R2-3) Rollback compatibility.** P1/P2 binaries must keep working on a P3a index.
