@@ -43,6 +43,44 @@ struct DownloadOptionsModel {
         let sizing: Sizing
     }
 
+    /// Both sheet wrappers read the same live row published for the library. A disappearing or
+    /// overtaken snapshot falls back only to the captured record, never to another attempt.
+    static func existingRow(_ record: DownloadRecord,
+                            library: OfflineLibrarySnapshot = .empty) -> OfflineDownloadRowSnapshot {
+        if let live = library.rows.first(where: {
+            $0.actionIdentity == OfflineDownloadRowActionIdentity(ratingKey: record.ratingKey,
+                                                                  attemptID: record.attemptID)
+        }) { return live }
+        return OfflineLibrarySnapshotBuilder.make(records: [record], isQueuePaused: false,
+            downloadSpeed: [:], errorMessage: { _ in nil },
+            displayProgress: { $0.progress > 0 ? $0.progress : nil },
+            statusCaption: { row, _ in
+                DownloadRowStatusCaptionPolicy.admissionWaitingCaption(
+                    lifecycle: row.lifecycle, intent: row.admissionIntent,
+                    isQueuePaused: false, isExempt: false)
+                ?? DownloadRowStatusCaptionPolicy.caption(.init(record: row, displayFraction: nil,
+                    isActive: row.lifecycle == .serverPrep || row.lifecycle == .finalizing,
+                    isBackendConfigured: true, isTranscodeLimited: false,
+                    serverPrepState: nil, serverPrepProgress: nil, serverPrepETA: nil,
+                    downloadETA: nil, downloadSpeedBytesPerSecond: nil, isRetrying: false,
+                    failureCaption: nil))
+            }, isRetrying: { _ in false }).rows[0]
+    }
+
+    struct RemovalConfirmation {
+        let identity: OfflineDownloadRowActionIdentity
+        let title: String
+        let actionTitle: String
+        let message: String
+        init(record: DownloadRecord) {
+            identity = .init(ratingKey: record.ratingKey, attemptID: record.attemptID)
+            title = record.isComplete ? "Remove downloaded file?" : "Cancel this download?"
+            actionTitle = record.isComplete ? "Remove Download" : "Cancel Download"
+            message = DownloadRemovalMessage.message(cancelsServerPrep:
+                DownloadDeletePolicy.deletionCancelsServerPrep(record))
+        }
+    }
+
     var probeState: ProbeState = .checking
     var selection: Selection?
 

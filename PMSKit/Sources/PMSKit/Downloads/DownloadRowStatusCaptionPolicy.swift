@@ -8,6 +8,7 @@ import Foundation
 /// UI snapshot builder to duplicate phase-specific wording.
 public enum DownloadRowStatusCaptionPolicy {
     public struct Context: Sendable, Equatable {
+        public let lifecycle: DownloadLifecycle?
         public let status: DownloadStatus
         public let progress: Double
         public let bytes: Int
@@ -52,7 +53,9 @@ public enum DownloadRowStatusCaptionPolicy {
                     downloadSpeedBytesPerSecond: Double?,
                     hasServerPrepQueueTitle: Bool,
                     isRetrying: Bool,
-                    failureCaption: String?) {
+                    failureCaption: String?,
+                    lifecycle: DownloadLifecycle? = nil) {
+            self.lifecycle = lifecycle
             self.status = status
             self.progress = progress
             self.bytes = bytes
@@ -114,7 +117,8 @@ public enum DownloadRowStatusCaptionPolicy {
                       downloadSpeedBytesPerSecond: downloadSpeedBytesPerSecond,
                       hasServerPrepQueueTitle: record.metadata?.optimizeQueueTitle?.isEmpty == false,
                       isRetrying: isRetrying,
-                      failureCaption: failureCaption)
+                      failureCaption: failureCaption,
+                      lifecycle: record.lifecycle)
         }
     }
 
@@ -136,6 +140,7 @@ public enum DownloadRowStatusCaptionPolicy {
             break
         }
 
+        if context.lifecycle == .finalizing { return .transferFinalizing }
         if DownloadProgressDisplay.isTransferFinalizing(status: context.status,
                                                         progress: context.progress) {
             return .transferFinalizing
@@ -267,8 +272,8 @@ public enum DownloadRowStatusCaptionPolicy {
     private static func serverPrepProgressCaption(_ context: Context) -> String {
         let isServerPrep = context.resumeMode == .serverPrepThenStatic
         let prepHead = (isServerPrep || context.status == .preparing) ? "Preparing on server…" : "Transcoding"
-        guard let progress = context.serverPrepProgress else { return prepHead }
-        var caption = "\(prepHead) \(Int(progress * 100))%"
+        guard let progress = context.serverPrepProgress, progress.isFinite else { return prepHead }
+        var caption = "\(prepHead) \(Int(max(0, min(0.99, progress)) * 100))%"
         if let eta = context.serverPrepETA, eta > 0,
            let left = DownloadRowDisplayPolicy.timeLeftString(eta) {
             caption += " • ~\(left) left"

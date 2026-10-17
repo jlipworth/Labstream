@@ -786,3 +786,24 @@ extension DownloadManager {
         }.resolve(deadline: .after(30), timedOut: { false })
     }
 }
+
+
+extension DownloadManager {
+    /// Narrow read-only hook: use the same phase policy and live facts as publication, without
+    /// changing manager storage or inferring semantics from a localized caption string. This
+    /// reads published records only; rendering never enters the store or stats a file.
+    func rowPhase(for row: OfflineDownloadRowSnapshot) -> DownloadJobPhase? {
+        guard let record = records.first(where: {
+            $0.ratingKey == row.id && $0.attemptID == row.attemptID
+        }) else { return nil }
+        return DownloadRowStatusCaptionPolicy.phase(.init(record: record,
+            displayFraction: displayFraction(for: record),
+            isActive: activeJobs.contains(record.ratingKey) || record.status == .downloading,
+            isBackendConfigured: isBackendConfigured(for: record),
+            isTranscodeLimited: DownloadDisplayClassifier.isLiveTranscoderSourced(record),
+            serverPrepState: optimizeState[record.ratingKey],
+            serverPrepProgress: optimizeProgress[record.ratingKey], serverPrepETA: optimizeETA[record.ratingKey],
+            downloadETA: downloadETA[record.ratingKey], downloadSpeedBytesPerSecond: downloadSpeed[record.ratingKey],
+            isRetrying: row.isRetrying, failureCaption: row.errorMessage))
+    }
+}

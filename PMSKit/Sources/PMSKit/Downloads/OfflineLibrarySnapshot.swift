@@ -49,12 +49,15 @@ public struct OfflineDownloadRowSnapshot: Identifiable, Sendable, Equatable {
     public let subtitle: String?
     public let qualityText: String?
     public let status: DownloadStatus
+    public let lifecycle: DownloadLifecycle
+    public let isWaitingForAdmission: Bool
     public let routeBadge: DownloadRowDisplayPolicy.RouteBadge
     public let artwork: OfflineArtworkPresentation?
     public let showBackendBadge: Bool
     public let backendName: String
     public let errorMessage: String?
     public let displayProgress: Double?
+    public let progressIsEstimated: Bool
     public let statusCaption: String
     public let isRetrying: Bool
 
@@ -71,22 +74,30 @@ public struct OfflineDownloadRowSnapshot: Identifiable, Sendable, Equatable {
                 errorMessage: String?,
                 displayProgress: Double?,
                 statusCaption: String,
-                isRetrying: Bool) {
+                isRetrying: Bool,
+                lifecycle: DownloadLifecycle? = nil,
+                isWaitingForAdmission: Bool = false,
+                progressIsEstimated: Bool = false) {
         self.id = id
         self.attemptID = attemptID
         self.title = title
         self.subtitle = subtitle
         self.qualityText = qualityText
         self.status = status
+        self.lifecycle = lifecycle ?? .structural(from: status, admissionPending: false, finalizingEvidence: false)
+        self.isWaitingForAdmission = isWaitingForAdmission
         self.routeBadge = routeBadge
         self.artwork = artwork
         self.showBackendBadge = showBackendBadge
         self.backendName = backendName
         self.errorMessage = errorMessage
         self.displayProgress = displayProgress
+        self.progressIsEstimated = progressIsEstimated
         self.statusCaption = statusCaption
         self.isRetrying = isRetrying
     }
+
+    public var presentation: DownloadRowPresentation { DownloadRowPresentation(row: self) }
 
     public var isComplete: Bool { status == .complete || status == .unverified }
     public var isUnverified: Bool { status == .unverified }

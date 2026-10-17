@@ -356,6 +356,42 @@ Acceptance is a phase's pins and inventory rows staying green.
 
 ## Progress journal
 
+- **2026-10-17 — P7.4 shared rows and library launch lane.** Library, iOS/visionOS
+  current-download sections and native Mac sections now consume the same row presentation and
+  `DownloadRowContent`; selection options share title/detail/accessory geometry. Route/context
+  styling is neutral, verified completion is green, caution amber, and failures/destructive controls
+  red. Waiting/paused remain neutral; waiting has a clock, zero server progress is indeterminate,
+  verification and server indexing retain distinct captions. Context/status/quality lines are
+  single-line with full accessibility values and an expandable full error reason. Media/extras,
+  saved quality, exact/estimated progress and preterminal 99% remain distinct. Sheet controls and
+  confirmations capture exact identities; shared D2 copy explains supported unfinished server-prep
+  cancellation and finished-version retention. Pins **12 and 13** were reproduced red and unwrapped
+  green in this lane's surface-adapter tests.
+
+  Library production presentation now accepts an injected `OfflinePlaybackLaunchFactory` and
+  renders only its immutable launch. Admission follows orientation, and a separate surface
+  generation fences both orientation and factory suspension. Owned unwrapped tests cover the
+  library halves of **06/orientation**, superseded requests, exact identity, rewind-once and
+  captured sink progress. No factory/sink/player/manager/Detail/lead-test files were edited.
+  **P7.6 integration seam:** replace the marked Debug default with
+  `return manager.offlinePlaybackLaunchFactory`, pass `launch.events` through the lead's player
+  sink parameter, and remove the temporary progress/close adapter. The lead-owned P7.1 fixtures
+  still call Debug-only legacy library adapters; migrate those fixtures, split/remove their library
+  known-issue wrappers, then remove these adapters. This preserves the lead's red pins while the
+  independent branch tests its injected production path. Pin **15** remains wrapped for P7.7.
+  This isolated Debug branch deliberately has a rejecting default factory until the lead's
+  concrete accessor is joined; it is not a release build or integrated playback acceptance.
+
+  Hermetic PMSKit passed **1,627 tests** with two retained lead-lane known issues. Two serialized
+  full Mac hosted runs passed **940 test functions each** (**874 Swift Testing + 66 XCTest**),
+  with **23 expected known issues**, no unexpected failures and no skips. Runs used the normal
+  matrix manifest plus a worktree-local copy adding `-parallel-testing-enabled NO`, under the
+  exclusive Xcode lock; one run rebuilt clean DerivedData. Final hygiene passed **386 tooling
+  tests**, public redaction, strict MkDocs, rendered links and Mermaid checks.
+  Live servers, interactive narrow-window/Dynamic Type/VoiceOver acceptance, actual decoded
+  playback, device orientation and headset/background gates remain with P7.6/TestFlight.
+  No simulator, push, PR, merge, release upload or version change was performed.
+
 - **2026-10-17 — P7.3 MediaBrowser lane.** Added one first-container-token policy,
   one injected PlaybackInfo transport/decode/verdict boundary and one backend/exact-attempt
   keepalive lifecycle. Selected source/audio remain authoritative; owning-session checks fence

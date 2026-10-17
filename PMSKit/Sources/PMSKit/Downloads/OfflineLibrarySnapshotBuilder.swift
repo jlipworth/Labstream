@@ -55,7 +55,11 @@ public enum OfflineLibrarySnapshotBuilder {
                 errorMessage: errorMessage(record),
                 displayProgress: displayProgress(record),
                 statusCaption: statusCaption(record, backend),
-                isRetrying: isRetrying(record.ratingKey)
+                isRetrying: isRetrying(record.ratingKey),
+                lifecycle: record.lifecycle,
+                isWaitingForAdmission: record.lifecycle == .planned || record.admissionIntent != nil,
+                progressIsEstimated: DownloadDisplayClassifier.isLiveTranscoderSourced(record)
+                    && record.progress <= 0 && record.bytes > 0
             )
         }
 
