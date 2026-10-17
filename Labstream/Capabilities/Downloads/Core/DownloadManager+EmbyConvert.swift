@@ -428,14 +428,36 @@ extension DownloadManager {
         }
 
         // Persist the job id so a relaunch resumes polling (not restarts) and a row delete can
-        // cancel the server-side job (`DELETE /Sync/Jobs/{id}`). If the user deleted/cancelled the
-        // row while `POST /Sync/Jobs` was in flight, do NOT upsert it back into existence; cancel the
-        // server job best-effort and leave the row gone.
+        // cancel the server-side job (`DELETE /Sync/Jobs/{id}`). If the user deleted the row, or a
+        // new attempt replaced it, while `POST /Sync/Jobs` was in flight, do NOT upsert it back into
+        // existence; cancel the server job best-effort and leave the row gone. B47: a row that was
+        // only PAUSED is still ours. Cancelling there left it with a dispatchAmbiguous identity that
+        // Resume could never match, so adopt the job onto the parked row instead.
         guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
                                           targetName: targetName) else {
             recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "post_create", jobId: job.id)
-            cancelEmbyConvertJob(jobId: job.id, ratingKey: ratingKey,
-                                 server: server, token: token, identity: identity)
+            let ownedRow = store.ownsAttempt(storeAttemptKey) ? store.record(for: storeAttemptKey) : nil
+            switch EmbyConvertRecoveryPolicy.staleCreateDisposition(
+                rowOwnedByAttempt: ownedRow?.metadata?.optimizeTargetName == targetName,
+                rowStatus: ownedRow?.status,
+                persistedJobID: ownedRow?.metadata?.embyConvertJobID,
+                createdJobID: job.id) {
+            case .adoptOntoParkedRow:
+                // On a persistence failure the job is still NOT cancelled: the row keeps its
+                // dispatchAmbiguous identity and recovery can match this exact new job on Resume.
+                if adoptEmbyConvertJobOntoParkedRow(jobId: job.id, targetName: targetName,
+                                                    for: storeAttemptKey) {
+                    recordDownloadDiagnostic("downloads.convert_job_adopted_parked", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "job_id": .int(job.id),
+                    ])
+                }
+            case .leaveToCurrentOwner:
+                break
+            case .cancel:
+                cancelEmbyConvertJob(jobId: job.id, ratingKey: ratingKey,
+                                     server: server, token: token, identity: identity)
+            }
             refreshRecords()
             return
         }
@@ -821,6 +843,24 @@ extension DownloadManager {
             guard metadata.embyConvertJobID == expectedJobID else { return }
             matched = true
             metadata.embyConvertJobID = nil
+        }
+        switch result {
+        case .applied: return true
+        case .noChange: return matched
+        case .staleOrMissing, .persistenceFailed: return false
+        }
+    }
+
+    /// B47: persist a just-created job id onto the exact parked (paused/failed) row that dispatched
+    /// it, leaving its status alone, so Resume polls this job instead of re-entering recovery.
+    private func adoptEmbyConvertJobOntoParkedRow(jobId: Int, targetName: String,
+                                                  for key: DownloadAttemptKey) -> Bool {
+        var matched = false
+        let result = store.updateMetadata(for: key) { metadata in
+            guard metadata.embyConvertJobID == nil,
+                  metadata.optimizeTargetName == targetName else { return }
+            matched = true
+            metadata.adoptEmbyConvertJobID(jobId)
         }
         switch result {
         case .applied: return true

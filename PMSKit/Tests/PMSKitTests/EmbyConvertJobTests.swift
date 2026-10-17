@@ -221,6 +221,36 @@ struct EmbyConvertJobTests {
             fingerprintUserID: dashed))
     }
 
+    // B47: pausing while POST /Sync/Jobs was in flight cancelled the new job, but the paused row kept
+    // its dispatchAmbiguous identity, so resume found zero matches and failed. A row this attempt
+    // still owns adopts the job; only a deleted or replaced row cancels it.
+    @Test("post-create on a stale attempt adopts onto a parked owned row and cancels only orphans")
+    func postCreateStaleDisposition() {
+        typealias Policy = EmbyConvertRecoveryPolicy
+        // Paused (or failed) row still owned by this attempt, no job yet → adopt, keep it parked.
+        #expect(Policy.staleCreateDisposition(rowOwnedByAttempt: true, rowStatus: .paused,
+                                              persistedJobID: nil, createdJobID: 7) == .adoptOntoParkedRow)
+        #expect(Policy.staleCreateDisposition(rowOwnedByAttempt: true, rowStatus: .failed,
+                                              persistedJobID: nil, createdJobID: 7) == .adoptOntoParkedRow)
+        // Deleted or replaced → nothing owns the job: cancel it.
+        #expect(Policy.staleCreateDisposition(rowOwnedByAttempt: false, rowStatus: nil,
+                                              persistedJobID: nil, createdJobID: 7) == .cancel)
+        #expect(Policy.staleCreateDisposition(rowOwnedByAttempt: false, rowStatus: .preparing,
+                                              persistedJobID: nil, createdJobID: 7) == .cancel)
+        // Pause then resume re-entered recovery under a newer server-prep attempt: that chain owns
+        // the evidence and will adopt the job itself. Never cancel or race it.
+        #expect(Policy.staleCreateDisposition(rowOwnedByAttempt: true, rowStatus: .preparing,
+                                              persistedJobID: nil, createdJobID: 7) == .leaveToCurrentOwner)
+        #expect(Policy.staleCreateDisposition(rowOwnedByAttempt: true, rowStatus: .paused,
+                                              persistedJobID: 7, createdJobID: 7) == .leaveToCurrentOwner)
+        // The owned row already holds a DIFFERENT job: ours is an orphan.
+        #expect(Policy.staleCreateDisposition(rowOwnedByAttempt: true, rowStatus: .paused,
+                                              persistedJobID: 9, createdJobID: 7) == .cancel)
+        // A completed row (or any other settled status) never adopts a server job.
+        #expect(Policy.staleCreateDisposition(rowOwnedByAttempt: true, rowStatus: .complete,
+                                              persistedJobID: nil, createdJobID: 7) == .cancel)
+    }
+
     @Test("cleanup queue preserves multiple attempt UUIDs for the same rating key")
     func cleanupTombstoneIDsAppendWithoutReplacement() {
         let first = UUID()
