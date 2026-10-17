@@ -68,11 +68,6 @@ extension DownloadStore {
         case observed(StartupIndexAdmission)
         case timedOut(epoch: UUID)
     }
-    enum LifecycleObservationResolution: Sendable, Equatable {
-        case observed(LifecycleEventSubmission)
-        case timedOut(epoch: UUID)
-    }
-    typealias LifecycleObservationSubmission = DownloadStoreWork<LifecycleEventSubmission>
     typealias ReconcileSubmission = DownloadStoreWork<PersistenceFlushResult>
 
     /// Every typed boundary keeps its original monotonic deadline. Expiry returns a typed timeout
@@ -185,20 +180,6 @@ extension DownloadStore {
         return .timedOut(epoch: submission.epoch)
     }
 
-    /// Disk-dependent observations run on a worker; Pause/Delete install their immediate fences
-    /// synchronously before using this adapter. P6.3 must compare the captured row generation
-    /// before applying facts; P6.2 must recheck authority after resolving the resulting commit.
-    func submitObservedLifecycleEvent(_ event: DownloadLifecycleEvent, for key: DownloadAttemptKey,
-                                      liveTask: Bool = false) -> LifecycleObservationSubmission {
-        DownloadStoreWork { self.submitLifecycleEvent(event, for: key, liveTask: liveTask) }
-    }
-
-    func resolve(_ submission: LifecycleObservationSubmission,
-                 deadline: DownloadStoreDeadline) async -> LifecycleObservationResolution {
-        if let result = await submission.observe(deadline: deadline) { return .observed(result) }
-        return .timedOut(epoch: submission.epoch)
-    }
-
     func submitReconcile(liveRatingKeys: Set<String>, snapshotRatingKeys: Set<String>) -> ReconcileSubmission {
         DownloadStoreWork {
             self.reconcileOnWorker(liveRatingKeys: liveRatingKeys, snapshotRatingKeys: snapshotRatingKeys)
@@ -229,18 +210,6 @@ extension DownloadStore {
     func setPlaySessionIDAsync(for key: DownloadAttemptKey, _ playSessionID: String) async -> AttemptMutationResult {
         guard !playSessionID.isEmpty else { return .noChange }
         return await updateMetadataAsync(for: key) { $0.playSessionID = playSessionID }
-    }
-
-    func setLocalPlaybackPositionAsync(for key: DownloadAttemptKey, positionMs: Int, durationMs: Int?) async -> AttemptMutationResult {
-        await updateMetadataAsync(for: key) { meta in
-            meta.localPlaybackPositionMs = OfflinePlaybackPositionPolicy.standard.persistedPositionMs(
-                currentMs: positionMs, durationMs: durationMs ?? meta.duration)
-        }
-    }
-
-    func markCompleteIfUnverifiedAsync(for key: DownloadAttemptKey) async -> AttemptUnverifiedPromotionResult {
-        await DownloadStoreWork { self.markCompleteIfUnverifiedOnWorker(for: key) }.resolve(
-            deadline: .after(30), timedOut: { .persistenceFailed(self.timeoutFailure(self.currentPersistenceTicket())) })
     }
 
 }

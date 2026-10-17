@@ -1744,12 +1744,6 @@ final class DownloadStore: @unchecked Sendable {
         baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).sub-\(streamID).\(Self.safeSubtitleExtension(ext))")
     }
 
-    /// #95: on-disk destination for a ratingKey's persisted URLSession resume blob, kept as a
-    /// sibling of the media file so the relative-path convention and `remove` cleanup apply.
-    func resumeDataDestinationURL(ratingKey: String) -> URL {
-        baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).resume")
-    }
-
     /// Durable home for an out-of-order static Range body. A UUID prevents a replacement body
     /// from aliasing the manifest/file still visible to a concurrent drain.
     func heldRangeSegmentDestinationURL(ratingKey: String, offset: Int) -> URL {

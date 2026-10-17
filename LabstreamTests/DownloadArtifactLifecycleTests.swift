@@ -566,14 +566,6 @@ struct DownloadArtifactLifecycleTests {
         try await body(directory)
     }
 
-    private func withDirectorySync(_ body: (URL) throws -> Void) throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("artifact-lifecycle-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try body(directory)
-    }
-
     private func resumeKey() throws -> DownloadAttemptKey {
         DownloadAttemptKey(
             ratingKey: "plex:resume-compose",
