@@ -94,6 +94,15 @@ final class BackgroundDownloadWakeCoordinator: @unchecked Sendable {
         return drain
     }
 
+    func finishAllAwaitingEvents() -> Drain {
+        lock.lock()
+        let wasPending = completionGate.hasPendingHandler
+        let batches = completionGate.finishAllAwaitingEvents()
+        let drain = drainLocked(wasPending: wasPending, batches: batches)
+        lock.unlock()
+        return drain
+    }
+
     func abortAwaitingHandlers() -> Drain {
         lock.lock()
         let wasPending = completionGate.hasPendingHandler
