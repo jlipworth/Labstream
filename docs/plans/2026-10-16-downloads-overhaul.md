@@ -1346,6 +1346,29 @@ amended as follows.
    - **Existing paths:** deletion execution and recovery of committed promotions keep their
      dedicated authority checks.
 
+### P3b revision 10 (2026-10-17): rescue only by completion
+
+Round 7 confirmed that revision 9 resolves round 6. It found one P2: while the pass awaits a
+Delete, a refresh with the queue paused can park an unprocessed static candidate as paused, and
+reclassification would then keep it.
+
+- **Rescue rule.** The candidate set is fixed when the pass starts. At a candidate's turn, it is
+  kept only if transport has since **completed** it, meaning it is now complete or unverified.
+  Any other change, including a pause applied during the pass, does not rescue it: the
+  candidate is deleted. This makes reclassification independent of refresh, so refresh needs no
+  extra fence.
+- **Startup state.** `startupRecoveryInFlight` stays true through the pass, the notice and the
+  stamp. Its success-path clear moves after the await, so Retry Recovery and the transient
+  retry cannot start a second activation. `.alreadyPurging` remains a coalesced wait and never
+  launches a second pass.
+- **Accepted interruption.** Background finish-events may release the OS handler and interrupt
+  the pass. The v4 redo, together with barrier and capsule recovery, makes that safe.
+- **Additional tests:**
+  - a paused-queue startup with an unprocessed transferring static checkpoint, which must be
+    deleted, not kept;
+  - season A→B replacement;
+  - retry-after-removal.
+
 ### P3b.1 Probe
 
 `currentSchemaVersion = 5`, with a new `.migratable(from: 4)` probe case.
