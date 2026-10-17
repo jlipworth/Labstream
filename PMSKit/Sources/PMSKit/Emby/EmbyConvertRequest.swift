@@ -424,6 +424,42 @@ public enum EmbyConvertRecoveryPolicy {
         return .preserveForRecovery
     }
 
+    /// What a convert chain does with the job its create POST returned once that chain is no longer
+    /// the current attempt (B47).
+    public enum StaleCreateDisposition: Equatable, Sendable {
+        /// The row this attempt created is still there but parked (paused/failed) with no job id:
+        /// persist the job id onto it, keep it parked, so Resume polls that exact job.
+        case adoptOntoParkedRow
+        /// The row is owned and either already holds this job, or a newer server-prep chain (e.g.
+        /// pause → resume re-entering crash-window recovery) owns the dispatch evidence and will
+        /// adopt the job itself. Do nothing, so neither chain cancels or races the other.
+        case leaveToCurrentOwner
+        /// Nothing owns the job (row deleted or replaced, or it holds a different job): cancel it.
+        case cancel
+    }
+
+    /// Decide the post-create disposition for a stale convert chain. `rowOwnedByAttempt` is true
+    /// when the store row still belongs to the exact attempt that dispatched POST, is not pending
+    /// deletion, and still carries this preset. Pausing during POST used to cancel the new job while
+    /// the paused row kept its dispatchAmbiguous identity, so Resume found zero matches and failed.
+    public static func staleCreateDisposition(rowOwnedByAttempt: Bool,
+                                              rowStatus: DownloadStatus?,
+                                              persistedJobID: Int?,
+                                              createdJobID: Int) -> StaleCreateDisposition {
+        guard rowOwnedByAttempt, let rowStatus else { return .cancel }
+        if let persistedJobID {
+            return persistedJobID == createdJobID ? .leaveToCurrentOwner : .cancel
+        }
+        switch rowStatus {
+        case .paused, .failed:
+            return .adoptOntoParkedRow
+        case .preparing:
+            return .leaveToCurrentOwner
+        case .queued, .downloading, .complete, .unverified:
+            return .cancel
+        }
+    }
+
     /// Recovery/cancellation must run under the same public Emby user that created the job. The
     /// Sync-list `UserId` is an incomparable internal integer, so ownership is enforced against the
     /// two public ids we control and persist locally instead.
