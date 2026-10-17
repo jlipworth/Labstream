@@ -278,6 +278,77 @@ struct DownloadLifecycleStoreTests {
         }
     }
 
+    @Test("A truncated body is deleted only after its verdict commits and never seeds a Retry")
+    func condemnedTruncatedBodyNeedsCommitAndIsNeverInherited() async throws {
+        try await withAsyncDirectory { directory in
+            final class SwitchableWriter: @unchecked Sendable {
+                var failing = false
+            }
+            let writer = SwitchableWriter()
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init(atomicWrite: { data, url in
+                    if writer.failing { throw CocoaError(.fileWriteOutOfSpace) }
+                    try data.write(to: url, options: .atomic)
+                }))
+            var metadata = profiled("1080p")
+            metadata.resumeMode = .staticByteRange
+            let key = try seed("plex:strike", status: .downloading, metadata: metadata, in: store)
+            let body = try #require(store.attemptWorkingFileURL(for: key))
+            try Data(repeating: 4, count: 8_192).write(to: body)
+            _ = store.submitLifecycleEvent(.bodyAtWorking, for: key,
+                                           facts: DownloadRowFacts(route: .staticRange))
+            let source = try #require(store.truncationSourceKey(for: key))
+
+            // The verdict cannot persist: the condemned body is kept.
+            writer.failing = true
+            guard case .accepted(_, let ticket) = store.submitLifecycleEvent(
+                .finalizeOutcome(id: "t#body-8192", outcome: .truncated, source: source),
+                for: key) else {
+                Issue.record("Expected the truncation verdict to apply"); return
+            }
+            #expect(store.lifecycleState(for: key)?.history.lastFailure == .truncated)
+            #expect(await !store.deleteCondemnedWorkingBody(
+                at: body, for: key, afterCommitOf: ticket, timeout: 1))
+            #expect(FileManager.default.fileExists(atPath: body.path))
+
+            // Retry never inherits the condemned body as a checkpoint.
+            writer.failing = false
+            let retry = DownloadAttemptKey(ratingKey: key.ratingKey,
+                                           attemptID: DownloadAttemptID(uuid: UUID()))
+            #expect(store.createAttemptOwnedRecord(
+                record(retry, metadata: metadata), attemptID: retry.attemptID,
+                replacing: key.attemptID) == .committed(retry))
+            #expect(store.record(for: retry)?.bytes == 0)
+            let retryBody = try #require(store.attemptWorkingFileURL(for: retry))
+            #expect(!FileManager.default.fileExists(atPath: retryBody.path))
+            #expect(store.truncationStrikes(for: retry) == 1, "the strike itself is inherited")
+        }
+    }
+
+    @Test("A committed truncation verdict deletes exactly the condemned body")
+    func committedTruncationDeletesTheCondemnedBody() async throws {
+        try await withAsyncDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let key = try seed("plex:strike", status: .downloading, metadata: profiled("1080p"),
+                               in: store)
+            let body = try #require(store.attemptWorkingFileURL(for: key))
+            try Data(repeating: 4, count: 4_096).write(to: body)
+            _ = store.submitLifecycleEvent(.bodyAtWorking, for: key,
+                                           facts: DownloadRowFacts(route: .staticRange))
+            let source = try #require(store.truncationSourceKey(for: key))
+            guard case .accepted(_, let ticket) = store.submitLifecycleEvent(
+                .finalizeOutcome(id: "t#body-4096", outcome: .truncated, source: source),
+                for: key) else {
+                Issue.record("Expected the truncation verdict to apply"); return
+            }
+            // No ticket is no evidence.
+            #expect(await !store.deleteCondemnedWorkingBody(at: body, for: key, afterCommitOf: nil))
+            #expect(await store.deleteCondemnedWorkingBody(at: body, for: key, afterCommitOf: ticket))
+            #expect(!FileManager.default.fileExists(atPath: body.path))
+        }
+    }
+
     @Test("A Retry that removes the failed row first still inherits its strikes; Delete does not")
     func retryRemovalCarriesStrikes() throws {
         try withDirectory { directory in

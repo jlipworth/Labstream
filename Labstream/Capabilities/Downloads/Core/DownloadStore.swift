@@ -3270,8 +3270,11 @@ final class DownloadStore: @unchecked Sendable {
         // the old private body to the new private path before committing the new owner. The old
         // body remains until the new index snapshot is durable, so a failed/ambiguous commit is
         // safe for both the current process and relaunch.
+        // A body finalization condemned as truncated is never a checkpoint (P3a): Retry
+        // downloads again from zero even while that body's deletion waits for its commit.
         if existing?.attemptID != attemptID,
            let expectedPreviousOwner,
+           previous?.history.lastFailure != .truncated,
            previous?.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange,
            metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange,
            let previous,
@@ -5209,6 +5212,34 @@ final class DownloadStore: @unchecked Sendable {
     /// Relaunch/foreground recovery (P3a): each eligible row's facts go through the reducer's
     /// `relaunchObserved`. Lifecycle and byte accounting change under the lock; file deletions are
     /// durable decisions executed after it is released (st-41).
+    /// Delete a working body that a committed failure verdict condemned. The evidence is the
+    /// verdict's own persistence ticket: nothing is deleted unless that revision commits, the
+    /// attempt still owns the row, the row is still failed, and the file is the one condemned.
+    /// Otherwise the body stays; a truncated body is never inherited, and relaunch or the row's
+    /// Delete reclaims it.
+    @discardableResult
+    func deleteCondemnedWorkingBody(
+        at url: URL,
+        for key: DownloadAttemptKey,
+        afterCommitOf ticket: PersistenceTicket?,
+        timeout: TimeInterval = 30
+    ) async -> Bool {
+        let identity = condemnedFileIdentity(at: url)
+        guard let ticket, let identity else { return false }
+        guard case .committed(let revision) = await flushPersistence(
+            through: ticket, timeout: timeout), revision >= ticket.revision else { return false }
+        return lock.withLock {
+            guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
+                  row.lifecycle == .failed, row.pendingArtifactIntents.isEmpty,
+                  !row.deletionPending,
+                  workingRelativePath(for: row, key: key)
+                    .map({ baseDirectory.appendingPathComponent($0).standardizedFileURL })
+                    == url.standardizedFileURL,
+                  condemnedFileIdentity(at: url) == identity else { return false }
+            return (try? fileManager.removeItem(at: url)) != nil
+        }
+    }
+
     /// The identity of a file reconcile condemned: inode, size and modification time.
     struct CondemnedFileIdentity: Equatable {
         let fileNumber: UInt64
