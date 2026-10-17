@@ -37,8 +37,9 @@ private func fakeProbe(delays: [Duration], successes: Set<Int>,
     #expect(result?.index == 0)
     #expect(result?.value == 0)
     #expect(elapsed < .seconds(5))
-    // Every still-pending probe, including the slower relay, is cancelled.
-    #expect(await log.cancelled == [1, 2, 3])
+    // Every still-pending probe, including the slower relay, is cancelled. Losers wind down
+    // in the background, after the result has already been returned.
+    #expect(await eventually { await log.cancelled == [1, 2, 3] })
 }
 
 @Test func fasterLowerPreferenceSuccessWaitsForPendingPreferredCandidate() async {
@@ -118,4 +119,97 @@ private func gaugedProbe(delays: [Duration], successes: Set<Int>,
                     successes: [0, 4], gauge: gauge))
     #expect(result?.index == 0)
     #expect(await gauge.started == [0, 1])
+}
+
+/// Polls `condition` for up to two seconds.
+private func eventually(_ condition: @Sendable () async -> Bool) async -> Bool {
+    for _ in 0..<200 {
+        if await condition() { return true }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return await condition()
+}
+
+/// A probe that ignores cancellation, like a connection attempt the system keeps open
+/// until its own timeout: it always takes `delays[index]`.
+private func uncancellableProbe(delays: [Duration], successes: Set<Int>) -> @Sendable (Int) async -> Int? {
+    { index in
+        let nanoseconds = UInt64(delays[index].components.seconds) * 1_000_000_000
+            + UInt64(delays[index].components.attoseconds / 1_000_000_000)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(nanoseconds))) {
+                continuation.resume()
+            }
+        }
+        return successes.contains(index) ? index : nil
+    }
+}
+
+@Test func resultDoesNotWaitForLosersThatIgnoreCancellation() async {
+    // The preferred candidate answers at once; a lower-ranked one ignores cancellation and
+    // takes 3 s. The result must not wait for it to wind down.
+    let clock = ContinuousClock()
+    let start = clock.now
+    let result = await PreferredProbe.firstSuccess(
+        count: 2,
+        uncancellableProbe(delays: [.milliseconds(10), .seconds(3)], successes: [0]))
+    #expect(result?.index == 0)
+    #expect(clock.now - start < .seconds(1))
+}
+
+private let directOnly = PreferredProbe.EarlyAcceptance(grace: .milliseconds(100)) { $0 != 2 }
+
+@Test func graceAcceptsLowerRankedSuccessWhenPreferredCandidateHangs() async {
+    // The preferred (local) candidate is unroutable and hangs until its timeout; the remote
+    // one answers. After the grace, the remote one wins instead of waiting the full timeout.
+    let clock = ContinuousClock()
+    let start = clock.now
+    let result = await PreferredProbe.firstSuccess(
+        count: 2, earlyAcceptance: directOnly,
+        uncancellableProbe(delays: [.seconds(3), .milliseconds(10)], successes: [1]))
+    #expect(result?.index == 1)
+    #expect(clock.now - start < .seconds(1))
+}
+
+@Test func preferredCandidateAnsweringWithinGraceStillWins() async {
+    // The remote candidate answers first, but the preferred one answers inside the grace.
+    let result = await PreferredProbe.firstSuccess(
+        count: 2, earlyAcceptance: PreferredProbe.EarlyAcceptance(grace: .milliseconds(400)) { _ in true },
+        fakeProbe(delays: [.milliseconds(60), .milliseconds(5)], successes: [0, 1]))
+    #expect(result?.index == 0)
+}
+
+@Test func ineligibleSuccessNeverWinsEarly() async {
+    // Only a relay (index 2) has answered; relays may not win early, so the preferred
+    // candidate is awaited even though it answers well after the grace.
+    let result = await PreferredProbe.firstSuccess(
+        count: 3, earlyAcceptance: directOnly,
+        fakeProbe(delays: [.milliseconds(300), .milliseconds(5), .milliseconds(5)],
+                  successes: [0, 2]))
+    #expect(result?.index == 0)
+}
+
+@Test func graceElapsingPicksTheBestEligibleSuccessSoFar() async {
+    // Index 0 hangs; indices 2 and 1 answer in that order inside the grace. The best
+    // (lowest-ranked) eligible success wins, not the first to answer.
+    let early = PreferredProbe.EarlyAcceptance(grace: .milliseconds(150)) { _ in true }
+    let result = await PreferredProbe.firstSuccess(
+        count: 3, earlyAcceptance: early,
+        uncancellableProbe(delays: [.seconds(3), .milliseconds(40), .milliseconds(5)],
+                           successes: [1, 2]))
+    #expect(result?.index == 1)
+}
+
+@Test func callerCancellationReturnsNilAndCancelsProbes() async {
+    let log = CancellationLog()
+    let task = Task {
+        await PreferredProbe.firstSuccess(
+            count: 2,
+            fakeProbe(delays: [.seconds(30), .seconds(30)], successes: [0, 1], log: log))
+    }
+    try? await Task.sleep(for: .milliseconds(50))
+    task.cancel()
+    let result = await task.value
+    #expect(result == nil)
+    #expect(await eventually { await log.cancelled == [0, 1] })
 }
