@@ -291,6 +291,36 @@ struct CleanupRunnerManagerTests {
         #expect(await manager.executeCleanupIntent(intent) == .waiting)
     }
 
+    @Test("An encoder abandonment is not blocked by a paused origin's stale PlaySessionId")
+    func pausedOriginDoesNotStrandEncoderStop() async throws {
+        let directory = try makeDirectory("paused-origin")
+        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+        let store = DownloadStore(baseDirectory: directory)
+        let key = DownloadAttemptKey(
+            ratingKey: "jellyfin:paused", attemptID: DownloadAttemptID(uuid: UUID()))
+        // A crash between the abandonment commit and the reference clear left both on disk.
+        let record = DownloadRecord(
+            ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Paused",
+            localURL: store.destinationURL(ratingKey: key.ratingKey, ext: "mp4"),
+            status: .paused,
+            metadata: OfflineMetadata(
+                ratingKey: key.ratingKey, title: "Paused", type: "movie", backendKind: .jellyfin,
+                backendBaseURLString: "https://jellyfin.example", backendServerID: "server-1",
+                backendUserID: "user-1", playSessionID: "session-A"))
+        #expect(store.createAttemptOwnedRecord(record, attemptID: key.attemptID) == .committed(key))
+        let (manager, _, session) = makeManager(store: store, directory: directory)
+        defer { session.invalidateInjectedSessionForTesting() }
+        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        let server = try #require(DurableDownloadCleanupIntent.ServerIdentity(
+            baseURL: URL(string: "https://jellyfin.example")!, serverID: "server-1", userID: "user-1"))
+        let intent = try #require(DurableDownloadCleanupIntent(
+            attemptKey: key, backend: .jellyfin, server: server,
+            operation: .activeEncoding(playSessionID: "session-A"),
+            provenance: .abandonment(originAttempt: key)))
+
+        #expect(manager.claimingRecords(for: intent).isEmpty)
+    }
+
     @Test("Ownership claims are scoped to the persisted server and user")
     func claimsAreServerAndUserScoped() throws {
         let server = try #require(DurableDownloadCleanupIntent.ServerIdentity(
