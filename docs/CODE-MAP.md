@@ -143,9 +143,10 @@ not necessarily the backend currently visible in the UI.
   pipeline instance, and owning view/playback generation remain current.
   `Labstream/Shared/UI/OfflineArtworkSource.swift` turns persisted row ownership plus
   `posterGeneration` into an opaque local authority, including same-path replacements.
-  `SettingsView` clears the one pipeline, and `ArtworkShimmerClock.swift` owns one app-lifetime,
-  reference-counted ticker for visible placeholders in the root UI and visionOS Custom Cinema
-  ImmersiveSpace, with a static Reduce Motion path. Shared image
+  `SettingsView` clears the one pipeline, memory pressure trims its decoded cache, and
+  `ArtworkShimmerClock.swift` owns one app-lifetime, reference-counted ticker for visible
+  placeholders in the root UI and visionOS Custom Cinema ImmersiveSpace, with a static Reduce
+  Motion path and a Debug/PerformanceAudit `perf.shimmer_session` summary line per ticker run. Shared image
   values use the immutable CGImage-backed `Labstream/Shared/Platform/DecodedImage.swift`; native
   images are created only at framework bridges.
 

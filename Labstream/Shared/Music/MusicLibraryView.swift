@@ -562,7 +562,8 @@ struct MusicPlaylistsPivot: View {
     /// One material card of playlist rows, hairline-separated — the same card-of-rows
     /// treatment as the album track list, at list (not track) density.
     private var playlistList: some View {
-        VStack(spacing: 0) {
+        // Lazy: only on-screen rows realize their artwork fetch and shimmer.
+        LazyVStack(spacing: 0) {
             ForEach(Array(playlists.enumerated()), id: \.element.id) { index, playlist in
                 NavigationLink(value: playlist) {
                     PlaylistRow(playlist: playlist)

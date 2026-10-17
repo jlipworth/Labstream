@@ -130,7 +130,7 @@ struct ContainerBrowserView: View {
                                 } else {
                                     LibraryPlaceholderPoster(width: DS.Poster.gridMin(compact: compactWidth))
                                         .id(index)
-                                        .onAppear { prefetchCollectionPage(containing: index) }
+                                        .task { await prefetchCollectionPage(containing: index) }
                                 }
                             }
                         }
@@ -263,12 +263,12 @@ struct ContainerBrowserView: View {
         }
     }
 
-    private func prefetchCollectionPage(containing index: Int) {
+    /// Runs inside the placeholder's `.task`: a placeholder scrolled away before its page
+    /// arrives cancels its waiter, so flings do not fetch every page they pass.
+    private func prefetchCollectionPage(containing index: Int) async {
         let source = collectionPagingSource
-        Task {
-            await collectionPaging.prefetch(containing: index, source: source) {
-                collectionLoadIdentity == source.identity
-            }
+        await collectionPaging.prefetch(containing: index, source: source) {
+            collectionLoadIdentity == source.identity
         }
     }
 

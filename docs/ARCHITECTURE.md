@@ -239,11 +239,15 @@ pipeline; native framework bridges receive only completed `DecodedImage` or orig
 Asynchronous success and terminal-failure publication is fenced by the exact descriptor, pipeline
 instance, and owning playback/view generation rather than cancellation alone. Settings clears
 positive and negative memory state on that same app-lifetime pipeline and advances its epoch so
-pre-clear work cannot repopulate those caches. Persisted offline
+pre-clear work cannot repopulate those caches. Process memory pressure drops only the decoded
+bitmaps; compressed bytes stay, so returning artwork whose bytes are still cached re-decodes
+locally without a refetch.
+Persisted offline
 `posterGeneration` changes on publish, replacement, and clear so a same-path, same-byte-count
 replacement cannot reuse stale pixels. One reference-counted app-lifetime shimmer clock serves all
 visible placeholders in the main UI and visionOS Custom Cinema ImmersiveSpace, while Reduce Motion
-starts no animation work.
+starts no animation work. A skeleton leases the clock only after a short delay, so cache hits and
+fast loads never animate, and decorative blurred backdrop washes never shimmer.
 
 AVKit-hosted chapter stills remain request-backed because their independent hosting environment
 does not inject the pipeline or an exact pixel contract. BIF and sprite-sheet providers, Emby

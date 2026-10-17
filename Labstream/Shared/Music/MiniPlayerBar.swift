@@ -81,10 +81,6 @@ struct MiniPlayerBar: View {
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
     @Binding private var presentation: NowPlayingPresentationState
-    #if os(macOS)
-    @State private var macIsScrubbing = false
-    @State private var macScrubSeconds: Double = 0
-    #endif
 
     init(presentation: Binding<NowPlayingPresentationState>) {
         _presentation = presentation
@@ -176,7 +172,7 @@ struct MiniPlayerBar: View {
             // scrub target (a 3-pt drag violates the 60-pt rule; scrubbing lives in
             // Now Playing — MUSIC-DESIGN §4.1). Inset past the glass corner radius so
             // it never pokes outside the platter shape.
-            .overlay(alignment: .bottom) { progressHairline }
+            .overlay(alignment: .bottom) { MiniPlayerProgressHairline() }
             // Ornament content gets its platter look from glassBackgroundEffect —
             // material backgrounds render flat and z-fight the window edge here.
             .labstreamGlassBackground(in: RoundedRectangle(cornerRadius: DS.Radius.card,
@@ -190,7 +186,7 @@ struct MiniPlayerBar: View {
         // Glass capsule, so the bar renders bare content — no platter of its own.
         barContent(for: current)
             .padding(.horizontal, DS.Space.md)
-            .overlay(alignment: .bottom) { progressHairline }
+            .overlay(alignment: .bottom) { MiniPlayerProgressHairline() }
             .contentShape(Rectangle())
             .onTapGesture { presentation.present() }
         #endif
@@ -228,22 +224,7 @@ struct MiniPlayerBar: View {
                 .buttonStyle(.plain)
                 .help("Open Now Playing")
 
-                Slider(value: Binding(
-                    get: { macIsScrubbing ? macScrubSeconds : player.elapsedSeconds },
-                    set: { macScrubSeconds = $0 }
-                ), in: 0...max(player.durationSeconds, 1), onEditingChanged: { editing in
-                    if editing {
-                        macScrubSeconds = player.elapsedSeconds
-                        macIsScrubbing = true
-                    } else {
-                        player.seek(to: macScrubSeconds)
-                        macIsScrubbing = false
-                    }
-                })
-                .controlSize(.small)
-                .accessibilityLabel("Playback position")
-                .accessibilityValue(macTimeValue)
-                .help("Scrub track")
+                MacMiniPlayerScrubber()
             }
             .frame(minWidth: 180, idealWidth: 280, maxWidth: 360)
 
@@ -314,12 +295,6 @@ struct MiniPlayerBar: View {
                 return value
             }
         return values.isEmpty ? "Unknown artist" : values.joined(separator: " · ")
-    }
-
-    private var macTimeValue: String {
-        let current = Int(macIsScrubbing ? macScrubSeconds : player.elapsedSeconds)
-        let duration = Int(player.durationSeconds)
-        return "\(current / 60):\(String(format: "%02d", current % 60)) of \(duration / 60):\(String(format: "%02d", duration % 60))"
     }
 
     private func macTransportButton(_ label: String,
@@ -568,10 +543,15 @@ struct MiniPlayerBar: View {
     #else
     private static let transportHit: CGFloat = 44
     #endif
+}
 
-    /// 3-pt elapsed-time sliver pinned to the bar's bottom edge. Purely decorative:
-    /// never hit-testable, no thumb, no drag.
-    private var progressHairline: some View {
+/// 3-pt elapsed-time sliver pinned to the bar's bottom edge. Purely decorative:
+/// never hit-testable, no thumb, no drag. Its own view so the player's 0.5 s
+/// `elapsedSeconds` tick invalidates only the sliver, not the whole bar.
+private struct MiniPlayerProgressHairline: View {
+    @Environment(MusicPlayerController.self) private var player
+
+    var body: some View {
         GeometryReader { geo in
             let duration = player.durationSeconds
             let fraction = duration > 0
@@ -590,3 +570,38 @@ struct MiniPlayerBar: View {
         .allowsHitTesting(false)
     }
 }
+
+#if os(macOS)
+/// The Mac bar's playhead slider. Its own view so the 0.5 s `elapsedSeconds` tick
+/// invalidates only the slider, not the whole bar.
+private struct MacMiniPlayerScrubber: View {
+    @Environment(MusicPlayerController.self) private var player
+    @State private var isScrubbing = false
+    @State private var scrubSeconds: Double = 0
+
+    var body: some View {
+        Slider(value: Binding(
+            get: { isScrubbing ? scrubSeconds : player.elapsedSeconds },
+            set: { scrubSeconds = $0 }
+        ), in: 0...max(player.durationSeconds, 1), onEditingChanged: { editing in
+            if editing {
+                scrubSeconds = player.elapsedSeconds
+                isScrubbing = true
+            } else {
+                player.seek(to: scrubSeconds)
+                isScrubbing = false
+            }
+        })
+        .controlSize(.small)
+        .accessibilityLabel("Playback position")
+        .accessibilityValue(timeValue)
+        .help("Scrub track")
+    }
+
+    private var timeValue: String {
+        let current = Int(isScrubbing ? scrubSeconds : player.elapsedSeconds)
+        let duration = Int(player.durationSeconds)
+        return "\(current / 60):\(String(format: "%02d", current % 60)) of \(duration / 60):\(String(format: "%02d", duration % 60))"
+    }
+}
+#endif

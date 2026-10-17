@@ -102,7 +102,7 @@ struct MusicPagedGrid: View {
                     MusicPagedGridSlot(index: index,
                                        item: slot,
                                        subtitle: slot.flatMap(subtitle(_:)),
-                                       onPlaceholderAppear: { prefetchPage(containing: index) })
+                                       onPlaceholderAppear: { await prefetchPage(containing: index) })
                     .id(index)
                 }
             }
@@ -177,12 +177,12 @@ struct MusicPagedGrid: View {
         }
     }
 
-    private func prefetchPage(containing index: Int) {
+    /// Runs inside the placeholder's `.task`: a placeholder scrolled away before its page
+    /// arrives cancels its waiter, so flings do not fetch every page they pass.
+    private func prefetchPage(containing index: Int) async {
         let source = pagingSource
-        Task {
-            await paging.prefetch(containing: index, source: source) {
-                loadIdentity == source.identity
-            }
+        await paging.prefetch(containing: index, source: source) {
+            loadIdentity == source.identity
         }
     }
 
@@ -211,7 +211,7 @@ private struct MusicPagedGridSlot: View {
     let index: Int
     let item: MediaItem?
     let subtitle: String?
-    let onPlaceholderAppear: () -> Void
+    let onPlaceholderAppear: () async -> Void
 
     var body: some View {
         Group {
@@ -228,7 +228,7 @@ private struct MusicPagedGridSlot: View {
             } else {
                 MusicPlaceholderCell()
                     .id("placeholder-\(index)")
-                    .onAppear(perform: onPlaceholderAppear)
+                    .task { await onPlaceholderAppear() }
             }
         }
     }

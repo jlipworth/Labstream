@@ -28,6 +28,9 @@ struct PosterImage: View {
     /// for video posters; music cells pass a `music.*` glyph so an art-less artist/album
     /// reads as "no cover" rather than "broken" (#111).
     var placeholderSymbol: String = "film"
+    /// Decorative blurred washes pass false: a sweeping highlight under a large blur is
+    /// invisible but still invalidates (and re-blurs) the layer on every shimmer tick.
+    var showsLoadingShimmer: Bool = true
     #if DEBUG || PERFORMANCE_AUDIT
     /// Narrow audit role supplied only by the stable first library-grid slot.
     var measurementRole: PosterArtworkMeasurementRole?
@@ -205,7 +208,11 @@ struct PosterImage: View {
     private var skeleton: some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             .fill(.regularMaterial)
-            .overlay { ShimmerView().clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)) }
+            .overlay {
+                if showsLoadingShimmer {
+                    ShimmerView().clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                }
+            }
     }
 
     /// Build the `/photo/:/transcode` URL for `path` at the requested size.
@@ -291,6 +298,8 @@ enum PosterLoadPublicationPolicy {
 /// A reusable animated shimmer overlay used by loading skeletons. A diagonal
 /// highlight sweeps across translucently, the standard "content is on its way" cue.
 struct ShimmerView: View {
+    static let leaseDelay: Duration = .milliseconds(300)
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.artworkShimmerClock) private var shimmerClock
     @State private var subscribedClock: ArtworkShimmerClock?
@@ -300,9 +309,12 @@ struct ShimmerView: View {
         GeometryReader { geo in
             let w = geo.size.width
             if !reduceMotion, let shimmerClock {
+                // Read the shared phase only once leased: an unleased skeleton (still inside
+                // its lease delay) parks the highlight off-screen and is not invalidated by
+                // every clock tick.
                 shimmerGradient(highlightOpacity: 0.18)
                 .frame(width: w * 1.4)
-                .offset(x: shimmerClock.phase * w * 1.6)
+                .offset(x: (subscription == nil ? -1 : shimmerClock.phase) * w * 1.6)
             } else {
                 shimmerGradient(highlightOpacity: 0.10)
                 .frame(width: w * 1.4)
@@ -310,7 +322,13 @@ struct ShimmerView: View {
             }
         }
         .allowsHitTesting(false)
-        .onAppear { updateSubscription() }
+        .task {
+            // Skeletons replaced quickly — cache hits, fast responses, cells flung past — never
+            // lease the 60 Hz clock at all; only a genuinely pending load starts the sweep.
+            try? await Task.sleep(for: Self.leaseDelay)
+            guard !Task.isCancelled else { return }
+            updateSubscription()
+        }
         .onDisappear { releaseSubscription() }
         .onChange(of: reduceMotion) { _, _ in updateSubscription() }
     }

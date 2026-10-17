@@ -750,7 +750,8 @@ struct DetailView: View {
                 .overlay {
                     GeometryReader { geo in
                         let scale = max(geo.size.width / 900, geo.size.height / 600, 1)
-                        PosterImage(path: art, width: 900, height: 600, cornerRadius: 0, requestScale: 1.0)
+                        PosterImage(path: art, width: 900, height: 600, cornerRadius: 0, requestScale: 1.0,
+                                    showsLoadingShimmer: false)
                             .scaleEffect(scale)
                             .frame(width: geo.size.width, height: geo.size.height)
                             .blur(radius: 60)

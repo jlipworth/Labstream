@@ -554,7 +554,7 @@ struct LibraryGridView: View {
                                                             item: slot,
                                                             width: metrics?.posterWidth ?? regularPosterWidth,
                                                             usesDenseLabels: metrics != nil || usesTelevisionGrid) {
-                                                prefetchPage(containing: index)
+                                                await prefetchPage(containing: index)
                                             }
                                             // Keep the stable sparse-grid offset as the scroll target for
                                             // the A–Z rail while giving the loaded/placeholder subtrees
@@ -1007,12 +1007,13 @@ struct LibraryGridView: View {
         }
     }
 
-    private func prefetchPage(containing index: Int) {
+    /// Runs inside the placeholder's `.task`, so a placeholder that scrolls away before its
+    /// page arrives cancels its waiter; the paging model drops a page flight once its last
+    /// waiter leaves, so a fast fling no longer fetches every page it passes.
+    private func prefetchPage(containing index: Int) async {
         let source = pagingSource
-        Task {
-            await paging.prefetch(containing: index, source: source) {
-                pagingIdentity == source.identity
-            }
+        await paging.prefetch(containing: index, source: source) {
+            pagingIdentity == source.identity
         }
     }
 
@@ -1047,7 +1048,7 @@ private struct LibraryGridSlot: View {
     let item: MediaItem?
     let width: CGFloat
     let usesDenseLabels: Bool
-    let onPlaceholderAppear: () -> Void
+    let onPlaceholderAppear: () async -> Void
 
     var body: some View {
         Group {
@@ -1071,7 +1072,7 @@ private struct LibraryGridSlot: View {
             } else {
                 LibraryPlaceholderPoster(width: width)
                     .id("placeholder-\(index)")
-                    .onAppear(perform: onPlaceholderAppear)
+                    .task { await onPlaceholderAppear() }
             }
         }
     }

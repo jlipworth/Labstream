@@ -423,6 +423,23 @@ struct ArtworkPipelineTests {
         #expect(calls.value == 2)
     }
 
+    @Test func memoryPressureTrimKeepsCompressedBytesSoNextReadDecodesLocally() async throws {
+        let descriptor = try makePlexDescriptor(path: "/pressure", pixels: 80)
+        let calls = TestLockedBox(0)
+        let pipeline = ArtworkPipeline { _ in
+            calls.withValue { $0 += 1 }
+            return (Self.squarePNG, Self.response(status: 200))
+        }
+        #expect(try await pipeline.fetch(descriptor).delivery == .networkDecode)
+        #expect(try await pipeline.fetch(descriptor).delivery == .decodedCache)
+
+        await pipeline.trimDecodedCache()
+
+        #expect(try await pipeline.fetch(descriptor).delivery == .compressedCacheDecode)
+        #expect(try await pipeline.fetch(descriptor).delivery == .decodedCache)
+        #expect(calls.value == 1)
+    }
+
     @Test func deliveryProvenanceDistinguishesWireDecodedCompressedAndJoinedReaders() async throws {
         let descriptor = try makePlexDescriptor(path: "/delivery", pixels: 80)
 
