@@ -278,14 +278,14 @@ struct DownloadLifecycleReducerTests {
     /// P4 (B66, B67): a start that never became active waits again with its intent; it never
     /// rewrites live work, a user pause or a finished row.
     @Test func admissionDeferredReturnsAnUnprovenStartToPlanned() {
-        for unproven in [DownloadLifecycle.admitted, .failed, .planned] {
+        for unproven in [DownloadLifecycle.admitted, .serverPrep, .failed, .planned] {
             let next = R.reduce(state(unproven), .admissionDeferred(.seasonPlanned),
                                 facts: staticFacts).state
             #expect(next?.lifecycle == .planned)
             #expect(next?.history.admissionIntent == .seasonPlanned)
             #expect(next?.history.lastFailure == nil)
         }
-        for other in [DownloadLifecycle.paused, .serverPrep, .transferring, .finalizing,
+        for other in [DownloadLifecycle.paused, .transferring, .finalizing,
                       .complete, .unverified] {
             #expect(R.reduce(state(other), .admissionDeferred(.seasonPlanned),
                              facts: staticFacts) == .rejected(.illegal))
