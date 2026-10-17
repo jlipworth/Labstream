@@ -356,6 +356,48 @@ Acceptance is a phase's pins and inventory rows staying green.
 
 ## Progress journal
 
+- **2026-10-17 — P7 cleanup and orientation review follow-up**, based on `0e7bae0f`
+  (including sign-out change `1ba002e2`). Fixed the cleanup runner's synchronous migration
+  barriers and backend-hydration reads: all journal/tombstone I/O now uses the existing worker
+  submission and bounded observation seam. Runner loads, legacy classification and retirement
+  also have bounded proof; eligibility, migration receipts and matching session authority are
+  read again after suspension and immediately before execution. An unfinished import stays
+  blocked. No journal lock is acquired by these MainActor read/barrier paths.
+
+  Recovery now journals paused forward-only encoder handles as abandonments, replaying the
+  index-before-journal sign-out crash window without transient maps. The pin reloads a persisted
+  paused row with legacy opaque resume evidence (so reconcile actually retains `.paused`) and
+  an absent journal, then repeats recovery: exactly one intent and one append commit result.
+  Paused static/Convert/Plex preparation rows retain their server-job references and produce no
+  cleanup intent; D2 and the existing deletion path remain authoritative.
+
+  The reported mobile-only transient-map assertion was a production race: a post-revocation
+  refresh took the teardown policy's `.none` branch and discarded a handle before the independent
+  journal handoff was durable. Forcing that refresh reproduced both failing backend cases on the
+  Mac host. `.none` now retains the reference; exact compare-clearing still follows durable
+  cleanup proof. The sign-out fixture awaits an explicit exact-handle completion acknowledgement.
+
+  Both offline launch surfaces share post-orientation admission and rejection cleanup. A current
+  rejected request restores orientation synchronously; a superseded request cannot restore over
+  its successor. Controls cover missing files, replaced attempts and newer presentations on both
+  surfaces, with no player required to mount. Current cancelled requests restore before admission
+  and never create a playback sink.
+
+  **Red evidence:** the unfixed focused run of seven test functions recorded **14 failed assertions**:
+  enabled-runner MainActor heartbeat (both backends), absent paused-handle replay (both backends),
+  rejected current orientation restoration (both surfaces), and the forced post-revocation
+  transient-map loss for both `(true, false)` cases. Superseded-presentation controls stayed green.
+  With the fixes, the focused five-suite run passed **43 test functions**, including held-worker
+  deadline and fresh-authority controls, with only the existing P7.7 version pin known issue.
+  Hermetic PMSKit passed **1,628 test functions**. Two final full Mac hosted runs passed
+  **958 test functions each** (**892 Swift Testing + 66 XCTest**), with normal parallel testing,
+  the exclusive Xcode lock, one expected version-pin known issue and zero unexpected failures
+  or skips. Hygiene passed **386 tooling tests**, public redaction, strict MkDocs, rendered links
+  and Mermaid checks. Worktree-local `build/` products were removed before handoff.
+  No simulator was booted for this work. iPhone hosted execution remains the lead's follow-up;
+  device rotation and live-backend acceptance remain maintainer gates. `Generic`, schema v5 and
+  persisted field shapes are unchanged; no release version, push, PR or merge is included.
+
 - **2026-10-17 — Dead-code cleanup.** Removed unused rating-key mutations, legacy Emby
   tombstone producers, compact captions and async adapters; migrated synchronous test fixtures
   to bounded submissions. Kept legacy consumption, exact outcomes, schema v5 and D1 unchanged.

@@ -439,6 +439,10 @@ public struct OfflineLibraryView: View {
                     #if os(iOS)
                     await mobilePlayerOrientationCoordinator.enterLandscapeBeforePresentationIfNeeded()
                     #endif
+                }, restoreOrientation: {
+                    #if os(iOS)
+                    mobilePlayerOrientationCoordinator.restoreIfNeeded()
+                    #endif
                 })
             switch result {
             case .success(let launch):
@@ -785,16 +789,13 @@ final class OfflineLibraryPlaybackPresentation {
     init(factory: any OfflinePlaybackLaunchFactory) { self.factory = factory }
 
     func launch(for identity: OfflineDownloadRowActionIdentity, resumeRewindSeconds: Int,
-                orientation: () async -> Void) async
+                orientation: () async -> Void, restoreOrientation: () -> Void = {}) async
         -> Result<OfflinePlaybackLaunch, OfflinePlaybackLaunchRejection> {
         generation += 1
         let captured = generation
         let request = factory.beginPresentationRequest()
-        await orientation()
-        guard !Task.isCancelled, generation == captured else { return .failure(.supersededPresentation) }
-        let result = await factory.makeLaunch(for: identity, request: request,
-                                              resumeRewindSeconds: resumeRewindSeconds)
-        guard !Task.isCancelled, generation == captured else { return .failure(.supersededPresentation) }
-        return result
+        return await factory.makeLaunchAfterOrientation(for: identity, request: request,
+            resumeRewindSeconds: resumeRewindSeconds, orientation: orientation,
+            restoreOrientation: restoreOrientation, isCurrent: { generation == captured })
     }
 }

@@ -75,6 +75,34 @@ protocol OfflinePlaybackLaunchFactory {
                     resumeRewindSeconds: Int) async
         -> Result<OfflinePlaybackLaunch, OfflinePlaybackLaunchRejection>
 }
+
+@MainActor
+extension OfflinePlaybackLaunchFactory {
+    /// Admission and rejected-request orientation cleanup share the same presentation authority.
+    /// Restoration is synchronous so a newer request cannot enter between the check and restore.
+    func makeLaunchAfterOrientation(
+        for identity: OfflineDownloadRowActionIdentity, request: OfflinePlaybackPresentationRequest,
+        resumeRewindSeconds: Int, orientation: () async -> Void,
+        restoreOrientation: () -> Void, isCurrent: () -> Bool
+    ) async -> Result<OfflinePlaybackLaunch, OfflinePlaybackLaunchRejection> {
+        await orientation()
+        guard isCurrent() else { return .failure(.supersededPresentation) }
+        guard !Task.isCancelled else {
+            restoreOrientation()
+            return .failure(.supersededPresentation)
+        }
+        let result = await makeLaunch(for: identity, request: request,
+                                      resumeRewindSeconds: resumeRewindSeconds)
+        guard isCurrent() else { return .failure(.supersededPresentation) }
+        if case .failure(.supersededPresentation) = result { return result }
+        if Task.isCancelled {
+            restoreOrientation()
+            return .failure(.supersededPresentation)
+        }
+        if case .failure = result { restoreOrientation() }
+        return result
+    }
+}
 #endif
 
 #if !os(tvOS)

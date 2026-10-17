@@ -44,16 +44,16 @@ final class EmbyConvertJobCoordinator {
 extension DownloadManager {
     /// Synthetic attempt-id prefix for intents migrated from legacy Emby tombstones, which carry no
     /// attempt id of their own.
-    static let legacyTombstoneAttemptPrefix = "legacy-tombstone-"
+    nonisolated static let legacyTombstoneAttemptPrefix = "legacy-tombstone-"
 
     func makeCleanupRunnerDependencies() -> DownloadCleanupIntentRunner.Dependencies {
         let journal = cleanupIntentJournal
         return DownloadCleanupIntentRunner.Dependencies(
-            runBarriers: { [weak self] in self?.runCleanupBarriers() ?? true },
+            runBarriers: { [weak self] deadline in await self?.runCleanupBarriers(deadline: deadline) ?? false },
             load: { journal.load() },
             replace: { journal.replace($0) },
             rowState: { [weak self] intent in self?.cleanupRowState(for: intent) ?? .unknown },
-            isBlocked: { [weak self] intent in self?.cleanupIntentIsBlocked(intent) ?? true },
+            isBlocked: { [weak self] intent in await self?.cleanupIntentIsBlocked(intent) ?? true },
             hasMatchingSession: { [weak self] intent in
                 guard let live = self?.appModel.backendSession(for: intent.backend) else {
                     return false
@@ -71,14 +71,24 @@ extension DownloadManager {
     /// Backends that owe server cleanup and therefore need a session even while inactive: any
     /// journaled intent, a terminal row whose launch sweep will journal a handle, or a legacy
     /// tombstone awaiting migration. Read once per recovery pass, before session hydration.
-    func pendingCleanupBackends() -> Set<DownloadBackendKind> {
+    func pendingCleanupBackends(deadline: DownloadStoreDeadline = .after(30)) async -> Set<DownloadBackendKind> {
+        let observation = DownloadStoreWork { [cleanupIntentJournal, store] in
+            (cleanupIntentJournal.load(), store.loadEmbyConvertCleanupTombstones(),
+             cleanupIntentJournal.hasLegacyQuarantineFiles())
+        }
+        guard let (journal, tombstones, hasQuarantine) = await observation.observe(deadline: deadline),
+              !Task.isCancelled else { return [.plex, .jellyfin, .emby] }
         var backends: Set<DownloadBackendKind> = []
-        if case .loaded(let intents) = cleanupIntentJournal.load() {
+        if case .loaded(let intents) = journal {
             backends.formUnion(intents.map(\.backend))
         }
-        for record in records where record.status == .complete || record.status == .failed
-            || record.status == .unverified {
+        // Read current rows only after the worker observation; its snapshot grants no row authority.
+        for record in records {
             guard let metadata = record.metadata else { continue }
+            let terminal = record.status == .complete || record.status == .failed || record.status == .unverified
+            let pausedEncoder = record.status == .paused
+                && metadata.resolvedResumeMode(ratingKey: record.ratingKey) == .liveForwardOnly
+            guard terminal || pausedEncoder else { continue }
             let backend = metadata.resolvedBackendKind(ratingKey: record.ratingKey)
             if backend != .plex,
                metadata.playSessionID?.isEmpty == false
@@ -87,12 +97,11 @@ extension DownloadManager {
                 backends.insert(backend)
             }
         }
-        if case .loaded(let tombstones) = store.loadEmbyConvertCleanupTombstones(),
-           !tombstones.isEmpty {
+        if case .loaded(let entries) = tombstones, !entries.isEmpty {
             backends.insert(.emby)
         }
         // Legacy quarantined Plex intents are imported by the sweep that runs after hydration.
-        if cleanupIntentJournal.hasLegacyQuarantineFiles() {
+        if hasQuarantine {
             backends.insert(.plex)
         }
         return backends
@@ -158,16 +167,25 @@ extension DownloadManager {
     /// intents behind an unfinished barrier stay blocked meanwhile.
     func prepareCleanupRunnerIfNeeded() {
         guard startupRecoveryState == .ready else { return }
-        _ = runCleanupBarriers()
+        // The enabled runner owns the asynchronous, bounded barriers before its first pass.
         cleanupRunner?.enable()
     }
 
     /// Migrate legacy tombstones and import legacy quarantined Plex intents. Idempotent and
     /// cheap when there is nothing left; the runner calls it before every pass so a transient
     /// failure retries on the runner's own timer. Returns true once both barriers are complete.
-    func runCleanupBarriers() -> Bool {
-        let tombstonesDone = migrateLegacyEmbyCleanupTombstones()
-        legacyCleanupImport = cleanupIntentJournal.importLegacyQuarantinedPlexIntents()
+    func runCleanupBarriers(deadline: DownloadStoreDeadline = .after(30)) async -> Bool {
+        let observation = DownloadStoreWork { [store, cleanupIntentJournal] in
+            let done = Self.migrateLegacyEmbyCleanupTombstones(store: store, journal: cleanupIntentJournal)
+            return (done, cleanupIntentJournal.importLegacyQuarantinedPlexIntents())
+        }
+        guard let (tombstonesDone, imported) = await observation.observe(deadline: deadline),
+              !Task.isCancelled, startupRecoveryState == .ready else {
+            // A late worker may finish, but no unproven import receipt authorizes Plex cleanup.
+            legacyCleanupImport.blocksAllPlex = true
+            return false
+        }
+        legacyCleanupImport = imported
         let importDone = !legacyCleanupImport.blocksAllPlex && legacyCleanupImport.blockedIDs.isEmpty
         if legacyCleanupImport.importedCount > 0 || !importDone {
             recordDownloadDiagnostic("downloads.cleanup_legacy_plex_import", fields: [
@@ -186,7 +204,9 @@ extension DownloadManager {
     /// kept as evidence; an unreadable tombstone file is left untouched.
     /// Returns true when no convertible tombstone remains (an unreadable file is not done).
     @discardableResult
-    func migrateLegacyEmbyCleanupTombstones() -> Bool {
+    nonisolated static func migrateLegacyEmbyCleanupTombstones(
+        store: DownloadStore, journal: DownloadCleanupIntentJournal
+    ) -> Bool {
         guard case .loaded(let tombstones) = store.loadEmbyConvertCleanupTombstones() else {
             return false
         }
@@ -200,12 +220,12 @@ extension DownloadManager {
                 unconvertible += 1
                 continue
             }
-            guard case .committed = cleanupIntentJournal.ensure(intent) else { continue }
+            guard case .committed = journal.ensure(intent) else { continue }
             if case .committed = store.removeEmbyConvertCleanupTombstone(id: tombstone.id) {
                 migrated += 1
             }
         }
-        recordDownloadDiagnostic("downloads.cleanup_tombstones_migrated", fields: [
+        AppDiagnostics.record(.downloads, "downloads.cleanup_tombstones_migrated", fields: [
             "migrated": .int(migrated),
             "unconvertible": .int(unconvertible),
             "remaining": .int(tombstones.count - migrated),
@@ -256,9 +276,12 @@ extension DownloadManager {
         }
     }
 
-    func cleanupIntentIsBlocked(_ intent: DurableDownloadCleanupIntent) -> Bool {
+    func cleanupIntentIsBlocked(_ intent: DurableDownloadCleanupIntent) async -> Bool {
         if intent.attemptKey.attemptID.rawValue.hasPrefix(Self.legacyTombstoneAttemptPrefix) {
-            switch store.loadEmbyConvertCleanupTombstones() {
+            let observation = DownloadStoreWork { [store] in store.loadEmbyConvertCleanupTombstones() }
+            guard let result = await observation.observe(deadline: .after(30)),
+                  !Task.isCancelled, startupRecoveryState == .ready else { return true }
+            switch result {
             case .loaded(let tombstones): return tombstones.contains { $0.id == intent.id }
             case .failed: return true
             }
@@ -275,10 +298,11 @@ extension DownloadManager {
     func executeCleanupIntent(
         _ intent: DurableDownloadCleanupIntent
     ) async -> DownloadCleanupIntentRunner.ExecutionOutcome {
-        guard let live = appModel.backendSession(for: intent.backend),
-              intent.matches(session: live) else { return .failed }
         return await runAsRequiredCleanup(intent.attemptKey) { [weak self] in
-            guard let self else { return .waiting }
+            guard let self, !Task.isCancelled, !(await self.cleanupIntentIsBlocked(intent)) else { return .waiting }
+            guard self.cleanupStillEligible(intent) else { return .waiting }
+            guard let live = self.appModel.backendSession(for: intent.backend),
+                  intent.matches(session: live) else { return .failed }
             switch intent.operation {
             case .activeEncoding(let playSessionID):
                 return await self.executeActiveEncodingCleanup(
@@ -373,9 +397,10 @@ extension DownloadManager {
     private func retire(_ intent: DurableDownloadCleanupIntent)
         async -> DownloadCleanupIntentRunner.ExecutionOutcome {
         let journal = cleanupIntentJournal
-        let removal = await Task.detached {
+        let submission = DownloadStoreWork {
             journal.remove(id: intent.id, attemptKey: intent.attemptKey, operation: intent.operation)
-        }.value
+        }
+        let removal = await submission.observe(deadline: .after(30))
         guard case .committed = removal else { return .failed }
         recordDownloadDiagnostic("downloads.cleanup_intent_retired", fields: [
             "download_id": .identifier(intent.attemptKey.ratingKey),

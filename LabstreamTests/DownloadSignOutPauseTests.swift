@@ -159,6 +159,10 @@ struct DownloadSignOutPauseTests {
         f.manager.activeJobs.insert(f.key.ratingKey)
         f.manager.inFlightAttempts.acquire(f.key)
         f.manager.refreshRecords()
+        let resolved = P6Acknowledgement<Bool>()
+        f.manager.encoderCleanupDidResolveForTesting = { [key = f.key] resolvedKey, handle, committed in
+            if resolvedKey == key, handle == "old-session" { resolved.signal(committed) }
+        }
         hold.arm()
         f.manager.pauseDownloadsForBackendSignOut(backend)
         _ = await hold.acknowledgement.wait()
@@ -168,6 +172,8 @@ struct DownloadSignOutPauseTests {
         #expect(f.store.record(for: f.key)?.metadata?.playSessionID == "old-session")
         model.embyAccessToken = nil
         model.jellyfinAccessToken = nil
+        // Force the refresh that can race credential revocation on the mobile callback path.
+        f.manager.refreshRecords()
         if replaces {
             // A newer exact handle can be installed while the old journal worker is held.
             _ = await f.store.updateMetadataAsync(for: f.key) { $0.playSessionID = "new-session" }
@@ -175,6 +181,7 @@ struct DownloadSignOutPauseTests {
             else { f.manager.jellyfinPlaySessionByAttempt[f.key] = "new-session" }
         }
         hold.release.signal()
+        #expect(await resolved.wait() == !fails)
         await f.manager.drainManagerOperationsForTesting()
         let expected = replaces ? "new-session" : (fails ? "old-session" : nil)
         #expect(f.store.record(for: f.key)?.metadata?.playSessionID == expected)

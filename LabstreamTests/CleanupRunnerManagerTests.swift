@@ -26,6 +26,7 @@ struct CleanupRunnerManagerTests {
 
         manager.teardownOrphanedEncodersOnLaunch()
         await manager.launchSweepJournaling?.value
+        await manager.cleanupRunner?.waitUntilIdle()
 
         guard case .loaded(let intents) = journal.load() else {
             Issue.record("Expected a readable journal"); return
@@ -56,15 +57,16 @@ struct CleanupRunnerManagerTests {
         #expect(await waitUntil { manager.startupRecoveryState == .ready })
         manager.teardownOrphanedEncodersOnLaunch()
         await manager.launchSweepJournaling?.value
+        await manager.cleanupRunner?.waitUntilIdle()
         guard case .loaded(let intents) = journal.load(),
               let migrated = intents.first(where: { $0.id == tombstone.id }) else {
             Issue.record("Expected the migrated intent"); return
         }
-        #expect(!manager.cleanupIntentIsBlocked(migrated))
+        #expect(!(await manager.cleanupIntentIsBlocked(migrated)))
 
         // Simulate a removal that did not become durable: the tombstone is still on disk.
         try LegacyEmbyTombstoneFixture.write([tombstone], to: store)
-        #expect(manager.cleanupIntentIsBlocked(migrated))
+        #expect(await manager.cleanupIntentIsBlocked(migrated))
     }
 
     @Test("Expiry journals its abandonment before clearing the recovery identity")
@@ -205,6 +207,7 @@ struct CleanupRunnerManagerTests {
         // Launch sweep: no Jellyfin session, so the intent is journaled and stays.
         manager.teardownOrphanedEncodersOnLaunch()
         await manager.launchSweepJournaling?.value
+        await manager.cleanupRunner?.waitUntilIdle()
         guard case .loaded(let swept) = journal.load(), let release = swept.first else {
             Issue.record("Expected the terminal-release intent"); return
         }

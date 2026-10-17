@@ -1514,6 +1514,10 @@ struct DetailView: View {
             #if os(iOS)
             await mobilePlayerOrientationCoordinator.enterLandscapeBeforePresentationIfNeeded()
             #endif
+        }, restoreOrientation: {
+            #if os(iOS)
+            mobilePlayerOrientationCoordinator.restoreIfNeeded()
+            #endif
         }, present: { localPlaybackRequest = $0 })
     }
 
@@ -1524,10 +1528,12 @@ struct DetailView: View {
                                     request: OfflinePlaybackPresentationRequest,
                                     resumeRewindSeconds: Int = 0,
                                     orientation: () async -> Void,
+                                    restoreOrientation: () -> Void = {},
                                     present: (LocalPlaybackRequest) -> Void) async {
-        await orientation()
-        guard case .success(let launch) = await manager.offlinePlaybackLaunchFactory.makeLaunch(
-            for: identity, request: request, resumeRewindSeconds: resumeRewindSeconds) else { return }
+        guard case .success(let launch) = await manager.offlinePlaybackLaunchFactory.makeLaunchAfterOrientation(
+            for: identity, request: request, resumeRewindSeconds: resumeRewindSeconds,
+            orientation: orientation, restoreOrientation: restoreOrientation,
+            isCurrent: { manager.offlinePresentationGeneration == request.generation }) else { return }
         present(LocalPlaybackRequest(launch: launch))
     }
     #endif

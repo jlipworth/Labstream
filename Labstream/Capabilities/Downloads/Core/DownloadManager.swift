@@ -1272,10 +1272,13 @@ public final class DownloadManager {
             guard let metadata = record.metadata else { continue }
             let terminal = record.status == .failed || record.status == .complete
                 || record.status == .unverified
-            guard terminal else { continue }
+            let pausedEncoder = record.status == .paused
+                && metadata.resolvedResumeMode(ratingKey: record.ratingKey) == .liveForwardOnly
+            guard terminal || pausedEncoder else { continue }
 
             let backend = metadata.resolvedBackendKind(ratingKey: record.ratingKey)
             if backend == .plex {
+                guard terminal else { continue }
                 // Plex has no ActiveEncoding cleanup. Preserve the prior stale-handle repair, but
                 // use exact attempt/value authority so this sweep cannot clear a replacement row.
                 if let playSessionID = metadata.playSessionID, !playSessionID.isEmpty {
@@ -1291,9 +1294,12 @@ public final class DownloadManager {
             if let playSessionID = metadata.playSessionID, !playSessionID.isEmpty,
                let intent = Self.makeActiveEncodingCleanupIntent(
                 attemptKey: key, metadata: metadata, playSessionID: playSessionID,
-                provenance: .terminalRelease) {
+                provenance: pausedEncoder ? .abandonment(originAttempt: key) : .terminalRelease) {
                 terminalReleases.append(intent)
             }
+            // A paused row still owns its resumable server-prep job (D2). Only its discarded
+            // forward-only encoder is an abandonment; Convert/Plex jobs remain row-owned.
+            guard terminal else { continue }
             // B44/B49: a failed row whose Retry resumes its Convert job (poll-health or 401/403
             // failure) or crash-window recovery keeps that authority. Cleaning it up here would
             // DELETE the live job, or race recovery for it. Same inputs as the retry gate.
@@ -1319,11 +1325,14 @@ public final class DownloadManager {
         let pendingReleases = terminalReleases
         launchSweepJournaling = Task { [weak self] in
             if !pendingReleases.isEmpty {
-                await Task.detached {
+                let submission = DownloadStoreWork {
                     for intent in pendingReleases { _ = journal.ensure(intent) }
-                }.value
+                    return true
+                }
+                guard await submission.observe(deadline: .after(30)) == true else { return }
             }
-            self?.cleanupRunner?.resetBackoff(reason: "recovery_pass")
+            guard let self, !Task.isCancelled, startupRecoveryState == .ready else { return }
+            cleanupRunner?.resetBackoff(reason: "recovery_pass")
         }
     }
 
@@ -1353,6 +1362,11 @@ public final class DownloadManager {
         }
     }
 
+    #if DEBUG
+    @ObservationIgnored var encoderCleanupDidResolveForTesting:
+        ((DownloadAttemptKey, String, Bool) -> Void)?
+    #endif
+
     /// Capture cleanup authority before sign-out clears credentials. Journal I/O runs on a P6
     /// submission worker; only its durable result permits clearing the row's encoder reference.
     private func releaseEncoderAfterDurableCleanup(
@@ -1367,7 +1381,13 @@ public final class DownloadManager {
         let deadline = DownloadStoreDeadline.after(30)
         let submission = DownloadStoreWork { [cleanupIntentJournal] in cleanupIntentJournal.ensure(candidate) }
         enqueueManagerOperation(ratingKey: attemptKey.ratingKey) { [self, store] in
+            #if DEBUG
+            var committed = false
+            #endif
             defer {
+                #if DEBUG
+                encoderCleanupDidResolveForTesting?(attemptKey, playSessionID, committed)
+                #endif
                 pendingEncoderCleanupReleases[attemptKey]?.remove(playSessionID)
                 if pendingEncoderCleanupReleases[attemptKey]?.isEmpty == true {
                     pendingEncoderCleanupReleases.removeValue(forKey: attemptKey)
@@ -1384,6 +1404,9 @@ public final class DownloadManager {
                 ])
                 return
             }
+            #if DEBUG
+            committed = true
+            #endif
             switch backend {
             case .emby:
                 if embyPlaySessionByAttempt[attemptKey] == playSessionID {
@@ -5037,7 +5060,8 @@ public final class DownloadManager {
             rowRemoved: rowRemoved
         ) {
         case .none:
-            embyPlaySessionByAttempt.removeValue(forKey: attemptKey)
+            // Missing/mismatched credentials grant no cleanup handoff. A refresh after sign-out
+            // must retain the exact handle while its independent journal commit is unresolved.
             break
         case .stop(let playSessionId):
             releaseEncoderAfterDurableCleanup(attemptKey: attemptKey, metadata: releaseMetadata,
@@ -5063,7 +5087,6 @@ public final class DownloadManager {
             rowRemoved: rowRemoved
         ) {
         case .none:
-            jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
             break
         case .stop(let playSessionId):
             releaseEncoderAfterDurableCleanup(attemptKey: attemptKey, metadata: releaseMetadata,
