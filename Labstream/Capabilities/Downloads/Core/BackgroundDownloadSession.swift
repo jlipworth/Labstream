@@ -5694,6 +5694,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let verdictThroughReducer = publishesWorkingFile
             && store.lifecycleState(for: attemptKey)?.lifecycle == .finalizing
         var truncationVerdictCommitted = false
+        // Commit proof exists only for a verdict resolved without a pending background completion
+        // handler; under a handler acceptance is admission-only.
+        var truncationVerdictProven = false
         let truncationFailures: Int
         switch outcome {
         case .truncated where verdictThroughReducer:
@@ -5710,9 +5713,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 // The body may be deleted only once the verdict that condemns it has committed
                 // (admission-only under a pending background completion, like every other
                 // finalize verdict; the completion gate then owns the bounded outcome).
+                let proven = !hasPendingBackgroundCompletionHandler()
                 guard acceptedAttemptSubmission(
                     verdict, key: attemptKey, phase: "finalize_truncated_verdict") else { return }
                 truncationVerdictCommitted = true
+                truncationVerdictProven = proven
             }
             truncationFailures = store.truncationStrikes(for: attemptKey)
         case .truncated:
@@ -5827,6 +5832,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     for: attemptKey, status: .unverified,
                     phase: "finalize_truncated_park_promote") else { return }
             } else if !truncationVerdictCommitted {
+                truncationVerdictProven = !hasPendingBackgroundCompletionHandler()
                 guard acceptedAttemptSubmission(
                     resolveLifecycleSubmission(submitFinalizeVerdictStatus(
                     for: attemptKey, outcome: Self.finalizeOutcome(outcome),
@@ -5835,7 +5841,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     key: attemptKey, phase: "finalize_truncated_status"
                 ) else { return }
             }
-            if finalizationResult.shouldDeleteFile,
+            if finalizationResult.shouldDeleteFile, !truncationVerdictProven {
+                // A verdict only admitted under a background completion handler may still fail to
+                // persist; keep the body the failed row still names. Its Retry or Delete
+                // reclaims it, and a relaunch re-finalizes it if the verdict was lost.
+                AppDiagnostics.record(.downloads, "downloads.truncated_body_kept_unproven", fields: [
+                    "download_id": .identifier(ratingKey),
+                ])
+            } else if finalizationResult.shouldDeleteFile,
                !Task.isCancelled,
                stillOwnsAttempt(attemptKey, phase: "finalize_truncated_delete") {
                 try? fileManager.removeItem(at: destination)
