@@ -792,6 +792,21 @@ Acceptance is a phase's pins and inventory rows staying green.
     only.
   - **Flaky test:** `BackgroundDownloadStartupAdmissionTests.unsupportedSchemaIsOpaqueUntilTaskDrainThenRootIsQuarantined`
     failed once and passed 3/3 reruns. It is pre-existing and P4 does not touch that code.
+- **2026-10-17 — P4 after-review, round 2: ready with fixes (5 P2). All fixed; no further round,
+  per the pace decision:**
+  1. **Static drain.** It skips rows waiting for admission and honours deferral backoff. The pump
+     wakes at the earliest backoff of any request, including a deferred static resume.
+  2. **Exemption.** A row's Pause All exemption also marks the static manual-resume set
+     (`markRowResumedDuringQueuePause`), so an exempt Convert handoff's later range rebuild is not
+     parked.
+  3. **B69 probe.** The re-plan is fenced by the supervision generation and an `admitted`
+     lifecycle after the probe's await.
+  4. **Late prep attach.** After startup recovery, the Plex and Emby prep scanners attach a row
+     the coordinator never counted only with prep-lane room. Startup reattach is still
+     grandfathered.
+  5. **Missing items.** A refresh that proves the item gone (HTTP 404/410, no metadata item) fails
+     the planned row as source-missing; other refresh errors defer.
+  - **Pin:** missing-item classification. The others are code-reviewed only.
 
 ## P2 detailed plan — cleanup foundation
 

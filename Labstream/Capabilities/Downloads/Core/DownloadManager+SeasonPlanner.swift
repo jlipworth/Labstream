@@ -209,6 +209,15 @@ extension DownloadManager {
                 operation: { try await planner.refreshedItem(snapshotItem, backend: backend) }) else { return }
             item = refreshed
         } catch {
+            // The item is gone: a visible source-missing failure, not an endless wait.
+            if Self.isDefinitiveMissingItem(error), seasonAdmissionStillCurrent(record),
+               let attemptID = record.attemptID {
+                _ = applyLifecycleEvent(
+                    .transferFailed(.sourceMissing),
+                    for: DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID),
+                    context: "season_plan_source_missing")
+                return
+            }
             recordDownloadDiagnostic("downloads.admission_refresh_unavailable", fields: [
                 "download_id": .identifier(record.ratingKey),
             ])

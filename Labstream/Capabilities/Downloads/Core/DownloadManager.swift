@@ -2285,6 +2285,7 @@ public final class DownloadManager {
         if StaticRangeRecoveryPolicy.shouldWaitForManualResume(
             isQueuePaused: isQueuePaused,
             wasManuallyResumedWhileQueuePaused: staticRangeRecovery.wasManuallyResumedWhileQueuePaused(ratingKey)
+                || admission.isExempt(ratingKey)
         ) {
             guard let record = store.record(for: ratingKey) else {
                 staticRangeRecovery.removePendingResume(ratingKey)
@@ -2388,6 +2389,16 @@ public final class DownloadManager {
         if StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: reason) {
             staticRangeRecovery.preserveRestartCountersForNextStart(ratingKey)
         }
+        // P4: a row waiting for admission belongs to the coordinator, never to this drain.
+        if isWaitingForAdmission(record) {
+            staticRangeRecovery.removePendingResume(ratingKey)
+            return
+        }
+        // A deferred start honours its backoff here too (the pump wakes at `eligibleAt`).
+        if let eligibleAt = admission.requestStates[ratingKey]?.eligibleAt,
+           eligibleAt > admission.now() {
+            return
+        }
         // P4: an automatic static resume takes a lane like any other start. Without room it keeps
         // its pending-resume marker; the admission pump drains pending resumes when the static
         // lane frees.
@@ -2420,6 +2431,13 @@ public final class DownloadManager {
     /// Drain pending static resumes once the static lane has room (P4 pump).
     func drainPendingStaticRangeResumes() {
         resumePendingStaticRangeDownloads()
+    }
+
+    /// P4.6: a row's own Resume or Retry during Pause All exempts it from the queue gate, for
+    /// admission and for static range recovery alike, until the next Pause All.
+    func markRowResumedDuringQueuePause(_ ratingKey: String) {
+        admission.exempt(ratingKey)
+        staticRangeRecovery.markManualQueueResume(ratingKey)
     }
 
     func hasRegisteredServerPrepPoller(ratingKey: String) -> Bool {
@@ -3084,6 +3102,11 @@ public final class DownloadManager {
         let token = session.token
         let identity = appModel.identity.emby
         for record in embyPreparing {
+            // P4: as for Plex, a late attach after startup recovery needs prep-lane room (Convert
+            // polling itself continues during Pause All, emby-33).
+            if admission.recoveryComplete,
+               !admissionHasRoom(for: record.ratingKey, lane: .serverPreparation,
+                                 exemptFromQueuePause: true) { continue }
             guard let metadata = record.metadata,
                   metadata.resolvedBackendKind(ratingKey: record.ratingKey) == .emby,
                   let key = attemptKey(for: record) else { continue }
@@ -3284,6 +3307,11 @@ public final class DownloadManager {
         guard !candidates.isEmpty else { return }
 
         for record in candidates {
+            // P4: after startup recovery, attaching a row the coordinator never counted (its
+            // backend was unavailable at launch) needs room in the prep lane like any start.
+            if admission.recoveryComplete,
+               !admissionHasRoom(for: record.ratingKey, lane: .serverPreparation,
+                                 exemptFromQueuePause: true) { continue }
             guard let metadata = record.metadata,
                   let targetName = metadata.optimizeTargetName,
                   let key = attemptKey(for: record) else { continue }

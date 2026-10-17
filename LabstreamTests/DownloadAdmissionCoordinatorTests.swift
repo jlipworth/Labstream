@@ -45,6 +45,16 @@ struct DownloadAdmissionCoordinatorTests {
         #expect(request.requestedAt == 100, "a repeated request keeps its place")
     }
 
+    /// Round-2 fix 5: a refresh proving the item gone is definitive; transport failures defer.
+    @Test func onlyAMissingItemIsADefinitiveRefreshFailure() {
+        #expect(DownloadManager.isDefinitiveMissingItem(PlexError.http(404)))
+        #expect(DownloadManager.isDefinitiveMissingItem(MediaBrowserRequestError.httpStatus(410)))
+        #expect(DownloadManager.isDefinitiveMissingItem(PlexBrowseService.ServiceError.noMetadataItem))
+        #expect(!DownloadManager.isDefinitiveMissingItem(PlexError.http(503)))
+        #expect(!DownloadManager.isDefinitiveMissingItem(PlexError.serverUnreachable))
+        #expect(!DownloadManager.isDefinitiveMissingItem(URLError(.timedOut)))
+    }
+
     @Test func exemptionsAreRowScopedAndRevokedTogether() {
         let coordinator = DownloadAdmissionCoordinator()
         coordinator.exempt("a")
