@@ -344,6 +344,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var healthWaiting: Set<Int> = []
     private var healthCandidates: [HealthCandidate] = []
     private var healthCurrent: HealthCandidate?
+    private var healthResults: [Int: HealthCandidate] = [:]
+    // A cancelled interval still needs refill even when reattach finds a live sibling.
+    private var healthRefills: [DownloadAttemptKey: (HealthCandidate, DelayedRangeRetryCurrency)] = [:]
     private struct HealthCandidate {
         let task: URLSessionTask
         let entry: RangeTransfer
@@ -351,7 +354,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let delta: Int
         let seconds: Double
         let since: Double
-        let generation: UInt64
+        var generation: UInt64
+        var resultTask: URLSessionTask?
         var discarded = 0
         var newID = -1
         var resultStart: Double = 0
@@ -588,6 +592,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.lock()
         let remaining = (pendingStaticRangeWorkCounts[ratingKey] ?? 1) - 1
         pendingStaticRangeWorkCounts[ratingKey] = remaining > 0 ? remaining : nil
+        retireHealthAttemptsLocked()
         lock.unlock()
     }
 
@@ -784,6 +789,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     var healthWillClaimForTesting: (@Sendable () -> Void)?
     var healthResultForTesting: (@Sendable (String) -> Void)?
     var healthDidClaimForTesting: (@Sendable () -> Void)?
+    var healthBookkeepingForTesting: (used: Int, waiting: Int) {
+        lock.withLock { (healthUsed.count, healthWaiting.count) }
+    }
     func healthTasksForTesting() async -> [URLSessionTask] { await urlSession.allTasks }
     func forgetHealthProvenanceForTesting() {
         lock.withLock {
@@ -1315,6 +1323,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         DownloadStoreCallback.resolve(returningOn: rangeIOQueue, operation: { [store] in
             await store.resolve(submission, deadline: deadline)
         }, completion: { [self] result in
+            lock.withLock { retireHealthAttemptsLocked() }
             if case .persistenceFailed = result {
                 AppDiagnostics.record(.downloads, "downloads.session_persistence_unfinished", fields: [
                     "kind": .label("mutation"),
@@ -1506,13 +1515,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "winding_down": .bool(backgroundWakeCoordinator.isWindingDown),
             "expired_operations": .int(backgroundWakeCoordinator.snapshot.expiredOperationCount),
         ])
-        if !active {
-            rangeIOQueue.async { [self] in
-                if let current = lock.withLock({ healthCurrent }), current.resultStart > 0 {
-                    finishHealthResult("inactive", generation: current.generation)
-                }
-            }
-        }
+        if !active { stopHealthResults(outcome: "inactive") }
     }
 
     private func healthBytes(_ task: URLSessionTask) -> Int {
@@ -1535,16 +1538,22 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let generation = lock.withLock { () -> UInt64? in
             guard healthActive, !healthStarted else { return nil }
             healthStarted = true; healthActiveSince = healthNow
-            healthWaiting.formIntersection(rangeInflight.keys)
-            healthInvalidSamples = healthWaiting
+            retireHealthAttemptsLocked()
             return healthGeneration
         }
         guard let generation else { return }
+        rangeIOQueue.async { [self] in resumeDeferredHealthRefill() }
         scheduleHealth(after: healthPolicy.settleSeconds) { [weak self] in
             guard let self, self.lock.withLock({ self.healthActive && self.healthGeneration == generation }) else { return }
             self.urlSession.getAllTasks { tasks in
                 let now = self.healthNow
-                let baseline = Dictionary(uniqueKeysWithValues: tasks.map { ($0.taskIdentifier, self.healthBytes($0)) })
+                let baseline = self.lock.withLock { () -> [Int: Int] in
+                    guard self.healthActive, self.healthGeneration == generation else { return [:] }
+                    self.healthWaiting.formIntersection(self.rangeInflight.keys)
+                    // Settling is outside measurement. Only unresolved causes cross this boundary.
+                    self.healthInvalidSamples = self.healthWaiting
+                    return Dictionary(uniqueKeysWithValues: tasks.map { ($0.taskIdentifier, self.healthBytes($0)) })
+                }
                 self.scheduleHealth(after: self.healthPolicy.windowSeconds) { [weak self] in
                     self?.evaluateHealthWindow(baseline, since: now, generation: generation)
                 }
@@ -1561,8 +1570,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 lock.withLock {
                     healthCandidates = tasks.compactMap { task in
                         guard let entry = rangeInflight[task.taskIdentifier], let length = entry.segmentLength,
-                              let bytes = baseline[task.taskIdentifier], !healthInvalidSamples.contains(task.taskIdentifier),
-                              task.state == .running else { return nil }
+                              let bytes = baseline[task.taskIdentifier], task.state == .running else { return nil }
                         let decision = healthPolicy.decide(activeSeconds: healthNow - healthActiveSince,
                             sampleSeconds: seconds, baselineBytes: bytes, currentBytes: healthBytes(task),
                             rangeLength: length, creationContext: entry.creationContext,
@@ -1588,6 +1596,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
         guard let candidate else { return }
         let key = candidate.entry.attemptKey
+        if lock.withLock({ healthInvalidSamples.contains(candidate.task.taskIdentifier) }) {
+            finishHealthResult("window_deferred", generation: candidate.generation); return
+        }
         let decision = healthPolicy.decide(activeSeconds: healthPolicy.settleSeconds + candidate.seconds,
             sampleSeconds: candidate.seconds, baselineBytes: candidate.baseline,
             currentBytes: candidate.baseline + candidate.delta, rangeLength: candidate.entry.segmentLength ?? 0,
@@ -1650,6 +1661,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             pendingStaticRangeWorkCounts[key.ratingKey, default: 0] += 1
             healthUsed.insert(key)
             healthCurrent?.discarded = bytes
+            if let current = healthCurrent { healthRefills[key] = (current, currency) }
+            healthWaiting.remove(candidate.task.taskIdentifier)
             rangeInflight.removeValue(forKey: candidate.task.taskIdentifier)
             supersededRangeTaskIdentifiers.insert(candidate.task.taskIdentifier)
             return true
@@ -1668,48 +1681,98 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         #endif
         rangeIOQueue.async { [self] in
             defer { endPendingStaticRangeWork(ratingKey: key.ratingKey) }
-            _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferRebuilding, for: key, phase: "health_reissue"))
-            guard healthIsAuthorized(candidate.generation), isDelayedRetryCurrent(currency) else {
-                finishHealthResult("refill_deferred", generation: candidate.generation); return
-            }
-            do {
-                let identifier = try startRangeRemainder(ratingKey: key.ratingKey, with: candidate.entry.request!,
-                    expectedBytes: candidate.entry.expectedBytes, resetsRetryCount: false,
-                    remainderReasonOverride: "foreground_health", attemptID: key.attemptID,
-                    retryCurrency: currency, healthAuthorization: candidate.generation)
-                if identifier < 0 { finishHealthResult("body_settled", generation: candidate.generation) }
-            } catch { finishHealthResult("refill_deferred", generation: candidate.generation) }
+            refillHealthCandidate(candidate, currency: currency)
         }
     }
 
-    private func beginHealthResult(_ task: URLSessionTask, generation: UInt64) {
-        let selected = lock.withLock { () -> Bool in
-            guard healthCurrent?.generation == generation, healthCurrent?.newID == task.taskIdentifier else { return false }
-            healthCurrent?.resultStart = healthNow; return true
+    private func refillHealthCandidate(_ candidate: HealthCandidate, currency: DelayedRangeRetryCurrency) {
+        let key = candidate.entry.attemptKey
+        guard store.attemptAdmitsWork(key), !isRangeHalted(for: key), isDelayedRetryCurrent(currency) else {
+            lock.withLock { healthRefills.removeValue(forKey: key) }
+            finishHealthResult("refill_deferred", generation: candidate.generation); return
         }
-        guard selected else { return }
+        _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferRebuilding, for: key, phase: "health_reissue"))
+        guard healthIsAuthorized(candidate.generation) else {
+            finishHealthResult("refill_deferred", generation: candidate.generation); return
+        }
+        do {
+            let identifier = try startRangeRemainder(ratingKey: key.ratingKey, with: candidate.entry.request!,
+                expectedBytes: candidate.entry.expectedBytes, resetsRetryCount: false,
+                remainderReasonOverride: "foreground_health", attemptID: key.attemptID,
+                retryCurrency: currency, healthAuthorization: candidate.generation)
+            if identifier < 0 {
+                lock.withLock { healthRefills.removeValue(forKey: key) }
+                finishHealthResult("body_settled", generation: candidate.generation)
+            }
+        } catch { finishHealthResult("refill_deferred", generation: candidate.generation) }
+    }
+
+    private func resumeDeferredHealthRefill() {
+        let intent = lock.withLock { () -> (HealthCandidate, DelayedRangeRetryCurrency)? in
+            guard healthActive, healthCurrent == nil, !backgroundWakeCoordinator.isWindingDown,
+                  let (saved, currency) = healthRefills.values.first(where: { $0.0.generation != healthGeneration }) else { return nil }
+            var candidate = saved
+            candidate.generation = healthGeneration
+            candidate.newID = -1
+            healthCurrent = candidate
+            healthRefills[candidate.entry.attemptKey] = (candidate, currency)
+            pendingStaticRangeWorkCounts[candidate.entry.ratingKey, default: 0] += 1
+            return (candidate, currency)
+        }
+        guard let (candidate, currency) = intent else { return }
+        defer { endPendingStaticRangeWork(ratingKey: candidate.entry.ratingKey) }
+        refillHealthCandidate(candidate, currency: currency)
+    }
+
+    private func beginHealthResult(_ task: URLSessionTask) {
+        // Mutation ownership ends at resume. Bounded result timers can overlap other rows.
+        runNextHealthCandidate()
+        resumeDeferredHealthRefill()
+        guard lock.withLock({ healthResults[task.taskIdentifier] != nil }) else { return }
         scheduleHealth(after: healthPolicy.resultSeconds) { [weak self] in
-            guard let self else { return }
-            self.rangeIOQueue.async { [self] in
-                guard self.lock.withLock({ self.healthCurrent?.newID == task.taskIdentifier }) else { return }
-                self.finishHealthResult("observed", generation: generation, postBytes: self.healthBytes(task))
-            }
+            self?.stopHealthResult(taskID: task.taskIdentifier, outcome: "observed")
         }
     }
 
-    private func finishHealthResult(_ outcome: String, generation: UInt64, postBytes: Int = 0) {
+    private func stopHealthResult(taskID: Int, outcome: String) {
+        guard let candidate = lock.withLock({ healthResults.removeValue(forKey: taskID) }) else { return }
+        emitHealthResult(candidate, outcome: outcome, postBytes: candidate.resultTask.map(healthBytes) ?? 0)
+    }
+
+    private func stopHealthResults(for key: DownloadAttemptKey? = nil, outcome: String) {
+        let ids = lock.withLock { healthResults.filter { key == nil || $0.value.entry.attemptKey == key }.map(\.key) }
+        for id in ids { stopHealthResult(taskID: id, outcome: outcome) }
+    }
+
+    private func finishHealthResult(_ outcome: String, generation: UInt64) {
         let candidate = lock.withLock { () -> HealthCandidate? in
             guard healthCurrent?.generation == generation else { return nil }
             defer { healthCurrent = nil }; return healthCurrent
         }
         guard let candidate else { return }
-        let duration = candidate.resultStart > 0 ? healthNow - candidate.resultStart : 0
+        emitHealthResult(candidate, outcome: outcome)
+        runNextHealthCandidate()
+        // Each retained intent is retried once per renewed foreground generation.
+        resumeDeferredHealthRefill()
+    }
+
+    private func emitHealthResult(_ candidate: HealthCandidate, outcome: String, postBytes: Int = 0) {
+        let duration = candidate.resultTask != nil ? healthNow - candidate.resultStart : 0
         recordHealth("downloads.range_health_result", candidate, outcome: outcome,
                      postBytes: postBytes, postSeconds: duration)
         #if DEBUG
         healthResultForTesting?(outcome)
         #endif
-        runNextHealthCandidate()
+    }
+
+    /// Pause retains the budget; terminal/deleted attempts have no future experimental work.
+    private func retireHealthAttemptsLocked() {
+        healthWaiting.formIntersection(rangeInflight.keys)
+        healthInvalidSamples.formIntersection(rangeInflight.keys)
+        healthUsed = healthUsed.filter { key in
+            store.lifecycleState(for: key).map { !$0.lifecycle.isTerminal } ?? false
+        }
+        healthRefills = healthRefills.filter { store.attemptAdmitsWork($0.key) && rangeHaltKinds[$0.key] == nil }
     }
 
     private func recordHealth(_ event: String, _ candidate: HealthCandidate, outcome: String, postBytes: Int = 0, postSeconds: Double = 0) {
@@ -1774,6 +1837,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     guard healthActive, healthGeneration == authorization,
                           rangeInflight[task.taskIdentifier]?.attemptKey == key,
                           !backgroundWakeCoordinator.isWindingDown else { return false }
+                    // Register observation under the same lock as resume, so a concurrent stop
+                    // cannot slip between the network edge and measurement ownership.
+                    if var current = healthCurrent, current.generation == authorization,
+                       current.newID == task.taskIdentifier {
+                        current.resultStart = healthNow; current.resultTask = task
+                        healthResults[task.taskIdentifier] = current
+                        healthRefills.removeValue(forKey: key)
+                        healthCurrent = nil
+                    }
                     task.resume(); return true
                 }
             } ?? { task.resume(); return true }()
@@ -1785,7 +1857,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     "session_kind": .label(urlSession.configuration.identifier == nil ? "default" : "background"),
                 ])
             }
-            if let healthAuthorization { beginHealthResult(task, generation: healthAuthorization) }
+            if healthAuthorization != nil { beginHealthResult(task) }
         })
     }
 
@@ -1943,7 +2015,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     private func endPendingBackgroundCompletionOperation(_ operation: DownloadWakeOperation) {
+        lock.withLock { retireHealthAttemptsLocked() }
         applyBackgroundWakeDrain(backgroundWakeCoordinator.endOperation(operation))
+        // A renewed foreground pass may have found an expired physical writer still settling.
+        rangeIOQueue.async { [weak self] in self?.resumeDeferredHealthRefill() }
     }
 
     func noteBackgroundCompletionHandlerStored(
@@ -3003,6 +3078,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         for (heldOffset, held) in heldRangeSegments[attemptKey] ?? [:] {
             liveSegments.append(StaticRangeSegmentPlan(offset: heldOffset, length: held.length))
         }
+        // A finished delegate body is coverage before the assembly queue receives it. Held
+        // bodies also retain claims, so count each interval once against the depth-two budget.
+        for claim in claimedRangeBodyURLs.values where claim.key == attemptKey {
+            guard let offset = claim.offset, claim.bytes > 0 else { continue }
+            let plan = StaticRangeSegmentPlan(offset: offset, length: claim.bytes)
+            if !liveSegments.contains(plan) { liveSegments.append(plan) }
+        }
         lock.unlock()
 
         let plans = StaticRangeSegmentQueuePolicy.segmentsToEnqueue(
@@ -3203,7 +3285,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         loggedProgressMilestones[task.taskIdentifier] = []
         lastRangeProgressDiagnostic.removeValue(forKey: task.taskIdentifier)
         rangeInflight[task.taskIdentifier] = candidate
-        if healthAuthorization != nil, healthCurrent?.entry.baseOffset == plan.offset {
+        if healthAuthorization == healthCurrent?.generation, healthAuthorization != nil, healthCurrent?.newID == -1 {
             healthCurrent?.newID = task.taskIdentifier
         }
         lock.unlock()
@@ -3486,7 +3568,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // A pause never downgrades an existing cancel halt: the cancel's caller may already be
         // deleting the partial, and preserving a body onto it would resurrect deleted bytes.
         installPauseHaltLocked(for: attemptKey, cause: .user)
+        healthRefills.removeValue(forKey: attemptKey)
         lock.unlock()
+        stopHealthResults(for: attemptKey, outcome: "paused")
         // Capture transfer shape before cancellation mutates the live set. Closed trains clear any
         // stale blob authority; the single open-ended fallback retains resumable OS-temp progress.
         let pauseContext = makeRangePauseContext(entries: Array(rangeEntriesForKey))
@@ -3730,6 +3814,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // append/resurrect the file the caller is about to delete or start replacement work.
         delayedRetryGenerations[attemptKey, default: 0] += 1
         rangeHaltKinds[attemptKey] = .cancel
+        healthRefills.removeValue(forKey: attemptKey)
+        retireHealthAttemptsLocked()
         // Advance the train generation: a finished body already in the delegate→IO hop must be
         // discarded, not appended at offset 0 of a re-download's file — and without the bump a
         // legitimate delete race trips the pre-append drift assertion (a DEBUG crash).
@@ -3741,6 +3827,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         rangeHTTPRehydrateCounts.removeValue(forKey: attemptKey)
         rangeBlobResumeCounts.removeValue(forKey: attemptKey)
         lock.unlock()
+        stopHealthResults(for: attemptKey, outcome: "cancelled")
         // D6: the consecutive-truncation parking budget is keyed by ratingKey and guarded by
         // `finalizationStateQueue` (not `lock`), so it can't be cleared inside the block above.
         // Clear it here for the same M-7 reason: the row is being cancelled/deleted, so a
@@ -4459,8 +4546,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             try? fileManager.removeItem(at: location)
             return
         }
+        stopHealthResult(taskID: taskIdentifier,
+                         outcome: (response as? HTTPURLResponse).map { $0.statusCode >= 400 } == true ? "error" : "completed")
+        let stash = rangeBodyStashURL(taskIdentifier: taskIdentifier, offset: entry.baseOffset)
+        let bodyBytes = fileSize(at: location) ?? 0
+        var handedOffStash = false
+        defer { if !handedOffStash { releaseRangeBodyClaim(stash) } }
         lock.lock()
+        claimedRangeBodyURLs[stash.standardizedFileURL] = (entry.attemptKey, bodyBytes, entry.baseOffset)
         rangeInflight.removeValue(forKey: taskIdentifier)
+        healthWaiting.remove(taskIdentifier)
+        healthInvalidSamples.remove(taskIdentifier)
         // B00: take a finish hold in the same critical section that drops live tracking, so the
         // stale-row self-heal never sees this body as abandoned while it is stashed and handed to
         // its append/finalize/retry successor (each acquires its own hold before this one ends).
@@ -4493,10 +4589,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // #220: stash the OS temp FIRST — `location` is only guaranteed valid until this delegate
         // returns, and the payload is irreplaceable. Classification, diagnostics, and the write
         // decision all run off the stash; branches that don't want the body delete the stash.
-        let stash = rangeBodyStashURL(taskIdentifier: taskIdentifier, offset: entry.baseOffset)
-        claimRangeBody(stash, for: entry.attemptKey, bytes: fileSize(at: location) ?? 0, offset: entry.baseOffset)
-        var handedOffStash = false
-        defer { if !handedOffStash { releaseRangeBodyClaim(stash) } }
         do {
             try? fileManager.removeItem(at: stash)
             try fileManager.moveItem(at: location, to: stash)
@@ -6183,6 +6275,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Execute only after DownloadManager has installed the exact `.finalizer` registry lease.
     func executeFinalizerRequest(_ request: FinalizerRequest) async {
         defer {
+            lock.withLock { retireHealthAttemptsLocked() }
             let outcome: RevalidationRequestOutcome = Task.isCancelled ? .cancelled : .finished
             abandonFinalizerRequest(request, revalidationOutcome: outcome)
         }
@@ -7220,6 +7313,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     func urlSession(_ session: URLSession,
                     task: URLSessionTask,
                     didCompleteWithError error: Error?) {
+        stopHealthResult(taskID: task.taskIdentifier, outcome: error == nil ? "completed" : "error")
+        lock.withLock {
+            healthWaiting.remove(task.taskIdentifier)
+            healthInvalidSamples.remove(task.taskIdentifier)
+        }
         guard !rejectTaskCallback(task) else { return }
         // #169: opaque and range tasks now share ONE session, so the task id uniquely identifies its
         // lane (no independent id spaces). A range task's SUCCESS path is fully handled in

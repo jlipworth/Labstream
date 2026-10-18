@@ -42,32 +42,103 @@ struct ForegroundStaticRangeHealthTests {
         }
     }
 
-    @Test("Global serialization uses real elapsed time for a waiting candidate's fresh rate")
-    func queuedCandidateUsesElapsedTime() async throws {
-        try await withSession(bytes: segment) { session, store, requests, clock, counters, _ in
+    @Test("Two rows with two crawling background tasks each reissue by second eighty")
+    func resultObservationDoesNotSerializeRows() async throws {
+        try await withSession { session, store, requests, clock, counters, _ in
             let second = DownloadAttemptKey(ratingKey: "plex:second", attemptID: DownloadAttemptID(rawValue: "second")!)
             let row = DownloadRecord(ratingKey: second.ratingKey, attemptID: second.attemptID, title: "Fixture",
                 localURL: store.destinationURL(ratingKey: second.ratingKey, ext: "mp4"), status: .downloading,
                 metadata: OfflineMetadata(ratingKey: second.ratingKey, title: "Fixture", type: "movie",
-                    sourcePartSize: segment, backendKind: .plex, resumeMode: .staticByteRange))
+                    sourcePartSize: 2 * segment, backendKind: .plex, resumeMode: .staticByteRange))
             try #require(store.createAttemptOwnedRecord(row, attemptID: second.attemptID) == .committed(second))
             session.noteBackgroundCompletionHandlerStored(identifier: BackgroundDownloadSession.identifier)
             try session.start(ratingKey: second.ratingKey, from: URL(string: "https://example.invalid/second")!,
-                expectedBytes: segment, byteRangeCheckpoint: true)
+                expectedBytes: 2 * segment, byteRangeCheckpoint: true)
             defer { session.cancel(ratingKey: second.ratingKey) }
-            try #require(await requests.waitForCount(2).count == 2)
+            try #require(await requests.waitForCount(4).count == 4)
             session.urlSessionDidFinishEvents(forBackgroundURLSession: URLSession.shared)
             try #require(await wait { session.diagnosticSnapshot(includePendingTempCleanupBytes: false).backgroundCompletionHandlerCount == 0 })
-            let waiting = try #require(await session.healthTasksForTesting().max { $0.taskIdentifier < $1.taskIdentifier })
+            let originals = await session.healthTasksForTesting().sorted { $0.taskIdentifier < $1.taskIdentifier }
             try await baseline(session, clock)
-            counters.withLock { $0[waiting.taskIdentifier] = 60 * 100 * 1_024 }
+            counters.withLock { values in
+                for task in originals { values[task.taskIdentifier] = 60 * 60 * 1_024 }
+            }
             clock.advance(to: 70)
-            try #require(await requests.waitForCount(3).count == 3)
-            #expect(await requests.count == 3) // the second row waits for the first result
-            try #require(await wait { self.hasTimer(clock, at: 100) })
-            counters.withLock { $0[waiting.taskIdentifier] = 90 * 100 * 1_024 }
-            clock.advance(to: 100)
-            #expect(await requests.waitForCount(4).count == 4)
+            // No result timer is fired: both serialized mutations must settle in this window.
+            try #require(await requests.waitForCount(6).count == 6)
+            clock.advance(to: 80)
+            let live = await session.healthTasksForTesting()
+            for pair in [Array(originals.prefix(2)), Array(originals.suffix(2))] {
+                #expect(pair.filter { old in live.contains { $0.taskIdentifier == old.taskIdentifier } }.count == 1)
+            }
+            #expect(live.count == 4)
+            #expect(await requests.count == 6)
+        }
+    }
+
+    @Test("A sibling finishing after claim remains coverage before its application")
+    func siblingFinishesBetweenClaimAndRefill() async throws {
+        try await withSession(bytes: segment + 64) { session, store, requests, clock, _, key in
+            let tail = try #require(await requests.waitForCount(2).first { $0.range == "bytes=\(segment)-\(segment + 63)" })
+            let claimed = P6Acknowledgement<Bool>()
+            let finished = P6Acknowledgement<Bool>()
+            let suspended = Mutex(false)
+            defer { if suspended.withLock({ $0 }) { session.releaseRangeIOForTesting() } }
+            session.healthDidClaimForTesting = {
+                session.holdRangeIOForTesting()
+                suspended.withLock { $0 = true }
+                claimed.signal(true)
+            }
+            session.rangeTrackingDroppedForTesting = { _ in finished.signal(true) }
+            try await baseline(session, clock)
+            clock.advance(to: 70)
+            try #require(await claimed.wait(seconds: 3) == true)
+            tail.finish(status: 206, body: Data(repeating: 7, count: 64), headers: [
+                "Content-Range": "bytes \(segment)-\(segment + 63)/\(segment + 64)", "ETag": "\"fixture\"",
+            ])
+            try #require(await finished.wait(seconds: 3) == true)
+            #expect(session.claimedRangeBodiesForTesting().count == 1)
+            // The refill was enqueued by claim, ahead of this sibling's assembly callback.
+            suspended.withLock { $0 = false }
+            session.releaseRangeIOForTesting()
+            let all = await requests.waitForCount(3)
+            try #require(await wait { store.record(for: key)?.metadata?.heldRangeSegments?.count == 1 })
+            #expect(all.filter { $0.range == tail.range }.count == 1)
+            let live = await session.healthTasksForTesting()
+            #expect(live.count + (store.record(for: key)?.metadata?.heldRangeSegments?.count ?? 0) == 2)
+            #expect(await requests.count == 3)
+        }
+    }
+
+    @Test("Connectivity restored before baseline is eligible; interruption inside measurement defers", arguments: [false, true])
+    func connectivityWindow(interruptDuringWindow: Bool) async throws {
+        try await withSession(bytes: segment) { session, _, requests, clock, counters, _ in
+            let task = try #require(await session.healthTasksForTesting().first as? URLSessionDownloadTask)
+            let result = P6Acknowledgement<String>()
+            session.healthResultForTesting = { result.signal($0) }
+            session.noteForegroundAuthorization()
+            session.noteStaticRangeHealthActivity(true)
+            session.urlSession(URLSession.shared, taskIsWaitingForConnectivity: task)
+            session.observeStaticRangeHealthAfterReconciliation()
+            clock.advance(to: 5)
+            session.urlSession(URLSession.shared, downloadTask: task, didWriteData: 1_024,
+                totalBytesWritten: 1_024, totalBytesExpectedToWrite: Int64(segment))
+            counters.withLock { $0[task.taskIdentifier] = 1_024 }
+            clock.advance(to: 10)
+            try #require(await wait { hasTimer(clock, at: 70) })
+            if interruptDuringWindow {
+                clock.advance(to: 40)
+                session.urlSession(URLSession.shared, taskIsWaitingForConnectivity: task)
+                clock.advance(to: 45)
+                session.urlSession(URLSession.shared, downloadTask: task, didWriteData: 1_024,
+                    totalBytesWritten: 2_048, totalBytesExpectedToWrite: Int64(segment))
+            }
+            counters.withLock { $0[task.taskIdentifier] = 60 * 60 * 1_024 }
+            clock.advance(to: 70)
+            if interruptDuringWindow {
+                #expect(await result.wait(seconds: 3) == "window_deferred")
+                #expect(await requests.count == 1)
+            } else { #expect(await requests.waitForCount(2).count == 2) }
         }
     }
 
@@ -135,7 +206,7 @@ struct ForegroundStaticRangeHealthTests {
         }
     }
 
-    @Test("Inactivity during the real resume flush parks the replacement", arguments: [false, true])
+    @Test("Inactivity during the real resume flush parks then refills the missing head beside a live sibling", arguments: [false, true])
     func inactiveOrFailedFlush(fails: Bool) async throws {
         let hold = P6Hold()
         let failWrite = Mutex(false)
@@ -144,23 +215,42 @@ struct ForegroundStaticRangeHealthTests {
             hold.hit()
             if failWrite.withLock({ $0 }) { throw CocoaError(.fileWriteUnknown) }
             try DownloadIndexFileCommitter().commit(data, to: url)
-        }, bytes: segment) { session, store, requests, clock, _, key in
+        }) { session, store, requests, clock, counters, key in
+            let tail = try #require(await session.healthTasksForTesting().max { $0.taskIdentifier < $1.taskIdentifier })
             let result = P6Acknowledgement<String>()
             session.healthResultForTesting = { result.signal($0) }
             session.healthDidClaimForTesting = { hold.arm() }
             try await baseline(session, clock)
+            counters.withLock { $0[tail.taskIdentifier] = 60 * 1_024 * 1_024 }
             clock.advance(to: 70)
             try #require(await hold.acknowledgement.wait(seconds: 3) == true)
             // Joining the range queue proves the replacement registered and its resume is awaiting this write.
             await session.drainRangeIOForTesting()
-            #expect(await requests.count == 1)
+            #expect(await requests.count == 2)
             if fails { failWrite.withLock { $0 = true } }
             else { session.noteStaticRangeHealthActivity(false) }
             hold.release.signal()
             #expect(await result.wait(seconds: 3) == "resume_deferred")
-            #expect(await requests.count == 1)
+            #expect(await requests.count == 2)
             #expect(store.ownsAttempt(key))
-            #expect(await wait { !session.isTrackingTransfer(ratingKey: key.ratingKey) })
+            #expect(await session.healthTasksForTesting().contains { $0.taskIdentifier == tail.taskIdentifier })
+            if !fails {
+                session.noteForegroundAuthorization()
+                session.noteStaticRangeHealthActivity(true)
+                session.observeStaticRangeHealthAfterReconciliation()
+                #expect(await requests.waitForCount(3).count == 3)
+                let live = await session.healthTasksForTesting()
+                #expect(live.count == 2)
+                #expect(live.contains { $0.taskIdentifier == tail.taskIdentifier })
+                // Renewed observation cannot spend another recovery budget for this attempt.
+                clock.advance(to: 80)
+                try #require(await wait { hasTimer(clock, at: 140) })
+                let evaluated = P6Acknowledgement<Bool>()
+                session.healthWindowEvaluatedForTesting = { evaluated.signal(true) }
+                clock.advance(to: 140)
+                try #require(await evaluated.wait(seconds: 3) == true)
+                #expect(await requests.count == 3)
+            }
         }
     }
 
@@ -231,6 +321,121 @@ struct ForegroundStaticRangeHealthTests {
         }
     }
 
+    @Test("Pause, delete and backend sign-out revoke an in-flight recovery", arguments: ["pause", "delete", "sign_out"])
+    @MainActor
+    func userIntentDuringRecovery(action: String) async throws {
+        try await withSession(bytes: segment) { session, store, requests, clock, _, key in
+            let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "health-recovery"))
+            let manager = DownloadManager(appModel: model, store: store, session: session,
+                                          registerForBackgroundEvents: false)
+            try #require(await manager.awaitStartupRecoveryForTesting())
+            manager.setQueuePausedForTesting(false)
+            manager.refreshRecords()
+            let claimed = P6Hold(); claimed.arm()
+            defer { claimed.release.signal() }
+            session.healthDidClaimForTesting = { claimed.hit() }
+            let result = P6Acknowledgement<String>()
+            session.healthResultForTesting = { result.signal($0) }
+            try await baseline(session, clock)
+            clock.advance(to: 70)
+            try #require(await claimed.acknowledgement.wait(seconds: 3) == true)
+            switch action {
+            case "pause": manager.pause(ratingKey: key.ratingKey)
+            case "delete":
+                session.haltForDeletion(attemptKey: key)
+                #expect(store.remove(for: key) == .applied)
+            default: manager.pauseDownloadsForBackendSignOut(.plex)
+            }
+            claimed.release.signal()
+            #expect(await result.wait(seconds: 3) == "refill_deferred")
+            try #require(await p6AwaitTask(Task { await manager.drainManagerOperationsForTesting() }))
+            session.noteStaticRangeHealthActivity(false)
+            session.noteStaticRangeHealthActivity(true)
+            session.observeStaticRangeHealthAfterReconciliation()
+            await session.drainRangeIOForTesting()
+            #expect(await requests.count == 1)
+            #expect(!session.isTrackingTransfer(ratingKey: key.ratingKey))
+            if action == "delete" { #expect(store.record(for: key) == nil) }
+            else { #expect(store.record(for: key)?.status == .paused) }
+        }
+    }
+
+    @Test("Result reports stop-edge rate and independently answers the three evidence questions",
+          arguments: ["paused", "cancelled", "completed", "error"])
+    func renderedStopResult(outcome: String) async throws {
+        let enabled = AppDiagnostics.isEnabled
+        AppDiagnostics.setEnabled(true)
+        defer { AppDiagnostics.setEnabled(enabled) }
+        let bytes = 4 * 1_024 * 1_024
+        try await withSession(bytes: bytes) { session, _, requests, clock, counters, key in
+            try await baseline(session, clock)
+            clock.advance(to: 70)
+            try #require(await requests.waitForCount(2).count == 2)
+            try #require(await wait { hasTimer(clock, at: 100) })
+            let task = try #require(await session.healthTasksForTesting().first)
+            let result = P6Acknowledgement<String>()
+            session.healthResultForTesting = { result.signal($0) }
+            counters.withLock { $0[task.taskIdentifier] = bytes }
+            clock.advance(to: 75)
+            switch outcome {
+            case "paused": session.pause(ratingKey: key.ratingKey)
+            case "cancelled":
+                session.urlSession(URLSession.shared, taskIsWaitingForConnectivity: task)
+                session.cancel(ratingKey: key.ratingKey)
+            case "error": session.urlSession(URLSession.shared, task: task,
+                didCompleteWithError: URLError(.networkConnectionLost))
+            default:
+                let request = try #require(await requests.waitForCount(2).last)
+                request.finish(status: 206, body: Data(repeating: 7, count: bytes),
+                    headers: ["Content-Range": "bytes 0-\(bytes - 1)/\(bytes)"])
+            }
+            #expect(await result.wait(seconds: 3) == outcome)
+            if outcome == "paused" { #expect(session.healthBookkeepingForTesting.used == 1) }
+            if outcome == "cancelled" { #expect(session.healthBookkeepingForTesting.used == 1) }
+            let event = try #require(AppDiagnostics.events().last {
+                $0.name == "downloads.range_health_result" && $0.fields["outcome"] == .label(outcome)
+                    && $0.fields["new_task_id"] == .int(task.taskIdentifier)
+            })
+            #expect(event.fields["post_seconds"] == .double(5))
+            #expect(event.fields["post_rate"] == .double(Double(bytes) / 5))
+            #expect(event.fields["pre_rate"] == .double(0))
+            let report = DiagnosticReportRenderer.render(context: .init(product: "Labstream",
+                appVersion: "1", appBuild: "1", operatingSystem: "macOS", deviceName: "Fixture",
+                backend: "Plex", selectedQuality: "Original", loggingEnabled: true),
+                events: Array(repeating: DiagnosticEvent(category: .downloads, name: "fixture.progress"), count: 79) + [event],
+                maxEvents: AppDiagnostics.maxReportEvents)
+            #expect(event.fields["old_task_id"] != event.fields["new_task_id"])
+            for evidence in ["\"creation_context\":\"background_wake\"", "\"old_task_id\":", "\"new_task_id\":",
+                             "\"pre_rate\":0", "\"post_rate\":838860.8", "\"post_seconds\":5", "\"outcome\":\"\(outcome)\""] {
+                #expect(report.contains(evidence))
+            }
+            // Its original timer must never emit another result or dilute the rate to 30 s.
+            clock.advance(to: 100)
+            #expect(AppDiagnostics.events().filter {
+                $0.name == "downloads.range_health_result" && $0.fields["new_task_id"] == .int(task.taskIdentifier)
+            }.last?.fields["outcome"] == .label(outcome))
+        }
+    }
+
+    @Test("Terminal attempts retire the process-local budget and obsolete connectivity entries")
+    func terminalBookkeeping() async throws {
+        try await withSession(bytes: segment) { session, store, requests, clock, _, key in
+            try await baseline(session, clock)
+            clock.advance(to: 70)
+            try #require(await requests.waitForCount(2).count == 2)
+            try #require(await wait { hasTimer(clock, at: 100) })
+            #expect(session.healthBookkeepingForTesting.used == 1)
+            let task = try #require(await session.healthTasksForTesting().first)
+            session.urlSession(URLSession.shared, taskIsWaitingForConnectivity: task)
+            #expect(session.healthBookkeepingForTesting.waiting == 1)
+            let request = try #require(await requests.waitForCount(2).last)
+            request.finish(status: 404, body: Data([0]), headers: [:])
+            try #require(await wait { store.lifecycleState(for: key)?.lifecycle == .failed })
+            try #require(await wait { session.healthBookkeepingForTesting.used == 0 })
+            #expect(session.healthBookkeepingForTesting.waiting == 0)
+        }
+    }
+
     private func hasTimer(_ clock: P6WakeClock, at seconds: UInt64) -> Bool {
         clock.state.withLock { $0.timers.contains { $0.0.kind == .foregroundHealth && $0.0.deadline == seconds * 1_000_000_000 } }
     }
@@ -250,6 +455,7 @@ struct ForegroundStaticRangeHealthTests {
         return predicate()
     }
     private func withSession(index: DownloadStore.IndexPersistence = .live, bytes: Int? = nil,
+        isolation: isolated (any Actor)? = #isolation,
         _ body: (BackgroundDownloadSession, DownloadStore, HeldRangeRequests, P6WakeClock,
                  HealthCounters, DownloadAttemptKey) async throws -> Void) async throws {
         let fixture = try P6Fixture()

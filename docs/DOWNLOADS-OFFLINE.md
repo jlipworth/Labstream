@@ -182,22 +182,30 @@ below 128 KiB/s with more than ten minutes remaining at that rate. Zero progress
 window. A task with at most 256 MiB of nondurable body may be plain-cancelled and reissued on the
 same session; a fresh counter must still meet the cap immediately before cancellation. Exactly
 256 MiB is allowed. One exact attempt gets at most one recovery per process, with one operation
-in flight globally. Unknown relaunch provenance is observed and diagnosed without reissue.
+in flight globally. The 30-second result observations overlap subsequent rows' recoveries, so
+both rows in the two-row/two-task crawl can reissue around seconds 70–80 after reconciliation.
+Unknown relaunch provenance is observed and diagnosed without reissue. Eligibility starts at the
+baseline boundary: connectivity restored during settling does not invalidate the subsequent
+window; an interruption inside measurement produces a deferred result.
 
 The selected task alone loses its nondurable body. The attempt, durable checkpoint, held tail,
 healthy sibling, resource validator, train epoch and 512 MiB/depth-two sizing survive. Checkpoint
 failure leaves the original task running. Inactivity or P6 winding-down at the real persistence-to-
-resume edge parks the replacement with existing continuation intent; expired physical workers
-retain their leases and defer recovery. No health state or revocation history is persisted, so a
-kill loses provenance and the experimental budget; normal reattachment may adopt the old task.
+resume edge parks the replacement with an exact-attempt refill intent. Renewed foreground
+reconciliation runs the gap planner even beside a live sibling, without spending another recovery.
+Finished bodies remain planner coverage throughout the delegate-to-assembly handoff, including
+before they become held. Expired physical workers retain their leases and defer recovery. No health
+state or revocation history is persisted, so a kill loses provenance and the experimental budget; normal reattachment may adopt the old task.
 
 Diagnostics extend `downloads.range_start` with creation context, session kind and registration
 phase, and distinguish actual `downloads.range_resume`. One `downloads.range_health_reissue`
 candidate event is paired with `downloads.range_health_result` after about 30 active seconds
-(or a deferred/aborted outcome); results repeat provenance, exact pre/post counters and rates,
+or at the actual pause, cancel, error, completion or inactive edge. Results use that stop's elapsed
+interval and outcome, and repeat provenance, exact pre/post counters and rates,
 old/new task IDs and discarded bytes. `downloads.range_health_foreground` records aggregate
-activity edges. There are no periodic healthy verdicts. Persistent OS scheduling treatment is a
-hypothesis; paired device evidence and hardware acceptance remain pending.
+activity edges. Terminal-attempt budgets and obsolete connectivity entries are retired; pauses
+retain the one-shot budget. There are no periodic healthy verdicts. Persistent OS scheduling
+treatment is a hypothesis; paired device evidence and hardware acceptance remain pending.
 
 Downloading while the app is backgrounded, suspended, or the device is locked/asleep is
 fundamentally constrained by the platform, not by the server or the app:

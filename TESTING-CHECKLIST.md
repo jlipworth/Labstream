@@ -372,12 +372,20 @@ background-session registration, or migration/recovery work.
       for ten minutes, then keep Labstream continuously active for at least two minutes. Export
       after `downloads.range_health_result`. Confirm `background_wake` provenance, the 10 s settle
       plus 60 s counter window, selected old/new task IDs, discarded bytes (at most 256 MiB), and
-      paired pre/post rates on the same session. Repeat with one row and no fast peer. A failed
+      paired pre/post rates on the same session. With two rows and two crawling tasks each, confirm
+      one reissue per row around seconds 70–80; result observation must not delay the second row.
+      Pause, cancel, error or completion before 30 seconds must report its actual elapsed rate and
+      outcome. Repeat with one row and no fast peer. A failed
       improvement must not trigger another recovery of that attempt in the same process.
 - [ ] #409 negative controls: uniformly slow networking, network loss, near-complete tasks,
       bodies over 256 MiB, unknown relaunch provenance, queue pause, inactivity during persistence,
-      and admission settings 1/3/5. Healthy siblings and held tails survive; recovery holds its
-      admission slot. Relaunch may adopt old tasks with unknown provenance and loses the process
+      and admission settings 1/3/5. Restore connectivity before baseline and confirm a subsequent
+      uninterrupted window is eligible; interrupt inside that window and confirm deferral. Reactivate
+      after inactivity during replacement persistence: the missing head must resume beside its live
+      sibling without another recovery budget. Race a sibling finish after claim and before refill:
+      no duplicate range or depth above two including held bodies. Pause, delete and backend sign-out
+      during recovery must prevent replacement. Healthy siblings and held tails survive; recovery
+      holds its admission slot. Relaunch may adopt old tasks with unknown provenance and loses the process
       budget; it must not infer background creation. If still crawling, export before/after manual
       pause/resume. Complete each download and verify offline playback and storage cleanup across
       available static backend routes. OS scheduling remains a hypothesis and hardware acceptance
