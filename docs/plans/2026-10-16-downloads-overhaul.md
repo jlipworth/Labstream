@@ -432,6 +432,203 @@ Acceptance is a phase's pins and inventory rows staying green.
     single intent on the main actor, as before P2. Moving them off-main changes their ordering
     contracts and belongs with the store-internals work in P6.
 
+- **2026-10-17 — P3a implemented** on `downloads/p3-lifecycle`, stacked on P2.
+  - **Persisted lifecycle and history.** Rows carry an authoritative lifecycle and attempt
+    history as additive v4 fields; `status` is derived from them. Rows written by older binaries
+    are rebuilt structurally on load.
+  - **One reducer.** Every production status change goes through `DownloadLifecycleReducer`: the
+    session's ~40 writes, the manager's and extensions' writes, the store's own promotion and
+    progress writes, and reconcile. Reconcile's file deletions now run outside the store lock.
+    `ci-hygiene` rejects legacy status writes and direct row-status assignment.
+  - **Bugs fixed:** B09, B10, B54 (cross-relaunch half), B16, B21 and B61.
+  - **Conversion work.** The session and manager call sites were converted by two parallel
+    agents. Their four reducer gaps were closed with reducer rules: `requeued`, Plex prep landing
+    on `admitted`, planned rows retrying like failed ones, and a complete body re-entering
+    finalizing.
+  - **Season admission stays authoritative in the legacy flag.** A planned row leaves through
+    Retry and stays visibly failed meanwhile. P4's admission coordinator owns `admissionGranted`.
+  - **Deviations from revision 2.1:**
+    - The pins that need the new store API landed with the commits that made them expressible,
+      not up front.
+    - Not yet written:
+      - the B02 pause-during-rebuild pin;
+      - the season commit → every resume entry point pin (B62/B63);
+      - a P1/P2 re-encode pin with pending artifact effects.
+    - Durable effects are executed by the existing call sites, chosen by the reducer, rather than
+      through a new effect queue. Every effect maps onto an existing artifact recipe, or onto
+      reconcile's post-lock deletions.
+- **2026-10-17 — P3a after-review, round 1 (GPT-6.1-Sol, high): not ready, 8 findings.** All
+  eight were valid. Each fix below has a pin, red-checked against the unfixed code where a pin
+  can express it.
+  - **Pause stranded a finalizing row.** The reducer kept it finalizing while the manager
+    cancelled its finalizer. Pause now leaves a finalizing body and its finalizer alone.
+  - **Reconcile could delete a static checkpoint.** A resume manifest masked the durable
+    partial, and a manifest counted even when its blob was gone. The pre-P3a precedence is
+    restored: the static partial comes first, and a blob counts only while it exists.
+  - **Plex Retry lost truncation strikes.** That path removes the failed row before seeding its
+    replacement, so there was nothing to inherit from. A non-user removal now hands its strikes
+    to the replacement in memory, matching the pre-P3a session counter. Delete and cancel never
+    carry strikes.
+  - **A relaunch could count one truncated body twice.** The outcome ID now names the body
+    (attempt and byte count) rather than the finalizer run. A working-body truncation goes
+    through the reducer's `finalizeOutcome`, so the strike, the verdict and the lifecycle
+    commit in one revision.
+  - **Probe-miss and repeated-truncation publication skipped `unverifiedReason`.** Both now
+    record it through `finalizeOutcome` before the promotion.
+  - **B10 capture.** P3a.6 is implemented in a reduced form:
+    - The attempt working path (`.attempt-stage-v1-<digest>.stage`) is attempt-unique and named
+      by the row, so it serves as the capture path, and steps 1 and 3 collapse into one rename.
+    - The parent directory is fsynced after the rename.
+    - `bodyAtWorking` must be accepted, and in the foreground committed, before validation
+      starts; a stale owner stops. While a background completion handler is pending, acceptance
+      is admission-only, as for every other session write, and the completion gate owns the
+      bounded outcome.
+    - Not built: a separate capture file and the pins for a crash at each step.
+  - **Reconcile deletions** now run only after the demotion commits. A failed index write keeps
+    the bytes with the row. They are still not journaled artifact intents; that is P3b, with the
+    v5 effect records.
+  - **The hygiene guard matched nothing.** BSD `git grep -E` has no `\b`. The guard now uses an
+    explicit identifier pattern and also rejects any lifecycle assignment that is not a reducer
+    result. Whole-row replacement is not guarded.
+  - **Still open:**
+    - the session-level pin for the replayed-outcome path (pinned at the store/reducer level only);
+    - the B02, B62/B63 and re-encode pins listed above;
+    - B16 protected-data and concurrent-recovery coverage;
+    - B21 with a real indeterminate candidate commit.
+- **2026-10-17 — P3a after-review, round 2: not ready, 4 findings (all P2).** All four were valid.
+  Round-1 responses 1 and 2 were confirmed.
+  - **Truncation deletion without commit proof.** The working body is deleted only once the
+    `finalizeOutcome` verdict has committed, using the same acceptance check as every other
+    finalize write.
+  - **Reconcile deletion race.** Moving deletion after the commit opened a window in which
+    in-flight Range I/O could move the attempt on. Each deletion now records its owner and the
+    condemned lifecycle. After the commit it runs under the store lock, only while the row is
+    still that exact owner in that lifecycle with no artifact head.
+  - **Relaunch replay erased `truncatedRepeated`.** `bodyAtWorking` on a row that is already
+    finalizing keeps its history. A reducer pin covers re-entry, replay rejection and the
+    promotion keeping the reason.
+  - **Delete could stash strikes.** Only Retry's `submitRemoveForRetry` stashes them. Clearing
+    the stash is fenced by attempt.
+  - **Still open:** a deterministic pin for the reconcile race (closed in round 3), and the
+    session-level crash/replay pin.
+- **2026-10-17 — P3a after-review, round 3: not ready, 2 findings (P2).** Round-2 responses 3 and 4
+  were confirmed by inspection.
+  - **Reconcile could still delete newly written bytes.** Range I/O writes files outside the
+    store lock, and progress keeps a failed row failed, so an owner-and-lifecycle check cannot
+    see a write. Reconcile now records each condemned file's identity (inode, size,
+    modification time) and deletes only a file that is unchanged. A file that is new, changed or
+    gone is left for the row's Retry or Delete. This exposure predates P3a, since Range I/O never
+    took the store lock. A deterministic pin writes through a DEBUG hook between the commit and
+    the deletion.
+  - **Background handler.** Under a pending background completion handler, a truncation verdict
+    is only admitted. The working body is now deleted only when the verdict was resolved without
+    a pending handler, which proves the commit. Otherwise the body is kept
+    (`downloads.truncated_body_kept_unproven`) for the failed row's Retry or Delete, and a
+    relaunch re-finalizes it if the verdict was lost.
+- **2026-10-17 — P3a after-review, round 4: not ready, 2 findings (P2).** Both were in the round-3
+  background-handler response, so that response was replaced rather than patched. The
+  reconcile identity fence was confirmed.
+  - **A handler snapshot is not commit evidence.** A handler could arrive between the snapshot
+    and the resolution. The truncated body is now deleted by
+    `DownloadStore.deleteCondemnedWorkingBody`, but only after the verdict's own persistence
+    ticket commits, and only while the attempt still owns a failed row whose working path and
+    file identity are unchanged. This holds whether or not a handler made acceptance
+    admission-only. A failed or timed-out commit keeps the body
+    (`downloads.truncated_body_kept`).
+  - **A kept body could seed a Retry.** A truncation failure now records the distinct reason
+    `truncated` instead of `validation`. Retry never clones such a body as a static checkpoint,
+    so it downloads again from zero. The strike itself is still inherited. Pins cover a blocked
+    commit (body kept, Retry starts at zero with no working file) and a committed verdict
+    (exactly that body deleted; no ticket, no deletion).
+- **2026-10-17 — P3a after-review, round 5: not ready, 2 findings (P2).** The verdict-ticket
+  commit evidence was confirmed. Both findings came from keeping a condemned body at its working
+  path, where its condemnation depended on mutable row state. That design was dropped.
+  - **Condemn by rename.** A truncation verdict now takes the body off its working path at once:
+    `condemnWorkingBody` atomically renames it to a fresh attempt-staging name that no row
+    references. A later failure reason, a pause or a Retry therefore can never see it as a
+    checkpoint, a recovery source or a clone source. The `.truncated` reason and the inheritance
+    exclusion remain as a second guard.
+  - **Prompt reclamation.** `deleteCondemnedBody` waits up to 30 s for the verdict's commit and
+    then deletes the condemned file whatever the outcome, provided its identity is unchanged.
+    The next launch's staging sweep is the backstop for a crash. An unproven commit is logged
+    (`downloads.truncated_verdict_unproven`).
+  - **Accepted cost:** a crash before any index commit can lose that one strike, as before P3a.
+    The same bytes can never be counted twice.
+  - **Pins:** a blocked commit followed by an overwriting `retryRejected` still leaves Retry at
+    0 bytes with no working file while inheriting the strike, and the space is freed. A
+    committed verdict deletes exactly the condemned body. A stale owner cannot condemn the path.
+- **2026-10-17 — P3a after-review, round 6: not ready, 2 P2s and 1 P3.** Relaunch handling after
+  a successful rename was confirmed. The fixes make the rename hygiene rather than the fence.
+  - **Persisted condemnation fence.** `DownloadAttemptHistory.bodyCondemned` is set by the
+    reducer in the same revision as a failing truncation verdict, whether through
+    `finalizeOutcome` or `transferFailed(.truncated)`. Nothing within the attempt clears it, and
+    a replacement attempt does not inherit it.
+  - **What the fence blocks.** A Retry clone, a checkpoint fact, and `bodyAtWorking` re-entry
+    into finalization. A later failure reason (for example `retryRejected`) cannot reopen the
+    body.
+  - **Rename before any wait.** The body is renamed as soon as the verdict applies in memory,
+    before any persistence wait, so a failed or wedged foreground commit cannot leave it at the
+    working path. Its deletion is scheduled at once.
+  - **Rename failure** is logged (`downloads.condemn_rename_failed`) and falls back to deleting
+    in place, as before P3a.
+  - **Deletion** of the renamed file retries up to three times, then is logged
+    (`downloads.condemned_body_delete_failed`).
+  - **Pins:**
+    - reducer: fence set, survives a reason overwrite, blocks re-entry, is not inherited, and
+      the legacy path also condemns;
+    - store: an unmoved condemned body is not a checkpoint and does not seed a Retry.
+  - **Still open:** a session-level pin with a blocked writer (the sequencing is covered at the
+    store and reducer levels).
+- **2026-10-17 — P3a after-review, round 7: not ready, 2 P2s and 1 P3.** Round 6's ordering
+  (rename before any wait) and its bounded deletion retries were confirmed. Both P2s required
+  the rename and the in-place delete to fail together.
+  - **Same-attempt readers bypassed the fence.** The fence now sits at the single choke point:
+    `workingRelativePath(for:key:)` returns nil for a condemned row. Checkpoint sizing,
+    checkpoint reset and write, durable-partial evidence, recovery finalization and validated
+    promotion all go through it and see no body. Only condemnation itself uses the unchecked
+    path. A condemned attempt's Retry ignores a surviving resume blob and takes the replacement
+    path from zero.
+  - **Rejected `bodyAtWorking` no longer continues.** Only a published body under revalidation
+    may proceed without entering finalizing. Any other rejection stops before probing or
+    publication (`downloads.finalize_refused`).
+  - **The downgrade loss** of the fence is now stated next to the strike and reason loss.
+- **2026-10-17 — P3a after-review, round 8: one blocking P2, two P3s.** No `serverPrep` or
+  `planned` completion is stranded by the finalization refusal, and side-asset and deletion paths
+  are unaffected.
+  - **Deferred Retry lost its intent** (blocking; it needed no filesystem failure). A
+    checkpoint reset on a condemned current owner now returns `condemned`, which resolves to
+    `applied(bytes: 0)` after zeroing the row's progress. It never reads or rewrites the bytes.
+    Offline Retry therefore keeps its restart-from-zero intent, and the backend-ready path
+    starts a replacement.
+  - **Layout API** (P3, done): `attemptWorkingFileLayout`/`attemptWorkingFileURL` now derive
+    from the fenced path. The pin asserts that both return nil and that the checkpoint reset
+    returns `applied(0)` without touching the bytes.
+  - **Reclaiming a surviving condemned body on replacement** (P3, journaled for P3b). It occurs
+    only after both the rename and the in-place delete failed. The next launch's staging sweep
+    reclaims it, and P3b's journaled artifact effects own retired-body cleanup.
+- **2026-10-17 — P3a after-review, round 9: one blocking P2.** The checkpoint reset kept the
+  deferred intent, but the backend-ready handoff (`resumeStaticRangeWhenReady`) still read
+  `durableStaticRangeCheckpointSize`, which returned nil for a condemned owner, so it gave up.
+  That function now returns 0 for a condemned current owner, an empty usable checkpoint. Every
+  caller treats 0 as "start fresh", so the replacement starts from zero. The layout change had no
+  other blocking regression.
+- **2026-10-17 — P3a after-review, round 10: ready.** The round-9 blocker is resolved. A review
+  of every caller of the checkpoint size found no regression: integrity audits read the
+  published body first, and stale-partial eligibility still needs the fenced working URL.
+  - **Journaled, open:** a manager-level pin for condemned Retry while the backend is
+    unavailable, then backend-ready, then a replacement that starts at byte zero.
+  - **Verification on c6c87d79.** These passed:
+    - Linux PMSKit, and the visionOS, iOS, tvOS and macOS builds;
+    - iOS hosted (719);
+    - the iOS UI smoke;
+    - the visionOS smoke (alive, no faults, Plex browse UI).
+
+    One run of the iOS hosted lane failed in
+    `SideAssetFetchCoordinatorTests.testTaskCancellationWinsWhenSuccessfulCompletionRacesCancellation`.
+    That test is unchanged from `main`, the overhaul does not touch the coordinator, and the test
+    bounds its wait by 1,000 `Task.yield()` calls. Two immediate reruns of the lane passed, so it
+    is recorded as a pre-existing timing flake.
+
 ## P2 detailed plan — cleanup foundation
 
 *Revision 3.1 (2026-10-17). The round-3 co-review approved it with three changes, applied here:
@@ -693,6 +890,366 @@ Ambiguous Convert cleanup and Convert crash-window recovery are serialized on on
 - Prep-poller registration (P4).
 - Physical deletion of the tombstone engine (P6).
 
+## P3 detailed plan — lifecycle, history, reducer and v5 migration
+
+*Revision 2.1 (2026-10-17).*
+- *Round 1 (GPT-6.1-Sol): "rework", nine findings, folded into revision 2.*
+- *Round 2: "approve with changes", seven changes, applied here and marked (R2-n).*
+
+P3 now ships as **two PRs**:
+
+- **P3a — lifecycle, history and the reducer.** Additive fields inside the v4 envelope;
+  call-site conversion.
+- **P3b — schema v5 and migration.** A transaction protocol that starts only once P3a's authority
+  exists.
+
+Physical facets remain a P6 concern. In P3 the facets are typed read views plus constrained
+mutation APIs.
+
+### What the code map changed about the design
+
+- **History is not persisted today.**
+  - Truncation strikes are in memory, keyed by ratingKey, and deliberately span attempts.
+  - The unverified reason appears only in diagnostics.
+  - Storage-full parks live in `lastError`.
+  - Finalizing is inferred from `.downloading` with progress ≥ 1.
+- **`.failed` also means "planned"** for season rows.
+- **`submitProgress` silently promotes** queued, paused and failed rows to downloading (B09).
+- **About 75 production status writes;** reconcile deletes files under the lock.
+- **Unreadable or malformed indexes block today.** Only `.unsupported` resets. P1's downgrade
+  guard classifies a newer schema as unreadable.
+
+---
+
+## P3a — lifecycle, history and reducer (inside v4)
+
+### P3a.1 Additive v4 fields (authoritative once written)
+
+`Row` gains `lifecycle: DownloadLifecycle?` and `history: DownloadAttemptHistory?`. Both are
+optional on decode.
+
+- A row without them is a legacy row. Its lifecycle is derived from `status` plus facts by the
+  same reducer rule, `relaunchObserved`, the first time the store loads it after an upgrade.
+- An older binary that re-encodes the row drops both fields. The next newer load re-derives
+  them. Strikes, reasons and a `bodyCondemned` fence lost that way restart; this is a stated,
+  bounded downgrade loss, and the B54 containment still keeps published bodies. A lost fence
+  matters only if both the rename and the in-place delete of that body failed, and older
+  binaries never had the fence.
+- `status` is still written, derived from lifecycle, so older binaries and diagnostics read a
+  consistent value.
+- **(R2-3) Rollback compatibility.** P1/P2 binaries must keep working on a P3a index.
+  - Every authority that older binaries enforce keeps its legacy projection throughout P3a.
+    `seasonPlannerPendingAdmission` is still encoded from `history.admissionIntent`.
+  - No new case is added to the existing `ArtifactIntentOperation` enum. An older decoder would
+    fail the whole row, and that makes the index unreadable.
+  - New durable effects use only existing operation cases (see P3a.5), or a separate optional
+    field that older binaries ignore.
+  - Pin: P3a writes planned rows and pending effects, a P1/P2 store re-encodes them, P3a reloads,
+    and everything except strikes and reasons survives.
+- **(R2-6) Structural derivation only at load.**
+  - The store derives a missing lifecycle structurally (status → lifecycle, no effects) when it
+    loads.
+  - Recovery effects and fact-dependent corrections wait for the authoritative task enumeration
+    in `relaunchObserved`.
+  - A row with a lifecycle but no history, or the reverse, is completed structurally; it is never
+    treated as malformed.
+  - Pin: a pre-P3a v4 index upgrades straight to the P3b binary, skipping P3a.
+
+### P3a.2 Types
+
+**`DownloadLifecycle`:**
+
+| Case | Meaning |
+|---|---|
+| `planned` | Created, not admitted (season rows; `planned` is shown as `queued`). |
+| `admitted` | Admission granted; no transfer has started yet. |
+| `serverPrep` | A Plex optimize or Emby Convert job is in progress. |
+| `transferring` | URLSession work is live or being rebuilt. |
+| `finalizing` | The body is complete and validation or promotion is pending. |
+| `complete` | |
+| `unverified` | |
+| `paused` | |
+| `failed` | |
+
+**`DownloadAttemptHistory`:**
+
+- `truncation: TruncationHistory?`
+  - Holds `strikes`, a `sourceKey`, and `lastOutcomeID` (dedupes replayed finalize outcomes).
+  - `sourceKey` is server and account identity, backend, item, media source or part, and
+    requested profile. Strikes carry across attempts with the same `sourceKey`, preserving
+    today's per-item behaviour.
+  - **(R2-5) Inheritance:**
+    - History moves to the new owner in the same store transaction that replaces the row
+      (`createAttemptOwnedRecord` replacement).
+    - An *unknown* component, such as a part not yet resolved during negotiation, is not
+      treated as a change. Only a proven difference resets the strikes.
+    - Outcome IDs are `(attemptID, finalizerRequestID)`, which are stable across replay. They are
+      applied in commit order, and a replay of an already-recorded ID is a no-op.
+  - They reset on `complete`, on a delete, and on a proven source or profile change.
+- `unverifiedReason`: `probeMiss(String)`, `truncatedRepeated`, `backgroundProbeDeferred`,
+  `migratedUnknown`.
+- `lastFailure`: a bounded enum.
+- `storagePark: StoragePark?`: the bytes needed and when it was measured.
+- `pauseCause`: `user`, `queuePaused`, `systemInterrupted`, `awaitingSession`, `storage`,
+  `deferredResume`.
+- `admissionIntent`: `seasonPlanned` or `retryRequested`. Today this is
+  `seasonPlannerPendingAdmission`; the field moves here, and the old field is read on load.
+
+### P3a.3 Typed facts (computed per call, not persisted twice)
+
+`DownloadRowFacts` is built from the row and live session state at the moment of the call:
+
+- **Route:** `staticRange`, `plexPrep(queueTitle, createConfirmed)`, `embyConvert(job: known(id)
+  | crashWindow | none)`, `forwardOnly`.
+- **Checkpoint:** `none`, `durablePartial(bytes)`, `resumeBlob`, `heldBodies(count)`.
+- **Body:** `none`, `workingComplete`, `published(path)`.
+- **Pending artifact ownership:** the head intent kind, or none. This includes legacy
+  `pendingValidatedPromotionStatus`.
+- **Deletion pending.**
+- **Live session state:** live task, rebuild grace, halt kind, finalizer claim, and a
+  generation for each.
+- **Snapshot eligibility** (reconcile).
+
+The reducer takes `(lifecycle, history, facts, event)`. These facts are exactly the distinctions
+today's reconcile table and retry policies use; Sol's finding 6 asked for this.
+
+### P3a.4 Events and the call-site transition matrix
+
+The matrix goes into the plan before implementation, as `docs/plans/p3a-transition-matrix.md`.
+It lists every one of the ~75 status writes and reconcile branches, with its event and its
+expected lifecycle result. Notable rows:
+
+| Today | Event | Rule |
+|---|---|---|
+| reattach adopts a live Range task | `taskAdopted(generation)` | → transferring, only if the task gate allows it |
+| rebuild grace begins or expires | `transferRebuilding`, then `rebuildExpired` | expiry with no task → paused(`deferredResume`) |
+| held-drain halt | `checkpointAdvanced(bytes)` then `pause(cause)` | checkpoint accounting never changes lifecycle (Sol 7) |
+| Convert → static replacement | `prepHandoff(newRoute)` | serverPrep → admitted on the same attempt |
+| season admission | `admissionGranted` | planned → admitted; clears `admissionIntent` |
+| legacy promotion recovery | `promotionRecovered(terminal)` | resolved before any other event |
+| duplicate start suppressed | none | no state change |
+| progress | `transferProgress` | legal only in admitted or transferring; elsewhere the bytes are recorded through `checkpointAdvanced` and the lifecycle is kept |
+| revalidating a published body | `publishedBodyRevalidated(outcome, revalidationID)` | complete or unverified results apply; a truncation result keeps the body and stays unverified (B54); empty means failed with the body deleted |
+| retry | `retry(mode)` | modes: `freshAttempt`, `resumeBlob`, `staticCheckpoint`, `prepReattach(plex)`, `convertResume(knownJob \| crashWindow)`, chosen by `DownloadRetryPreparationPolicy` from facts (Sol 5) |
+
+### P3a.5 Durable effects
+
+A transition's effects are **persisted in the same index revision as the state change**, as
+existing artifact intents where one fits:
+
+**(R2-2)** The mapping, with terminal semantics:
+
+| Effect | Durable form | Row afterwards |
+|---|---|---|
+| `deleteBody(working)` (a truncation strike, an empty body) | the existing `heldBodyDeletion` operation with the working path, which deletes the body only | the row and its history stay |
+| `deleteBody(published)` (empty published body on revalidation) | `heldBodyDeletion` with the published path, plus a constrained `clearPublication` | the row stays, failed, with its history |
+| publish (complete or unverified) | the existing `validatedPromotion` recipe | the lifecycle stays `finalizing` until the terminal snapshot commits, then becomes the terminal |
+| `clearResumeBlob` | `clearResumeBlob` | unchanged |
+| held bodies | `heldBodyDeletion` | unchanged |
+| `requestFinalization` | the persisted `finalizing` lifecycle (relaunch re-requests it) | — |
+| server cleanup | P2 journal intents, committed before the index revision under the P2 rule | — |
+
+`rowDeletion` is used only to delete a whole row.
+
+Effects that are not durable (UI refresh, diagnostics) are marked transient.
+
+Every artifact intent carries the attempt and generation fence it already has. Retries and
+retirement follow the existing artifact lifecycle coordinator. **No effect executes before its
+revision commits.**
+
+### P3a.6 B10 move/marker boundary
+
+Today the body is moved into the attempt working path (BDS ~3261), and only then is finalization
+recorded (~3296).
+
+**(R2-4)** The URLSession temp file is system-owned and expires once the delegate returns, so it
+can never be a replay source. The protocol, inside the delegate callback:
+
+1. **Move to an attempt-owned path.** Before returning, move the temp file to an attempt-owned,
+   uniquely named capture path. The name is
+   `.attempt-capture-<attemptID>-<finalizerRequestID>`, so the attempt owns it exactly and no
+   pre-existing file can be mistaken for it. Then fsync the directory.
+2. **Record the capture.** Submit `finalizing(capture: path)`. If that persistence fails, keep the
+   capture file. The startup staging sweep recognizes a capture file only through its row record,
+   so an unrecorded capture is orphaned and swept, which is the same loss as today.
+3. **Promote the capture** to the working path. A pre-existing working file is replaced only if
+   the row record names it as this attempt's working body; otherwise the row fails and keeps
+   both files as evidence. Then submit `finalizing(bodyAtWorking)`.
+
+On relaunch:
+
+- a recorded capture path that still exists → resume from step 3;
+- the working body named by the record → re-request finalization;
+- neither → failed.
+
+Pins: the temp file has expired, a pre-existing destination exists, persistence fails after
+capture, and a crash happens after each step.
+
+### P3a.7 Store API
+
+- `store.apply(_ event:, for key:, generation:) -> ApplyResult` runs the reducer under the lock.
+  It persists lifecycle, history and the durable effects in one revision, and returns the
+  committed effects to execute.
+- **Constrained mutators** replace whole-record writes. Each changes only its own field, keeps
+  identity, and is attempt-fenced:
+  - `checkpointAdvanced(bytes)`;
+  - `setObligation(...)`;
+  - `recordSideAsset(...)`.
+- **Retired by the end of P3a:**
+  - `submitStatus` and `setStatus`;
+  - status inside `upsert` or `createAttemptOwnedRecord` (creation takes an initial lifecycle);
+  - implicit promotion in `submitProgress`.
+- A temporary `.legacy(status)` shim exists only while the conversion is in progress. A hygiene
+  check fails on any shim use, any direct `row.status =` assignment, or whole-record replacement
+  by the final P3a commit.
+
+### P3a.8 Reconcile
+
+`reconcile` builds facts and applies `relaunchObserved` or `foregroundObserved` per row. Its file
+deletions become durable effects executed outside the lock, which closes st-41 for reconcile. The
+P6 rows st-28 to st-31 and st-41 are re-tagged P3a for reconcile.
+
+### P3a.9 B16, B21, B61
+
+- **B16 — Retry Recovery re-probes.** It re-runs `startupProbe`, then reloads in process, instead
+  of reusing the cached `startupIndexAdmission()` result. An indeterminate season commit becomes
+  its own recovery state, `.seasonCommitIndeterminate`, distinct from `.unreadable`.
+- **B21:** to be confirmed against Appendix A when the matrix is written. Mapped rows are fixed or
+  re-tagged explicitly.
+- **B61 — the stall watchdog.** It classifies from lifecycle and facts (`transferring` with no
+  progress for N seconds and no rebuild grace) through `DownloadStallRecoveryPolicy`. It no longer
+  depends on the display classifier.
+
+### P3a.10 Pins written first
+
+1. B10 move/marker boundary: three crash points.
+2. B54 strikes: truncate → Retry → relaunch → truncate → park; the body is kept.
+3. A replayed finalize outcome is deduplicated and never double-counted.
+4. Progress cannot promote a paused or failed row, while held-drain bytes are still recorded.
+5. Pause during delayed rebuild or auth callback, then resume (B02 class).
+6. A failed Convert row's Retry resumes its job (`convertResume`); B44/B49 pins exist.
+7. Season commit → each resume entry point (B62/B63).
+8. Retry Recovery re-probes after the index is repaired (B16).
+9. Protected data unavailable at launch, then unlocked: no reset, and rows available after unlock.
+10. Rejected events produce no I/O.
+
+### P3a commits
+
+1. Pins, plus the transition matrix doc.
+2. PMSKit: types, facts, derivation and reducer, with exhaustive tests.
+3. Store:
+   - additive fields with legacy derivation;
+   - `apply` and the constrained mutators;
+   - durable effects;
+   - the shim.
+4. Session conversion, including B10.
+5. Manager and extension conversion; reconcile as events; B16 and B61; shim removal plus the
+   hygiene check.
+6. Docs.
+
+---
+
+## P3b — schema v5 and migration (after P3a)
+
+A v4 index written by P3a already carries authoritative lifecycle and history. For P3b,
+migration therefore means:
+
+- applying D1, which drops non-terminal rows;
+- journaling dropped rows' obligations;
+- bumping the version.
+
+### P3b.1 Probe
+
+`currentSchemaVersion = 5`, with a new `.migratable(from: 4)` probe case.
+
+- **Kept fail-closed and blocking, never reset:**
+  - unreadable bytes;
+  - malformed current rows;
+  - invalid ownership;
+  - unparseable v4 (this corrects revision 1, where it reset).
+- **Reset:** only explicitly unsupported schemas (1–3).
+- **Newer than the binary:** unreadable (the P1 guard).
+
+### P3b.2 Transaction protocol
+
+- **Identity:** `migrationID` (a UUID) and `sourceDigest`, a SHA-256 of the v4 bytes, recorded in
+  `migration-v5.json` in the authority directory and written with the P2 committer.
+- **(R2-1) Digest progression:**
+  - Every canonical replacement the migration makes (step 3's artifact recovery) is journalled
+    in the receipt as `(beforeDigest, afterDigest)` before the write.
+  - Ordinary writers and session callback mutations are frozen for the whole migration. Admission
+    is closed, and the store rejects every mutation except the migration's own.
+  - The candidate's digest is persisted in the receipt **before** its rename.
+  - Recovery accepts the canonical index if its digest is any recorded `afterDigest`, the
+    `sourceDigest`, or the candidate digest. Only an unrecorded digest is indeterminate.
+- **Steps, each with a receipt:**
+  1. `begin(migrationID, sourceDigest)`.
+  2. **Drain transport.** A drain primitive is extracted that neither resets nor activates. Every
+     process restart drains again before it continues.
+  3. **Inventory.** It resolves each of these under the v4 rules, and blocks the migration if any
+     cannot be resolved:
+     - pending promotions;
+     - legacy `pendingValidatedPromotionStatus`;
+     - queued artifact intents;
+     - `deletionPendingCleanupIntents`;
+     - B54 staging publication, with replayable rename ownership and a cross-row path check.
+
+     It writes a candidate v5 index to a sibling file.
+  4. **Journal obligations of dropped rows** as abandonments. They stay *ineligible* while the
+     migration is incomplete; see the runner gate below.
+  5. **Commit.** The candidate is renamed over `index.json`, and the commit is proven by its
+     digest.
+  6. **Reclaim** unreferenced bodies, partials, held bodies and blobs.
+  7. `end`.
+- **Recovery precedence on launch:**
+  1. If the canonical index is v5 and its digest equals the recorded candidate, the commit
+     happened, whatever step the receipt says. Resume reclaim, then end.
+  2. If the canonical index is v4 and its digest equals `sourceDigest`, resume from the last
+     receipt.
+  3. If the digests mismatch, block as `.migrationIndeterminate` with the bytes untouched.
+  4. An ambiguous post-rename commit failure is settled by the digest comparison above.
+- **(R2-7) Runner gate:** `rowState` is `.unknown` for every intent from `begin` until the v5
+  commit is proven and the store has loaded the committed rows.
+  - Cleanup then reopens.
+  - Reclaim resumes independently; a reclaim failure never holds back server cleanup.
+  - The runner's resource-ownership rechecks still apply.
+- **Unverified rows:** the reason recovered from P3a history is kept; `migratedUnknown` is used
+  only when it is absent.
+- **Read-only blocked load:** this only takes effect once the index can be read. While protected
+  data is unavailable, startup waits for the unlock (pin 9).
+
+### P3b pins
+
+A failure at each step, plus:
+
+- post-rename ambiguity;
+- the journal written but the index not;
+- a stale receipt alongside a committed v5;
+- a reclaim failure that resumes;
+- legacy promotion recovery that blocks the migration;
+- a runner blocked before the commit.
+
+### P3b commits
+
+1. Pins.
+2. Probe and the drain primitive.
+3. Protocol and steps.
+4. Runner gate and read-only load.
+5. Docs.
+
+### Downgrade guard (P1)
+
+Shipped in #371: a newer schema is classified unreadable and kept. **Release limitation:** it only
+protects downgrades to builds that contain it, so it must be in a released build before any v5
+build ships.
+
+### Out of P3
+
+- Admission coordinator (P4).
+- Storage policy (P5).
+- The physical facet split and remaining off-lock I/O (P6).
+- UI (P7).
+
 ## Open gates (never claimed by this work)
 
 - Live Plex, Jellyfin and Emby acceptance for every shared-behaviour phase.
@@ -897,10 +1454,10 @@ This is every edge case the history shows the module has had to handle. *Status*
 | st-25 | Joined deletion waiters (double-tap Delete, coalesced recovery) each receive the outcome for the same epoch | A second waiter must not see a stale or overwritten outcome from a different retry epoch. | handled | yes | yes | P6 |
 | st-26 | Deletion-pending capsule: if the cleanup journal is unavailable, the row and its exact cleanup intents stay durable, and reconcile and mutators must… | A delete while the journal is unwritable would otherwise drop the only server-cleanup authority. | handled | yes | yes | P6 |
 | st-27 | Cleanup journals: unreadable is not empty; exact-value proofs after an ambiguous atomic write; element-level quarantine repair (intent journal only) | An unreadable queue treated as empty would erase orphan-cleanup authority. | partially-handled | yes | yes | P6 |
-| st-28 | Reconcile: a complete or unverified row whose file is missing becomes failed | Offline Play must not be offered for a file that no longer exists. | handled | yes | yes | P6 |
-| st-29 | Reconcile: a non-live queued/downloading/paused row that cannot stay resumable is demoted to failed and its partial and resume blob deleted; resumabl… | Invisible dead bytes piled up on disk (e1dc0224). Deleting the partial of a resumable row made its resume data useless (adc8943f). | partially-handled | yes | yes | P6 |
-| st-30 | Reconcile skips rows with pending artifact intents | A staged validatedPromotion leaves the row in .downloading while the working file is the validated body. Demoting it would delete the source. | handled | yes | yes | P6 |
-| st-31 | Reconcile backend nuance: Plex server-prep rows return to queued; Jellyfin/Emby transcodes become failed; a live static range task stays downloading… | Emby/Jellyfin live renders die with the task, while Plex optimize jobs survive on the server. A paused row with a live task offered Resume and could start a duplicate Ra… | handled | yes | yes | P6 |
+| st-28 | Reconcile: a complete or unverified row whose file is missing becomes failed | Offline Play must not be offered for a file that no longer exists. | handled | yes | yes | P3a |
+| st-29 | Reconcile: a non-live queued/downloading/paused row that cannot stay resumable is demoted to failed and its partial and resume blob deleted; resumabl… | Invisible dead bytes piled up on disk (e1dc0224). Deleting the partial of a resumable row made its resume data useless (adc8943f). | partially-handled | yes | yes | P3a |
+| st-30 | Reconcile skips rows with pending artifact intents | A staged validatedPromotion leaves the row in .downloading while the working file is the validated body. Demoting it would delete the source. | handled | yes | yes | P3a |
+| st-31 | Reconcile backend nuance: Plex server-prep rows return to queued; Jellyfin/Emby transcodes become failed; a live static range task stays downloading… | Emby/Jellyfin live renders die with the task, while Plex optimize jobs survive on the server. A paused row with a live task offered Resume and could start a duplicate Ra… | handled | yes | yes | P3a |
 | st-32 | Side-asset owner fencing on load: a mismatched owner retires the bundle; a legacy ownerless bundle with an attempt is adopted | Stale-attempt side assets must not attach to a new attempt (SAFE-06). The fail-closed version, however, deleted every pre-owner-schema user's cached posters, trickplay,… | handled | no | yes | P6 |
 | st-33 | Load-time normalization of legacy Plex prepared-static lane rows | Rows written before the rendered-Part handoff moved lanes showed the wrong badge. | handled | no | yes | P6 |
 | st-34 | Atomic season plan: new rows plus retry markers commit in one snapshot off-lock; conditional compensation on failure; an indeterminate result blocks… | A partial season plan would admit work for rows that never became durable. The earlier version held the store lock across I/O and blocked delegate callbacks. | handled | yes | yes | P6 |
@@ -910,7 +1467,7 @@ This is every edge case the history shows the module has had to handle. *Status*
 | st-38 | Storage audit: report referenced, unreferenced and orphan-candidate bytes in diagnostics (#171), report-only | Repeated pause/delete/restart cycles were suspected of leaking 5 GB ghost partials, and leaks need to be observable. | dropped-accidental (observability regressed by 6b62b5b0's h… | yes | no | P6 |
 | st-39 | General launch-time orphan sweep of unreferenced stable media and side assets | Files whose delete failed, side-cache writes after delete, and old leftovers were never collected (#171 gaps 2-3). | dropped-intentional | no | no | P6 |
 | st-40 | Bounded lifecycle bookkeeping: abandoned or superseded failures retire out of the live table into a FIFO capped at 512 | Every boundary scan walked dead intents and one dead intent poisoned every later boundary. | partially-handled | yes | yes | P6 |
-| st-41 | Filesystem and journal I/O happens off the store lock (the lock is shared with URLSession delegate callbacks) | Lock-held I/O blocked delegate callbacks and contributed to the main-thread and watchdog stalls reported in #187 and #210. | partially-handled | yes | yes | P6 |
+| st-41 | Filesystem and journal I/O happens off the store lock (the lock is shared with URLSession delegate callbacks) | Lock-held I/O blocked delegate callbacks and contributed to the main-thread and watchdog stalls reported in #187 and #210. | partially-handled | yes | yes | P3a |
 | st-42 | Rollback boundary: an older binary cannot decode newer pending intent cases, so intents must be drained before a downgrade | An exhaustive Codable enum fails on unknown cases, which makes the index unreadable for the older binary. | unclear | no | no | P6 |
 | st-43 | If Application Support is unavailable, fall back to the temporary directory | Defensive init. | unclear | no | no | P6 |
 
@@ -1191,3 +1748,113 @@ This is every edge case the history shows the module has had to handle. *Status*
 | Public-repo hygiene: a code comment names a real media title | unhandled | Labstream/Capabilities/Downloads/Core/DownloadManager.swift:5251-5253 |
 | #210 refresh/resume recursion backstop | handled | DownloadManager.swift:2088-2104; markStartAbortedBeforeTransfer ordering :3556-3586 |
 | #125 existing-version offline-compatibility gate also applies to season 'Use Existing Versions' | handled | DownloadExistingVersionOptionPolicy.swift:52-68 (playableOffline); SeasonDownloadPlanningPolicy nearestIndex skips !playable (:123-126); DownloadOptionsSheet.s… |
+
+## Appendix C — P3a call-site transition matrix
+
+Every production status write and reconcile branch on `downloads/p3-lifecycle`, mapped to the
+P3a event that replaces it.
+
+- **Line numbers** are approximate, from the P3 code map.
+- **Lifecycle column:** `*` means unchanged; `→X` is the new lifecycle.
+- **"Effects"** lists durable effects (P3a.5).
+- **"Keep"** means bytes and checkpoint are recorded through a constrained mutator, with no
+  lifecycle change.
+
+### C.1 Store primitives
+
+| Site | Today | Event | Lifecycle | Effects / notes |
+|---|---|---|---|---|
+| `submitProgress` (~4677) | queued/paused/failed → downloading, implicitly | `transferProgress`; anything other than admitted/transferring becomes `checkpointAdvanced` | admitted→transferring; else * | the implicit promotion is removed (B09) |
+| `markCompleteIfUnverified` (~4788) | unverified → complete | `localPlaybackProgressed` | unverified→complete | — |
+| `executeValidatedPromotion` (~1200) | downloading → terminal | `promotionCommitted(terminal)` | finalizing→terminal | strike reset if complete |
+| `abandonUnrecoverablePromotion` (~1246) | → failed | `promotionAbandoned` | finalizing→failed | `lastFailure = internal` |
+| `recoverPendingValidatedPromotion` (~1322) | → legacy marker | `promotionRecovered(terminal)` | →terminal | resolved before other events |
+| `createAttemptOwnedRecord` | writes `record.status` | creation takes an initial lifecycle | planned \| admitted \| serverPrep | history inherited (R2-5) |
+| `applySeasonPlanAtomically` | new rows `.failed` + flag | creation | planned + `admissionIntent = seasonPlanned` | legacy flag still projected (R2-3) |
+| `reconcile` (~4833) | table | `relaunchObserved(facts)` / `foregroundObserved(facts)` | see C.5 | deletions become effects |
+
+### C.2 BackgroundDownloadSession
+
+| Site | Today → | Event | Lifecycle |
+|---|---|---|---|
+| 1327 rebuild grace expired | paused | `rebuildExpired` | transferring→paused(`deferredResume`) |
+| 1712 reattach, requestNeeded | queued | `transferRebuilding` | →transferring |
+| 1722 reattach, adopted task | downloading | `taskAdopted(gen)` (task gate) | →transferring |
+| 2272/2336 segment enqueue | downloading | `transferStarted` | admitted\|transferring→transferring |
+| 2579/2642/2772 user pause | paused | `pause(user)` | →paused(user) |
+| 2911/2971 oversized body / counter reset | queued | `transferRebuilding` | * (transferring) |
+| 3871/4265 halt/pause while finishing | paused | `checkpointAdvanced`, then `pause(cause)` | →paused |
+| 4312 halt with no task | paused | `pause(haltCause)` | →paused |
+| 4544 held-drain halt | paused | `checkpointAdvanced` + `pause` | →paused (bytes kept) |
+| 4589 `setFailedPurgingHeldSegments` (~25 callers) | failed | `transferFailed(reason)` | →failed |
+| 4705/4726 continue / pause after body | queued / paused | `transferRebuilding` / `pause` | * / →paused |
+| 4792 offset-mismatch retry | queued | `transferRebuilding` | * |
+| 4905/4927 changed resource | queued / paused | `resourceChanged` / `pause` | * / →paused |
+| 5259/5280 move-failure retry | queued | `transferRebuilding` | * |
+| 3261/3296 body arrives (B10) | — | `bodyCaptured(path)`, then `bodyAtWorking` | →finalizing (R2-4) |
+| 5525–5662 `finalizeTransferredFile` | per outcome | `finalizeOutcome(id, outcome)` | finalizing→failed / finalizing (promote) |
+| 5683 promote | complete / unverified | promotion recipe | stays finalizing until commit |
+| 5721 promotion rejected | failed | `promotionAbandoned` | →failed |
+| 5622 revalidation | complete / unverified / failed | `publishedBodyRevalidated(outcome, id)` | per rule (B54) |
+| 5974 system cancel | paused | `transferInterrupted(systemCancel)` | →paused(`systemInterrupted`) |
+| 6086/6090 adopted failed remainder | queued / paused | `transferRebuilding` / `pause` | * / →paused |
+| 6184 opaque interruption, blob | paused | `transferInterrupted(network)` | →paused |
+| 6464 blob failure | queued | `transferRebuilding` | * |
+| 6589 blob-resumed adoption | downloading | `taskAdopted(gen)` | →transferring |
+| 6673 401/403 rehydrate | queued | `transferRebuilding(auth)` | * |
+
+### C.3 DownloadManager
+
+| Site | Today → | Event | Lifecycle |
+|---|---|---|---|
+| 1626/1632 pause | paused | `pause(user)` | →paused(user) |
+| 1951/1957/1960 deferred resume | queued / paused / failed | `backendUnavailable(disposition)` | per disposition |
+| 2053 queue paused with checkpoint | paused | `pause(queuePaused)` | →paused |
+| 2260 retry, Emby convert | preparing | `retry(convertResume)` | →serverPrep |
+| 2295 retry with blob | downloading | `retry(resumeBlob)` | →transferring |
+| 2332 blob refused | failed | `transferFailed(blobRefused)` | →failed |
+| 2361 retry, static | queued | `retry(staticCheckpoint \| freshAttempt)` | →admitted |
+| 2398/2441 retry, auth / part missing | failed | `retryRejected(reason)` | →failed |
+| 2577 resume Plex prep | queued | `retry(prepReattach)` | →serverPrep |
+| 2594/2606 Plex retry, auth / server | paused | `backendUnavailable` | →paused(`awaitingSession`) |
+| 2650/2672/2717/2738 JF/Emby retry, auth / server | failed | `retryRejected` | →failed |
+| 2866 relaunch Convert recovery | preparing | `prepReattached` | →serverPrep |
+| 2900/2932 Convert identity mismatch / expired | failed | `prepFailed(reason)` | →failed |
+| 3187/3353/3379 Plex optimize deadline / poller error | failed | `prepFailed(reason)` | →failed |
+| 3469 start aborted | failed | `transferFailed(aborted)` | →failed |
+| 3732/3738 transfer start threw | failed | `transferFailed(start)` | →failed |
+| 3780 local playback | complete | `localPlaybackProgressed` | unverified→complete |
+| 3826 size audit | failed | `sizeAuditFailed` | terminal→failed |
+| 3962/4044 refresh, queue paused | paused | `pause(queuePaused)` | →paused |
+| 4251 forward-only stall | failed | `stallDetected` | transferring→failed (B61: facts-driven) |
+| 912/1786 reattach + reconcile | table | `relaunchObserved` / `foregroundObserved` | see C.5 |
+
+### C.4 Extensions
+
+| Site | Today → | Event | Lifecycle |
+|---|---|---|---|
+| +Plex 80/243, +Jellyfin 86/322, +Emby 94/352, +PlexOptimize 101/173/345 | seed queued | creation | admitted (P4 makes it planned → admitted) |
+| +EmbyConvert 92/275/300/391 | seed preparing | creation | serverPrep |
+| +SeasonPlanner 123 | queued \| failed+flag | creation | admitted \| planned |
+| +SeasonPlanner 205 admission | calls `retry` | `admissionGranted` | planned→admitted |
+| +Plex 260, +PlexOptimize 111/268/290/311, +Jellyfin 314/334/351/374, +Emby 157/196/274/344, +EmbyConvert 747/765, +SeasonPlanner 254/287 | failed | `transferFailed` / `prepFailed(reason)` | →failed |
+| +Emby 396 queue paused before Convert→static | paused | `pause(queuePaused)` | →paused |
+| Convert→static handoff | new static record | `prepHandoff(route)` | serverPrep→admitted, same attempt |
+
+### C.5 Reconcile as `relaunchObserved` (facts → lifecycle)
+
+The order is preserved from today's reconcile:
+
+| Facts | Lifecycle | Effects |
+|---|---|---|
+| pending artifact head, or deletion pending | * | none (skipped today) |
+| finalizing with a capture or working body | finalizing | re-request finalization (B10) |
+| Plex prep route, queued/transferring, no task | serverPrep, bytes reset | — |
+| live static task | transferring | — |
+| prep checkpoint (paused + target or Emby job) or app Range checkpoint > 0 | paused(`deferredResume`), bytes = durable | — |
+| complete/unverified + published body | * | — |
+| complete/unverified, no body | failed | — |
+| queued/transferring, no task, no checkpoint | failed | `deleteBody(working)`, `clearResumeBlob` (effects, outside the lock) |
+| paused with a blob or static restart | paused | — |
+| paused, nothing resumable | failed | `deleteBody(working)` |
+| planned | planned | — (not in today's table; added) |

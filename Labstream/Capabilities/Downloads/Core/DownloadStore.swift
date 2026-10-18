@@ -68,6 +68,9 @@ final class DownloadStore: @unchecked Sendable {
         /// Unknown/corrupt bytes are not assumed to be legacy. Keep them for diagnosis and stop.
         case unreadableIndex
         case malformedCurrentRows([String])
+        /// B21: a season plan's commit could not be proven either way. Memory is consistent (the
+        /// plan was withdrawn); re-committing it resolves the block.
+        case seasonCommitIndeterminate
     }
 
     enum AttemptRecordCreateResult: Sendable, Equatable {
@@ -318,6 +321,9 @@ final class DownloadStore: @unchecked Sendable {
     enum AttemptStaticCheckpointSubmission: Sendable, Equatable {
         case accepted(ticket: DownloadArtifactLifecycleCoordinator.Ticket)
         case notStatic(bytes: Int)
+        /// The current owner's body is condemned (P3a): zero usable bytes, already applied to
+        /// the row. Callers schedule a restart from zero exactly as for an empty checkpoint.
+        case condemned(PersistenceTicket)
         case staleOrMissing
     }
 
@@ -424,7 +430,24 @@ final class DownloadStore: @unchecked Sendable {
         var pendingValidatedPromotionStatus: DownloadStatus?
         var bytes: Int
         var progress: Double
-        var status: DownloadStatus
+        /// P3a: where the attempt is. Authoritative; `status` is derived from it.
+        var lifecycle: DownloadLifecycle
+        /// P3a: facts no status can hold (truncation strikes, unverified reason, pause cause).
+        var history: DownloadAttemptHistory
+        /// Derived for older binaries, diagnostics and the UI. The setter is the temporary P3a
+        /// legacy shim: a status write maps onto lifecycle without losing what status cannot
+        /// express (finalizing, planned). Call sites move to reducer events; the shim is removed
+        /// by the end of P3a.
+        var status: DownloadStatus {
+            // `planned` keeps today's `.failed` + admission-flag projection until the season
+            // planner converts to reducer events, so behaviour and older binaries are unchanged.
+            get { lifecycle == .planned ? .failed : lifecycle.derivedStatus }
+            set { lifecycle = Self.legacyLifecycle(for: newValue, current: lifecycle,
+                                                   admissionPending: admissionPending) }
+        }
+        /// Season-planner admission stays authoritative in metadata during P3a so P1/P2 binaries
+        /// keep enforcing it after a rollback (R2-3).
+        var admissionPending: Bool { metadata?.seasonPlannerPendingAdmission == true }
         // D5: snapshot of the source item + the locally-cached poster path. Both are
         // optional and decoded with `decodeIfPresent` so rows written before D5 load.
         var metadata: OfflineMetadata?
@@ -455,6 +478,7 @@ final class DownloadStore: @unchecked Sendable {
             case ratingKey, attemptID, title, relativePath, attemptWorkingRelativePath
             case pendingValidatedPromotionStatus
             case bytes, progress, status, metadata
+            case lifecycle, history
             case deletionPending
             case deletionPendingCleanupIntents
             case heldRangeBodyDeletionIntents
@@ -477,7 +501,7 @@ final class DownloadStore: @unchecked Sendable {
                 DownloadStatus.self, forKey: .pendingValidatedPromotionStatus)
             bytes = try c.decode(Int.self, forKey: .bytes)
             progress = try c.decode(Double.self, forKey: .progress)
-            status = try c.decode(DownloadStatus.self, forKey: .status)
+            let decodedStatus = try c.decode(DownloadStatus.self, forKey: .status)
             metadata = try c.decodeIfPresent(OfflineMetadata.self, forKey: .metadata)
             let nestedAttemptID = metadata?.downloadAttemptID.flatMap(DownloadAttemptID.init(rawValue:))
             attemptID = topLevelAttemptID
@@ -493,6 +517,24 @@ final class DownloadStore: @unchecked Sendable {
                 UInt64.self, forKey: .sideAssetGeneration) ?? 0
             pendingArtifactIntents = try c.decodeIfPresent(
                 [ArtifactIntent].self, forKey: .pendingArtifactIntents) ?? []
+            // R2-6: a row without lifecycle (written before P3a, or re-encoded by an older binary)
+            // derives it structurally from status alone. A lifecycle that disagrees with the
+            // status an older binary wrote afterwards also yields to that status, structurally.
+            let decodedLifecycle = try c.decodeIfPresent(DownloadLifecycle.self, forKey: .lifecycle)
+            let admission = metadata?.seasonPlannerPendingAdmission == true
+            let promotionPending = pendingArtifactIntents.first.map {
+                if case .validatedPromotion = $0.operation { return true }
+                return false
+            } ?? false
+            if let decodedLifecycle, decodedLifecycle.derivedStatus == decodedStatus
+                || (decodedLifecycle == .planned && decodedStatus == .failed) {
+                lifecycle = decodedLifecycle
+            } else {
+                lifecycle = DownloadLifecycle.structural(
+                    from: decodedStatus, admissionPending: admission,
+                    finalizingEvidence: promotionPending)
+            }
+            history = try c.decodeIfPresent(DownloadAttemptHistory.self, forKey: .history) ?? .empty
             decodedTopLevelAttemptIDPresent = topLevelAttemptID != nil
             decodedAttemptIdentityDisagrees = topLevelAttemptID != nil
                 && nestedAttemptID != nil
@@ -519,8 +561,11 @@ final class DownloadStore: @unchecked Sendable {
             self.pendingValidatedPromotionStatus = pendingValidatedPromotionStatus
             self.bytes = bytes
             self.progress = progress
-            self.status = status
             self.metadata = metadata
+            self.lifecycle = Self.legacyLifecycle(
+                for: status, current: nil,
+                admissionPending: metadata?.seasonPlannerPendingAdmission == true)
+            self.history = .empty
             self.deletionPending = deletionPending
             self.deletionPendingCleanupIntents = deletionPendingCleanupIntents
             self.heldRangeBodyDeletionIntents = heldRangeBodyDeletionIntents
@@ -543,6 +588,8 @@ final class DownloadStore: @unchecked Sendable {
             try c.encode(bytes, forKey: .bytes)
             try c.encode(progress, forKey: .progress)
             try c.encode(status, forKey: .status)
+            try c.encode(lifecycle, forKey: .lifecycle)
+            if history != .empty { try c.encode(history, forKey: .history) }
             try c.encodeIfPresent(metadata, forKey: .metadata)
             if deletionPending { try c.encode(true, forKey: .deletionPending) }
             if !deletionPendingCleanupIntents.isEmpty {
@@ -563,6 +610,22 @@ final class DownloadStore: @unchecked Sendable {
                 try c.encode(pendingArtifactIntents, forKey: .pendingArtifactIntents)
             }
         }
+
+        /// The P3a legacy shim mapping (Appendix C): a status write keeps the lifecycle detail it
+        /// cannot express — `finalizing` stays finalizing under `.downloading`, and a failed
+        /// season row awaiting admission is `planned`.
+        static func legacyLifecycle(
+            for status: DownloadStatus,
+            current: DownloadLifecycle?,
+            admissionPending: Bool
+        ) -> DownloadLifecycle {
+            if let current, current.derivedStatus == status
+                || (current == .planned && status == .failed && admissionPending) {
+                return current
+            }
+            return DownloadLifecycle.structural(
+                from: status, admissionPending: admissionPending, finalizingEvidence: false)
+        }
     }
 
     /// Minimum spacing between index rewrites driven by progress callbacks.
@@ -582,6 +645,12 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     private var rows: [String: Row] = [:]          // ratingKey -> Row
+    /// Truncation strikes of a row a Retry removed before seeding its replacement, keyed by
+    /// rating key (guarded by `lock`). The replacement inherits them like an in-place
+    /// replacement would (R2-5), with the same in-process lifetime the pre-P3a session counter
+    /// had. Only `submitRemoveForRetry` stashes strikes; a Delete or a cancel never does.
+    private var retiredTruncation: [String: (attemptID: DownloadAttemptID?,
+                                             truncation: DownloadTruncationHistory)] = [:]
     private var sideAssetHydrationCache: [String: HydratedSideAssets] = [:] // guarded by `lock`
     private var lastProgressPersist = Date.distantPast   // guarded by `lock`
     private let baseDirectory: URL                  // Application Support/Downloads
@@ -603,6 +672,11 @@ final class DownloadStore: @unchecked Sendable {
         label: "com.visionplay.download-artifact-lifecycle", qos: .utility)
     private var nextPersistenceRevision: UInt64 = 0 // guarded by `lock`
     private var startupSchemaProbe: DownloadIndexCoding.StartupProbe // guarded by `lock`
+    private var seasonCommitIndeterminate = false // guarded by `lock`
+    #if DEBUG
+    /// Runs after reconcile's demotion commits and before its fenced deletions (race pins).
+    var reconcileBeforeDeletionsForTesting: (() -> Void)?
+    #endif
     private var activeArtifactIntentIDs: Set<UUID> = [] // guarded by `lock`
     private var pendingResumeArtifactData: [UUID: Data] = [:] // guarded by `lock`
     private var artifactLifecycleTickets: [UUID: DownloadArtifactLifecycleCoordinator.Ticket] = [:]
@@ -659,36 +733,12 @@ final class DownloadStore: @unchecked Sendable {
         let indexURL = dir.appendingPathComponent("index.json")
         let pendingQuarantine = dir.deletingLastPathComponent().appendingPathComponent(
             ".\(dir.lastPathComponent)-unsupported-reset-pending", isDirectory: true)
-        var startupProbe: DownloadIndexCoding.StartupProbe
-        var startupIndexData: Data?
-        if fileManager.fileExists(atPath: indexURL.path) {
-            do {
-                let data = try indexPersistence.read(indexURL)
-                startupIndexData = data
-                startupProbe = DownloadIndexCoding.startupProbe(data: data)
-            } catch {
-                startupProbe = .unreadable
-            }
-        } else if fileManager.fileExists(atPath: pendingQuarantine.path) {
-            // A prior rollback was interrupted after the opaque root was quarantined. Never
-            // classify the absent live root as a new empty library; retry from the durable pending
-            // quarantine after task drainage.
-            startupProbe = .unsupported(schemaVersion: nil)
-        } else {
-            startupProbe = .missing
-        }
-        if startupProbe == .current, let startupIndexData {
-            let decoded = DownloadIndexCoding.decode(Row.self, from: startupIndexData)
-            let keys = decoded.rows.map(\.ratingKey)
-            if decoded.skippedRowCount > 0 || Set(keys).count != keys.count {
-                startupProbe = .unreadable
-            }
-        }
+        let (startupProbe, startupIndexData) = Self.classifyIndex(
+            at: indexURL, pendingQuarantine: pendingQuarantine,
+            read: indexPersistence.read, fileManager: fileManager)
         self.startupSchemaProbe = startupProbe
-        self.startupStagingInventory = Set(
-            ((startupProbe == .missing || startupProbe == .current)
-                ? ((try? fileManager.contentsOfDirectory(atPath: dir.path)) ?? []) : [])
-                .filter(Self.isAttemptStagingRelativePath))
+        self.startupStagingInventory = Self.stagingInventory(
+            in: dir, probe: startupProbe, fileManager: fileManager)
         self.indexURL = indexURL
         let authority = dir.deletingLastPathComponent().appendingPathComponent(
             ".\(dir.lastPathComponent)-download-authority", isDirectory: true)
@@ -709,13 +759,67 @@ final class DownloadStore: @unchecked Sendable {
         // Probe above is deliberately the first filesystem interaction that can affect admission.
         // Unsupported/unreadable roots remain byte-for-byte untouched until the session drain.
         guard startupProbe == .missing || startupProbe == .current else { return }
+        completeAdmissibleStartup(probe: startupProbe, indexData: startupIndexData)
+    }
+
+    /// Classify the on-disk index without mutating anything (the first admission decision).
+    private static func classifyIndex(
+        at indexURL: URL,
+        pendingQuarantine: URL,
+        read: (URL) throws -> Data?,
+        fileManager: FileManager
+    ) -> (DownloadIndexCoding.StartupProbe, Data?) {
+        var probe: DownloadIndexCoding.StartupProbe
+        var indexData: Data?
+        if fileManager.fileExists(atPath: indexURL.path) {
+            do {
+                let data = try read(indexURL)
+                indexData = data
+                probe = DownloadIndexCoding.startupProbe(data: data)
+            } catch {
+                probe = .unreadable
+            }
+        } else if fileManager.fileExists(atPath: pendingQuarantine.path) {
+            // A prior rollback was interrupted after the opaque root was quarantined. Never
+            // classify the absent live root as a new empty library; retry from the durable pending
+            // quarantine after task drainage.
+            probe = .unsupported(schemaVersion: nil)
+        } else {
+            probe = .missing
+        }
+        if probe == .current, let indexData {
+            let decoded = DownloadIndexCoding.decode(Row.self, from: indexData)
+            let keys = decoded.rows.map(\.ratingKey)
+            if decoded.skippedRowCount > 0 || Set(keys).count != keys.count {
+                probe = .unreadable
+            }
+        }
+        return (probe, indexData)
+    }
+
+    private static func stagingInventory(
+        in dir: URL, probe: DownloadIndexCoding.StartupProbe, fileManager: FileManager
+    ) -> Set<String> {
+        Set(((probe == .missing || probe == .current)
+             ? ((try? fileManager.contentsOfDirectory(atPath: dir.path)) ?? []) : [])
+            .filter(Self.isAttemptStagingRelativePath))
+    }
+
+    /// The admissible-startup tail: directories, authority migration, protection, temp sweeps,
+    /// load, and artifact recovery. Runs from `init`, or from `reprobeBlockedIndex` once an index
+    /// that was unreadable at launch reads cleanly (B16).
+    private func completeAdmissibleStartup(
+        probe startupProbe: DownloadIndexCoding.StartupProbe, indexData startupIndexData: Data?
+    ) {
+        let dir = baseDirectory
+        let authority = cleanupAuthorityDirectory
         do {
             try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
             try fileManager.createDirectory(at: authority, withIntermediateDirectories: true)
             try Self.syncDirectory(dir.deletingLastPathComponent())
             try moveCleanupAuthorityFilesOutOfVersionedRoot()
         } catch {
-            startupSchemaProbe = .unreadable
+            lock.withLock { startupSchemaProbe = .unreadable }
             return
         }
         // Exclude the offline cache from iCloud/device backups and give newly-created
@@ -958,10 +1062,7 @@ final class DownloadStore: @unchecked Sendable {
         guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !Self.hasPendingRowDeletion(row),
               row.status != .complete, row.status != .unverified,
-              let working = row.attemptWorkingRelativePath,
-              Self.isSafeOneLevelRelativePath(row.relativePath),
-              working == Self.attemptStagingRelativePath(
-                for: key, stableRelativePath: row.relativePath) else { return nil }
+              let working = workingRelativePath(for: row, key: key) else { return nil }
         return AttemptWorkingFileLayout(
             key: key,
             stableURL: baseDirectory.appendingPathComponent(row.relativePath),
@@ -1197,7 +1298,7 @@ final class DownloadStore: @unchecked Sendable {
         }
         row.bytes = bytes
         row.progress = 1
-        row.status = terminalStatus
+        Self.applyPromotionTerminal(terminalStatus, on: &row)
         row.attemptWorkingRelativePath = nil
         artifactRetirementKeys.insert(ticket.key)
         let retiring = row.pendingArtifactIntents.removeFirst()
@@ -1243,7 +1344,8 @@ final class DownloadStore: @unchecked Sendable {
         }
         artifactRetirementKeys.insert(ticket.key)
         let retiring = row.pendingArtifactIntents.removeFirst()
-        row.status = .failed
+        Self.reduceLocked(row.lifecycle == .finalizing
+                          ? .promotionAbandoned : .transferFailed(.internalError), on: &row)
         rows[ticket.key.ratingKey] = row
         let terminal = enqueueAttemptPersistenceLocked()
         lock.unlock()
@@ -1319,7 +1421,7 @@ final class DownloadStore: @unchecked Sendable {
         }
         current.bytes = bytes
         current.progress = 1
-        current.status = terminalStatus
+        Self.reduceLocked(.promotionRecovered(Self.terminalLifecycle(terminalStatus)), on: &current)
         current.attemptWorkingRelativePath = nil
         current.pendingValidatedPromotionStatus = nil
         rows[key.ratingKey] = current
@@ -1332,7 +1434,16 @@ final class DownloadStore: @unchecked Sendable {
         return .promoted(key, bytes: bytes, status: terminalStatus)
     }
 
+    /// The exact attempt's working body path. A condemned body (P3a `bodyCondemned`) has none:
+    /// every checkpoint reader, checkpoint write, recovery finalization and promotion goes through
+    /// here, so bytes a failed rename/delete left behind are invisible to all of them.
     private func workingRelativePath(for row: Row, key: DownloadAttemptKey) -> String? {
+        guard !row.history.isBodyCondemned else { return nil }
+        return uncheckedWorkingRelativePath(for: row, key: key)
+    }
+
+    /// The working path ignoring condemnation; only condemnation itself needs it.
+    private func uncheckedWorkingRelativePath(for row: Row, key: DownloadAttemptKey) -> String? {
         guard Self.isSafeOneLevelRelativePath(row.relativePath) else { return nil }
         let expected = Self.attemptStagingRelativePath(
             for: key, stableRelativePath: row.relativePath)
@@ -2296,6 +2407,80 @@ final class DownloadStore: @unchecked Sendable {
         return stagedDeletion ? .retiring : .present(hydratedRecord(row))
     }
 
+    /// What a truncation strike is counted against (R2-5). Unknown components stay nil so that
+    /// only a proven change resets the count.
+    static func truncationSourceKey(ratingKey: String, metadata: OfflineMetadata?)
+        -> DownloadSourceKey {
+        func nonEmpty(_ value: String?) -> String? {
+            value?.isEmpty == false ? value : nil
+        }
+        return DownloadSourceKey(
+            server: nonEmpty(metadata?.backendServerID) ?? nonEmpty(metadata?.backendBaseURLString),
+            account: nonEmpty(metadata?.backendUserID),
+            backend: metadata?.backendKind?.rawValue,
+            item: ratingKey,
+            source: nonEmpty(metadata?.mediaSourceID) ?? metadata?.sourcePartID.map(String.init),
+            profile: nonEmpty(metadata?.requestedProfileLabel) ?? nonEmpty(metadata?.optimizeTargetName))
+    }
+
+    /// The exact attempt's truncation source key; nil for a stale or missing attempt.
+    func truncationSourceKey(for key: DownloadAttemptKey) -> DownloadSourceKey? {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else { return nil }
+        return Self.truncationSourceKey(ratingKey: key.ratingKey, metadata: row.metadata)
+    }
+
+    /// Persist one truncation strike for the exact attempt (deduplicated by `outcomeID`) and
+    /// return the strike count it now carries; nil for a stale or missing attempt.
+    func recordTruncationStrike(for key: DownloadAttemptKey, outcomeID: String) -> Int? {
+        lock.lock()
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
+            lock.unlock()
+            return nil
+        }
+        let (history, recorded) = row.history.recordingTruncation(
+            outcomeID: outcomeID,
+            source: Self.truncationSourceKey(ratingKey: key.ratingKey, metadata: row.metadata))
+        if recorded {
+            row.history = history
+            rows[key.ratingKey] = row
+            _ = enqueueAttemptPersistenceLocked()
+        }
+        let strikes = row.history.truncation?.strikes ?? 0
+        lock.unlock()
+        return strikes
+    }
+
+    func truncationStrikes(for key: DownloadAttemptKey) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else { return 0 }
+        return row.history.truncation?.strikes ?? 0
+    }
+
+    /// A complete verdict, or a user cancel that re-downloads from scratch, clears the strikes.
+    func clearTruncationStrikes(for key: DownloadAttemptKey) {
+        lock.lock()
+        if retiredTruncation[key.ratingKey]?.attemptID == key.attemptID {
+            retiredTruncation.removeValue(forKey: key.ratingKey)
+        }
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
+              row.history.truncation != nil else {
+            lock.unlock()
+            return
+        }
+        row.history.truncation = nil
+        rows[key.ratingKey] = row
+        _ = enqueueAttemptPersistenceLocked()
+        lock.unlock()
+    }
+
+    /// The exact attempt's P3a lifecycle and history.
+    func lifecycleState(for key: DownloadAttemptKey) -> DownloadLifecycleState? {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else { return nil }
+        return DownloadLifecycleState(lifecycle: row.lifecycle, history: row.history)
+    }
+
     func isDeletionPending(for key: DownloadAttemptKey) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else { return false }
@@ -2926,7 +3111,7 @@ final class DownloadStore: @unchecked Sendable {
         // Neither authority can be proven. Mark startup admission unreadable so the manager
         // can stop the queue rather than report an ordinary save failure and continue.
         lock.lock()
-        startupSchemaProbe = .unreadable
+        seasonCommitIndeterminate = true
         lock.unlock()
         return .persistenceIndeterminate
     }
@@ -3094,8 +3279,12 @@ final class DownloadStore: @unchecked Sendable {
         // the old private body to the new private path before committing the new owner. The old
         // body remains until the new index snapshot is durable, so a failed/ambiguous commit is
         // safe for both the current process and relaunch.
+        // A body finalization condemned as truncated is never a checkpoint (P3a): Retry
+        // downloads again from zero even while that body's deletion waits for its commit.
         if existing?.attemptID != attemptID,
            let expectedPreviousOwner,
+           previous?.history.lastFailure != .truncated,
+           previous?.history.isBodyCondemned != true,
            previous?.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange,
            metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange,
            let previous,
@@ -3129,7 +3318,7 @@ final class DownloadStore: @unchecked Sendable {
                 $0,
                 expectedBytes: previous.flatMap { Self.expectedBytesEstimate(row: $0) })
         } ?? record.progress
-        rows[record.ratingKey] = Row(
+        var newRow = Row(
             ratingKey: record.ratingKey,
             attemptID: attemptID,
             title: record.title,
@@ -3140,6 +3329,15 @@ final class DownloadStore: @unchecked Sendable {
             status: record.status,
             metadata: metadata,
         )
+        // R2-5: a replacement attempt inherits truncation strikes for the same source in this
+        // same transaction, so a Retry cannot reset the two-strike park (B54).
+        let retired = retiredTruncation.removeValue(forKey: record.ratingKey)
+        if let inheritedFrom = existing?.history
+            ?? retired.map({ DownloadAttemptHistory(truncation: $0.truncation) }) {
+            newRow.history = inheritedFrom.inherited(
+                by: Self.truncationSourceKey(ratingKey: record.ratingKey, metadata: metadata))
+        }
+        rows[record.ratingKey] = newRow
         sideAssetHydrationCache.removeValue(forKey: record.ratingKey)
         let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
@@ -4059,6 +4257,7 @@ final class DownloadStore: @unchecked Sendable {
     /// as one opaque root; malformed current rows are retained byte-for-byte and fail closed.
     func startupIndexAdmission() -> StartupIndexAdmission {
         lock.lock(); defer { lock.unlock() }
+        if seasonCommitIndeterminate { return .seasonCommitIndeterminate }
         switch startupSchemaProbe {
         case .unsupported(let schemaVersion):
             return .requiresDestructiveReset(schemaVersion: schemaVersion)
@@ -4079,6 +4278,43 @@ final class DownloadStore: @unchecked Sendable {
                 stableRelativePath: row.relativePath)
         }.map(\.ratingKey).sorted()
         return malformed.isEmpty ? .current : .malformedCurrentRows(malformed)
+    }
+
+    /// Retry Recovery (B16, B21): re-examine a blocked admission in process instead of returning
+    /// the probe cached at launch.
+    /// - An indeterminate season commit re-commits the (consistent) in-memory index; once that
+    ///   commits, disk and memory agree again.
+    /// - An index that was unreadable at launch, before any row was loaded, is classified again;
+    ///   if it now reads as current or missing, the normal startup tail runs.
+    func reprobeBlockedIndex() -> StartupIndexAdmission {
+        lock.lock()
+        let indeterminate = seasonCommitIndeterminate
+        let unreadableAtLaunch = startupSchemaProbe == .unreadable && rows.isEmpty
+        lock.unlock()
+        if indeterminate {
+            lock.lock()
+            let ticket = enqueuePersistenceLocked()
+            lock.unlock()
+            if Self.mapPersistenceResult(indexWriter.waitSynchronouslyForOutcome(
+                through: ticket.revision)).committed(through: ticket) {
+                lock.withLock { seasonCommitIndeterminate = false }
+            }
+        } else if unreadableAtLaunch {
+            let pendingQuarantine = baseDirectory.deletingLastPathComponent().appendingPathComponent(
+                ".\(baseDirectory.lastPathComponent)-unsupported-reset-pending", isDirectory: true)
+            let (probe, data) = Self.classifyIndex(
+                at: indexURL, pendingQuarantine: pendingQuarantine,
+                read: rootIndexPersistence.read, fileManager: fileManager)
+            lock.withLock {
+                startupSchemaProbe = probe
+                startupStagingInventory = Self.stagingInventory(
+                    in: baseDirectory, probe: probe, fileManager: fileManager)
+            }
+            if probe == .current || probe == .missing {
+                completeAdmissibleStartup(probe: probe, indexData: data)
+            }
+        }
+        return startupIndexAdmission()
     }
 
     /// #169: reset persisted static byte-range progress to the bytes that are actually durable in
@@ -4173,6 +4409,13 @@ final class DownloadStore: @unchecked Sendable {
                 for: key, stableRelativePath: row.relativePath)
             stable = row.relativePath
             temporary = ".\(working).checkpoint-\(UUID().uuidString)"
+        } else if row.history.isBodyCondemned {
+            // Never read or rewrite the condemned bytes; the usable checkpoint is empty.
+            row.bytes = 0
+            row.progress = 0
+            rows[key.ratingKey] = row
+            let ticket = enqueueAttemptPersistenceLocked()
+            lock.unlock(); return .condemned(ticket)
         } else {
             guard let existing = workingRelativePath(for: row, key: key) else {
                 lock.unlock(); return .staleOrMissing
@@ -4214,6 +4457,10 @@ final class DownloadStore: @unchecked Sendable {
         switch submission {
         case .staleOrMissing: return .staleOrMissing
         case .notStatic(let bytes): return .notStatic(bytes: bytes)
+        case .condemned(let ticket):
+            let persistence = waitForPersistence(through: ticket)
+            return persistence.result.committed(through: persistence.ticket)
+                ? .applied(bytes: 0) : .persistenceFailed(bytes: 0, persistence.result)
         case .accepted(let ticket):
             let outcome = artifactLifecycle.waitSynchronously(for: ticket)
             if let result = lock.withLock({ () -> AttemptStaticRangeCheckpointResetResult? in
@@ -4418,6 +4665,9 @@ final class DownloadStore: @unchecked Sendable {
         if row.status == .complete || row.status == .unverified {
             return fileSize(relativePath: row.relativePath) ?? 0
         }
+        // A condemned current owner has an empty usable checkpoint, not a missing owner: deferred
+        // Retry and backend-ready resume must restart it from zero rather than give up (P3a).
+        if row.history.isBodyCondemned { return 0 }
         guard let workingRelative = workingRelativePath(for: row, key: key) else { return nil }
         return fileSize(relativePath: workingRelative) ?? 0
     }
@@ -4635,11 +4885,9 @@ final class DownloadStore: @unchecked Sendable {
         row.bytes = bytes
         row.progress = progress
         let previousStatus = row.status
-        var statusChanged = false
-        if row.status == .queued || row.status == .paused || row.status == .failed {
-            row.status = .downloading
-            statusChanged = true
-        }
+        let previousLifecycle = row.lifecycle
+        Self.reduceLocked(.transferProgress, on: &row)
+        let statusChanged = row.lifecycle != previousLifecycle
         rows[ratingKey] = row
         let now = Date()
         let shouldPersist = statusChanged
@@ -4685,8 +4933,17 @@ final class DownloadStore: @unchecked Sendable {
             return .staleOrMissing
         }
         let previousStatus = row.status
-        let statusChanged = row.status == .queued || row.status == .paused || row.status == .failed
-        if statusChanged { row.status = .downloading }
+        // P3a/B09: progress is the `transferProgress` event. It may move an admitted row to
+        // transferring, but never promotes a paused, failed or finalizing row; those only record
+        // their bytes (`checkpointAdvanced`).
+        let previousLifecycle = row.lifecycle
+        if case .applied(let next, _) = DownloadLifecycleReducer.reduce(
+            DownloadLifecycleState(lifecycle: row.lifecycle, history: row.history),
+            .transferProgress, facts: DownloadRowFacts(route: .staticRange)) {
+            row.lifecycle = next.lifecycle
+            row.history = next.history
+        }
+        let statusChanged = row.lifecycle != previousLifecycle
         let changed = row.bytes != bytes || row.progress != progress || statusChanged
         guard changed else {
             lock.unlock()
@@ -4714,6 +4971,153 @@ final class DownloadStore: @unchecked Sendable {
         return .accepted(change: .applied, ticket: ticket)
     }
 
+    enum LifecycleEventSubmission: Sendable, Equatable {
+        case accepted(effects: [DownloadLifecycleEffect], ticket: PersistenceTicket?)
+        case rejected(DownloadLifecycleTransition.Rejection)
+        case staleOrMissing
+    }
+
+    /// Apply a reducer event to a row the caller holds under the lock. Events whose result never
+    /// depends on route or body facts use this; a rejected event leaves the row unchanged.
+    @discardableResult
+    private static func reduceLocked(_ event: DownloadLifecycleEvent, on row: inout Row) -> Bool {
+        guard case .applied(let next, _) = DownloadLifecycleReducer.reduce(
+            DownloadLifecycleState(lifecycle: row.lifecycle, history: row.history),
+            event, facts: DownloadRowFacts(route: .staticRange)) else { return false }
+        row.lifecycle = next.lifecycle
+        row.history = next.history
+        return true
+    }
+
+    fileprivate static func terminalLifecycle(_ status: DownloadStatus) -> DownloadLifecycle {
+        status == .unverified ? .unverified : .complete
+    }
+
+    /// The validated-promotion terminal snapshot: a finalizing row commits through
+    /// `promotionCommitted`; any other row (legacy or revalidation) through `promotionRecovered`.
+    private static func applyPromotionTerminal(_ status: DownloadStatus, on row: inout Row) {
+        let terminal = terminalLifecycle(status)
+        if !reduceLocked(.promotionCommitted(terminal), on: &row) {
+            reduceLocked(.promotionRecovered(terminal), on: &row)
+        }
+    }
+
+    /// P3a facts for the exact attempt, derived from the row. Session-owned facts (a live task)
+    /// come from the caller; everything else is read here under the lock.
+    func lifecycleFacts(for key: DownloadAttemptKey, liveTask: Bool = false) -> DownloadRowFacts {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else {
+            return DownloadRowFacts(route: .staticRange)
+        }
+        return lifecycleFactsLocked(row: row, key: key, liveTask: liveTask)
+    }
+
+    private func lifecycleFactsLocked(row: Row, key: DownloadAttemptKey, liveTask: Bool)
+        -> DownloadRowFacts {
+        let metadata = row.metadata
+        let resumeMode = metadata?.resolvedResumeMode(ratingKey: row.ratingKey)
+        let backend = metadata?.resolvedBackendKind(ratingKey: row.ratingKey)
+            ?? DownloadBackendKind(ratingKeyPrefix: row.ratingKey)
+        let route: DownloadRowFacts.Route
+        switch (resumeMode, backend) {
+        case (.serverPrepThenStatic?, .emby):
+            route = .embyConvert(hasJobOrIdentity: metadata?.embyConvertJobID != nil
+                                 || metadata?.hasEmbyConvertCrashWindowIdentity == true)
+        case (.serverPrepThenStatic?, _): route = .plexPrep
+        case (.liveForwardOnly?, _): route = .forwardOnly
+        default: route = .staticRange
+        }
+        let workingBytes = workingRelativePath(for: row, key: key)
+            .flatMap { fileSize(at: baseDirectory.appendingPathComponent($0)) } ?? 0
+        let resumeRelative = metadata?.resumeDataRelativePath
+        let checkpoint: DownloadRowFacts.Checkpoint
+        // Pre-P3a reconcile precedence: an app-owned static partial is the checkpoint whether or
+        // not a resume manifest also exists, and a manifest counts only while its blob survives.
+        if row.history.isBodyCondemned {
+            checkpoint = .none   // a condemned body is never a checkpoint
+        } else if route == .staticRange, workingBytes > 0 {
+            checkpoint = .durablePartial(bytes: workingBytes)
+        } else if let resumeRelative, !resumeRelative.isEmpty,
+                  fileManager.fileExists(
+                      atPath: baseDirectory.appendingPathComponent(resumeRelative).path) {
+            checkpoint = .resumeBlob
+        } else {
+            checkpoint = .none
+        }
+        let body: DownloadRowFacts.Body
+        if row.lifecycle.isTerminal || row.status == .complete || row.status == .unverified {
+            body = fileManager.fileExists(
+                atPath: baseDirectory.appendingPathComponent(row.relativePath).path)
+                ? .published : .none
+        } else if workingBytes > 0, row.lifecycle == .finalizing || route == .forwardOnly {
+            // A forward-only body reaches the working path only once its transfer finished.
+            body = .workingComplete
+        } else {
+            body = .none
+        }
+        return DownloadRowFacts(
+            route: route, checkpoint: checkpoint, body: body,
+            pendingArtifactHead: !row.pendingArtifactIntents.isEmpty,
+            deletionPending: row.deletionPending, liveTask: liveTask)
+    }
+
+    /// Convenience for call sites whose event does not depend on session-owned facts.
+    @discardableResult
+    func submitLifecycleEvent(
+        _ event: DownloadLifecycleEvent,
+        for key: DownloadAttemptKey,
+        liveTask: Bool = false
+    ) -> LifecycleEventSubmission {
+        submitLifecycleEvent(event, for: key, facts: lifecycleFacts(for: key, liveTask: liveTask))
+    }
+
+    /// The P3a way to change an exact attempt's lifecycle: run the pure reducer under the store
+    /// lock, persist the new lifecycle and history in one revision, and return the committed
+    /// effects for the caller to execute. A rejected event changes nothing.
+    @discardableResult
+    func submitLifecycleEvent(
+        _ event: DownloadLifecycleEvent,
+        for key: DownloadAttemptKey,
+        facts: DownloadRowFacts
+    ) -> LifecycleEventSubmission {
+        lock.lock()
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
+            lock.unlock()
+            return .staleOrMissing
+        }
+        let previousStatus = row.status
+        switch DownloadLifecycleReducer.reduce(
+            DownloadLifecycleState(lifecycle: row.lifecycle, history: row.history),
+            event, facts: facts) {
+        case .rejected(let rejection):
+            lock.unlock()
+            return .rejected(rejection)
+        case .applied(let next, let effects):
+            row.lifecycle = next.lifecycle
+            row.history = next.history
+            rows[key.ratingKey] = row
+            let ticket = enqueueAttemptPersistenceLocked()
+            let bytes = row.bytes
+            let progress = row.progress
+            let status = row.status
+            lock.unlock()
+            if previousStatus != status {
+                AppDiagnostics.record(.downloads, "downloads.status_transition", fields: [
+                    "download_id": .identifier(key.ratingKey),
+                    "from": .label(previousStatus.rawValue),
+                    "to": .label(status.rawValue),
+                    "bytes_exact": .int(bytes),
+                    "progress_percent": .int(Int((progress * 100).rounded(.down))),
+                    "source": .label("lifecycle_event"),
+                ])
+            }
+            return .accepted(effects: effects, ticket: ticket)
+        }
+    }
+
+    #if DEBUG
+    // P3a: test fixtures only. Production status changes go through `submitLifecycleEvent`;
+    // `scripts/ci-hygiene.sh` rejects any non-fixture status write.
     /// Set the explicit lifecycle status for a row (D2). No-op if the row is gone.
     func setStatus(ratingKey: String, _ status: DownloadStatus) {
         lock.lock()
@@ -4721,7 +5125,7 @@ final class DownloadStore: @unchecked Sendable {
         let previousStatus = row.status
         let bytes = row.bytes
         let progress = row.progress
-        row.status = status
+        row.status = status // P3a-legacy-fixture
         rows[ratingKey] = row
         lock.unlock()
         if previousStatus != status {
@@ -4766,7 +5170,7 @@ final class DownloadStore: @unchecked Sendable {
         }
         let bytes = row.bytes
         let progress = row.progress
-        row.status = status
+        row.status = status // P3a-legacy-fixture
         rows[key.ratingKey] = row
         let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
@@ -4780,6 +5184,7 @@ final class DownloadStore: @unchecked Sendable {
         ])
         return .accepted(change: .applied, ticket: ticket)
     }
+    #endif
 
     /// Promote a previously byte-complete but probe-inconclusive row once a later validation or
     /// actual local playback proves the file is usable. No-op for already-complete/active/failed rows
@@ -4797,7 +5202,7 @@ final class DownloadStore: @unchecked Sendable {
             lock.unlock()
             return .notUnverified
         }
-        row.status = .complete
+        Self.reduceLocked(.localPlaybackProgressed, on: &row)
         rows[key.ratingKey] = row
         let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
@@ -4830,136 +5235,184 @@ final class DownloadStore: @unchecked Sendable {
     /// existed when the task snapshot was requested: rows seeded on the main actor after that
     /// point are skipped entirely, or a brand-new `.queued` row (or a static row mid retry
     /// rebuild) would be demoted against a snapshot that predates it.
+    /// Relaunch/foreground recovery (P3a): each eligible row's facts go through the reducer's
+    /// `relaunchObserved`. Lifecycle and byte accounting change under the lock; file deletions are
+    /// durable decisions executed after it is released (st-41).
+    /// Take a working body a failure verdict condemned off its working path at once (P3a).
+    /// The atomic rename gives it a fresh attempt-staging name that no row references, so it can
+    /// never again be a checkpoint, a recovery source or a Retry clone, whatever later happens
+    /// to the row. Returns the condemned URL, or nil when the attempt no longer owns that path.
+    func condemnWorkingBody(at url: URL, for key: DownloadAttemptKey) -> URL? {
+        lock.withLock {
+            guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
+                  uncheckedWorkingRelativePath(for: row, key: key)
+                    .map({ baseDirectory.appendingPathComponent($0).standardizedFileURL })
+                    == url.standardizedFileURL else { return nil }
+            let condemned = baseDirectory.appendingPathComponent(Self.attemptStagingRelativePath(
+                for: key, stableRelativePath: "condemned-\(UUID().uuidString)"))
+            guard Darwin.rename(url.path, condemned.path) == 0 else {
+                let renameErrno = errno
+                // Fall back to deleting in place (the pre-P3a behavior). Either way the persisted
+                // `bodyCondemned` fence keeps these bytes from ever seeding a Retry.
+                let deleted = (try? fileManager.removeItem(at: url)) != nil
+                AppDiagnostics.record(.downloads, "downloads.condemn_rename_failed", fields: [
+                    "download_id": .identifier(key.ratingKey),
+                    "errno": .int(Int(renameErrno)),
+                    "deleted_in_place": .bool(deleted),
+                ])
+                return nil
+            }
+            return condemned
+        }
+    }
+
+    /// Delete a condemned body once its verdict's revision commits, or after `timeout` if it
+    /// cannot: the body is no longer anyone's checkpoint, and keeping multi-GB bytes while the
+    /// index cannot be written (often a full volume) only makes that worse. An unchanged file
+    /// identity is required. Returns whether the verdict was proven committed first.
+    @discardableResult
+    func deleteCondemnedBody(
+        at condemned: URL,
+        afterCommitOf ticket: PersistenceTicket?,
+        timeout: TimeInterval = 30
+    ) async -> Bool {
+        let identity = condemnedFileIdentity(at: condemned)
+        var committed = false
+        if let ticket, case .committed(let revision) = await flushPersistence(
+            through: ticket, timeout: timeout) {
+            committed = revision >= ticket.revision
+        }
+        // Bounded retries: the name is unreferenced and absent from this launch's staging
+        // inventory, so nothing else in this process would reclaim it.
+        for attempt in 0..<3 {
+            guard let identity, condemnedFileIdentity(at: condemned) == identity else { break }
+            if (try? fileManager.removeItem(at: condemned)) != nil { break }
+            if attempt == 2 {
+                AppDiagnostics.record(.downloads, "downloads.condemned_body_delete_failed", fields: [
+                    "bytes": .bytes(Int(clamping: identity.size)),
+                ])
+            } else {
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+        return committed
+    }
+
+    /// The identity of a file reconcile condemned: inode, size and modification time.
+    struct CondemnedFileIdentity: Equatable {
+        let fileNumber: UInt64
+        let size: UInt64
+        let modified: Date
+    }
+
+    private func condemnedFileIdentity(at url: URL) -> CondemnedFileIdentity? {
+        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+              let fileNumber = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value,
+              let size = (attributes[.size] as? NSNumber)?.uint64Value,
+              let modified = attributes[.modificationDate] as? Date else { return nil }
+        return CondemnedFileIdentity(fileNumber: fileNumber, size: size, modified: modified)
+    }
+
     func reconcile(liveRatingKeys: Set<String>, snapshotRatingKeys: Set<String>) {
         lock.lock()
         var changed = false
-        for (key, var row) in rows {
-            // A deletion-pending row is a sealed recovery capsule. Reconcile must not demote it,
-            // rewrite its checkpoint counters, or delete main/resume artifacts while the cleanup
-            // journal is unavailable; cleanup migration is the only path allowed to unseal it.
-            guard !row.deletionPending else { continue }
-            // A row with pending artifact intents is owned by the durable artifact queue: intent
-            // replay runs asynchronously on the artifact worker queue with no ordering barrier
-            // against this reconcile, and a staged `.validatedPromotion` head leaves the row
-            // `.downloading` while the working file IS the fully-validated body. Demoting the row
-            // or deleting its working/resume files here would destroy the intent's source, so
-            // replay/abandonment is the only authority allowed to resolve these rows.
-            guard row.pendingArtifactIntents.isEmpty else { continue }
-            guard DownloadStatus.reconcileEligible(ratingKey: key,
-                                                   snapshotRatingKeys: snapshotRatingKeys) else { continue }
-            let hasLiveTask = liveRatingKeys.contains(key)
-            let isTerminal = row.status == .complete || row.status == .unverified
-            let evidenceURL: URL? = {
-                if isTerminal { return baseDirectory.appendingPathComponent(row.relativePath) }
-                guard let attemptID = row.attemptID,
-                      let working = workingRelativePath(
-                        for: row,
-                        key: DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: attemptID))
-                else { return nil }
-                return baseDirectory.appendingPathComponent(working)
-            }()
-            let partialBytes = evidenceURL.flatMap(fileSize(at:)) ?? 0
-            let fileExists = evidenceURL.map {
-                partialBytes > 0 || fileManager.fileExists(atPath: $0.path)
-            } ?? false
-            // #95: does a persisted resume blob survive for this row? A `.paused` row stays
-            // resumable only while it does (checked WITHOUT reading the blob).
-            let resumeRelative = row.metadata?.resumeDataRelativePath
-            let hasResumeData = (resumeRelative?.isEmpty == false)
-                && fileManager.fileExists(
-                    atPath: baseDirectory.appendingPathComponent(resumeRelative!).path)
-            let resumeMode = row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey)
-                ?? DownloadResumeMode.resolved(
-                    backend: row.metadata?.resolvedBackendKind(ratingKey: row.ratingKey)
-                        ?? DownloadBackendKind(ratingKeyPrefix: row.ratingKey),
-                    lane: row.metadata?.resolvedDownloadLane() ?? .original)
-            let hasServerPrepCheckpoint = resumeMode == .serverPrepThenStatic
-                && row.status == .paused
-                && (row.metadata?.optimizeTargetName?.isEmpty == false
-                    || row.metadata?.embyConvertJobID != nil)
-            let hasAppRangeCheckpoint = resumeMode == .staticByteRange
-                && (row.status == .paused || row.status == .queued || row.status == .downloading)
-                && partialBytes > 0
-            let staticRangeExpectedBytes = Self.expectedBytesEstimate(row: row)
-            let staticRangeProgress = Self.progressForDurableBytes(
-                partialBytes,
-                expectedBytes: staticRangeExpectedBytes
-            )
-            // Only Plex has a server-side "prepare then static download" optimize queue that can
-            // resume after relaunch. Jellyfin AND Emby transcoded rows are LIVE streams from a
-            // URLSession task (Emby additionally renders via a server FFmpeg encoder), so a
-            // missing task means the render is gone — they must demote to retryable `.failed`, not
-            // resume as `.queued`. Hence both backend prefixes are excluded here.
-            let isPlexServerPrepOptimizedJob = !hasLiveTask
-                && (row.status == .queued || row.status == .downloading)
-                && resumeMode == .serverPrepThenStatic
-                && row.metadata?.optimizeTargetName?.isEmpty == false
-                && !row.ratingKey.hasPrefix("jellyfin:")
-                && !row.ratingKey.hasPrefix("emby:")
-            let hasLiveStaticRangeTask = hasLiveTask
-                && resumeMode == .staticByteRange
-                && (row.status == .paused || row.status == .queued || row.status == .downloading)
-            let newStatus: DownloadStatus
-            if isPlexServerPrepOptimizedJob {
-                newStatus = .queued
-            } else if hasLiveStaticRangeTask {
-                // A reattached background Range task is authoritative live work. Do not park the row
-                // as `.paused` merely because a durable partial exists: that made the UI offer Resume
-                // while nsurlsessiond was still delivering callbacks, allowing a duplicate Range task
-                // to start at the same checkpoint.
-                newStatus = .downloading
-            } else if hasServerPrepCheckpoint || hasAppRangeCheckpoint {
-                newStatus = .paused
-            } else {
-                newStatus = DownloadStatus.reconciledStatus(
-                    current: row.status, fileExists: fileExists,
-                    hasLiveTask: hasLiveTask, hasResumeData: hasResumeData,
-                    canRestartFromStaticCheckpoint: resumeMode == .staticByteRange)
-            }
-            let shouldResetOptimizedProgress = isPlexServerPrepOptimizedJob
-                && (row.bytes != 0 || row.progress != 0)
-            let shouldResetRangeProgress = hasAppRangeCheckpoint
-                && (row.bytes != partialBytes || abs(row.progress - staticRangeProgress) > 0.000_001)
-            let shouldResetMissingRangeProgress = resumeMode == .staticByteRange
-                && !hasLiveTask
-                && !hasAppRangeCheckpoint
-                && (row.status == .paused || row.status == .queued
-                    || row.status == .downloading || row.status == .failed)
-                && (row.bytes != 0 || row.progress != 0)
-            guard newStatus != row.status
-                    || shouldResetOptimizedProgress
-                    || shouldResetRangeProgress
-                    || shouldResetMissingRangeProgress else { continue }
-            // A non-live queued/downloading row that we're demoting to `.failed` may have left a
-            // partial file behind. Delete it so dead bytes don't sit invisibly on disk — a retry
-            // rebuilds the file from scratch regardless. #95: but a row that STAYS resumable
-            // (`.paused` with a surviving resume blob) must KEEP its partial, or the resume data
-            // is useless; only delete when we're actually demoting to a non-resumable terminal state.
-            let isStayingResumable = (newStatus == .paused)
-            if (row.status == .queued || row.status == .downloading || row.status == .paused)
-                && !hasLiveTask && !isStayingResumable {
-                if let evidenceURL { try? fileManager.removeItem(at: evidenceURL) }
-                if resumeRelative?.isEmpty == false {
-                    try? fileManager.removeItem(
-                        at: baseDirectory.appendingPathComponent(resumeRelative!))
+        // Each deletion is fenced by the exact owner and the lifecycle that condemned it.
+        var deletions: [(ratingKey: String, attemptID: DownloadAttemptID?, lifecycle: DownloadLifecycle,
+                         url: URL, identity: CondemnedFileIdentity?)] = []
+        for (ratingKey, var row) in rows {
+            // A deletion-pending row is a sealed recovery capsule, and a row with pending artifact
+            // intents is owned by the durable artifact queue (a staged `.validatedPromotion` head
+            // leaves the working file as the validated body). Neither is reconciled.
+            guard !row.deletionPending, row.pendingArtifactIntents.isEmpty,
+                  DownloadStatus.reconcileEligible(ratingKey: ratingKey,
+                                                   snapshotRatingKeys: snapshotRatingKeys)
+            else { continue }
+            // Legacy unowned rows are still reconciled; their facts simply have no working body.
+            let key = DownloadAttemptKey(
+                ratingKey: ratingKey,
+                attemptID: row.attemptID ?? DownloadAttemptID(rawValue: "unowned-legacy-row")!)
+            let hasLiveTask = liveRatingKeys.contains(ratingKey)
+            let facts = lifecycleFactsLocked(row: row, key: key, liveTask: hasLiveTask)
+            guard case .applied(let next, let effects) = DownloadLifecycleReducer.reduce(
+                DownloadLifecycleState(lifecycle: row.lifecycle, history: row.history),
+                .relaunchObserved, facts: facts) else { continue }
+            let workingURL = workingRelativePath(for: row, key: key)
+                .map { baseDirectory.appendingPathComponent($0) }
+            let partialBytes = workingURL.flatMap(fileSize(at:)) ?? 0
+            var newBytes = row.bytes
+            var newProgress = row.progress
+            for effect in effects {
+                switch effect {
+                case .resetBytesToZero:
+                    newBytes = 0
+                    newProgress = 0
+                case .resetBytesToDurableCheckpoint:
+                    newBytes = partialBytes
+                    newProgress = Self.progressForDurableBytes(
+                        partialBytes, expectedBytes: Self.expectedBytesEstimate(row: row))
+                case .deleteWorkingBody:
+                    if let workingURL {
+                        deletions.append((ratingKey, row.attemptID, next.lifecycle, workingURL,
+                                          condemnedFileIdentity(at: workingURL)))
+                    }
+                case .clearResumeBlob:
+                    if let resume = row.metadata?.resumeDataRelativePath, !resume.isEmpty {
+                        let url = baseDirectory.appendingPathComponent(resume)
+                        deletions.append((ratingKey, row.attemptID, next.lifecycle, url,
+                                          condemnedFileIdentity(at: url)))
+                    }
+                case .deletePublishedBody, .publish, .requestFinalization:
+                    break // Relaunch never publishes; finalization is re-requested by the manager.
                 }
             }
-            row.status = newStatus
-            if isPlexServerPrepOptimizedJob {
-                row.bytes = 0
-                row.progress = 0
-            } else if hasAppRangeCheckpoint {
-                row.bytes = partialBytes
-                row.progress = staticRangeProgress
-            } else if shouldResetMissingRangeProgress {
-                row.bytes = 0
-                row.progress = 0
+            // A static row with no durable bytes left carries no stale byte count.
+            if case .staticRange = facts.route, !hasLiveTask, partialBytes == 0,
+               next.lifecycle != .complete, next.lifecycle != .unverified,
+               next.lifecycle != .finalizing {
+                newBytes = 0
+                newProgress = 0
             }
-            rows[key] = row
+            guard next != DownloadLifecycleState(lifecycle: row.lifecycle, history: row.history)
+                    || newBytes != row.bytes || abs(newProgress - row.progress) > 0.000_001
+            else { continue }
+            row.lifecycle = next.lifecycle
+            row.history = next.history
+            row.bytes = newBytes
+            row.progress = newProgress
+            rows[ratingKey] = row
             changed = true
         }
         lock.unlock()
-        if changed { persist() }
+        guard changed else { return }
+        // The demotion commits before its bytes go: a failed index write keeps the files with the
+        // still-recoverable row, and a crash after the commit leaves bytes the failed row still
+        // names, which its Retry or Delete reclaims (the next relaunch repeats nothing).
+        let persistence = persist()
+        guard persistence.result.committed(through: persistence.ticket) else {
+            AppDiagnostics.record(.downloads, "downloads.reconcile_deletion_deferred", fields: [
+                "deletions": .int(deletions.count),
+            ])
+            return
+        }
+        #if DEBUG
+        reconcileBeforeDeletionsForTesting?()
+        #endif
+        // Range I/O dispatched before reconcile may have moved the same attempt on (for example
+        // back to finalizing) while the commit was in flight. Delete under the lock, as before
+        // P3a, and only while the row is still the exact owner in the condemned lifecycle.
+        lock.lock()
+        for deletion in deletions {
+            guard let row = rows[deletion.ratingKey], row.attemptID == deletion.attemptID,
+                  row.lifecycle == deletion.lifecycle, row.pendingArtifactIntents.isEmpty,
+                  !row.deletionPending,
+                  // Range I/O writes files outside the store lock and may keep a failed row
+                  // failed: only the exact bytes reconcile condemned are deleted. A file that is
+                  // absent, new, or changed since is left for the row's Retry or Delete.
+                  let identity = deletion.identity,
+                  condemnedFileIdentity(at: deletion.url) == identity else { continue }
+            try? fileManager.removeItem(at: deletion.url)
+        }
+        lock.unlock()
     }
 
     /// Attempt-conditional removal. A stale finalizer/delete for attempt A cannot remove attempt B
@@ -4992,9 +5445,16 @@ final class DownloadStore: @unchecked Sendable {
         submitRemove(for: key, requiresDeletionPending: false)
     }
 
+    /// Retry's replace-by-removal: like `submitRemove`, and the replacement seeded next inherits
+    /// this attempt's truncation strikes (R2-5).
+    func submitRemoveForRetry(for key: DownloadAttemptKey) -> RowDeletionSubmission {
+        submitRemove(for: key, requiresDeletionPending: false, retainingTruncation: true)
+    }
+
     private func submitRemove(
         for key: DownloadAttemptKey,
-        requiresDeletionPending: Bool
+        requiresDeletionPending: Bool,
+        retainingTruncation: Bool = false
     ) -> RowDeletionSubmission {
         lock.lock()
         guard var existing = rows[key.ratingKey], existing.attemptID == key.attemptID,
@@ -5021,6 +5481,9 @@ final class DownloadStore: @unchecked Sendable {
             lock.unlock()
             if let start { scheduleArtifactLifecycle(ticket: start.1, intent: start.0) }
             return .accepted(ticket: ticket)
+        }
+        if retainingTruncation, let truncation = existing.history.truncation {
+            retiredTruncation[key.ratingKey] = (key.attemptID, truncation)
         }
         return stageRowDeletionLocked(row: &existing, key: key,
                                       requiresDeletionPending: requiresDeletionPending)
@@ -5421,3 +5884,25 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 }
+
+#if DEBUG
+/// Exposes the private row's P3a legacy-shim mapping to tests.
+enum DownloadStoreTestHooks {
+    static func legacyLifecycle(for status: DownloadStatus, current: DownloadLifecycle?,
+                                admissionPending: Bool) -> DownloadLifecycle {
+        DownloadStore.legacyLifecycleForTesting(
+            for: status, current: current, admissionPending: admissionPending)
+    }
+}
+
+extension DownloadStore {
+    func markSeasonCommitIndeterminateForTesting() {
+        lock.withLock { seasonCommitIndeterminate = true }
+    }
+
+    static func legacyLifecycleForTesting(for status: DownloadStatus, current: DownloadLifecycle?,
+                                          admissionPending: Bool) -> DownloadLifecycle {
+        Row.legacyLifecycle(for: status, current: current, admissionPending: admissionPending)
+    }
+}
+#endif

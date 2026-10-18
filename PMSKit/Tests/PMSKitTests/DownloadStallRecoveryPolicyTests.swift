@@ -31,6 +31,15 @@ struct DownloadStallRecoveryPolicyTests {
             record(ratingKey: "emby:1", lane: .compatibleRemux)))
     }
 
+    @Test("A remux with a server-reported size is still watched for stalls (B61)")
+    func remuxWithKnownSizeIsACandidate() {
+        #expect(DownloadStallRecoveryPolicy.isForwardOnlyMediaBrowserStream(
+            record(ratingKey: "jellyfin:2", lane: .compatibleRemux, progress: 0.5)))
+        #expect(DownloadStallRecoveryPolicy.isForwardOnlyMediaBrowserStream(
+            record(ratingKey: "emby:2", lane: .compatibleRemux,
+                   resumeMode: .liveForwardOnly, progress: 0.8)))
+    }
+
     @Test("static and Plex rows are not forward-only restart candidates")
     func staticAndPlexRowsAreNotCandidates() {
         #expect(!DownloadStallRecoveryPolicy.isForwardOnlyMediaBrowserStream(

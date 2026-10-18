@@ -302,16 +302,20 @@ extension DownloadManager {
                 "backend": .label("Jellyfin"),
                 "error": .error(error),
             ])
+            let failure: DownloadFailureReason
             if case JellyfinPlaybackError.preferredMediaSourceUnavailable = error {
                 // B59: the persisted version vanished from PlaybackInfo. Fail the row (retryable)
                 // instead of downloading a different edition under it.
                 lastError[ratingKey] = .transferFailed(
                     "The requested server version is no longer available. Choose another version and retry.")
+                failure = .sourceMissing
             } else {
                 lastError[ratingKey] = .transferFailed(
                     DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
+                failure = .server
             }
-            _ = store.setStatus(for: attemptKey, .failed)
+            _ = applyLifecycleEvent(
+                .transferFailed(failure), for: attemptKey, context: "jellyfin_playback_info")
             clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(for: attemptKey)
             refreshRecords()
@@ -331,7 +335,8 @@ extension DownloadManager {
                                               backendKind: .jellyfin,
                                               backendSession: backendSession)
             if store.ownsAttempt(attemptKey) {
-                _ = store.setStatus(for: attemptKey, .failed)
+                _ = applyLifecycleEvent(
+                    .transferFailed(.internalError), for: attemptKey, context: "jellyfin_publish")
                 releaseInFlight(for: attemptKey)
             }
             return
@@ -348,7 +353,8 @@ extension DownloadManager {
                                                   backendKind: .jellyfin,
                                                   backendSession: backendSession)
                 if store.ownsAttempt(attemptKey) {
-                    _ = store.setStatus(for: attemptKey, .failed)
+                    _ = applyLifecycleEvent(.transferFailed(.internalError),
+                                            for: attemptKey, context: "jellyfin_play_session")
                     releaseInFlight(for: attemptKey)
                 }
                 return
@@ -371,7 +377,8 @@ extension DownloadManager {
                     $0.mediaSourceID = resolvedJellyfinMediaSourceID
                 }, key: attemptKey, phase: "media_source") else {
                 if store.ownsAttempt(attemptKey) {
-                    _ = store.setStatus(for: attemptKey, .failed)
+                    _ = applyLifecycleEvent(.transferFailed(.internalError),
+                                            for: attemptKey, context: "jellyfin_media_source")
                     releaseInFlight(for: attemptKey)
                 }
                 return
