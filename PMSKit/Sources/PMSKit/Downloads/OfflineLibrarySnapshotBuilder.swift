@@ -59,7 +59,9 @@ public enum OfflineLibrarySnapshotBuilder {
                 statusCaption: statusCaption(record, backend),
                 isRetrying: isRetrying(record.ratingKey),
                 lifecycle: record.lifecycle,
-                isWaitingForAdmission: record.lifecycle == .planned || record.admissionIntent != nil,
+                isWaitingForAdmission: record.lifecycle == .planned
+                    || ((record.lifecycle == .paused || record.lifecycle == .failed)
+                        && record.admissionIntent == .retryRequested),
                 progressIsEstimated: DownloadDisplayClassifier.isLiveTranscoderSourced(record)
                     && record.progress <= 0 && record.bytes > 0,
                 phase: phase(record),
@@ -84,7 +86,11 @@ public enum OfflineLibrarySnapshotBuilder {
             rows: rows,
             queueToolbarAction: DownloadQueueToolbarPolicy.action(
                 isQueuePaused: isQueuePaused,
-                statuses: records.map(\.status)
+                // Admission deliberately preserves paused/failed status while a retry waits.
+                // Retry presentation also covers the async interval before its active write.
+                statuses: rows.map { row in
+                    row.isWaitingForAdmission || row.isRetrying ? .queued : row.status
+                }
             ),
             isQueuePaused: isQueuePaused,
             aggregateStats: OfflineDownloadAggregateStats.make(records: records,

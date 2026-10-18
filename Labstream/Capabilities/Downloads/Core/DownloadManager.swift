@@ -2128,10 +2128,16 @@ public final class DownloadManager {
         admission.revokeAllExemptions()
         staticRangeRecovery.removeAllManualQueueResumes()
         UserDefaults.standard.set(true, forKey: Self.queuePausedDefaultsKey)
-        for record in records where DownloadPausePolicy.shouldPauseDuringQueuePause(record) {
-            pause(ratingKey: record.ratingKey)
+        // Admission can advance a row before the coalesced UI snapshot is published. Pause
+        // the store's current attempts, not an older waiting/paused presentation of those rows.
+        for record in store.records where DownloadPausePolicy.shouldPauseDuringQueuePause(record)
+            || admission.supervised[record.ratingKey] != nil
+            || retryState.isPresentingRetry(record.ratingKey) {
+            pause(record: record)
+            // A granted retry can still be parked at its async preparation boundary. End both
+            // its continuation token and its presentation handoff when the bulk action stops it.
+            retryState.removeAll(record.ratingKey)
         }
-        resumePendingEmbyConvertDownloads()
         refreshRecords()
     }
 

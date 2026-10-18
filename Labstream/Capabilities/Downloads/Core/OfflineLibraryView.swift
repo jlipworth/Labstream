@@ -431,6 +431,7 @@ public struct OfflineLibraryView: View {
         .buttonStyle(.plain)
         #endif
         .accessibilityLabel(action.title)
+        .disabled(manager.startupRecoveryState != .ready)
     }
 
     private static func aggregateByteString(_ bytes: Int) -> String {

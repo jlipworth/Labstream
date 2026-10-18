@@ -148,7 +148,7 @@ struct ServerPrepRunnerIntegrationTests {
         #expect(fixture.wire.value.negotiations == 1)
     }
 
-    // Pins 24/25: cancellation fences the static handoff; global queue pause leaves Convert alive.
+    // Pins 24/25: cancellation fences the static handoff; global queue pause parks Convert too.
     @Test(arguments: [false, true])
     func embyDeleteAndPauseAllDuringFreshPolling(pauseAll: Bool) async throws {
         let fixture = try await PrepRunnerFixture()
@@ -166,12 +166,9 @@ struct ServerPrepRunnerIntegrationTests {
             if let prior { defaults.set(prior, forKey: "downloads.queuePaused") }
             else { defaults.removeObject(forKey: "downloads.queuePaused") }
             #expect(fixture.manager.isQueuePaused)
-            let before = fixture.wire.value.jobReads
-            try #require(await fixture.wait { fixture.wire.value.jobReads > before })
-            #expect(fixture.store.record(for: key)?.status == .preparing)
-            fixture.wire.withValue { $0.completeConversion = true }
-            try #require(await fixture.wait { fixture.store.record(for: key.ratingKey)?.status == .paused })
-            #expect(fixture.store.metadata(for: key.ratingKey)?.mediaSourceID == "converted")
+            #expect(fixture.store.record(for: key.ratingKey)?.status == .paused)
+            #expect(fixture.manager.serverPrepPollerTaskForTesting(for: key) == nil)
+            #expect(fixture.transfers.value.isEmpty)
         } else {
             let poller = try #require(fixture.manager.serverPrepPollerTaskForTesting(for: key))
             fixture.manager.delete(ratingKey: key.ratingKey)

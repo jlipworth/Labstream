@@ -2,12 +2,8 @@ import Foundation
 
 /// Pure queue-toolbar decision for the Offline downloads screen.
 ///
-/// Idle incomplete rows should dominate active transfer states: in a mixed list, the one global
-/// toolbar action should keep offering Resume until every resumable row has been kicked. Otherwise
-/// a quick "Resume All" tap can turn into an accidental "Pause All" tap as soon as the first
-/// transfer starts, parking the rest of the backlog before their async retry reaches URLSession.
-/// Once no work is active, Resume is intentionally memoryless: it means "attempt every incomplete
-/// idle row", not "only rows paused by the last global pause" (#172).
+/// Running or requested work takes precedence over parked rows, so a mixed queue always
+/// offers a way to stop it. Resume is memoryless: it attempts every incomplete idle row.
 public enum DownloadQueueToolbarPolicy {
     public enum Action: String, Sendable, Equatable {
         case pauseQueue
@@ -29,12 +25,6 @@ public enum DownloadQueueToolbarPolicy {
     }
 
     public static func action(isQueuePaused: Bool, statuses: some Sequence<DownloadStatus>) -> Action? {
-        // The persisted global gate is the authoritative state for the toolbar. Some backend
-        // preparation rows intentionally keep polling while the queue is paused, and URLSession
-        // rows can take a refresh turn to settle from active -> paused. In those windows the
-        // visible control must still flip to Resume All so the next tap actually clears the gate.
-        if isQueuePaused { return .resumeQueue }
-
         var hasIncompleteIdleWork = false
         var hasActiveWork = false
 
@@ -49,8 +39,8 @@ public enum DownloadQueueToolbarPolicy {
             }
         }
 
-        if hasIncompleteIdleWork { return .resumeQueue }
         if hasActiveWork { return .pauseQueue }
+        if hasIncompleteIdleWork || isQueuePaused { return .resumeQueue }
         return nil
     }
 

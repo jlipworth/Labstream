@@ -39,10 +39,9 @@ public enum DownloadPausePolicy {
         }
     }
 
-    /// Global queue pause should pause active rows except persistent Emby convert jobs, which can
-    /// continue server-side polling while no local bytes are transferring.
+    /// Include durable retry requests even though their storage status remains paused/failed.
+    /// Server preparation follows the same cancellation path as a per-row Pause.
     public static func shouldPauseDuringQueuePause(_ record: DownloadRecord) -> Bool {
-        record.status.isActiveWork
-            && !ServerPrepRefreshPolicy.shouldPollEmbyServerPrepWhileQueuePaused(record)
+        record.status.isActiveWork || record.admissionIntent == .retryRequested
     }
 }

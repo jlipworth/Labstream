@@ -26,22 +26,22 @@ struct DownloadQueueToolbarPolicyTests {
         }
     }
 
-    @Test("idle incomplete downloads dominate active mixed state")
-    func idleIncompleteDownloadsDominateActiveMixedState() {
+    @Test("active work keeps Pause All reachable in a mixed queue")
+    func activeWorkDominatesIdleMixedState() {
         #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: false,
-                                                  statuses: [.paused, .downloading]) == .resumeQueue)
+                                                  statuses: [.paused, .downloading]) == .pauseQueue)
         #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: false,
-                                                  statuses: [.failed, .downloading]) == .resumeQueue)
+                                                  statuses: [.failed, .downloading]) == .pauseQueue)
         #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: false,
-                                                  statuses: [.paused, .queued]) == .resumeQueue)
+                                                  statuses: [.paused, .queued]) == .pauseQueue)
     }
 
-    @Test("queue-paused state always shows Resume All")
-    func queuePausedAlwaysShowsResumeAll() {
+    @Test("queue gate cannot hide running work")
+    func queuePausedStillOffersPauseForRunningWork() {
         #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: true,
                                                   statuses: [DownloadStatus.complete, .failed]) == .resumeQueue)
         #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: true,
-                                                  statuses: [DownloadStatus.queued, .preparing, .downloading]) == .resumeQueue)
+                                                  statuses: [DownloadStatus.queued, .preparing, .downloading]) == .pauseQueue)
         #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: true,
                                                   statuses: []) == .resumeQueue)
     }

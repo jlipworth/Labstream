@@ -352,7 +352,7 @@ User-facing expectations worth setting (the "downloads disclaimer"):
 - Fresh Plex and Emby preparation starts return after registering their poller tasks. Delete
   cancels those tasks. Emby reuse and completed conversions share one handoff that detaches its
   own poller before releasing prep bookkeeping, then starts the existing-version static lane.
-  Pause All leaves Emby Convert polling active and parks the static handoff.
+  Pause All parks Emby Convert through the same cancellation path as a row Pause.
 - Jellyfin optimized/compatible-remux downloads, and Emby compatible-remux
   downloads, can be live-forward encoder streams. They may continue as
   system-owned transfers while the OS allows it, but they are not durable
@@ -624,9 +624,18 @@ available on visionOS, iOS/iPadOS and macOS; tvOS has no Downloads settings.
   Resume or Retry keep the row paused or failed with a `retryRequested` intent, so its retry
   routes from its own facts (checkpoint, resume blob, Emby job, Plex queue item). Waiting rows read
   **Waiting for a download slot…**, or **Waiting — downloads paused** during Pause All.
-- **Pause All** grants nothing. A row's own Resume or Retry during Pause All is exempt for that
-  row only; the next Pause All revokes the exemption. Emby Convert polling continues during Pause
-  All and its static handoff parks unless the row is exempt.
+- **Bulk controls** show **Pause All** whenever any row is active, preparing, retrying or
+  waiting for admission, including paused/failed rows with a pending retry request. Mixed idle,
+  completed or failed rows never hide Pause All. With no running or requested work, paused/failed
+  rows or a paused queue offer **Resume All**. The label and icon follow each published snapshot;
+  the control is disabled until startup recovery is ready.
+- **Pause All** closes the admission gate, withdraws waiting retry requests and pauses active
+  rows, including Emby Convert preparation via the same cancellation path as a row Pause.
+  This cancels local preparation pollers; remote conversion jobs retain their existing resumable
+  ownership, with supported remote-job cleanup belonging to Delete.
+  Finished bodies already being verified are allowed to finish. A row's own Resume or Retry
+  during Pause All is exempt for that row only; its pending or active work offers Pause All
+  again, and the next Pause All revokes every exemption.
 - **Barriers.** Nothing is granted before startup recovery has reattached tasks and pollers (work
   the OS still owned counts first, even over a cap), or while a season commit is proving
   durability.

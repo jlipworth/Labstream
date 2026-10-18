@@ -42,7 +42,7 @@ struct OfflineLibrarySnapshotBuilderTests {
             isRetrying: { $0 == "emby:2" }
         )
 
-        #expect(snapshot.queueToolbarAction == .resumeQueue)
+        #expect(snapshot.queueToolbarAction == .pauseQueue)
         #expect(snapshot.isQueuePaused == false)
         #expect(snapshot.aggregateStats.downloadedBytes == 455)
         #expect(snapshot.aggregateStats.activeSpeedBytesPerSecond == 10.5)
@@ -70,6 +70,46 @@ struct OfflineLibrarySnapshotBuilderTests {
         #expect(embyRow.errorMessage == "boom")
         #expect(embyRow.statusCaption == "Emby:failed")
         #expect(embyRow.isRetrying)
+    }
+
+    @Test("admission requests are running queue work even while persisted paused or failed")
+    func waitingRetriesOfferPauseAll() {
+        for status in [DownloadStatus.paused, .failed] {
+            var waiting = record("waiting", status: status)
+            waiting.lifecycle = status == .paused ? .paused : .failed
+            waiting.admissionIntent = .retryRequested
+            let snapshot = OfflineLibrarySnapshotBuilder.make(
+                records: [waiting], isQueuePaused: false,
+                aggregateSpeedBytesPerSecond: nil,
+                errorMessage: { _ in nil }, displayProgress: { _ in nil },
+                statusCaption: { _, _ in "Waiting for a download slot…" },
+                isRetrying: { _ in false })
+            #expect(snapshot.queueToolbarAction == .pauseQueue)
+        }
+    }
+
+    @Test("toolbar follows retries and a planned row through pause and resume")
+    func toolbarTracksPendingWork() {
+        var row = record("planned", status: .queued)
+        row.lifecycle = .planned
+        row.admissionIntent = .seasonPlanned
+        func snapshot(_ row: DownloadRecord, retrying: Bool = false) -> OfflineLibrarySnapshot {
+            OfflineLibrarySnapshotBuilder.make(
+                records: [row], isQueuePaused: true, aggregateSpeedBytesPerSecond: nil,
+                errorMessage: { _ in nil }, displayProgress: { _ in nil },
+                statusCaption: { _, _ in "" }, isRetrying: { _ in retrying })
+        }
+        #expect(snapshot(row).queueToolbarAction == .pauseQueue)
+        row.lifecycle = .paused
+        row.status = .paused
+        // A paused first start retains seasonPlanned as a route, not a pending request.
+        #expect(snapshot(row).queueToolbarAction == .resumeQueue)
+        #expect(!snapshot(row).rows[0].isWaitingForAdmission)
+        row.admissionIntent = nil
+        #expect(snapshot(row, retrying: true).queueToolbarAction == .pauseQueue)
+        row.status = .downloading
+        row.lifecycle = .transferring
+        #expect(snapshot(row).queueToolbarAction == .pauseQueue)
     }
 
     @Test("episode title is derived from lightweight persisted scalars")

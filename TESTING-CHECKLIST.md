@@ -338,6 +338,12 @@ background-session registration, or migration/recovery work.
       unambiguous backend badges.
 - [ ] Pause/Resume, Pause All/Resume All, Retry, Delete, completed-only deletion, queue pause,
       cellular permission, and storage-limit rejection leave coherent durable rows.
+- [ ] Bulk toolbar: mix transferring, server-prep, waiting, paused, failed and completed rows.
+      Any running/requested work shows **Pause All** with the pause icon. Tap it: admission stops,
+      waiting retries are withdrawn, server preparation (including Emby Convert) parks, and the
+      icon changes to **Resume All** once work is paused. Resume All changes it back even with
+      more rows than available slots. A per-row Resume during queue pause exposes Pause All again.
+      During “Restoring downloads…” the bulk control is disabled.
 - [ ] Storage (P5): with a storage limit set, retrying a large partial download is not refused
       for counting its partial twice. A Jellyfin or Emby Original shows its real size in the
       download sheet. An item whose size is unknown says so. A Plex Original that falls back to

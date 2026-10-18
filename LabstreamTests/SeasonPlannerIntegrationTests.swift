@@ -504,6 +504,41 @@ struct SeasonPlannerIntegrationTests {
         await h.teardown()
     }
 
+    @Test func bulkToolbarTracksAdmissionAndPausesTheWholeMixedQueue() async throws {
+        let h = try await makeHarness("bulk-mixed")
+        let defaults = UserDefaults.standard
+        let prior = defaults.object(forKey: "downloads.queuePaused")
+        defer {
+            if let prior { defaults.set(prior, forKey: "downloads.queuePaused") }
+            else { defaults.removeObject(forKey: "downloads.queuePaused") }
+        }
+        for id in (1...5).map({ "episode-\($0)" }) {
+            try await seedPausedStaticRow(id, host: h.host, in: h.store)
+        }
+        h.manager.refreshRecords()
+        #expect(h.manager.offlineLibrarySnapshot.queueToolbarAction == .resumeQueue)
+        h.manager.resumeQueue()
+        try #require(await waitUntil { h.gate.heldIDs.count == 2 })
+        #expect(h.manager.offlineLibrarySnapshot.queueToolbarAction == .pauseQueue)
+        #expect(h.manager.offlineLibrarySnapshot.queueToolbarAction?.systemImage == "pause.circle")
+        let generations = h.manager.admission.supervised.values.map(\.generation)
+        h.manager.pauseQueue()
+        #expect(h.manager.isQueuePaused)
+        #expect(h.manager.admission.supervised.isEmpty)
+        // These starts are still held at metadata, so there is no URLSession task to drain.
+        #expect(h.store.records.allSatisfy { $0.status == .paused && $0.admissionIntent == nil })
+        #expect(h.manager.offlineLibrarySnapshot.queueToolbarAction == .resumeQueue)
+        #expect(h.manager.offlineLibrarySnapshot.queueToolbarAction?.systemImage == "play.circle")
+        #expect(h.manager.offlineLibrarySnapshot.rows.allSatisfy { !$0.isRetrying })
+        // Successful late metadata responses must not resurrect either paused start.
+        for id in h.gate.heldIDs { h.gate.releaseMetadata(id: id, failing: false) }
+        try #require(await h.completions.wait(for: generations))
+        #expect(h.gate.transferPaths.isEmpty)
+        for _ in 0..<3 { h.manager.pumpAdmission() }
+        #expect(h.gate.metadataIDs.count == 2)
+        await h.teardown()
+    }
+
     /// B67: a season row whose metadata refresh fails (an unreachable server) waits again as
     /// planned and is retried after backoff; it never becomes a failed row.
     @Test func aRefreshOutageDefersAPlannedRowInsteadOfFailingIt() async throws {
