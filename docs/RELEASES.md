@@ -11,9 +11,13 @@ query; verify them in App Store Connect again before any upload or submission.
 The repository source on the downloads-overhaul stack is **1.8.0 (build 2)** across all four app
 targets. 1.8.0 is the downloads overhaul (P1–P7): download admission, cleanup and lifecycle
 durability, storage accounting, bounded background wakes, offline playback and shared download rows;
-see the [bugs-versus-main audit](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/2026-10-17-downloads-overhaul-bugs-vs-main.md). No 1.8.0
-archive, upload, build selection, validation, device acceptance or review submission has happened;
-on-demand TestFlight builds stamp their own build number. PMSKit has no app-version constant; the
+see the [bugs-versus-main audit](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/2026-10-17-downloads-overhaul-bugs-vs-main.md). On 2026-10-17 a `ship` run
+built clean **1.8.0 (build 1523)** archives for all four targets from `49e186f0` on the
+`downloads/overhaul` integration branch (not yet on `main`; uploaded with `--allow-unpublished`).
+All four processed to **VALID**, are in beta testing, and are in the internal TestFlight group.
+They are TestFlight builds only: no 1.8.0 App Store version exists, nothing was selected, and
+nothing was submitted for review. Device acceptance and landing on `main` are tracked in
+[#403](https://github.com/jlipworth/Labstream/issues/403). PMSKit has no app-version constant; the
 runtime client identity reads the bundle version and falls back to `0.0.0`.
 
 The previous source was **1.7.2 (build 2)** across all four app targets. Build 2 supersedes the never-uploaded build 1 source so the next archive set carries its
