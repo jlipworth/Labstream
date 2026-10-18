@@ -358,6 +358,40 @@ public enum EmbyConvertRecoveryPolicy {
             && epoch <= start + maximumCreateResponseWindowSeconds
     }
 
+    /// Durable crash-window recovery identity of a live row: enough to recompute which server job
+    /// that row would adopt.
+    public struct LiveRecoveryIdentity: Equatable, Sendable {
+        public let baselineJobIDs: Set<Int>
+        public let fingerprint: Fingerprint
+        public let attemptStartedAtEpochSeconds: Double
+        public let phase: Phase
+
+        public init(baselineJobIDs: Set<Int>, fingerprint: Fingerprint,
+                    attemptStartedAtEpochSeconds: Double, phase: Phase) {
+            self.baselineJobIDs = baselineJobIDs
+            self.fingerprint = fingerprint
+            self.attemptStartedAtEpochSeconds = attemptStartedAtEpochSeconds
+            self.phase = phase
+        }
+    }
+
+    /// B49: every job a live row owns, either by persisted id or because its crash-window recovery
+    /// would adopt it. Cleanup must never cancel these, even before recovery persists the id.
+    public static func claimedJobIDs(liveJobIDs: Set<Int>,
+                                     liveRecoveryIdentities: [LiveRecoveryIdentity],
+                                     jobs: [EmbyConvertRecoveryEntry],
+                                     nowEpochSeconds: Double) -> Set<Int> {
+        var claimed = liveJobIDs
+        for identity in liveRecoveryIdentities {
+            claimed.formUnion(matchingNewJobIDs(
+                baselineJobIDs: identity.baselineJobIDs, jobs: jobs,
+                fingerprint: identity.fingerprint,
+                attemptStartedAtEpochSeconds: identity.attemptStartedAtEpochSeconds,
+                phase: identity.phase, nowEpochSeconds: nowEpochSeconds))
+        }
+        return claimed
+    }
+
     public static func cleanupAction(baselineJobIDs: Set<Int>,
                                      jobs: [EmbyConvertRecoveryEntry],
                                      listIsComplete: Bool,

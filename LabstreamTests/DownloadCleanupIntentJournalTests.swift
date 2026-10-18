@@ -187,7 +187,7 @@ struct DownloadCleanupIntentJournalTests {
                 persistence: .init(
                     read: { _ in throw InjectedCleanupJournalFailure() },
                     encode: { try JSONEncoder().encode($0) },
-                    atomicWrite: { _, _ in Issue.record("Unreadable queue must never be overwritten") }))
+                    commit: { _, _ in Issue.record("Unreadable queue must never be overwritten") }))
             guard case .failed(let readFailure) = unreadable.load() else {
                 Issue.record("Expected read failure"); return
             }
@@ -225,7 +225,7 @@ struct DownloadCleanupIntentJournalTests {
             let quarantines = try FileManager.default.contentsOfDirectory(
                 at: directory, includingPropertiesForKeys: nil)
                 .filter { $0.lastPathComponent.hasPrefix(
-                    "download-cleanup-intents-quarantine-") }
+                    "download-cleanup-intents-rejected-") }
             #expect(quarantines.count == 1)
             #expect(try Data(contentsOf: #require(quarantines.first)) == original)
         }
@@ -245,7 +245,7 @@ struct DownloadCleanupIntentJournalTests {
                 persistence: .init(
                     read: liveRead,
                     encode: { _ in throw InjectedCleanupJournalFailure() },
-                    atomicWrite: { _, _ in Issue.record("Commit must not run after encode failure") }))
+                    commit: { _, _ in Issue.record("Commit must not run after encode failure") }))
             guard case .failed(let encoding) = encodeFailure.add(second) else {
                 Issue.record("Expected encode failure"); return
             }
@@ -257,7 +257,7 @@ struct DownloadCleanupIntentJournalTests {
                 persistence: .init(
                     read: liveRead,
                     encode: { try JSONEncoder().encode($0) },
-                    atomicWrite: { data, _ in
+                    commit: { data, _ in
                         try data.write(to: temp)
                         throw InjectedCleanupJournalFailure()
                     }))
@@ -270,20 +270,25 @@ struct DownloadCleanupIntentJournalTests {
         }
     }
 
-    @Test func replaceThenThrowIsProvenForExactAddAndRemove() throws {
+    /// B18: a commit that keeps throwing after its rename is visible, not durable. Neither the add
+    /// nor the removal reports success; a later healthy ensure syncs the visible value first.
+    @Test func replaceThenThrowIsNeverReportedDurable() throws {
         try withTemporaryDirectory { directory in
             let journal = DownloadCleanupIntentJournal(
                 directory: directory, persistence: replaceThenThrowPersistence())
             let first = try intent(id: UUID(), attempt: "attempt-A", session: "session-A")
-            let second = try intent(id: UUID(), attempt: "attempt-B", session: "session-B")
-            #expect(journal.add(first) == .committed(first))
-            #expect(journal.add(second) == .committed(second))
-            #expect(try loaded(DownloadCleanupIntentJournal(directory: directory)) == [first, second])
-            #expect(journal.remove(
-                id: first.id,
-                attemptKey: first.attemptKey,
-                operation: first.operation) == .committed(removed: true))
-            #expect(try loaded(DownloadCleanupIntentJournal(directory: directory)) == [second])
+            guard case .failed(let addFailure) = journal.add(first) else {
+                Issue.record("A commit that keeps throwing must not report durable authority"); return
+            }
+            #expect(addFailure.stage == .commit)
+
+            let healthy = DownloadCleanupIntentJournal(directory: directory)
+            #expect(healthy.ensure(first) == .committed(first))
+            guard case .failed(let removeFailure) = journal.remove(
+                id: first.id, attemptKey: first.attemptKey, operation: first.operation) else {
+                Issue.record("A removal whose commit keeps throwing must not claim durability"); return
+            }
+            #expect(removeFailure.stage == .commit)
         }
     }
 
@@ -296,7 +301,7 @@ struct DownloadCleanupIntentJournalTests {
         .init(
             read: liveRead,
             encode: { try JSONEncoder().encode($0) },
-            atomicWrite: { data, url in
+            commit: { data, url in
                 try data.write(to: url, options: .atomic)
                 throw InjectedCleanupJournalFailure()
             })
@@ -347,7 +352,7 @@ private final class SlowReadJournalPersistence: @unchecked Sendable {
                 return try Data(contentsOf: url)
             },
             encode: { try JSONEncoder().encode($0) },
-            atomicWrite: { data, url in try data.write(to: url, options: .atomic) })
+            commit: { data, url in try data.write(to: url, options: .atomic) })
     }
 }
 

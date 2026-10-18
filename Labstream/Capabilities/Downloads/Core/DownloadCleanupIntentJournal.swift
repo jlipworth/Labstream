@@ -8,7 +8,22 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
     struct Persistence: Sendable {
         let read: @Sendable (URL) throws -> Data?
         let encode: @Sendable ([DurableDownloadCleanupIntent]) throws -> Data
-        let atomicWrite: @Sendable (Data, URL) throws -> Void
+        /// Full durable replace (B18): temp write, full fsync, rename, directory fsync.
+        let commit: @Sendable (Data, URL) throws -> Void
+        /// Makes an already-visible rename durable before an existing value is relied on.
+        let syncDirectory: @Sendable (URL) throws -> Void
+
+        init(
+            read: @escaping @Sendable (URL) throws -> Data?,
+            encode: @escaping @Sendable ([DurableDownloadCleanupIntent]) throws -> Data,
+            commit: @escaping @Sendable (Data, URL) throws -> Void,
+            syncDirectory: @escaping @Sendable (URL) throws -> Void = DurableJournalCommit.liveSyncDirectory
+        ) {
+            self.read = read
+            self.encode = encode
+            self.commit = commit
+            self.syncDirectory = syncDirectory
+        }
 
         static let live = Self(
             read: { url in
@@ -24,7 +39,7 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
                 }
             },
             encode: { try JSONEncoder().encode($0) },
-            atomicWrite: { data, url in try data.write(to: url, options: .atomic) }
+            commit: DurableJournalCommit.liveCommit
         )
     }
 
@@ -68,6 +83,10 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
         self.quarantineDirectory = directory
         self.persistence = persistence
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // B18: the authority directory is protected and excluded from backup whether it is new or
+        // was created by an older build; each committed file gets the same attributes.
+        try? CredentialArtifactStorage.applyProtectionAndBackupExclusion(
+            to: directory, protection: CredentialArtifactStorage.authArtifactProtection)
     }
 
     func load() -> LoadResult {
@@ -92,7 +111,7 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
                 && $0.server == proposed.server
                 && $0.operation == proposed.operation
         }) {
-            return .committed(existing)
+            return existingCommittedLocked(existing)
         }
         return appendLocked(proposed, to: &values)
     }
@@ -116,7 +135,7 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
         to values: inout [DurableDownloadCleanupIntent]
     ) -> AddResult {
         if let existing = values.first(where: { $0.id == intent.id }) {
-            return existing == intent ? .committed(intent) : .conflictingID(existing)
+            return existing == intent ? existingCommittedLocked(intent) : .conflictingID(existing)
         }
         values.append(intent)
         let data: Data
@@ -125,24 +144,35 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
         } catch {
             return .failed(Self.failure(.encode, error))
         }
-        do {
-            try persistence.atomicWrite(data, fileURL)
-        } catch {
-            // Atomic replacement may have succeeded before throwing. Only the exact full value is
-            // proof that this add committed; UUID presence alone could be a conflicting authority.
-            switch readLocked() {
-            case .loaded(let durable) where durable.contains(intent):
-                return .committed(intent)
-            case .loaded(let durable):
-                if let conflict = durable.first(where: { $0.id == intent.id }) {
-                    return .conflictingID(conflict)
-                }
-            case .failed:
-                break
-            }
+        if let error = DurableJournalCommit.commit(data, to: fileURL, using: persistence.commit) {
             return .failed(Self.failure(.commit, error))
         }
         return .committed(intent)
+    }
+
+    /// A value already present may be the visible-but-unsynced result of an earlier ambiguous
+    /// commit. Sync its directory entry before reporting it as durable authority.
+    private func existingCommittedLocked(_ existing: DurableDownloadCleanupIntent) -> AddResult {
+        do {
+            try persistence.syncDirectory(fileURL)
+        } catch {
+            return .failed(Self.failure(.commit, error))
+        }
+        return .committed(existing)
+    }
+
+    /// Durably replace the entry with `updated`'s id, attempt and operation (provenance
+    /// classification). Returns false when the entry is gone or the commit fails.
+    func replace(_ updated: DurableDownloadCleanupIntent) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard case .loaded(var values) = readLocked(),
+              let index = values.firstIndex(where: {
+                  $0.matchesForClear(id: updated.id, attemptKey: updated.attemptKey,
+                                     operation: updated.operation)
+              }) else { return false }
+        values[index] = updated
+        guard let data = try? persistence.encode(values) else { return false }
+        return DurableJournalCommit.commit(data, to: fileURL, using: persistence.commit) == nil
     }
 
     /// Remove only the exact cleanup operation that completed. Matching UUID alone is insufficient:
@@ -175,17 +205,7 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
             lock.unlock()
             return .failed(Self.failure(.encode, error))
         }
-        do {
-            try persistence.atomicWrite(data, fileURL)
-        } catch {
-            // Absence of the exact triple after a thrown replace proves this removal committed.
-            if case .loaded(let durable) = readLocked(),
-               !durable.contains(where: {
-                   $0.matchesForClear(id: id, attemptKey: attemptKey, operation: operation)
-               }) {
-                lock.unlock()
-                return .committed(removed: true)
-            }
+        if let error = DurableJournalCommit.commit(data, to: fileURL, using: persistence.commit) {
             lock.unlock()
             return .failed(Self.failure(.commit, error))
         }
@@ -250,11 +270,11 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
             ))
         }
 
+        // Evidence only: everything this build can decode is already back in the canonical queue,
+        // so these files are never import candidates (see `importLegacyQuarantinedPlexIntents`).
         let quarantineURL = quarantineDirectory.appendingPathComponent(
-            "download-cleanup-intents-quarantine-\(UUID().uuidString).json")
-        do {
-            try persistence.atomicWrite(data, quarantineURL)
-        } catch {
+            "\(Self.rejectedPrefix)\(UUID().uuidString).json")
+        if let error = DurableJournalCommit.commit(data, to: quarantineURL, using: persistence.commit) {
             return .failed(Self.failure(.commit, error))
         }
         let repairedData: Data
@@ -263,20 +283,95 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
         } catch {
             return .failed(Self.failure(.encode, error))
         }
-        do {
-            try persistence.atomicWrite(repairedData, fileURL)
-        } catch {
-            // The canonical replace may have won before throwing. Exact recovered equality proves
-            // repair committed, just as add/remove prove their postconditions after ambiguity.
-            if let durableData = try? persistence.read(fileURL),
-               let durable = try? JSONDecoder().decode(
-                    [DurableDownloadCleanupIntent].self, from: durableData),
-               durable == recovered {
-                return .loaded(recovered)
-            }
+        if let error = DurableJournalCommit.commit(
+            repairedData, to: fileURL, using: persistence.commit) {
             return .failed(Self.failure(.commit, error))
         }
         return .loaded(recovered)
+    }
+
+    // MARK: - Downgrade compatibility (P2.2)
+
+    /// Builds before P2 quarantined elements they could not decode, rewriting the canonical queue
+    /// without them. After a downgrade and re-upgrade those elements include `plexOptimize`
+    /// intents that the older build could not run. This build's own repairs write
+    /// `rejectedPrefix` files instead, so only the legacy name is an import candidate.
+    static let legacyQuarantinePrefix = "download-cleanup-intents-quarantine-"
+    static let rejectedPrefix = "download-cleanup-intents-rejected-"
+    static let importedPrefix = "download-cleanup-intents-imported-"
+
+    struct LegacyImportOutcome: Sendable, Equatable {
+        var importedCount = 0
+        /// IDs present in a legacy file whose import receipt is not yet durable. The runner must
+        /// not execute them: once one drained, a later import would recreate it.
+        var blockedIDs: Set<UUID> = []
+        /// A legacy file could not be read or parsed, so its IDs are unknown; every `plexOptimize`
+        /// intent waits until it can be processed.
+        var blocksAllPlex = false
+    }
+
+    func hasLegacyQuarantineFiles(fileManager: FileManager = .default) -> Bool {
+        guard let names = try? fileManager.contentsOfDirectory(atPath: quarantineDirectory.path)
+        else { return true }
+        return names.contains { $0.hasPrefix(Self.legacyQuarantinePrefix) }
+    }
+
+    /// Re-import only `plexOptimize` elements from legacy quarantine files, then rename each file
+    /// to the imported prefix (the durable receipt). Elements that conflict with an existing ID or
+    /// still do not decode stay in the renamed file as evidence. Run before the cleanup runner.
+    func importLegacyQuarantinedPlexIntents(fileManager: FileManager = .default) -> LegacyImportOutcome {
+        lock.lock(); defer { lock.unlock() }
+        var outcome = LegacyImportOutcome()
+        guard let names = try? fileManager.contentsOfDirectory(atPath: quarantineDirectory.path)
+        else {
+            // Unreadable is not empty: a legacy file may be hiding there.
+            outcome.blocksAllPlex = true
+            return outcome
+        }
+        for name in names.sorted() where name.hasPrefix(Self.legacyQuarantinePrefix) {
+            let source = quarantineDirectory.appendingPathComponent(name)
+            guard let data = try? persistence.read(source),
+                  let raw = try? JSONSerialization.jsonObject(with: data) as? [Any] else {
+                outcome.blocksAllPlex = true
+                continue
+            }
+            let candidates: [DurableDownloadCleanupIntent] = raw.compactMap { element in
+                guard let object = element as? [String: Any],
+                      object["operationType"] as? String == "plexOptimize",
+                      let elementData = try? JSONSerialization.data(withJSONObject: object)
+                else { return nil }
+                return try? JSONDecoder().decode(DurableDownloadCleanupIntent.self, from: elementData)
+            }
+            let fileIDs = Set(candidates.map(\.id))
+            var values: [DurableDownloadCleanupIntent]
+            switch readLocked() {
+            case .loaded(let loaded): values = loaded
+            case .failed:
+                outcome.blockedIDs.formUnion(fileIDs)
+                continue
+            }
+            let existingIDs = Set(values.map(\.id))
+            let additions = candidates.filter { !existingIDs.contains($0.id) }
+            if !additions.isEmpty {
+                values.append(contentsOf: additions)
+                guard let encoded = try? persistence.encode(values),
+                      DurableJournalCommit.commit(encoded, to: fileURL, using: persistence.commit) == nil
+                else {
+                    outcome.blockedIDs.formUnion(fileIDs)
+                    continue
+                }
+                outcome.importedCount += additions.count
+            }
+            let receipt = quarantineDirectory.appendingPathComponent(
+                Self.importedPrefix + name.dropFirst(Self.legacyQuarantinePrefix.count))
+            do {
+                try fileManager.moveItem(at: source, to: receipt)
+                try persistence.syncDirectory(receipt)
+            } catch {
+                outcome.blockedIDs.formUnion(fileIDs)
+            }
+        }
+        return outcome
     }
 
     private static func failure(_ stage: Failure.Stage, _ error: any Error) -> Failure {

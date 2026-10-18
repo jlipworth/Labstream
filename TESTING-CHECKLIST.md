@@ -334,6 +334,14 @@ background-session registration, or migration/recovery work.
       hotspot network waits; it starts once an unconstrained, inexpensive network is available.
 - [ ] Planning an Emby season shows "Planning episode N of M…" and finishes without a per-episode
       server refresh delay.
+- [ ] Delete a **paused** Plex optimize row while its server job is still queued or rendering.
+      The confirmation says in-progress preparation is cancelled where possible. Within a few
+      minutes the item leaves the server's conversion queue. A completed optimized version is
+      never removed by deleting its row.
+- [ ] Delete a preparing Emby Convert row while offline, then reconnect. The server's Sync job
+      is cancelled after the reconnect without any further user action.
+- [ ] Delete a Jellyfin transcode download while signed in to a different backend. Its server
+      encoder is stopped once that backend's session is available, including after a relaunch.
 
 ### Static segment train
 

@@ -318,19 +318,14 @@ public final class DownloadManager {
     /// active row progress, speed, and ETA between checkpoints.
     private var liveRangeProgress: [String: DownloadLiveRangeProgressSample] = [:]
 
-    /// Emby convert cleanup tombstones whose durable persist FAILED (disk full — exactly when a
-    /// user deletes downloads). The delete still completes; these in-memory copies keep the
-    /// cleanup intent alive for this process and each convert-resume sweep retries persisting
-    /// them. Lost on app death — an accepted trade-off versus wedging delete() forever.
-    @ObservationIgnored var deferredEmbyCleanupTombstones: [DownloadStore.EmbyConvertCleanupTombstone] = []
-    /// Process-lifetime fallback when the durable cleanup journal is temporarily unavailable.
-    /// User deletion must still remove the row/file; these exact intents retry opportunistically
-    /// and are removed only after the same confirmation paths as durable journal entries.
-    @ObservationIgnored private var deferredCleanupIntents: [UUID: DurableDownloadCleanupIntent] = [:]
-    /// Tombstone ids whose recovery is currently running. Sweeps fire from many lifecycle edges
-    /// (pause, retry ladder, backend-ready) and each spawned a fresh GET /Sync/Jobs (+ racing
-    /// DELETE) per tombstone; this is the tombstone twin of the `activeJobs` row guard.
-    @ObservationIgnored var embyCleanupTombstonesInFlight: Set<UUID> = []
+    /// P2: the single executor of journaled server cleanup. Created at the end of `init`.
+    @ObservationIgnored var cleanupRunner: DownloadCleanupIntentRunner?
+    /// Serializes Emby Convert adoption (crash-window recovery) with Convert cleanup per server.
+    @ObservationIgnored let embyConvertJobCoordinator = EmbyConvertJobCoordinator()
+    /// Receipt state of the legacy Plex quarantine import (blocks affected intents until durable).
+    @ObservationIgnored var legacyCleanupImport = DownloadCleanupIntentJournal.LegacyImportOutcome()
+    /// The latest launch-sweep journaling hop (tests await it).
+    @ObservationIgnored var launchSweepJournaling: Task<Void, Never>?
 
     private static let queuePausedDefaultsKey = "downloads.queuePaused"
 
@@ -440,7 +435,6 @@ public final class DownloadManager {
     @ObservationIgnored private let keepaliveCoordinator: DownloadKeepaliveCoordinator
     /// Attempt-scoped server cleanup survives row/file removal in a separate durability domain.
     let cleanupIntentJournal: DownloadCleanupIntentJournal
-    @ObservationIgnored private var cleanupIntentsInFlight: Set<UUID> = []
 
     /// Poll cadence for Plex server-side optimize jobs. Deliberately no wall-clock timeout:
     /// long 4K/HDR software transcodes can legitimately run for hours, and the app must base
@@ -494,6 +488,8 @@ public final class DownloadManager {
                 self?.revalidateUnverifiedDownloads(reason: "session_change")
             }
         }
+        self.cleanupRunner = DownloadCleanupIntentRunner(
+            dependencies: makeCleanupRunnerDependencies())
         self.session.onFinalizerRequest = { [weak self, weak session] request in
             Task { @MainActor in
                 guard let self, let session else {
@@ -950,6 +946,7 @@ public final class DownloadManager {
     /// never treated as an empty queue.
     func migrateAndRetryActiveEncodingCleanupOnLaunch() {
         guard startupRecoveryState == .ready else { return }
+        var terminalReleases: [DurableDownloadCleanupIntent] = []
 
         for record in records {
             guard let attemptID = record.attemptID else { continue }
@@ -988,13 +985,8 @@ public final class DownloadManager {
                             refreshRecords()
                             return
                         }
-                        for intent in durable {
-                            deferredCleanupIntents[intent.id] = intent
-                            switch intent.operation {
-                            case .activeEncoding: executeActiveEncodingCleanupIntent(intent)
-                            case .embyConvert: executeEmbyConvertCleanupIntent(intent)
-                            }
-                        }
+                        _ = durable
+                        cleanupRunner?.kick(reason: "pending_deletion_completed")
                         lastError[key.ratingKey] = nil
                         refreshRecords()
                     }
@@ -1030,15 +1022,13 @@ public final class DownloadManager {
                 continue
             }
 
-            var cleanupAuthorityDurable = true
-            if let playSessionID = metadata.playSessionID, !playSessionID.isEmpty {
-                if let intent = persistActiveEncodingCleanupIntent(
-                    attemptKey: key, metadata: metadata, playSessionID: playSessionID
-                ) {
-                    executeActiveEncodingCleanupIntent(intent)
-                } else {
-                    cleanupAuthorityDurable = false
-                }
+            // P2: journal terminal handles as terminal releases; the runner decides when they may
+            // run (and re-checks B44 protection at execution time).
+            if let playSessionID = metadata.playSessionID, !playSessionID.isEmpty,
+               let intent = Self.makeActiveEncodingCleanupIntent(
+                attemptKey: key, metadata: metadata, playSessionID: playSessionID,
+                provenance: .terminalRelease) {
+                terminalReleases.append(intent)
             }
             // B44/B49: a failed row whose Retry resumes its Convert job (poll-health or 401/403
             // failure) or crash-window recovery keeps that authority. Cleaning it up here would
@@ -1050,28 +1040,26 @@ public final class DownloadManager {
                     isEmbyRecord: DownloadRecordIdentity.isEmbyRecordKey(record.ratingKey),
                     hasEmbyConvertJobID: metadata.embyConvertJobID != nil,
                     hasEmbyConvertRecoveryIdentity: metadata.hasEmbyConvertRecoveryIdentity)
-            if !retryKeepsConvertAuthority, Self.hasEmbyConvertCleanupAuthority(metadata) {
-                if let intent = persistEmbyConvertCleanupIntent(
-                    attemptKey: key, metadata: metadata
-                ) {
-                    executeEmbyConvertCleanupIntent(intent)
-                } else {
-                    cleanupAuthorityDurable = false
-                }
+            if !retryKeepsConvertAuthority, Self.hasEmbyConvertCleanupAuthority(metadata),
+               let intent = Self.makeEmbyConvertCleanupIntent(
+                attemptKey: key, metadata: metadata, provenance: .terminalRelease) {
+                terminalReleases.append(intent)
             }
-            _ = cleanupAuthorityDurable
         }
 
-
-        guard case .loaded(let intents) = cleanupIntentJournal.load() else {
-            recordDownloadDiagnostic("downloads.cleanup_intent_load_failed")
-            return
-        }
-        for intent in intents {
-            switch intent.operation {
-            case .activeEncoding: executeActiveEncodingCleanupIntent(intent)
-            case .embyConvert: executeEmbyConvertCleanupIntent(intent)
+        prepareCleanupRunnerIfNeeded()
+        // Every launch, backend-ready and backend-switch pass funnels through here. Journal the
+        // terminal releases off the main actor (each is a full durable commit or directory sync),
+        // then reset backoff, since a changed session can make backed-off intents runnable.
+        let journal = cleanupIntentJournal
+        let pendingReleases = terminalReleases
+        launchSweepJournaling = Task { [weak self] in
+            if !pendingReleases.isEmpty {
+                await Task.detached {
+                    for intent in pendingReleases { _ = journal.ensure(intent) }
+                }.value
             }
+            self?.cleanupRunner?.resetBackoff(reason: "recovery_pass")
         }
     }
 
@@ -1107,10 +1095,12 @@ public final class DownloadManager {
     private func persistActiveEncodingCleanupIntent(
         attemptKey: DownloadAttemptKey,
         metadata: OfflineMetadata,
-        playSessionID: String
+        playSessionID: String,
+        provenance: DurableDownloadCleanupIntent.Provenance
     ) -> DurableDownloadCleanupIntent? {
         guard let candidate = Self.makeActiveEncodingCleanupIntent(
-            attemptKey: attemptKey, metadata: metadata, playSessionID: playSessionID
+            attemptKey: attemptKey, metadata: metadata, playSessionID: playSessionID,
+            provenance: provenance
         ) else { return nil }
         switch cleanupIntentJournal.ensure(candidate) {
         case .committed(let durable): return durable
@@ -1121,7 +1111,8 @@ public final class DownloadManager {
     nonisolated static func makeActiveEncodingCleanupIntent(
         attemptKey: DownloadAttemptKey,
         metadata: OfflineMetadata,
-        playSessionID: String
+        playSessionID: String,
+        provenance: DurableDownloadCleanupIntent.Provenance? = nil
     ) -> DurableDownloadCleanupIntent? {
         let backend = metadata.resolvedBackendKind(ratingKey: attemptKey.ratingKey)
         guard backend == .jellyfin || backend == .emby,
@@ -1135,26 +1126,41 @@ public final class DownloadManager {
             attemptKey: attemptKey,
             backend: backend,
             server: server,
-            operation: .activeEncoding(playSessionID: playSessionID)
+            operation: .activeEncoding(playSessionID: playSessionID),
+            provenance: provenance,
+            recordedAtEpochSeconds: Date().timeIntervalSince1970
         )
     }
 
-    private func persistEmbyConvertCleanupIntent(
+    /// Plex optimize cleanup is server-scoped: the persisted machine identifier, or the persisted
+    /// base URL for rows written before it, and no user. Never falls back to the live session.
+    nonisolated static func makePlexOptimizeCleanupIntent(
         attemptKey: DownloadAttemptKey,
-        metadata: OfflineMetadata
+        metadata: OfflineMetadata,
+        create: DurableDownloadCleanupIntent.PlexCreateEvidence,
+        provenance: DurableDownloadCleanupIntent.Provenance? = nil
     ) -> DurableDownloadCleanupIntent? {
-        guard let candidate = Self.makeEmbyConvertCleanupIntent(
-            attemptKey: attemptKey, metadata: metadata
-        ) else { return nil }
-        switch cleanupIntentJournal.ensure(candidate) {
-        case .committed(let durable): return durable
-        case .conflictingID, .failed: return nil
-        }
+        guard metadata.resolvedBackendKind(ratingKey: attemptKey.ratingKey) == .plex,
+              let queueTitle = metadata.optimizeQueueTitle, !queueTitle.isEmpty,
+              let baseURLString = metadata.backendBaseURLString,
+              let baseURL = URL(string: baseURLString),
+              let server = DurableDownloadCleanupIntent.ServerIdentity(
+                baseURL: baseURL, serverID: metadata.backendServerID, userID: nil
+              ) else { return nil }
+        return DurableDownloadCleanupIntent(
+            attemptKey: attemptKey,
+            backend: .plex,
+            server: server,
+            operation: .plexOptimize(queueTitle: queueTitle),
+            provenance: provenance,
+            plexCreate: create,
+            recordedAtEpochSeconds: Date().timeIntervalSince1970)
     }
 
     nonisolated static func makeEmbyConvertCleanupIntent(
         attemptKey: DownloadAttemptKey,
-        metadata: OfflineMetadata
+        metadata: OfflineMetadata,
+        provenance: DurableDownloadCleanupIntent.Provenance? = nil
     ) -> DurableDownloadCleanupIntent? {
         guard metadata.resolvedBackendKind(ratingKey: attemptKey.ratingKey) == .emby,
               let baseURLString = metadata.backendBaseURLString,
@@ -1179,7 +1185,8 @@ public final class DownloadManager {
             return nil
         }
         return DurableDownloadCleanupIntent(
-            attemptKey: attemptKey, backend: .emby, server: server, operation: operation)
+            attemptKey: attemptKey, backend: .emby, server: server, operation: operation,
+            provenance: provenance, recordedAtEpochSeconds: Date().timeIntervalSince1970)
     }
 
     nonisolated private static func hasEmbyConvertCleanupAuthority(
@@ -1188,118 +1195,9 @@ public final class DownloadManager {
         metadata.embyConvertJobID != nil || metadata.hasEmbyConvertCrashWindowIdentity
     }
 
-    private func executeActiveEncodingCleanupIntent(_ intent: DurableDownloadCleanupIntent) {
-        guard case .activeEncoding(let playSessionID) = intent.operation,
-              !cleanupIntentsInFlight.contains(intent.id),
-              let live = appModel.backendSession(for: intent.backend),
-              intent.matches(session: live) else { return }
-        cleanupIntentsInFlight.insert(intent.id)
-        downloadWorkRegistry.start(
-            for: intent.attemptKey,
-            kind: .requiredCleanup
-        ) { [weak self] in
-            guard let self else { return }
-            let confirmedGone: Bool
-            switch intent.backend {
-            case .jellyfin:
-                confirmedGone = await JellyfinBrowseService(appModel: self.appModel)
-                    .stopActiveEncoding(playSessionId: playSessionID, session: live)
-            case .emby:
-                confirmedGone = await EmbyBrowseService(appModel: self.appModel)
-                    .stopActiveEncoding(playSessionId: playSessionID, session: live)
-            case .plex:
-                confirmedGone = false
-            }
-            self.cleanupIntentsInFlight.remove(intent.id)
-            guard confirmedGone else { return }
-            self.deferredCleanupIntents.removeValue(forKey: intent.id)
-            switch self.store.clearPlaySessionID(
-                for: intent.attemptKey, expectedPlaySessionID: playSessionID
-            ) {
-            case .persistenceFailed:
-                // Repeat the idempotent DELETE later; never drop the only durable cleanup record
-                // while the row clear is still dirty/unproven.
-                return
-            case .cleared, .alreadyAbsent, .expectedValueMismatch, .staleOrMissing:
-                _ = self.cleanupIntentJournal.remove(
-                    id: intent.id, attemptKey: intent.attemptKey, operation: intent.operation)
-            }
-        }
-    }
-
-    private func executeEmbyConvertCleanupIntent(_ intent: DurableDownloadCleanupIntent) {
-        guard case .embyConvert(let convertIdentity) = intent.operation,
-              !cleanupIntentsInFlight.contains(intent.id),
-              let live = appModel.backendSession(for: .emby),
-              let currentUserID = live.userID,
-              intent.matches(session: live) else { return }
-        cleanupIntentsInFlight.insert(intent.id)
-        downloadWorkRegistry.start(for: intent.attemptKey, kind: .requiredCleanup) { [weak self] in
-            guard let self else { return }
-            defer { self.cleanupIntentsInFlight.remove(intent.id) }
-            do {
-                let resolved: EmbyConvertCleanupResolution
-                switch convertIdentity {
-                case .knownJob(let jobID):
-                    resolved = .cancel(jobID: jobID)
-                case .ambiguousCreate(let baseline, let fingerprint, let started, let phase):
-                    guard EmbyConvertRecoveryPolicy.publicUserMatches(
-                        currentSessionUserID: currentUserID,
-                        persistedBackendUserID: intent.server.userID,
-                        fingerprintUserID: fingerprint.userId) else { return }
-                    let listRequest = try EmbyConvertRequest.jobListRequest(
-                        server: live.baseURL, token: live.token, identity: self.appModel.identity.emby)
-                    let (data, response) = try await URLSession.shared.data(for: listRequest)
-                    guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return }
-                    let list = try EmbyConvertRequest.decodeJobList(from: data)
-                    // Preserve the legacy tombstone sweep's one-train exclusion exactly: every
-                    // job currently owned by any live row is protected, including a job this same
-                    // attempt may have adopted after its ambiguous intent was journaled.
-                    let liveJobIDs = Set(self.store.records.compactMap {
-                        $0.metadata?.embyConvertJobID
-                    })
-                    switch EmbyConvertRecoveryPolicy.cleanupAction(
-                        baselineJobIDs: Set(baseline), jobs: list.items,
-                        listIsComplete: list.isComplete, fingerprint: fingerprint,
-                        attemptStartedAtEpochSeconds: started, phase: phase,
-                        nowEpochSeconds: Date().timeIntervalSince1970,
-                        liveJobIDs: liveJobIDs
-                    ) {
-                    case .retainTombstone: return
-                    case .discardTombstone: resolved = .discard
-                    case .cancel(let jobID): resolved = .cancel(jobID: jobID)
-                    }
-                }
-
-                if case .cancel(let jobID) = resolved {
-                    let request = try EmbyConvertRequest.deleteJobRequest(
-                        server: live.baseURL, token: live.token,
-                        identity: self.appModel.identity.emby, jobId: jobID)
-                    let (_, response) = try await URLSession.shared.data(for: request)
-                    guard let http = response as? HTTPURLResponse,
-                          (200..<300).contains(http.statusCode) || [404, 410].contains(http.statusCode)
-                    else { return }
-                }
-
-                guard self.clearEmbyConvertMetadataIfExact(intent) else { return }
-                self.deferredCleanupIntents.removeValue(forKey: intent.id)
-                _ = self.cleanupIntentJournal.remove(
-                    id: intent.id, attemptKey: intent.attemptKey, operation: intent.operation)
-            } catch {
-                // Transport/decode/identity uncertainty retains the durable intent for a later pass.
-                return
-            }
-        }
-    }
-
-    private enum EmbyConvertCleanupResolution {
-        case cancel(jobID: Int)
-        case discard
-    }
-
     /// Clear only the exact row authority represented by this completed cleanup. A replacement
     /// attempt, a newly adopted job, or a changed ambiguous-create fingerprint remains untouched.
-    private func clearEmbyConvertMetadataIfExact(
+    func clearEmbyConvertMetadataIfExact(
         _ intent: DurableDownloadCleanupIntent
     ) -> Bool {
         guard case .embyConvert(let identity) = intent.operation else { return false }
@@ -1650,7 +1548,8 @@ public final class DownloadManager {
     /// noticed the delete/pause. No transfer ever started, so at worst this DELETEs an encoder that
     /// never spun up (harmless) — but if the backend did start one for the minted PlaySessionId, it
     /// would otherwise leak with no row, no task, and no activeJobs slot pointing at it.
-    func stopSupersededMediaBrowserEncoder(ratingKey: String,
+    func stopSupersededMediaBrowserEncoder(attemptKey: DownloadAttemptKey,
+                                           ratingKey: String,
                                            playSessionID: String?,
                                            backendKind: DownloadBackendKind,
                                            backendSession: BackendSession) {
@@ -1659,6 +1558,13 @@ public final class DownloadManager {
             "download_id": .identifier(ratingKey),
             "backend": .label(backendKind.rawValue),
         ])
+        // P2.4: journal the stop from the session the negotiation captured; the runner executes
+        // it. If that fails, keep today's unrecorded best-effort stop (a documented residual
+        // window).
+        guard backendKind != .plex,
+              !journalCleanupAbandonment(
+                .activeEncoding(playSessionID: playSessionID), originAttempt: attemptKey,
+                session: backendSession, reason: "superseded_encoder") else { return }
         switch backendKind {
         case .jellyfin:
             let service = JellyfinBrowseService(appModel: appModel)
@@ -2876,63 +2782,16 @@ public final class DownloadManager {
                 && record.metadata?.resolvedDownloadLane() == .optimize
                 && !activeJobs.contains(record.ratingKey)
         }
-        // First prove the canonical queue is readable. Treating read/decode failure as empty could
-        // resume a row whose delete intent is hidden in that queue.
-        switch store.loadEmbyConvertCleanupTombstones() {
-        case .loaded:
-            break
-        case .failed(let failure):
-            recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
-                "reason": .label("tombstone_\(failure.stage.rawValue)_failed"),
-                "error_type": .label(failure.errorType),
-            ])
-            refreshRecords()
-            return
-        }
-
-        // Re-attempt exact-ID tombstones whose durable write failed at delete time. Keep failed
-        // values in memory, but include the pre-retry snapshot in this sweep even if persistence
-        // succeeds so cleanup is not delayed until another lifecycle edge.
-        let deferredForSweep = deferredEmbyCleanupTombstones
-        var committedDeferredIDs = Set<UUID>()
-        for tombstone in deferredForSweep {
-            switch store.addEmbyConvertCleanupTombstone(tombstone) {
-            case .committed:
-                committedDeferredIDs.insert(tombstone.id)
-            case .failed(let failure):
-                recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
-                    "download_id": .identifier(tombstone.ratingKey),
-                    "reason": .label("tombstone_\(failure.stage.rawValue)_failed"),
-                    "error_type": .label(failure.errorType),
-                ])
-            }
-        }
-        deferredEmbyCleanupTombstones.removeAll { committedDeferredIDs.contains($0.id) }
-
-        let durableTombstones: [DownloadStore.EmbyConvertCleanupTombstone]
-        switch store.loadEmbyConvertCleanupTombstones() {
-        case .loaded(let values):
-            durableTombstones = values
-        case .failed(let failure):
-            recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
-                "reason": .label("tombstone_\(failure.stage.rawValue)_failed"),
-                "error_type": .label(failure.errorType),
-            ])
-            refreshRecords()
-            return
-        }
-        var seenCleanupIDs = Set<UUID>()
-        let cleanupTombstones = (durableTombstones + deferredForSweep).filter {
-            seenCleanupIDs.insert($0.id).inserted
-        }
-        guard !embyPreparing.isEmpty || !cleanupTombstones.isEmpty else {
+        // P2: legacy tombstones are migrated into the cleanup journal at launch and executed by
+        // the cleanup runner; this sweep only resumes Convert rows.
+        guard !embyPreparing.isEmpty else {
             refreshRecords()
             return
         }
         guard let session = appModel.backendSession(for: .emby),
               let userId = session.userID else {
             recordDownloadDiagnostic("downloads.convert_resume_skip", fields: [
-                "candidate_count": .int(embyPreparing.count + cleanupTombstones.count),
+                "candidate_count": .int(embyPreparing.count),
                 "reason": .label("emby_session_unavailable"),
             ])
             refreshRecords()
@@ -2941,14 +2800,6 @@ public final class DownloadManager {
         let server = session.baseURL
         let token = session.token
         let identity = appModel.identity.emby
-        for tombstone in cleanupTombstones
-            where session.matchesPersistedServer(tombstone.metadata) {
-            Task { [weak self] in
-                await self?.recoverAndCancelEmbyConvertTombstone(
-                    tombstone, server: server, token: token, identity: identity,
-                    currentUserID: userId)
-            }
-        }
         for record in embyPreparing {
             guard let metadata = record.metadata,
                   metadata.resolvedBackendKind(ratingKey: record.ratingKey) == .emby,
@@ -3060,24 +2911,20 @@ public final class DownloadManager {
                     "download_id": .identifier(record.ratingKey),
                     "phase": .label("recovery_expired"),
                 ])
-                let cleanupCandidate = DownloadStore.EmbyConvertCleanupTombstone(
-                    id: UUID(), ratingKey: record.ratingKey, metadata: metadata
-                )
-                switch store.addEmbyConvertCleanupTombstone(cleanupCandidate) {
-                case .committed(let tombstone):
-                    Task { [weak self] in
-                        await self?.recoverAndCancelEmbyConvertTombstone(
-                            tombstone, server: server, token: token, identity: identity,
-                            currentUserID: userId)
-                    }
-                case .failed(let failure):
-                    deferredEmbyCleanupTombstones.append(cleanupCandidate)
+                // P2.4: the abandonment intent must be durable before the row gives up its
+                // recovery identity, or a failed write would leave no record of the job at all.
+                // On failure the row keeps its identity and stays put for the next pass.
+                guard let expired = Self.makeEmbyConvertCleanupIntent(
+                        attemptKey: key, metadata: metadata,
+                        provenance: .abandonment(originAttempt: key)),
+                      case .committed = cleanupIntentJournal.ensure(expired) else {
                     recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
                         "download_id": .identifier(record.ratingKey),
-                        "reason": .label("tombstone_\(failure.stage.rawValue)_failed"),
-                        "error_type": .label(failure.errorType),
+                        "reason": .label("expiry_intent_not_durable"),
                     ])
+                    continue
                 }
+                cleanupRunner?.kick(reason: "convert_recovery_expired")
                 guard clearEmbyConvertRecoveryIfExact(
                     for: key, expected: metadata) else { continue }
                 lastError[record.ratingKey] = .transferFailed(
@@ -3423,6 +3270,7 @@ public final class DownloadManager {
                     try await triggerOptimize(item: currentItem, targetName: targetName,
                                               queueTitle: queueTitle,
                                               server: server, token: token, identity: identity)
+                    markPlexOptimizeCreateConfirmed(for: key, queueTitle: queueTitle)
                 } catch {
                     // Same policy as fresh optimize starts: a recreate failure should not briefly
                     // turn a queued/preparing row red if the optimized Part can still be discovered.
@@ -3672,7 +3520,8 @@ public final class DownloadManager {
                 if let attemptID = rowToDelete.attemptID {
                     let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
                     if let intent = Self.makeActiveEncodingCleanupIntent(
-                        attemptKey: key, metadata: metadata, playSessionID: playSessionID
+                        attemptKey: key, metadata: metadata, playSessionID: playSessionID,
+                        provenance: .rowDeletion
                     ) {
                         cleanupIntentsToExecute.append(intent)
                     } else {
@@ -3688,11 +3537,27 @@ public final class DownloadManager {
                     ])
                 }
             }
+            // P2.4/D2: a Plex row still in server prep (paused included) journals its optimize
+            // queue item like every other server obligation; the runner removes it after the
+            // row's deletion commits and never touches a completed render.
+            if DownloadDeletePolicy.plexOptimizeCleanupQueueTitle(for: rowToDelete) != nil,
+               let attemptID = rowToDelete.attemptID {
+                let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+                if let intent = Self.makePlexOptimizeCleanupIntent(
+                    attemptKey: key, metadata: metadata,
+                    create: metadata.plexOptimizeCreateConfirmed == true ? .confirmed : .unresolved,
+                    provenance: .rowDeletion) {
+                    cleanupIntentsToExecute.append(intent)
+                } else {
+                    serverCleanupLeakDisclosure = .transferFailed(
+                        "Downloaded file deleted; server optimize cleanup identity was unavailable.")
+                }
+            }
             if Self.hasEmbyConvertCleanupAuthority(metadata) {
                 if let attemptID = rowToDelete.attemptID {
                     let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
                     if let intent = Self.makeEmbyConvertCleanupIntent(
-                        attemptKey: key, metadata: metadata) {
+                        attemptKey: key, metadata: metadata, provenance: .rowDeletion) {
                         cleanupIntentsToExecute.append(intent)
                     } else {
                         serverCleanupLeakDisclosure = .transferFailed(
@@ -3781,38 +3646,6 @@ public final class DownloadManager {
         // server-side "Convert Media" Sync job, or it keeps rendering after the user abandoned it.
         // Capture the row BEFORE removing it (best-effort; deleting the job never deletes an
         // already-converted file, so this only ever cancels an in-flight conversion).
-        // Plex parity: deleting a row still in server prep (optimize job triggered, no rendered
-        // Part handed off yet) must also remove its type-42 background-processing item, or the
-        // server keeps transcoding — and later stores a rendered version — for a download the
-        // user abandoned. Targeted at THIS row's queue title only; the completed-state guard in
-        // `cancellableItemID` keeps finished renders (which other rows may reuse) untouched.
-        let plexSession = appModel.backendSession(for: .plex)
-        let plexSessionMatchesDeletedRow = rowToDelete.metadata.map { metadata in
-            plexSession?.matchesPersistedServer(metadata) == true
-        } ?? false
-        switch DownloadDeletePolicy.plexOptimizeCancelDecision(
-            for: rowToDelete,
-            plexSessionMatchesPersistedServer: plexSessionMatchesDeletedRow
-        ) {
-        case .none:
-            break
-        case .cancel(let queueTitle):
-            guard let plexSession else { break }
-            let server = plexSession.baseURL
-            let token = plexSession.token
-            let identity = appModel.identity
-            Task { [weak self] in
-                await self?.removePlexOptimizeQueueItem(ratingKey: ratingKey,
-                                                        queueTitle: queueTitle,
-                                                        server: server, token: token,
-                                                        identity: identity)
-            }
-        case .skip(_, let reason):
-            recordDownloadDiagnostic("downloads.optimize_cancel_skip", fields: [
-                "download_id": .identifier(ratingKey),
-                "reason": .label(reason),
-            ])
-        }
         // The prepared row-deletion recipe is submitted synchronously, but filesystem work and
         // terminal persistence run on the artifact worker. Keep the main actor responsive and do
         // not release attempt state until exact removal is proven complete.
@@ -3825,12 +3658,8 @@ public final class DownloadManager {
                 refreshRecords()
                 return
             }
-            for intent in cleanupIntentsToExecute {
-                deferredCleanupIntents[intent.id] = intent
-                switch intent.operation {
-                case .activeEncoding: executeActiveEncodingCleanupIntent(intent)
-                case .embyConvert: executeEmbyConvertCleanupIntent(intent)
-                }
+            if !cleanupIntentsToExecute.isEmpty {
+                cleanupRunner?.kick(reason: "row_deleted")
             }
             // Preserve the server-cleanup-identity leak disclosure across a successful deletion —
             // the row is gone but the server encoder/conversion was never torn down, and clearing
@@ -4380,12 +4209,6 @@ public final class DownloadManager {
 
         records = fresh
         offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: fresh)
-        for intent in deferredCleanupIntents.values where !cleanupIntentsInFlight.contains(intent.id) {
-            switch intent.operation {
-            case .activeEncoding: executeActiveEncodingCleanupIntent(intent)
-            case .embyConvert: executeEmbyConvertCleanupIntent(intent)
-            }
-        }
         keepaliveCoordinator.reconcile(records: recoveryEligibleFresh)
         for restart in forwardOnlyRestarts {
             Task { @MainActor [weak self] in
@@ -4602,11 +4425,12 @@ public final class DownloadManager {
             break
         case .stop(let playSessionId):
             guard let metadata = releaseMetadata,
-                  let intent = persistActiveEncodingCleanupIntent(
+                  persistActiveEncodingCleanupIntent(
                     attemptKey: attemptKey,
                     metadata: metadata,
-                    playSessionID: playSessionId
-                  ) else {
+                    playSessionID: playSessionId,
+                    provenance: .abandonment(originAttempt: attemptKey)
+                  ) != nil else {
                 recordDownloadDiagnostic("downloads.emby_encoder_teardown_skip", fields: [
                     "download_id": .identifier(ratingKey),
                     "reason": .label("cleanup_intent_not_durable"),
@@ -4614,7 +4438,11 @@ public final class DownloadManager {
                 break
             }
             embyPlaySessionByAttempt.removeValue(forKey: attemptKey)
-            executeActiveEncodingCleanupIntent(intent)
+            // The journal now holds the stop; hand authority over by clearing the row's own
+            // reference. If this clear fails or is interrupted, the runner completes it after the
+            // stop once the row is no longer actively transferring.
+            _ = store.clearPlaySessionID(for: attemptKey, expectedPlaySessionID: playSessionId)
+            cleanupRunner?.kick(reason: "encoder_released")
         case .skip(let reason):
             recordDownloadDiagnostic("downloads.emby_encoder_teardown_skip", fields: [
                 "download_id": .identifier(ratingKey),
@@ -4640,11 +4468,12 @@ public final class DownloadManager {
             break
         case .stop(let playSessionId):
             guard let metadata = releaseMetadata,
-                  let intent = persistActiveEncodingCleanupIntent(
+                  persistActiveEncodingCleanupIntent(
                     attemptKey: attemptKey,
                     metadata: metadata,
-                    playSessionID: playSessionId
-                  ) else {
+                    playSessionID: playSessionId,
+                    provenance: .abandonment(originAttempt: attemptKey)
+                  ) != nil else {
                 recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown_skip", fields: [
                     "download_id": .identifier(ratingKey),
                     "reason": .label("cleanup_intent_not_durable"),
@@ -4652,7 +4481,11 @@ public final class DownloadManager {
                 break
             }
             jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
-            executeActiveEncodingCleanupIntent(intent)
+            // The journal now holds the stop; hand authority over by clearing the row's own
+            // reference. If this clear fails or is interrupted, the runner completes it after the
+            // stop once the row is no longer actively transferring.
+            _ = store.clearPlaySessionID(for: attemptKey, expectedPlaySessionID: playSessionId)
+            cleanupRunner?.kick(reason: "encoder_released")
         case .skip(let reason):
             recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown_skip", fields: [
                 "download_id": .identifier(ratingKey),
