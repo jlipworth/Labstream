@@ -10,7 +10,7 @@ struct OfflineLibrarySnapshotBuilderTests {
                         sideAssetBytes: Int = 0,
                         attemptID: DownloadAttemptID? = nil,
                         metadata: OfflineMetadata? = nil) -> DownloadRecord {
-        DownloadRecord(ratingKey: key,
+        var record = DownloadRecord(ratingKey: key,
                        attemptID: attemptID,
                        title: key,
                        localURL: URL(fileURLWithPath: "/tmp/\(key).mp4"),
@@ -19,6 +19,8 @@ struct OfflineLibrarySnapshotBuilderTests {
                        status: status,
                        metadata: metadata,
                        sideAssetBytes: sideAssetBytes)
+        if status == .downloading { record.lifecycle = .transferring }
+        return record
     }
 
     @Test("builder derives mixed-backend rows, queue action, aggregate stats, and overlays")
@@ -32,7 +34,7 @@ struct OfflineLibrarySnapshotBuilderTests {
         let snapshot = OfflineLibrarySnapshotBuilder.make(
             records: records,
             isQueuePaused: false,
-            downloadSpeed: ["plex-1": 10.5, "emby:2": 100],
+            aggregateSpeedBytesPerSecond: 10.5,
             displayBytes: { record in record.ratingKey == "plex-1" ? 420 : nil },
             errorMessage: { record in record.status == .failed ? "boom" : nil },
             displayProgress: { record in record.ratingKey == "plex-1" ? 0.42 : nil },
@@ -78,7 +80,7 @@ struct OfflineLibrarySnapshotBuilderTests {
         let snapshot = OfflineLibrarySnapshotBuilder.make(
             records: [record("fallback", status: .complete, metadata: metadata)],
             isQueuePaused: false,
-            downloadSpeed: [:],
+            aggregateSpeedBytesPerSecond: nil,
             errorMessage: { _ in nil },
             displayProgress: { _ in nil },
             statusCaption: { _, _ in "Downloaded" },
@@ -93,7 +95,7 @@ struct OfflineLibrarySnapshotBuilderTests {
         let snapshot = OfflineLibrarySnapshotBuilder.make(
             records: [paused],
             isQueuePaused: false,
-            downloadSpeed: [:],
+            aggregateSpeedBytesPerSecond: nil,
             displayBytes: { $0.ratingKey == "plex-1" ? 5_500 : nil },
             errorMessage: { _ in nil },
             displayProgress: { _ in 0.35 },
@@ -108,7 +110,7 @@ struct OfflineLibrarySnapshotBuilderTests {
         let snapshot = OfflineLibrarySnapshotBuilder.make(
             records: [record("jellyfin:1", status: .paused, bytes: 1)],
             isQueuePaused: true,
-            downloadSpeed: [:],
+            aggregateSpeedBytesPerSecond: nil,
             errorMessage: { _ in nil },
             displayProgress: { _ in nil },
             statusCaption: { _, _ in "Paused" },

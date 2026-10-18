@@ -412,6 +412,7 @@ public final class DownloadManager {
     /// first-emit window, the stall decay/cutoff, the backwards-bytes re-baseline, and the
     /// Σdb/Σdt window average — all pinned by `DownloadRateEstimatorTests`. Ephemeral; never persisted.
     private var rateEstimators: [String: DownloadRateEstimator] = [:]
+    private var aggregateRateEstimator = DownloadAggregateRateEstimator()
 
     /// Background URLSession can report a large amount of already-transferred body data in
     /// its first foreground callback. That is real byte progress, but it did not occur inside
@@ -783,14 +784,24 @@ public final class DownloadManager {
                 self.scheduleRefreshRecords(reason: "range_live_progress", delay: .seconds(1))
             }
         }
-        // Register only after callbacks exist, but while the session is still dormant. If the app
-        // delegate already holds a background completion handler, registration records it in the
-        // session's completion gate before activation constructs URLSession and events can arrive.
+        self.session.onTransferRateSample = { [weak self] key, bytes, time in
+            Task { @MainActor in
+                guard let self, self.store.ownsAttempt(key) else { return }
+                // Membership comes from snapshot publication; do not copy the entire library
+                // for every delegate tick. A newly admitted row warms up after that publication.
+                self.aggregateRateEstimator.sample(key, bytes: bytes, at: time)
+            }
+        }
         self.session.onBackgroundWakeAuthorized = { [weak self] in
             Task { @MainActor in
+                self?.aggregateRateEstimator.resetAfterWake()
+                self?.scheduleRefreshRecords(reason: "background_wake_speed")
                 self?.resumeStartupRecoveryAfterAuthorization()
             }
         }
+        // Register only after callbacks exist, but while the session is still dormant. If the app
+        // delegate already holds a background completion handler, registration records it in the
+        // session's completion gate before activation constructs URLSession and events can arrive.
         if registerForBackgroundEvents {
             backgroundCompletionRegistry.register(self.session)
         }
@@ -2199,6 +2210,7 @@ public final class DownloadManager {
     /// queued static rows captured before reconcile as well as rows already downloading; either can
     /// be the row whose first reattached/restarted callback exposes accumulated background bytes.
     private func beginDownloadRateForegroundRebaseline() {
+        aggregateRateEstimator.resetAfterWake()
         let now = Date()
         let interruptedStaticKeys = Set(store.interruptedStaticByteRangeKeys())
         let downloadingRecords = store.records.filter { $0.status == .downloading }
@@ -4958,12 +4970,17 @@ public final class DownloadManager {
     }
 
     private func updateDownloadWatchdog(for records: [DownloadRecord]) {
-        if DownloadWatchdogPolicy.requiresWatchdog(records: records) {
+        if DownloadWatchdogPolicy.requiresWatchdog(records: records)
+            || aggregateRateEstimator.rate(at: Date()) != nil {
             guard downloadWatchdogTask == nil else { return }
             downloadWatchdogTask = Task { [weak self] in
                 while !Task.isCancelled {
                     do {
-                        try await Task.sleep(for: .seconds(DownloadWatchdogPolicy.refreshIntervalSeconds))
+                        // Expire aggregate evidence even when a static transfer goes completely
+                        // silent. UI refreshes never count as fresh delegate observations.
+                        let interval = self?.aggregateRateEstimator.rate(at: Date()) != nil
+                            ? 1.0 : DownloadWatchdogPolicy.refreshIntervalSeconds
+                        try await Task.sleep(for: .seconds(interval))
                     } catch { return }
                     await MainActor.run {
                         guard let self, self.downloadWatchdogTask != nil else { return }
@@ -5217,12 +5234,18 @@ public final class DownloadManager {
         DownloadExpectedBytesPolicy.staticRangeExpectedBytes(for: record)
     }
 
+    private func aggregateRateTransferKeys(_ records: [DownloadRecord]) -> Set<DownloadAttemptKey> {
+        Set(records.filter { $0.lifecycle == .transferring && !isDeletionPending($0) }
+            .compactMap { attemptKey(for: $0) })
+    }
+
     func makeOfflineLibrarySnapshot(from records: [DownloadRecord]) -> OfflineLibrarySnapshot {
         refreshResumePresenceEvidence(records: records)
+        aggregateRateEstimator.setActiveTransfers(aggregateRateTransferKeys(records))
         return OfflineLibrarySnapshotBuilder.make(
             records: records,
             isQueuePaused: isQueuePaused,
-            downloadSpeed: downloadSpeed,
+            aggregateSpeedBytesPerSecond: aggregateRateEstimator.rate(at: Date()),
             phase: { record in publishedRowPhase(for: record) },
             displayFraction: { record in displayFraction(for: record) },
             displayBytes: { record in displayBytes(for: record) },

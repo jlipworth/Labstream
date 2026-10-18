@@ -308,12 +308,7 @@ public struct OfflineLibraryView: View {
 
     @ViewBuilder
     private func offlineToolbarInlineItems(snapshot: OfflineLibrarySnapshot) -> some View {
-        if let speed = snapshot.aggregateStats.activeSpeedBytesPerSecond, speed > 0 {
-            aggregateToolbarMetric(value: "\(Self.aggregateByteString(Int(speed)))/s",
-                                   systemImage: "speedometer",
-                                   accessibilityLabel: "Active download speed",
-                                   envelope: .rate)
-        }
+        aggregateSpeedMetric(snapshot.aggregateStats)
         if snapshot.aggregateStats.downloadedBytes > 0 {
             aggregateToolbarMetric(value: Self.aggregateByteString(snapshot.aggregateStats.downloadedBytes),
                                    systemImage: "externaldrive.fill",
@@ -328,12 +323,7 @@ public struct OfflineLibraryView: View {
     #if os(visionOS)
     private func offlineToolbarCluster(snapshot: OfflineLibrarySnapshot) -> some View {
         HStack(spacing: 8) {
-            if let speed = snapshot.aggregateStats.activeSpeedBytesPerSecond, speed > 0 {
-                aggregateToolbarMetric(value: "\(Self.aggregateByteString(Int(speed)))/s",
-                                       systemImage: "speedometer",
-                                       accessibilityLabel: "Active download speed",
-                                       envelope: .rate)
-            }
+            aggregateSpeedMetric(snapshot.aggregateStats)
             if snapshot.aggregateStats.downloadedBytes > 0 {
                 aggregateToolbarMetric(value: Self.aggregateByteString(snapshot.aggregateStats.downloadedBytes),
                                        systemImage: "externaldrive.fill",
@@ -361,6 +351,20 @@ public struct OfflineLibraryView: View {
         .accessibilityElement(children: .contain)
     }
     #endif
+
+    @ViewBuilder
+    private func aggregateSpeedMetric(_ stats: OfflineDownloadAggregateStats) -> some View {
+        if let speed = stats.activeSpeedBytesPerSecond {
+            aggregateToolbarMetric(value: "\(Self.aggregateByteString(Int(speed)))/s",
+                                   systemImage: "speedometer",
+                                   accessibilityLabel: "Active download speed",
+                                   envelope: .rate)
+        } else if stats.isUpdatingSpeed {
+            Text("Updating speed…")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
 
     private func aggregateToolbarMetric(value: String,
                                         systemImage: String,

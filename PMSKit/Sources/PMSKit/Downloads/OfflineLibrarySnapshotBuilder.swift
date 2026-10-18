@@ -9,7 +9,7 @@ import Foundation
 public enum OfflineLibrarySnapshotBuilder {
     public static func make(records: [DownloadRecord],
                             isQueuePaused: Bool,
-                            downloadSpeed: [String: Double],
+                            aggregateSpeedBytesPerSecond: Double?,
                             phase: (DownloadRecord) -> DownloadJobPhase? = { _ in nil },
                             displayFraction: (DownloadRecord) -> DownloadProgressDisplay.Fraction? = { _ in nil },
                             displayBytes: (DownloadRecord) -> Int? = { _ in nil },
@@ -88,7 +88,7 @@ public enum OfflineLibrarySnapshotBuilder {
             ),
             isQueuePaused: isQueuePaused,
             aggregateStats: OfflineDownloadAggregateStats.make(records: records,
-                                                               speedsByRatingKey: downloadSpeed,
+                                                               activeSpeedBytesPerSecond: aggregateSpeedBytesPerSecond,
                                                                displayBytesByRatingKey: displayBytesByRatingKey),
             activeTransferPercentage: activeTransferPercentage,
             sidebarStatus: OfflineSidebarStatusPolicy.presentation(activeSamples)

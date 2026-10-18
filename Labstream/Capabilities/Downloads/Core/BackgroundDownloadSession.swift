@@ -488,6 +488,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// for durable/resumable accounting; DownloadManager uses these samples for active speed/ETA.
     var onRangeLiveProgress: ((_ ratingKey: String, _ liveBytes: Int, _ expectedBytes: Int?) -> Void)?
 
+    /// Exact-attempt, callback-time watermarks for the shared aggregate speed window.
+    var onTransferRateSample: ((_ key: DownloadAttemptKey, _ bytes: Int, _ time: Date) -> Void)?
+
     /// Finalization is owned by DownloadManager's exact-attempt work registry. This callback only
     /// brokers an already synchronously admitted request; it must either register the request or
     /// call `abandonFinalizerRequest` so the session's admission/background accounting balances.
@@ -3683,6 +3686,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             _ = resolveLifecycleSubmission(store.submitProgress(for: rangeEntry.attemptKey,
                                      bytes: checkpointBytes, progress: progress))
             onRangeLiveProgress?(rangeEntry.ratingKey, displayTotal, effectiveExpectedBytes)
+            onTransferRateSample?(rangeEntry.attemptKey, displayTotal, Date())
             recordRangeProgressIfNeeded(taskIdentifier: downloadTask.taskIdentifier,
                                         entry: rangeEntry,
                                         bodyBytes: Int(totalBytesWritten),
@@ -3732,6 +3736,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         _ = resolveLifecycleSubmission(store.submitProgress(for: entry.attemptKey,
                                  bytes: Int(totalBytesWritten),
                                  progress: progress))
+        onTransferRateSample?(entry.attemptKey, Int(totalBytesWritten), Date())
         notifyProgressChangeIfNeeded(ratingKey: entry.ratingKey, progress: progress)
     }
 

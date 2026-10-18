@@ -8,9 +8,11 @@ public struct OfflineDownloadAggregateStats: Sendable, Equatable {
     public static let empty = OfflineDownloadAggregateStats(activeSpeedBytesPerSecond: nil,
                                                             downloadedBytes: 0)
 
-    /// Sum of currently measured per-row rates for active work. Nil means no active transfer has a
-    /// trustworthy rate yet, which lets the UI stay quiet instead of showing noisy `0 B/s`.
+    /// Batch rate measured over one common interval for every active transfer. Nil means the
+    /// whole batch lacks trustworthy evidence; callers must never substitute a partial row sum.
     public var activeSpeedBytesPerSecond: Double?
+
+    public var isUpdatingSpeed: Bool
 
     /// Total local bytes recorded across complete and incomplete rows. For active static-range
     /// transfers, callers may provide live display bytes so this aggregate matches the row progress
@@ -18,20 +20,20 @@ public struct OfflineDownloadAggregateStats: Sendable, Equatable {
     /// rows should pass no live overlay so the total snaps back to resumable local bytes honestly.
     public var downloadedBytes: Int
 
-    public init(activeSpeedBytesPerSecond: Double?, downloadedBytes: Int) {
+    public init(activeSpeedBytesPerSecond: Double?, downloadedBytes: Int, isUpdatingSpeed: Bool = false) {
         self.activeSpeedBytesPerSecond = activeSpeedBytesPerSecond
         self.downloadedBytes = downloadedBytes
+        self.isUpdatingSpeed = isUpdatingSpeed
     }
 
     public var hasVisibleMetrics: Bool {
-        activeSpeedBytesPerSecond != nil || downloadedBytes > 0
+        activeSpeedBytesPerSecond != nil || isUpdatingSpeed || downloadedBytes > 0
     }
 
     public static func make(records: some Sequence<DownloadRecord>,
-                            speedsByRatingKey: [String: Double],
+                            activeSpeedBytesPerSecond: Double?,
                             displayBytesByRatingKey: [String: Int] = [:]) -> OfflineDownloadAggregateStats {
-        var totalSpeed = 0.0
-        var hasActiveSpeed = false
+        var hasActiveTransfer = false
         var totalBytes = 0
 
         for record in records {
@@ -42,16 +44,12 @@ public struct OfflineDownloadAggregateStats: Sendable, Equatable {
             if record.sideAssetBytes > 0 {
                 totalBytes += record.sideAssetBytes
             }
-            if record.status.isActiveWork,
-               let speed = speedsByRatingKey[record.ratingKey],
-               speed.isFinite,
-               speed > 0 {
-                totalSpeed += speed
-                hasActiveSpeed = true
-            }
+            hasActiveTransfer = hasActiveTransfer || record.lifecycle == .transferring
         }
 
-        return OfflineDownloadAggregateStats(activeSpeedBytesPerSecond: hasActiveSpeed ? totalSpeed : nil,
-                                             downloadedBytes: totalBytes)
+        let speed = activeSpeedBytesPerSecond.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+        return OfflineDownloadAggregateStats(activeSpeedBytesPerSecond: hasActiveTransfer ? speed : nil,
+                                             downloadedBytes: totalBytes,
+                                             isUpdatingSpeed: hasActiveTransfer && speed == nil)
     }
 }

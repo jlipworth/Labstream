@@ -164,6 +164,17 @@ These are app-side bounds, not proof of OS scheduling or background continuation
 
 ## Background downloads and sleeping devices
 
+The Downloads header reports aggregate speed only when every transferring attempt has fresh
+delegate observations over one common interval within the last four seconds. It shows
+**Updating speed…** while that evidence is incomplete; queued, preparing and finalizing rows do
+not count as transfers. Foreground, a background-session wake, or a gap of six seconds in an
+attempt's callbacks discards the old batch window. Each attempt's first callback establishes a
+new watermark, with four seconds of baseline replacement to exclude buffered catch-up bytes
+(#224), before the shared window can produce a total. Staggered callbacks are interpolated
+inside their observed overlap, never extrapolated or silently omitted. Observed quiet intervals
+contribute zero; a silent attempt makes the total unavailable once the common window expires.
+All measurement state is memory-only.
+
 Downloading while the app is backgrounded, suspended, or the device is locked/asleep is
 fundamentally constrained by the platform, not by the server or the app:
 

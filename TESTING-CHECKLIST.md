@@ -379,6 +379,15 @@ background-session registration, or migration/recovery work.
 
 ### Static segment train
 
+- [ ] Aggregate speed (#379): run multiple downloads, lock/remove the headset for a sustained
+      interval, then wake it. The header shows **Updating speed…** until every transferring row
+      has fresh observations in the same post-wake window; staggered callbacks never show a
+      partial batch total or an inflated catch-up burst (#224). Compare the settled total with
+      a synchronized server-side sample over the same interval. Repeat with one transfer and
+      with one transfer stalled: quiet observations contribute zero, and missing observations
+      hide the total rather than silently omitting that transfer. A background-session wake
+      and a long callback gap must receive the same protection.
+
 Both visionOS and non-visionOS currently use the closed-segment train. Each segment is
 512 MiB, with at most two live or newly planned segments per download (the durable head plus
 one look-ahead), for roughly 1 GiB of queued runway per row. Validate on physical devices when
