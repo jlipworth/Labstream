@@ -219,6 +219,21 @@ public final class DownloadManager {
 
     /// Live records (in-progress + completed), backed by `DownloadStore`.
     public private(set) var records: [DownloadRecord] = []
+    #if DEBUG
+    @ObservationIgnored private var startupCompletionWaiters: [CheckedContinuation<Bool, Never>] = []
+    /// Observe the actual terminal startup edge. Scheduling delay is not a startup failure;
+    /// store operations retain their own bounded deadlines and failure transitions.
+    func awaitStartupRecoveryForTesting() async -> Bool {
+        if startupRecoveryState == .ready && admission.recoveryComplete { return true }
+        if case .blocked = startupRecoveryState { return false }
+        return await withCheckedContinuation { startupCompletionWaiters.append($0) }
+    }
+    private func acknowledgeStartupRecoveryForTesting(_ ready: Bool) {
+        let waiters = startupCompletionWaiters
+        startupCompletionWaiters.removeAll()
+        for waiter in waiters { waiter.resume(returning: ready) }
+    }
+    #endif
     /// Fail-closed schema/task admission state. The message is fixed application text: no paths,
     /// tokens, persistence error descriptions, or server values are exposed to UI/diagnostics.
     public private(set) var startupRecoveryState: StartupRecoveryState = .preparing
@@ -435,6 +450,44 @@ public final class DownloadManager {
 
     // #135 Stage 5c: `internal` (not `private`) so the per-backend lane subsystems split into their
     // own files (e.g. DownloadManager+EmbyConvert.swift) can reach the shared download services.
+    @ObservationIgnored var admissionPersistenceProofs: [DownloadAttemptKey: UUID] = [:]
+    @ObservationIgnored var managerActionGenerations: [String: UInt64] = [:]
+    @ObservationIgnored private var managerOperations: [String: (UUID, Task<Void, Never>)] = [:]
+
+    @discardableResult
+    func enqueueManagerOperation(ratingKey: String, operation: @escaping @MainActor () async -> Void) -> Task<Void, Never> {
+        let previous = managerOperations[ratingKey]?.1
+        let id = UUID()
+        let generation = managerActionGenerations[ratingKey, default: 0]
+        let task = Task { @MainActor [weak self] in
+            await previous?.value
+            guard let self, managerActionGenerations[ratingKey, default: 0] == generation else { return }
+            await operation()
+            if managerOperations[ratingKey]?.0 == id { managerOperations.removeValue(forKey: ratingKey) }
+        }
+        managerOperations[ratingKey] = (id, task)
+        return task
+    }
+
+    func managerContinuationIsCurrent(_ key: DownloadAttemptKey, fence: UInt64) -> Bool {
+        !Task.isCancelled && managerActionGenerations[key.ratingKey, default: 0] == fence
+            && store.attemptAdmitsWork(key) && store.lifecycleState(for: key)?.lifecycle != .paused
+    }
+
+    #if DEBUG
+    func drainManagerOperationsForTesting() async {
+        let tasks = managerOperations.values.map { $0.1 }
+        for task in tasks { await task.value }
+    }
+    #endif
+
+    /// A Pause/Delete fence invalidates continuations immediately, ahead of older disk waits.
+    private func fenceManagerOperations(ratingKey: String) {
+        managerActionGenerations[ratingKey, default: 0] &+= 1
+        admissionPersistenceProofs = admissionPersistenceProofs.filter { $0.key.ratingKey != ratingKey }
+        managerOperations.removeValue(forKey: ratingKey)
+    }
+
     let appModel: AppModel
     let store: DownloadStore
     let session: BackgroundDownloadSession
@@ -465,9 +518,9 @@ public final class DownloadManager {
         let downloadStoreSpan = PerformanceInstrumentation.begin(.runtimeDownloadStore,
                                                                   backend: "App")
         #endif
-        let store = injectedStore ?? DownloadStore()
-        // Commit typed row ownership before the background session can be constructed/activated.
-        // A failure remains explicit and leaves session admission dormant.
+        let store = injectedStore ?? DownloadStore(startupOnWorker: true)
+        // The production store runs its admissible load/repair tail on a worker. Install the
+        // dormant session and its callbacks now; activation awaits that tail's durability proof.
         let startupAdmission = store.startupIndexAdmission()
         #if PERFORMANCE_AUDIT
         downloadStoreSpan.end(fields: ["default_store": injectedStore == nil ? 1 : 0])
@@ -685,16 +738,57 @@ public final class DownloadManager {
         // Register only after callbacks exist, but while the session is still dormant. If the app
         // delegate already holds a background completion handler, registration records it in the
         // session's completion gate before activation constructs URLSession and events can arrive.
+        self.session.onBackgroundWakeAuthorized = { [weak self] in
+            Task { @MainActor in
+                guard let self, self.startupRecoveryState == .preparing,
+                      !self.startupRecoveryInFlight else { return }
+                self.continueStartupRecovery(with: self.store.startupIndexAdmission(), deferCurrentActivation: true)
+            }
+        }
         if registerForBackgroundEvents {
             backgroundCompletionRegistry.register(self.session)
         }
-        continueStartupRecovery(with: startupAdmission, deferCurrentActivation: true)
+        if let submission = store.initialStartupSubmission {
+            startupRecoveryInFlight = true
+            Task { @MainActor [weak self, store] in
+                let deadline = DownloadStoreDeadline.after(30)
+                let result = await store.resolve(submission, deadline: deadline)
+                guard let self else { return }
+                startupRecoveryInFlight = false
+                switch result {
+                case .observed(let admission):
+                    guard await proveStartupPersistence(admission, deadline: deadline) else { return }
+                    continueStartupRecovery(with: admission)
+                case .timedOut:
+                    blockDownloadStartup(affectedRatingKeys: store.allRatingKeys,
+                        message: "Downloads recovery timed out. Try recovery again.", reason: "initial_load_timed_out")
+                }
+            }
+        } else {
+            continueStartupRecovery(with: startupAdmission, deferCurrentActivation: true)
+        }
+    }
+
+    /// The worker's observation alone cannot authorize transport after a failed repair commit.
+    private func proveStartupPersistence(_ admission: DownloadStore.StartupIndexAdmission,
+                                         deadline: DownloadStoreDeadline) async -> Bool {
+        guard admission == .current else { return true }
+        startupRecoveryInFlight = true
+        let proof = await store.flushPersistence(through: store.currentPersistenceTicket(), deadline: deadline)
+        startupRecoveryInFlight = false
+        guard case .committed = proof else {
+            blockDownloadStartup(affectedRatingKeys: store.allRatingKeys,
+                message: "Download recovery could not be saved. Try recovery again.", reason: "startup_repair_not_durable")
+            return false
+        }
+        return true
     }
 
     /// Explicit retry hook for a prior persistence/activation failure. It is intentionally not an
     /// automatic repair loop: persistent disk failure or malformed v3 ownership keeps admission
     /// closed until the user/lifecycle layer explicitly asks again, and malformed rows remain
     /// blocked rather than receiving a guessed owner.
+    @ObservationIgnored private var startupReprobeGeneration = UUID()
     public func retryDownloadStartupRecovery() {
         guard startupRecoveryState != .ready, !startupRecoveryInFlight else { return }
         startupRecoveryDeferredActivationTask?.cancel()
@@ -703,7 +797,23 @@ public final class DownloadManager {
         startupRecoveryRetryTask = nil
         startupRecoveryState = .preparing
         // B16/B21: re-examine the store instead of replaying the admission cached at launch.
-        continueStartupRecovery(with: store.reprobeBlockedIndex())
+        let generation = UUID()
+        startupReprobeGeneration = generation
+        startupRecoveryInFlight = true
+        let submission = store.submitReprobeBlockedIndex()
+        Task { @MainActor [weak self, store] in
+            let deadline = DownloadStoreDeadline.after(30)
+            let result = await store.resolve(submission, deadline: deadline)
+            guard let self, startupReprobeGeneration == generation else { return }
+            startupRecoveryInFlight = false
+            switch result {
+            case .observed(let admission):
+                guard await proveStartupPersistence(admission, deadline: deadline) else { return }
+                continueStartupRecovery(with: admission)
+            case .timedOut:
+                blockDownloadStartup(affectedRatingKeys: store.allRatingKeys, message: "Downloads recovery timed out. Try recovery again.", reason: "reprobe_timed_out")
+            }
+        }
     }
 
     private func scheduleTransientStartupRecoveryRetry() {
@@ -775,6 +885,7 @@ public final class DownloadManager {
     }
 
     private func activateDownloadsAfterUnsupportedSchemaReset() {
+        guard !session.startupAuthorizationExpired else { return }
         startupRecoveryInFlight = true
         session.activateAfterResettingUnsupportedStore { [weak self] result in
             Task { @MainActor in
@@ -800,7 +911,14 @@ public final class DownloadManager {
         }
     }
 
+    #if DEBUG
+    var startupActivationDecisionForTesting: (@Sendable () -> Void)?
+    #endif
     private func activateDownloadsForCurrentStore() {
+        #if DEBUG
+        startupActivationDecisionForTesting?()
+        #endif
+        guard !session.startupAuthorizationExpired else { return }
         startupRecoveryDeferredActivationTask?.cancel()
         startupRecoveryDeferredActivationTask = nil
         startupRecoveryInFlight = true
@@ -899,13 +1017,18 @@ public final class DownloadManager {
         for key in candidates {
             if !store.schemaUpgradeRescues(key), let record = store.record(for: key) {
                 deleteCleanupGapObserved = false
-                switch delete(record: record) {
+                var handoff = delete(record: record)
+                if case .preparing(let pendingKey) = handoff,
+                   let preparation = deletionPreparationTasks[pendingKey] {
+                    handoff = await preparation.task.value
+                }
+                switch handoff {
                 case .barriered, .capsule:
                     // Full key: legacy attempt IDs need not be unique across items.
                     let entry = DownloadUpgradeNotice.entry(for: key)
                     retired.append(entry)
                     if deleteCleanupGapObserved { cleanupGaps.append(entry) }
-                case .persistenceFailed, .stale:
+                case .persistenceFailed, .stale, .preparing:
                     break
                 }
             }
@@ -939,6 +1062,9 @@ public final class DownloadManager {
         session.releaseBackgroundCompletionAfterStartupFailure()
         startupRecoveryInFlight = false
         startupRecoveryState = .blocked(message: message)
+        #if DEBUG
+        acknowledgeStartupRecoveryForTesting(false)
+        #endif
         startupRecoveryErrorKeys = affectedRatingKeys
         for key in affectedRatingKeys { lastError[key] = .transferFailed(message) }
         recordDownloadDiagnostic("downloads.startup_admission_blocked", fields: [
@@ -1015,9 +1141,10 @@ public final class DownloadManager {
         }
         let snapshotRatingKeys = store.allRatingKeys
         session.reattach { [weak self, store] liveKeys in
-            store.reconcile(liveRatingKeys: liveKeys, snapshotRatingKeys: snapshotRatingKeys)
+            let submission = store.submitReconcile(liveRatingKeys: liveKeys, snapshotRatingKeys: snapshotRatingKeys)
             Task { @MainActor in
-                guard let self else { return }
+                let proof = await store.resolve(submission, deadline: .after(30))
+                guard let self, case .committed = proof, self.startupRecoveryState == .ready else { return }
                 self.refreshRecords()
                 // Pending deletion is the first recovery concern after publishing the reconciled
                 // snapshot. It must migrate (or fail closed and halt A) before finalization,
@@ -1036,6 +1163,9 @@ public final class DownloadManager {
                 // P4: admission opens only after tasks and pollers were reattached, so surviving
                 // work is counted before anything new is granted.
                 self.admission.recoveryComplete = true
+                #if DEBUG
+                self.acknowledgeStartupRecoveryForTesting(true)
+                #endif
                 self.scheduleAdmissionPump()
             }
         }
@@ -1063,53 +1193,60 @@ public final class DownloadManager {
             guard let attemptID = record.attemptID else { continue }
             let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
             if let pending = store.deletionPendingCleanupIntents(for: key) {
-                switch DownloadCleanupOrdering.prepareForDestructiveDeletion(
-                    candidates: pending,
-                    key: key,
-                    journal: cleanupIntentJournal,
-                    store: store
-                ) {
-                case .ready(let durable):
-                    // Every cleanup operation is now independent of row lifetime. Remove A under
-                    // exact ownership before starting cleanup; a replacement B is rejected while
-                    // the deletion-pending reservation exists.
-                    session.cancel(ratingKey: key.ratingKey)
-                    let submission = store.submitCompletePendingDeletion(for: key)
-                    if case .accepted = submission {
-                        _ = downloadWorkRegistry.cancelCancellableWork(for: key)
-                    }
-                    Task { [weak self] in
-                        guard let self else { return }
-                        let outcome = await store.resolveRowDeletion(submission)
-                        guard case .removed = outcome else {
-                            // A non-`.removed` outcome means the accepted completion never proved
-                            // exact removal (terminal-barrier persistence/cleanup failed, or the
-                            // owner changed underneath us). Mirror the interactive delete() and
-                            // removeAttempt() paths: emit a diagnostic and surface a retry-able
-                            // lastError instead of guard-returning silently, which left the
-                            // deletion-pending row frozen until a manual Delete. The durable
-                            // reservation survives, so the next launch's migration re-drives it and
-                            // the surfaced "tap Delete to retry" gives the user an in-session action.
-                            recordStartupDeletionResolutionFailure(outcome, key: key)
-                            lastError[key.ratingKey] = .transferFailed(
-                                "Deletion could not finish safely. Free storage if needed, then tap Delete to retry.")
-                            refreshRecords()
-                            return
+                let fence = managerActionGenerations[key.ratingKey, default: 0]
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    let result = await DownloadCleanupOrdering.prepareForDestructiveDeletionAsync(
+                        candidates: pending,
+                        key: key,
+                        journal: cleanupIntentJournal,
+                        store: store, deadline: .after(30)
+                    )
+                    guard managerActionGenerations[key.ratingKey, default: 0] == fence,
+                          store.isDeletionPending(for: key) else { return }
+                    switch result {
+                    case .ready(let durable):
+                        // Every cleanup operation is now independent of row lifetime. Remove A under
+                        // exact ownership before starting cleanup; a replacement B is rejected while
+                        // the deletion-pending reservation exists.
+                        session.cancel(ratingKey: key.ratingKey)
+                        let submission = store.submitCompletePendingDeletion(for: key)
+                        if case .accepted = submission {
+                            _ = downloadWorkRegistry.cancelCancellableWork(for: key)
                         }
-                        _ = durable
-                        cleanupRunner?.kick(reason: "pending_deletion_completed")
-                        lastError[key.ratingKey] = nil
-                        refreshRecords()
+                        Task { [weak self] in
+                            guard let self else { return }
+                            let outcome = await store.resolveRowDeletion(submission)
+                            guard case .removed = outcome else {
+                                // A non-`.removed` outcome means the accepted completion never proved
+                                // exact removal (terminal-barrier persistence/cleanup failed, or the
+                                // owner changed underneath us). Mirror the interactive delete() and
+                                // removeAttempt() paths: emit a diagnostic and surface a retry-able
+                                // lastError instead of guard-returning silently, which left the
+                                // deletion-pending row frozen until a manual Delete. The durable
+                                // reservation survives, so the next launch's migration re-drives it and
+                                // the surfaced "tap Delete to retry" gives the user an in-session action.
+                                recordStartupDeletionResolutionFailure(outcome, key: key)
+                                lastError[key.ratingKey] = .transferFailed(
+                                    "Deletion could not finish safely. Free storage if needed, then tap Delete to retry.")
+                                refreshRecords()
+                                return
+                            }
+                            _ = durable
+                            cleanupRunner?.kick(reason: "pending_deletion_completed")
+                            lastError[key.ratingKey] = nil
+                            refreshRecords()
+                        }
+                    case .deletionPending:
+                        haltManagerOwnedWorkForPendingDeletion(key)
+                        lastError[key.ratingKey] = .transferFailed(
+                            "Deletion is pending until server cleanup can be saved. Tap Delete to retry.")
+                    case .indexPersistenceFailed:
+                        lastError[key.ratingKey] = .transferFailed(
+                            "Deletion could not be saved. Free storage if needed, then tap Delete to retry.")
+                    case .staleOrMissing:
+                        break
                     }
-                case .deletionPending:
-                    haltManagerOwnedWorkForPendingDeletion(key)
-                    lastError[key.ratingKey] = .transferFailed(
-                        "Deletion is pending until server cleanup can be saved. Tap Delete to retry.")
-                case .indexPersistenceFailed:
-                    lastError[key.ratingKey] = .transferFailed(
-                        "Deletion could not be saved. Free storage if needed, then tap Delete to retry.")
-                case .staleOrMissing:
-                    break
                 }
                 continue
             }
@@ -1123,11 +1260,8 @@ public final class DownloadManager {
                 // Plex has no ActiveEncoding cleanup. Preserve the prior stale-handle repair, but
                 // use exact attempt/value authority so this sweep cannot clear a replacement row.
                 if let playSessionID = metadata.playSessionID, !playSessionID.isEmpty {
-                    switch store.clearPlaySessionID(for: key, expectedPlaySessionID: playSessionID) {
-                    case .cleared, .alreadyAbsent:
-                        break
-                    case .expectedValueMismatch, .staleOrMissing, .persistenceFailed:
-                        break
+                    enqueueManagerOperation(ratingKey: key.ratingKey) { [store] in
+                        _ = await store.clearPlaySessionIDAsync(for: key, expectedPlaySessionID: playSessionID)
                     }
                 }
                 continue
@@ -1310,9 +1444,9 @@ public final class DownloadManager {
     /// attempt, a newly adopted job, or a changed ambiguous-create fingerprint remains untouched.
     func clearEmbyConvertMetadataIfExact(
         _ intent: DurableDownloadCleanupIntent
-    ) -> Bool {
+    ) async -> Bool {
         guard case .embyConvert(let identity) = intent.operation else { return false }
-        let result = store.updateMetadata(for: intent.attemptKey) { metadata in
+        let result = await store.updateMetadataAsync(for: intent.attemptKey) { metadata in
             switch identity {
             case .knownJob(let expectedJobID):
                 guard metadata.embyConvertJobID == expectedJobID else { return }
@@ -1629,18 +1763,20 @@ public final class DownloadManager {
         _ record: DownloadRecord,
         for handle: DownloadStartAttemptHandle,
         backend: String
-    ) -> Bool {
+    ) async -> Bool {
         guard record.ratingKey == handle.ratingKey,
               startAttemptStillCurrent(handle, backend: backend, phase: "persist_seed") else {
             return false
         }
-        let result = store.createAttemptOwnedRecord(
+        let result = await store.createAttemptOwnedRecordAsync(
             record,
             attemptID: handle.attemptID,
             replacing: handle.expectedPreviousOwner
         )
+        guard startAttemptStillCurrent(handle, backend: backend, phase: "persist_seed_resolved") else { return false }
         switch result {
         case .committed(let key) where key.attemptID == handle.attemptID:
+            guard startAttemptStillCurrent(handle, backend: backend, phase: "persist_seed_committed") else { return false }
             guard session.advanceRangeRequestRebuild(to: key, replacing: handle.expectedPreviousOwner) else {
                 return false
             }
@@ -1736,6 +1872,7 @@ public final class DownloadManager {
 
     private func pause(record: DownloadRecord) {
         let ratingKey = record.ratingKey
+        fenceManagerOperations(ratingKey: ratingKey)
         guard let releaseKey = attemptKey(for: record) else { return }
         // P4.6: a pause ends the row's supervised start and forgets its request, so no granted
         // continuation can start it afterwards (B64).
@@ -1745,7 +1882,7 @@ public final class DownloadManager {
             // row waiting for its retry just withdraws the request.
             let event: DownloadLifecycleEvent = record.lifecycle == .planned
                 ? .pause(.user) : .admissionWithdrawn
-            _ = applyLifecycleEvent(event, for: releaseKey, context: "user_pause_waiting")
+            _ = submitImmediateManagerEvent(event, for: releaseKey, context: "user_pause_waiting")
             lastError[ratingKey] = .interruptedResumable
             refreshRecords()
             return
@@ -1785,7 +1922,7 @@ public final class DownloadManager {
             // A freshly seeded URLSession task can still be `.queued` until first progress. Route
             // queued rows through the session too, but park no-live static gaps immediately.
             guard let key = attemptKey(for: record),
-                  applyLifecycleEvent(.pause(.user), for: key, context: "user_pause") else { return }
+                  submitImmediateManagerEvent(.pause(.user), for: key, context: "user_pause") else { return }
             session.pause(ratingKey: ratingKey)
         case .cancelTaskOnly:
             // B64: a task-less admitted row (a granted start still negotiating) parks
@@ -1793,12 +1930,12 @@ public final class DownloadManager {
             // chain past its last check could begin the transfer first.
             if !session.isTrackingTransfer(ratingKey: ratingKey),
                store.lifecycleState(for: releaseKey)?.lifecycle == .admitted {
-                _ = applyLifecycleEvent(.pause(.user), for: releaseKey, context: "user_pause")
+                _ = submitImmediateManagerEvent(.pause(.user), for: releaseKey, context: "user_pause")
             }
             session.pause(ratingKey: ratingKey)
         case .parkPreparing:
             guard let key = attemptKey(for: record),
-                  applyLifecycleEvent(.pause(.user), for: key, context: "user_pause") else { return }
+                  submitImmediateManagerEvent(.pause(.user), for: key, context: "user_pause") else { return }
         }
         clearOptimizeProgress(ratingKey: ratingKey)
         setOptionalSideAssetHydrationParked(true, for: releaseKey)
@@ -1908,6 +2045,10 @@ public final class DownloadManager {
         let isActive = reason == .aggregateSceneBecameActive
         isAppSceneActive = isActive
         if isActive {
+            session.noteForegroundAuthorization()
+            if startupRecoveryState == .preparing && !startupRecoveryInFlight {
+                continueStartupRecovery(with: store.startupIndexAdmission(), deferCurrentActivation: true)
+            }
             beginDownloadRateForegroundRebaseline()
             // #187: headset reattach can deliver a burst of background-session progress and scene
             // activation events while the Offline window is being reconstructed. Coalesce the first
@@ -1966,10 +2107,12 @@ public final class DownloadManager {
         // B.13: same snapshot rule as launch — rows created while `getAllTasks` runs are skipped.
         let snapshotRatingKeys = store.allRatingKeys
         session.reattach { [weak self, store] liveKeys in
-            store.reconcile(liveRatingKeys: liveKeys, snapshotRatingKeys: snapshotRatingKeys)
+            let submission = store.submitReconcile(liveRatingKeys: liveKeys, snapshotRatingKeys: snapshotRatingKeys)
             Task { @MainActor in
+                let proof = await store.resolve(submission, deadline: .after(30))
                 guard let self else { return }
                 self.foregroundStaticRangeRecoveryInFlight = false
+                guard case .committed = proof, self.startupRecoveryState == .ready else { return }
                 self.refreshRecords()
                 guard !self.isQueuePaused else { return }
                 self.resumeInterruptedStaticByteRangeDownloads(candidateKeys: interruptedStaticKeys,
@@ -2010,45 +2153,48 @@ public final class DownloadManager {
         for record: DownloadRecord,
         expectedBytes: Int? = nil,
         context: String,
-        completion: @escaping (Int?) -> Void
+        completion: @escaping (Int?) async -> Void
     ) {
         guard let key = attemptKey(for: record) else { return }
+        let fence = managerActionGenerations[key.ratingKey, default: 0]
         staticCheckpointResolutions.enqueue(key: key, operation: { [store] in
             let submission = store.submitStaticRangeCheckpointReset(
                 for: key, expectedBytes: expectedBytes)
             return await store.resolveStaticCheckpoint(submission)
         }, completion: { [weak self] result in
-            guard let self else { return }
-            // The result belongs only to the exact owner captured by the queued request. Avoid
-            // mutating manager trackers/errors when a replacement won while the worker was busy.
-            guard store.record(for: key) != nil else {
-                completion(nil)
-                return
-            }
-            switch result {
-            case .applied(let bytes), .unchanged(let bytes):
-                completion(bytes)
-            case .notStatic:
-                completion(nil)
-            case .staleOrMissing:
-                recordDownloadDiagnostic("downloads.range_checkpoint_owner_stale", fields: [
-                    "download_id": .identifier(record.ratingKey),
-                    "context": .label(context),
-                ])
-                completion(nil)
-            case .persistenceFailed(_, let failure):
-                recordDownloadDiagnostic("downloads.range_checkpoint_persist_failed", fields: [
-                    "download_id": .identifier(record.ratingKey),
-                    "context": .label(context),
-                    "failure": .label(Self.startupPersistenceFailureLabel(failure)),
-                ])
-                completion(nil)
+            guard let self, managerActionGenerations[key.ratingKey, default: 0] == fence else { return }
+            enqueueManagerOperation(ratingKey: key.ratingKey) { [self] in
+                // The result belongs only to the exact owner captured by the queued request. Avoid
+                // mutating manager trackers/errors when a replacement won while the worker was busy.
+                guard store.record(for: key) != nil else {
+                    await completion(nil)
+                    return
+                }
+                switch result {
+                case .applied(let bytes), .unchanged(let bytes):
+                    await completion(bytes)
+                case .notStatic:
+                    await completion(nil)
+                case .staleOrMissing:
+                    recordDownloadDiagnostic("downloads.range_checkpoint_owner_stale", fields: [
+                        "download_id": .identifier(record.ratingKey),
+                        "context": .label(context),
+                    ])
+                    await completion(nil)
+                case .persistenceFailed(_, let failure):
+                    recordDownloadDiagnostic("downloads.range_checkpoint_persist_failed", fields: [
+                        "download_id": .identifier(record.ratingKey),
+                        "context": .label(context),
+                        "failure": .label(Self.startupPersistenceFailureLabel(failure)),
+                    ])
+                    await completion(nil)
+                }
             }
         })
     }
 
-    /// P3a: change an exact attempt's lifecycle through the reducer and wait for the revision to
-    /// commit, with the same blocking contract the legacy status write had. Returns false when the owner is
+    /// Change an exact attempt's lifecycle, then await its bounded durability proof without
+    /// occupying MainActor. Returns false when the owner is
     /// stale, the reducer rejects the event in the row's current lifecycle, or the snapshot did not
     /// commit; callers must not create dependent work or change manager trackers in that case.
     @discardableResult
@@ -2056,7 +2202,7 @@ public final class DownloadManager {
         _ event: DownloadLifecycleEvent,
         for key: DownloadAttemptKey,
         context: String
-    ) -> Bool {
+    ) async -> Bool {
         switch store.submitLifecycleEvent(event, for: key) {
         case .staleOrMissing:
             recordDownloadDiagnostic("downloads.status_owner_stale", fields: [
@@ -2077,9 +2223,13 @@ public final class DownloadManager {
         case .accepted(let effects, let ticket):
             // Manager events never produce durable effects; reject silently dropping one.
             assert(effects.isEmpty, "manager lifecycle event produced effects: \(effects)")
-            switch store.resolveSynchronously(.accepted(change: .applied, ticket: ticket)) {
+            let acceptedState = store.lifecycleState(for: key)
+            let fence = managerActionGenerations[key.ratingKey, default: 0]
+            let result = await store.resolve(DownloadStore.AttemptMutationSubmission.accepted(change: .applied, ticket: ticket), deadline: .after(30))
+            switch result {
             case .applied, .noChange:
-                return true
+                return store.ownsAttempt(key) && store.lifecycleState(for: key) == acceptedState
+                    && managerActionGenerations[key.ratingKey, default: 0] == fence
             case .staleOrMissing:
                 recordDownloadDiagnostic("downloads.status_owner_stale", fields: [
                     "download_id": .identifier(key.ratingKey),
@@ -2097,6 +2247,22 @@ public final class DownloadManager {
         }
     }
 
+    /// Immediate in-memory halt/admission fence. Disk proof is observed asynchronously; the
+    /// synchronous caller may stop work immediately but never starts dependent external work.
+    @discardableResult
+    func submitImmediateManagerEvent(_ event: DownloadLifecycleEvent, for key: DownloadAttemptKey, context: String) -> Bool {
+        guard case .accepted(let effects, let ticket) = store.submitLifecycleEvent(event, for: key) else { return false }
+        assert(effects.isEmpty)
+        enqueueManagerOperation(ratingKey: key.ratingKey) { [weak self, store] in
+            let result = await store.resolve(DownloadStore.AttemptMutationSubmission.accepted(change: .applied, ticket: ticket), deadline: .after(30))
+            if case .persistenceFailed(let failure) = result {
+                self?.recordDownloadDiagnostic("downloads.status_persist_failed", fields: [
+                    "context": .label(context), "failure": .label(Self.startupPersistenceFailureLabel(failure))])
+            }
+        }
+        return true
+    }
+
     /// A server-prep failure. `prepFailed` covers the prep lifecycles; an attempt that already
     /// handed off to its transfer (or is still planned) fails the same way as a transfer, which
     /// is what the legacy `.failed` write did in those states.
@@ -2105,23 +2271,23 @@ public final class DownloadManager {
         _ reason: DownloadFailureReason,
         for key: DownloadAttemptKey,
         context: String
-    ) -> Bool {
+    ) async -> Bool {
         let event: DownloadLifecycleEvent
         switch store.lifecycleState(for: key)?.lifecycle {
         case .transferring?, .finalizing?, .planned?: event = .transferFailed(reason)
         default: event = .prepFailed(reason)
         }
-        return applyLifecycleEvent(event, for: key, context: context)
+        return await applyLifecycleEvent(event, for: key, context: context)
     }
 
     /// The global queue gate parks this attempt (`pause(queuePaused)`). The reducer's `pause` is
     /// for live work; a failed row the gate parks (legacy wrote `.paused` over it) takes the
     /// `backendUnavailable` path, which accepts failed and records the same cause.
     @discardableResult
-    func applyQueuePause(for key: DownloadAttemptKey, context: String) -> Bool {
+    func applyQueuePause(for key: DownloadAttemptKey, context: String) async -> Bool {
         let event: DownloadLifecycleEvent = store.lifecycleState(for: key)?.lifecycle == .failed
             ? .backendUnavailable(.queuePaused) : .pause(.queuePaused)
-        return applyLifecycleEvent(event, for: key, context: context)
+        return await applyLifecycleEvent(event, for: key, context: context)
     }
 
     /// Bounded failure category for a manager-visible error (never its free-form text).
@@ -2203,20 +2369,20 @@ public final class DownloadManager {
             ) {
             case .queuedActiveIntent:
                 // Keep (or restore) the visibly queued intent while the backend session returns.
-                guard applyLifecycleEvent(
+                guard await applyLifecycleEvent(
                     .requeued, for: key, context: "defer_resume") else { return }
                 lastError[ratingKey] = checkpointBytes > 0
                     ? .interruptedResumable
                     : .transferFailed(
                         "Download will restart when the \(backend.displayName) session is ready.")
             case .pausedAtCheckpoint:
-                guard applyLifecycleEvent(
+                guard await applyLifecycleEvent(
                     .backendUnavailable(.awaitingSession), for: key, context: "defer_resume") else { return }
                 lastError[ratingKey] = .interruptedResumable
             case .failedNoCheckpoint:
                 // Nothing to resume from: the missing session fails the attempt as an auth
                 // failure (retry restarts from zero once the session returns).
-                guard applyLifecycleEvent(
+                guard await applyLifecycleEvent(
                     .transferFailed(.auth), for: key, context: "defer_resume") else { return }
                 lastError[ratingKey] = .transferFailed(
                     "No completed checkpoint was saved before the interruption; retry will restart this download from 0%.")
@@ -2311,7 +2477,7 @@ public final class DownloadManager {
                 [weak self] checkpointBytes in
                 guard let self, let checkpointBytes else { return }
                 if checkpointBytes > 0 {
-                    guard applyQueuePause(for: key, context: "queue_paused") else { return }
+                    guard await applyQueuePause(for: key, context: "queue_paused") else { return }
                     lastError[ratingKey] = .interruptedResumable
                 }
                 staticRangeRecovery.removePendingResume(ratingKey)
@@ -2428,7 +2594,7 @@ public final class DownloadManager {
             allowReplacingExistingActiveRow: StaticRangeRecoveryPolicy.shouldMarkSystemResumeInactiveBeforeRetry(record))
         Task { @MainActor [weak self] in
             await work?.value
-            self?.finishAdmittedStart(ratingKey, generation: generation, intent: .retryRequested)
+            await self?.finishAdmittedStart(ratingKey, generation: generation, intent: .retryRequested)
         }
     }
 
@@ -2522,6 +2688,15 @@ public final class DownloadManager {
     /// synchronously).
     @discardableResult
     func retry(record: DownloadRecord, allowReplacingExistingActiveRow: Bool) -> Task<Void, Never>? {
+        guard currentRecord(for: .init(ratingKey: record.ratingKey, attemptID: record.attemptID)) != nil else { return nil }
+        return enqueueManagerOperation(ratingKey: record.ratingKey) { [weak self] in
+            guard let self else { return }
+            let work = await retryRecordAsync(record: record, allowReplacingExistingActiveRow: allowReplacingExistingActiveRow)
+            await work?.value
+        }
+    }
+
+    private func retryRecordAsync(record: DownloadRecord, allowReplacingExistingActiveRow: Bool) async -> Task<Void, Never>? {
         let ratingKey = record.ratingKey
         guard startupRecoveryState == .ready else {
             lastError[ratingKey] = .transferFailed(
@@ -2587,7 +2762,7 @@ public final class DownloadManager {
             hasEmbyConvertJobID: record.metadata?.embyConvertJobID != nil,
             hasEmbyConvertRecoveryIdentity: record.metadata?.hasEmbyConvertRecoveryIdentity == true
         ) {
-            guard applyLifecycleEvent(
+            guard await applyLifecycleEvent(
                 .retry(.convertResume), for: retryAttemptKey, context: "retry_emby_convert") else {
                 retryState.removeRetrying(ratingKey)
                 return nil
@@ -2622,7 +2797,7 @@ public final class DownloadManager {
                 refreshRecords()
                 return nil
             }
-            guard applyLifecycleEvent(
+            guard await applyLifecycleEvent(
                 .retry(.resumeBlob), for: retryAttemptKey, context: "resume_blob") else {
                 retryState.removeRetrying(ratingKey)
                 return nil
@@ -2654,7 +2829,10 @@ public final class DownloadManager {
                 }
             case .opaque:
                 resumed = session.resume(ratingKey: ratingKey, resumeData: resumeData)
-                if resumed { _ = store.clearResumeData(for: retryAttemptKey, clearDisplayBytes: false) }
+                if resumed {
+                    _ = await store.clearResumeDataAsync(for: retryAttemptKey, clearDisplayBytes: false)
+                    guard retryAttemptCanContinue(for: retryAttemptKey, token: retryToken) else { return nil }
+                }
             }
             if resumed {
                 activeJobs.insert(ratingKey)
@@ -2671,7 +2849,7 @@ public final class DownloadManager {
             }
             // The blob was refused/stale — fall through to a clean restart below (for range rows
             // the durable partial remains the checkpoint; only the blob's temp is lost).
-            guard applyLifecycleEvent(
+            guard await applyLifecycleEvent(
                 .transferFailed(.validation), for: retryAttemptKey,
                 context: "resume_blob_refused") else {
                 retryState.removeRetrying(ratingKey)
@@ -2687,7 +2865,7 @@ public final class DownloadManager {
             hasIncompleteStaticPartial: DownloadRetryPolicy.shouldPromotePausedStaticPartial(
                 record, durablePartialURL: durableStaticPartialURL(for: record))
         ), let targetName = record.metadata?.optimizeTargetName {
-            resumePausedPlexServerPrep(record: record, targetName: targetName)
+            await resumePausedPlexServerPrep(record: record, targetName: targetName)
             return nil
         }
         // #131/#146/#168/#169 live checks: paused static-byte-range rows may have only the durable
@@ -2703,7 +2881,7 @@ public final class DownloadManager {
             // briefly showing user-visible `.failed` as a retry trampoline.
             let staticMode: DownloadRetryMode = store.durableStaticRangeCheckpointSize(
                 for: retryAttemptKey).map { $0 > 0 } == true ? .staticCheckpoint : .freshAttempt
-            guard applyLifecycleEvent(
+            guard await applyLifecycleEvent(
                 .retry(staticMode), for: retryAttemptKey, context: "retry_static") else {
                 retryState.removeRetrying(ratingKey)
                 return nil
@@ -2712,7 +2890,7 @@ public final class DownloadManager {
             // P4: a paused forward-only stream restarts fresh. Left `.paused`, the backend chain's
             // continuation guard reads the Resume as cancelled and silently no-ops (prep, Convert
             // and resume-blob rows returned above with their own transitions).
-            guard applyLifecycleEvent(
+            guard await applyLifecycleEvent(
                 .retry(.freshAttempt), for: retryAttemptKey, context: "retry_paused_fresh") else {
                 retryState.removeRetrying(ratingKey)
                 return nil
@@ -2747,7 +2925,7 @@ public final class DownloadManager {
                 }
                 self.clearRetryHandoff(ratingKey: ratingKey)
                 self.lastError[ratingKey] = .notAuthenticated
-                guard self.applyLifecycleEvent(
+                guard await self.applyLifecycleEvent(
                     .retryRejected(.auth), for: retryAttemptKey,
                     context: "retry_auth") else { return }
                 self.refreshRecords()
@@ -2791,7 +2969,7 @@ public final class DownloadManager {
                         "The saved server version is no longer available. Choose another version and retry.")
                     self.clearStaticRangePendingResume(ratingKey: ratingKey)
                     self.releaseInFlight(for: retryAttemptKey)
-                    guard self.applyLifecycleEvent(
+                    guard await self.applyLifecycleEvent(
                         .retryRejected(.sourceMissing), for: retryAttemptKey,
                         context: "retry_part_missing") else { return }
                     self.refreshRecords()
@@ -2896,7 +3074,7 @@ public final class DownloadManager {
     /// Resume a paused Plex server-prep row by reattaching to its existing optimize queue item.
     ///
     /// The persisted queue identity and dispatch evidence are reconciled before any create.
-    private func resumePausedPlexServerPrep(record: DownloadRecord, targetName: String) {
+    private func resumePausedPlexServerPrep(record: DownloadRecord, targetName: String) async {
         guard let key = attemptKey(for: record) else { return }
         guard let backendSession = appModel.backendSession(for: .plex) else {
             lastError[record.ratingKey] = .notAuthenticated
@@ -2930,7 +3108,7 @@ public final class DownloadManager {
         clearRetryHandoff(ratingKey: record.ratingKey)
         // Plex prep is persisted queued (admitted) while the server renders; the prep scanner
         // reattaches queued rows.
-        guard applyLifecycleEvent(
+        guard await applyLifecycleEvent(
             .retry(.prepReattach), for: key, context: "plex_prep_resume") else { return }
         optimizeState[record.ratingKey] = DownloadOptimizeStateLabel.queued
         refreshRecords()
@@ -2958,8 +3136,10 @@ public final class DownloadManager {
                 }
                 self.clearRetryHandoff(ratingKey: record.ratingKey)
                 self.lastError[record.ratingKey] = .notAuthenticated
-                _ = self.applyLifecycleEvent(
+                let failureFence = self.managerActionGenerations[key.ratingKey, default: 0]
+                _ = await self.applyLifecycleEvent(
                     .retryRejected(.auth), for: key, context: "jellyfin_retry_auth")
+                guard !Task.isCancelled, self.managerActionGenerations[key.ratingKey, default: 0] == failureFence, self.store.ownsAttempt(key) else { return }
                 self.refreshRecords()
                 return
             }
@@ -2981,8 +3161,10 @@ public final class DownloadManager {
                 self.retryState.removeRetrying(record.ratingKey)
                 self.lastError[record.ratingKey] = .transferFailed(
                     "Waiting for the original Jellyfin server session.")
-                _ = self.applyLifecycleEvent(
+                let failureFence = self.managerActionGenerations[key.ratingKey, default: 0]
+                _ = await self.applyLifecycleEvent(
                     .retryRejected(.server), for: key, context: "jellyfin_retry_server")
+                guard !Task.isCancelled, self.managerActionGenerations[key.ratingKey, default: 0] == failureFence, self.store.ownsAttempt(key) else { return }
                 self.refreshRecords()
                 return
             }
@@ -3028,8 +3210,10 @@ public final class DownloadManager {
                 }
                 self.clearRetryHandoff(ratingKey: record.ratingKey)
                 self.lastError[record.ratingKey] = .notAuthenticated
-                _ = self.applyLifecycleEvent(
+                let failureFence = self.managerActionGenerations[key.ratingKey, default: 0]
+                _ = await self.applyLifecycleEvent(
                     .retryRejected(.auth), for: key, context: "emby_retry_auth")
+                guard !Task.isCancelled, self.managerActionGenerations[key.ratingKey, default: 0] == failureFence, self.store.ownsAttempt(key) else { return }
                 self.refreshRecords()
                 return
             }
@@ -3050,8 +3234,10 @@ public final class DownloadManager {
                 self.retryState.removeRetrying(record.ratingKey)
                 self.lastError[record.ratingKey] = .transferFailed(
                     "Waiting for the original Emby server session.")
-                _ = self.applyLifecycleEvent(
+                let failureFence = self.managerActionGenerations[key.ratingKey, default: 0]
+                _ = await self.applyLifecycleEvent(
                     .retryRejected(.server), for: key, context: "emby_retry_server")
+                guard !Task.isCancelled, self.managerActionGenerations[key.ratingKey, default: 0] == failureFence, self.store.ownsAttempt(key) else { return }
                 self.refreshRecords()
                 return
             }
@@ -3084,6 +3270,12 @@ public final class DownloadManager {
     /// replacement. Idempotent: a row already being polled (`activeJobs`) is skipped. Best-effort —
     /// a row whose Emby lane is signed out stays parked and resumes once the lane returns.
     private func resumePendingEmbyConvertDownloads() {
+        enqueueManagerOperation(ratingKey: "\u{1F}emby-recovery") { [weak self] in
+            await self?.resumePendingEmbyConvertDownloadsAsync()
+        }
+    }
+
+    func resumePendingEmbyConvertDownloadsAsync() async {
         guard startupRecoveryState == .ready else { return }
         // Use the store's current rows, not the published `records` snapshot. Manual Resume paths
         // mutate the store and then call this immediately; reading stale published rows can skip the
@@ -3100,6 +3292,11 @@ public final class DownloadManager {
                 // P4: a failed row waiting for its retry is admitted by the coordinator, never
                 // reattached here past the caps.
                 && !isWaitingForAdmission(record)
+        }
+        // Capture all action fences before the first suspension: a later candidate may be paused
+        // while an earlier candidate's repair commit is still pending.
+        let candidates = embyPreparing.sorted { $0.ratingKey < $1.ratingKey }.map {
+            ($0, managerActionGenerations[$0.ratingKey, default: 0])
         }
         // P2: legacy tombstones are migrated into the cleanup journal at launch and executed by
         // the cleanup runner; this sweep only resumes Convert rows.
@@ -3119,7 +3316,8 @@ public final class DownloadManager {
         let server = session.baseURL
         let token = session.token
         let identity = appModel.identity.emby
-        for record in embyPreparing {
+        for (snapshot, fence) in candidates {
+            guard let record = currentEmbyRecoveryCandidate(snapshot, fence: fence) else { continue }
             // P4: as for Plex, a late attach after startup recovery needs prep-lane room (Convert
             // polling itself continues during Pause All, emby-33).
             if admission.recoveryComplete,
@@ -3188,8 +3386,9 @@ public final class DownloadManager {
                 }
                 // A prior bounded/list attempt may have parked this row failed while preserving
                 // ownership evidence. Relaunch/retry re-enters recovery, never a blind new POST.
-                guard applyLifecycleEvent(
-                    .prepReattached, for: key, context: "emby_convert_recover") else { continue }
+                guard await applyLifecycleEvent(
+                    .prepReattached, for: key, context: "emby_convert_recover"),
+                      currentEmbyRecoveryCandidate(snapshot, fence: fence, reattached: true) != nil else { continue }
                 activeJobs.insert(ratingKey)
                 inFlightAttempts.acquire(key)
                 guard let attemptID = beginEmbyConvertPoller(for: key) else { continue }
@@ -3220,10 +3419,13 @@ public final class DownloadManager {
                 if metadata.embyConvertRecoveryPhase == .prepared {
                     // Durable proof POST was never handed to URLSession: safe to discard this
                     // baseline so a user retry may create a fresh job.
-                    guard clearEmbyConvertRecoveryIfExact(
-                        for: key, expected: metadata) else { continue }
+                    guard await clearEmbyConvertRecoveryIfExact(
+                        for: key, expected: metadata),
+                          managerContinuationIsCurrent(key, fence: fence) else { continue }
                 }
-                _ = applyServerPrepFailure(.internalError, for: key, context: "emby_convert_identity")
+                let failureFence = managerActionGenerations[key.ratingKey, default: 0]
+                _ = await applyServerPrepFailure(.internalError, for: key, context: "emby_convert_identity")
+                guard !Task.isCancelled, managerActionGenerations[key.ratingKey, default: 0] == failureFence, store.ownsAttempt(key) else { continue }
                 clearOptimizeProgress(ratingKey: record.ratingKey)
                 releaseInFlight(for: key)
             case .expireRecovery:
@@ -3251,16 +3453,31 @@ public final class DownloadManager {
                     continue
                 }
                 cleanupRunner?.kick(reason: "convert_recovery_expired")
-                guard clearEmbyConvertRecoveryIfExact(
-                    for: key, expected: metadata) else { continue }
+                guard await clearEmbyConvertRecoveryIfExact(
+                    for: key, expected: metadata),
+                      managerContinuationIsCurrent(key, fence: fence) else { continue }
                 lastError[record.ratingKey] = .transferFailed(
                     "Server conversion could not be recovered; retry to create a new conversion.")
-                _ = applyServerPrepFailure(.server, for: key, context: "emby_convert_expired")
+                let failureFence = managerActionGenerations[key.ratingKey, default: 0]
+                _ = await applyServerPrepFailure(.server, for: key, context: "emby_convert_expired")
+                guard !Task.isCancelled, managerActionGenerations[key.ratingKey, default: 0] == failureFence, store.ownsAttempt(key) else { continue }
                 clearOptimizeProgress(ratingKey: record.ratingKey)
                 releaseInFlight(for: key)
             }
         }
         refreshRecords()
+    }
+
+    /// Re-read exact ownership, lifecycle, source/recovery identity and the user-action fence.
+    /// A scanner snapshot is never authority to revive a row after a different candidate awaited.
+    private func currentEmbyRecoveryCandidate(_ snapshot: DownloadRecord, fence: UInt64,
+                                               reattached: Bool = false) -> DownloadRecord? {
+        guard let key = attemptKey(for: snapshot), managerContinuationIsCurrent(key, fence: fence),
+              let current = store.record(for: key), !isDeletionPending(current),
+              current.metadata == snapshot.metadata,
+              current.status == (reattached ? .preparing : snapshot.status),
+              !activeJobs.contains(key.ratingKey), !isWaitingForAdmission(current) else { return nil }
+        return current
     }
 
     /// #169: auto-resume static byte-range downloads that a hard app kill interrupted mid-transfer.
@@ -3513,6 +3730,7 @@ public final class DownloadManager {
         let ratingKey = record.ratingKey
         guard let key = attemptKey(for: record) else { return }
         let identity = appModel.identity
+        let persistenceFence = managerActionGenerations[key.ratingKey, default: 0]
         // Legacy prep rows predate the persisted deadline. Seed it once before polling and write it
         // back to the row so another relaunch continues the same clock instead of resetting it.
         var metadata = metadata
@@ -3522,7 +3740,7 @@ public final class DownloadManager {
             metadata.plexOptimizeStartedAtEpochSeconds = optimizeStartedAt
             var updatedRecord = record
             updatedRecord.metadata = metadata
-            switch store.createAttemptOwnedRecord(updatedRecord, attemptID: key.attemptID) {
+            switch await store.createAttemptOwnedRecordAsync(updatedRecord, attemptID: key.attemptID) {
             case .committed(let committed) where committed == key:
                 break
             case .committed, .rejectedOwnership:
@@ -3535,14 +3753,17 @@ public final class DownloadManager {
             case .failed:
                 lastError[ratingKey] = .transferFailed(
                     "The download could not be saved safely. Check storage and try again.")
-                _ = applyServerPrepFailure(.internalError, for: key, context: "plex_deadline_publish")
+                let failureFence = managerActionGenerations[key.ratingKey, default: 0]
+                _ = await applyServerPrepFailure(.internalError, for: key, context: "plex_deadline_publish")
+                guard !Task.isCancelled, managerActionGenerations[key.ratingKey, default: 0] == failureFence, store.ownsAttempt(key) else { return }
                 if store.ownsAttempt(key) { releaseInFlight(for: key) }
                 refreshRecords()
                 return
             }
         }
         do {
-            guard store.ownsAttempt(key) else {
+            guard managerContinuationIsCurrent(key, fence: persistenceFence),
+                  resumeOptimizePollerIsCurrent(for: key, pollerID: pollerID, phase: "deadline_committed") else {
                 throw DownloadLifecycleCancellation.staleOptimizeAttempt
             }
             try assertCurrentOptimizeAttempt(attemptKey: key,
@@ -3568,7 +3789,7 @@ public final class DownloadManager {
             try assertCurrentOptimizeAttempt(attemptKey: key,
                                              metadata: metadata,
                                              targetName: targetName)
-            try startOptimizedPartDownload(attemptKey: key,
+            try await startOptimizedPartDownload(attemptKey: key,
                                            title: record.title,
                                            part: part.part,
                                            metadata: metadata,
@@ -3611,8 +3832,10 @@ public final class DownloadManager {
                 "error": .error(error),
             ])
             lastError[ratingKey] = error
-            _ = applyServerPrepFailure(
+            let failureFence = managerActionGenerations[key.ratingKey, default: 0]
+            _ = await applyServerPrepFailure(
                 Self.lifecycleFailureReason(for: error), for: key, context: "plex_poller_error")
+            guard !Task.isCancelled, managerActionGenerations[key.ratingKey, default: 0] == failureFence, store.ownsAttempt(key) else { return }
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(for: key)
             refreshRecords()
@@ -3638,7 +3861,9 @@ public final class DownloadManager {
             ])
             lastError[ratingKey] = .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            _ = applyServerPrepFailure(.network, for: key, context: "plex_poller_error")
+            let failureFence = managerActionGenerations[key.ratingKey, default: 0]
+            _ = await applyServerPrepFailure(.network, for: key, context: "plex_poller_error")
+            guard !Task.isCancelled, managerActionGenerations[key.ratingKey, default: 0] == failureFence, store.ownsAttempt(key) else { return }
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(for: key)
             refreshRecords()
@@ -3766,9 +3991,17 @@ public final class DownloadManager {
     /// detector on the next refresh, which re-drives the same doomed start — the churn cousin of
     /// the #210 refresh⇄resume recursion.
     func markStartAbortedBeforeTransfer(ratingKey: String) {
+        enqueueManagerOperation(ratingKey: ratingKey) { [weak self] in
+            await self?.markStartAbortedBeforeTransferAsync(ratingKey: ratingKey)
+        }
+    }
+
+    private func markStartAbortedBeforeTransferAsync(ratingKey: String) async {
         if let record = store.record(for: ratingKey), record.status.isActiveWork,
            let key = attemptKey(for: record) {
-            _ = applyLifecycleEvent(.transferFailed(.aborted), for: key, context: "start_aborted")
+            let failureFence = managerActionGenerations[key.ratingKey, default: 0]
+            _ = await applyLifecycleEvent(.transferFailed(.aborted), for: key, context: "start_aborted")
+            guard !Task.isCancelled, managerActionGenerations[key.ratingKey, default: 0] == failureFence, store.ownsAttempt(key) else { return }
         }
         clearStaticRangePendingResume(ratingKey: ratingKey)
     }
@@ -3801,6 +4034,7 @@ public final class DownloadManager {
     enum DeleteHandoff: Sendable, Equatable {
         /// The row-deletion barrier is installed; the artifact queue finishes removal.
         case barriered
+        case preparing(DownloadAttemptKey)
         /// Journaling was unavailable; a durable deletion-pending reservation holds the row.
         case capsule
         /// The deletion could not be saved; the row is unchanged.
@@ -3811,6 +4045,7 @@ public final class DownloadManager {
 
     @discardableResult
     private func delete(record rowToDelete: DownloadRecord) -> DeleteHandoff {
+        fenceManagerOperations(ratingKey: rowToDelete.ratingKey)
         // P4: a delete ends the row's supervised start and forgets its request and exemption.
         withdrawAdmission(ratingKey: rowToDelete.ratingKey)
         let ratingKey = rowToDelete.ratingKey
@@ -3891,50 +4126,61 @@ public final class DownloadManager {
         }
         deleteCleanupGapObserved = serverCleanupLeakDisclosure != nil
         if let rowAttemptKey, !cleanupIntentsToExecute.isEmpty {
-            // Journal first, destructive local deletion second. If the standalone queue is
-            // unavailable, reserve every exact operation (including transient PlaySessionId) in
-            // the index and return with the row/files intact. A retry or relaunch can then migrate
-            // the reservation without inventing authority from whichever attempt is current.
-            switch DownloadCleanupOrdering.prepareForDestructiveDeletion(
-                candidates: cleanupIntentsToExecute,
-                key: rowAttemptKey,
-                journal: cleanupIntentJournal,
-                store: store
-            ) {
-            case .ready(let durable):
-                cleanupIntentsToExecute = durable
-            case .deletionPending(_, let failure):
-                haltManagerOwnedWorkForPendingDeletion(rowAttemptKey)
-                lastError[ratingKey] = .transferFailed(
-                    "Deletion is pending until server cleanup can be saved. Tap Delete to retry.")
-                recordDownloadDiagnostic("downloads.delete_deferred", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "reason": .label(Self.cleanupOrderingFailureLabel(failure)),
-                    "authority": .label("index_deletion_pending"),
-                ])
-                refreshRecords()
-                return .capsule
-            case .indexPersistenceFailed(_, let persistence):
-                // The reservation may be dirty in memory; stop process-owned work either way.
-                haltManagerOwnedWorkForPendingDeletion(rowAttemptKey)
-                lastError[ratingKey] = .transferFailed(
-                    "Deletion could not be saved. Free storage if needed, then tap Delete to retry.")
-                recordDownloadDiagnostic("downloads.delete_deferred", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "reason": .label(Self.startupPersistenceFailureLabel(persistence)),
-                    "authority": .label("existing_row_unchanged"),
-                ])
-                refreshRecords()
-                return .persistenceFailed
-            case .staleOrMissing:
-                recordDownloadDiagnostic("downloads.delete_deferred", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "reason": .label("cleanup_owner_changed"),
-                ])
-                refreshRecords()
-                return .stale
+            let reservation = store.submitDeletionPending(for: rowAttemptKey, cleanupIntents: cleanupIntentsToExecute)
+            guard case .accepted = reservation else { return .stale }
+            haltManagerOwnedWorkForPendingDeletion(rowAttemptKey)
+            let fence = managerActionGenerations[ratingKey, default: 0]
+            let candidates = cleanupIntentsToExecute
+            let disclosure = serverCleanupLeakDisclosure
+            let task = Task { @MainActor [weak self] () -> DeleteHandoff in
+                guard let self else { return .stale }
+                defer {
+                    if deletionPreparationTasks[rowAttemptKey]?.generation == fence {
+                        deletionPreparationTasks.removeValue(forKey: rowAttemptKey)
+                    }
+                }
+                let result = await DownloadCleanupOrdering.prepareForDestructiveDeletionAsync(
+                    candidates: candidates, key: rowAttemptKey, journal: cleanupIntentJournal,
+                    store: store, deadline: .after(30), reservation: reservation)
+                guard managerActionGenerations[ratingKey, default: 0] == fence,
+                      store.isDeletionPending(for: rowAttemptKey) else { return .stale }
+                switch result {
+                case .ready(let durable):
+                    return finishDeletion(record: rowToDelete, rowAttemptKey: rowAttemptKey,
+                        wasDeletionPending: true, cleanupIntentsToExecute: durable,
+                        serverCleanupLeakDisclosure: disclosure)
+                case .deletionPending(_, let failure):
+                    lastError[ratingKey] = .transferFailed(
+                        "Deletion is pending until server cleanup can be saved. Tap Delete to retry.")
+                    recordDownloadDiagnostic("downloads.delete_deferred", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "reason": .label(Self.cleanupOrderingFailureLabel(failure)),
+                        "authority": .label("index_deletion_pending"),
+                    ])
+                    refreshRecords()
+                    return .capsule
+                case .indexPersistenceFailed:
+                    lastError[ratingKey] = .transferFailed(
+                        "Deletion could not be saved. Free storage if needed, then tap Delete to retry.")
+                    refreshRecords()
+                    return .persistenceFailed
+                case .staleOrMissing: return .stale
+                }
             }
+            deletionPreparationTasks[rowAttemptKey] = (fence, task)
+            return .preparing(rowAttemptKey)
         }
+        return finishDeletion(record: rowToDelete, rowAttemptKey: rowAttemptKey,
+            wasDeletionPending: wasDeletionPending, cleanupIntentsToExecute: cleanupIntentsToExecute,
+            serverCleanupLeakDisclosure: serverCleanupLeakDisclosure)
+    }
+
+    @ObservationIgnored private var deletionPreparationTasks: [DownloadAttemptKey: (generation: UInt64, task: Task<DeleteHandoff, Never>)] = [:]
+
+    private func finishDeletion(record rowToDelete: DownloadRecord, rowAttemptKey: DownloadAttemptKey?,
+        wasDeletionPending: Bool, cleanupIntentsToExecute: [DurableDownloadCleanupIntent],
+        serverCleanupLeakDisclosure: DownloadError?) -> DeleteHandoff {
+        let ratingKey = rowToDelete.ratingKey
         guard let deletedAttemptKey = rowAttemptKey else { return .stale }
         let deletionSubmission = wasDeletionPending
             ? store.submitCompletePendingDeletion(for: deletedAttemptKey)
@@ -4062,14 +4308,14 @@ public final class DownloadManager {
             try startBackgroundTransfer(plan, start: start)
         } catch let error as DownloadError {
             lastError[plan.ratingKey] = error
-            _ = applyLifecycleEvent(.transferFailed(Self.lifecycleFailureReason(for: error)),
+            _ = submitImmediateManagerEvent(.transferFailed(Self.lifecycleFailureReason(for: error)),
                                     for: plan.attemptKey, context: "transfer_start")
             if plan.releaseInFlightOnFailure { releaseInFlight(for: plan.attemptKey) }
             refreshRecords()
         } catch {
             lastError[plan.ratingKey] = .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            _ = applyLifecycleEvent(.transferFailed(.internalError),
+            _ = submitImmediateManagerEvent(.transferFailed(.internalError),
                                     for: plan.attemptKey, context: "transfer_start")
             if plan.releaseInFlightOnFailure { releaseInFlight(for: plan.attemptKey) }
             refreshRecords()
@@ -4108,14 +4354,20 @@ public final class DownloadManager {
 
 
     func updateLocalPlaybackPosition(ratingKey: String, positionMs: Int, durationMs: Int?) {
+        enqueueManagerOperation(ratingKey: ratingKey) { [weak self] in
+            await self?.updateLocalPlaybackPositionAsync(ratingKey: ratingKey, positionMs: positionMs, durationMs: durationMs)
+        }
+    }
+
+    private func updateLocalPlaybackPositionAsync(ratingKey: String, positionMs: Int, durationMs: Int?) async {
         guard let record = store.record(for: ratingKey) else { return }
         guard let attemptID = record.attemptID else { return }
         let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
         var promoted = false
-        if positionMs > 0, case .promoted = store.markCompleteIfUnverified(for: key) {
+        if positionMs > 0, case .promoted = await store.markCompleteIfUnverifiedAsync(for: key) {
             promoted = true
         }
-        switch store.setLocalPlaybackPosition(
+        switch await store.setLocalPlaybackPositionAsync(
             for: key, positionMs: positionMs, durationMs: durationMs) {
         case .applied, .noChange:
             break
@@ -4158,7 +4410,7 @@ public final class DownloadManager {
                 for: record, expectedBytes: expected, context: "size_audit"
             ) { [weak self] checkpointBytes in
                 guard let self, checkpointBytes != nil,
-                      applyLifecycleEvent(.sizeAuditFailed, for: key, context: "size_audit") else { return }
+                      await applyLifecycleEvent(.sizeAuditFailed, for: key, context: "size_audit") else { return }
                 lastError[record.ratingKey] = .transferFailed(
                     "Download is incomplete (\(durable / 1_000_000) of \(expected / 1_000_000) MB). Retry to continue.")
                 refreshRecords()
@@ -4294,7 +4546,7 @@ public final class DownloadManager {
                         [weak self] checkpointBytes in
                         guard let self, let checkpointBytes else { return }
                         if checkpointBytes > 0 {
-                            guard applyQueuePause(
+                            guard await applyQueuePause(
                                 for: key, context: "stale_queue_pause") else { return }
                             lastError[record.ratingKey] = .interruptedResumable
                         } else if store.record(for: key) == nil {
@@ -4378,7 +4630,7 @@ public final class DownloadManager {
             where !admission.isExempt(ratingKey) {
                 if let record = fresh.first(where: { $0.ratingKey == ratingKey }),
                    record.status != .paused, let key = attemptKey(for: record) {
-                    _ = applyQueuePause(for: key, context: "queue_pause_prep")
+                    _ = submitImmediateManagerEvent(.pause(.queuePaused), for: key, context: "queue_pause_prep")
                 }
             }
             if !serverPrepRefreshPlan.parkWhileQueuePausedKeys.isEmpty { fresh = store.records }
@@ -4563,6 +4815,12 @@ public final class DownloadManager {
     }
 
     private func restartStalledForwardOnlyStream(_ restart: DownloadForwardOnlyStallRestart) {
+        enqueueManagerOperation(ratingKey: restart.record.ratingKey) { [weak self] in
+            await self?.restartStalledForwardOnlyStreamAsync(restart)
+        }
+    }
+
+    private func restartStalledForwardOnlyStreamAsync(_ restart: DownloadForwardOnlyStallRestart) async {
         let ratingKey = restart.record.ratingKey
         guard let current = store.record(for: ratingKey),
               let key = attemptKey(for: current),
@@ -4584,7 +4842,7 @@ public final class DownloadManager {
         lastError[ratingKey] = .transferFailed(
             "Network stalled; restarting this forward-only stream from the beginning.")
         // B61: only a transferring row stalls; a finalizing body is never failed for a stall.
-        guard applyLifecycleEvent(.stallDetected, for: key, context: "stream_stall") else { return }
+        guard await applyLifecycleEvent(.stallDetected, for: key, context: "stream_stall") else { return }
         releaseInFlight(for: key)
         // `releaseInFlight` wipes the stall tracker entry, including the attempt count
         // `detectRestarts` just incremented — without re-seeding it the 2-restart cap never binds
@@ -4780,8 +5038,10 @@ public final class DownloadManager {
             // The journal now holds the stop; hand authority over by clearing the row's own
             // reference. If this clear fails or is interrupted, the runner completes it after the
             // stop once the row is no longer actively transferring.
-            _ = store.clearPlaySessionID(for: attemptKey, expectedPlaySessionID: playSessionId)
-            cleanupRunner?.kick(reason: "encoder_released")
+            enqueueManagerOperation(ratingKey: attemptKey.ratingKey) { [weak self, store] in
+                _ = await store.clearPlaySessionIDAsync(for: attemptKey, expectedPlaySessionID: playSessionId)
+                self?.cleanupRunner?.kick(reason: "encoder_released")
+            }
         case .skip(let reason):
             recordDownloadDiagnostic("downloads.emby_encoder_teardown_skip", fields: [
                 "download_id": .identifier(ratingKey),
@@ -4823,8 +5083,10 @@ public final class DownloadManager {
             // The journal now holds the stop; hand authority over by clearing the row's own
             // reference. If this clear fails or is interrupted, the runner completes it after the
             // stop once the row is no longer actively transferring.
-            _ = store.clearPlaySessionID(for: attemptKey, expectedPlaySessionID: playSessionId)
-            cleanupRunner?.kick(reason: "encoder_released")
+            enqueueManagerOperation(ratingKey: attemptKey.ratingKey) { [weak self, store] in
+                _ = await store.clearPlaySessionIDAsync(for: attemptKey, expectedPlaySessionID: playSessionId)
+                self?.cleanupRunner?.kick(reason: "encoder_released")
+            }
         case .skip(let reason):
             recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown_skip", fields: [
                 "download_id": .identifier(ratingKey),
@@ -5155,9 +5417,9 @@ public final class DownloadManager {
                             },
                             willDispatch: { [weak self] in
                                 guard let self else { throw CancellationError() }
-                                try self.persistPlexOptimizeDispatch(for: attemptKey, targetName: targetName)
+                                try await self.persistPlexOptimizeDispatch(for: attemptKey, targetName: targetName)
                             })
-                        markPlexOptimizeCreateConfirmed(for: attemptKey, queueTitle: queueTitle)
+                        await markPlexOptimizeCreateConfirmed(for: attemptKey, queueTitle: queueTitle)
                     } catch PlexError.http(400) {
                         // Duplicate creates can race metadata indexing. Re-run adoption immediately;
                         // if still missing, retain the original dispatch clock and keep inspecting.
@@ -5235,12 +5497,13 @@ public final class DownloadManager {
         throw CancellationError()
     }
 
-    private func persistPlexOptimizeDispatch(for key: DownloadAttemptKey, targetName: String) throws {
+    private func persistPlexOptimizeDispatch(for key: DownloadAttemptKey, targetName: String) async throws {
         guard let metadata = store.record(for: key)?.metadata else {
             throw DownloadLifecycleCancellation.staleOptimizeAttempt
         }
         try assertCurrentOptimizeAttempt(attemptKey: key, metadata: metadata, targetName: targetName)
-        switch store.updateMetadata(for: key, mutate: { metadata in
+        let fence = managerActionGenerations[key.ratingKey, default: 0]
+        switch await store.updateMetadataAsync(for: key, mutate: { metadata in
             if metadata.plexOptimizeCreateDispatchedAtEpochSeconds == nil {
                 metadata.plexOptimizeCreateDispatchedAtEpochSeconds = Date().timeIntervalSince1970
             }

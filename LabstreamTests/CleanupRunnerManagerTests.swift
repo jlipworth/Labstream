@@ -79,7 +79,9 @@ struct CleanupRunnerManagerTests {
         signInEmby(manager.appModel)
 
         manager.resumePendingServerPrepDownloads(allowWhileQueuePaused: true)
+        await manager.drainManagerOperationsForTesting()
 
+        #expect(await waitUntil { store.metadata(for: key.ratingKey)?.hasEmbyConvertCrashWindowIdentity == false })
         guard case .loaded(let intents) = journal.load() else {
             Issue.record("Expected a readable journal"); return
         }
@@ -111,6 +113,7 @@ struct CleanupRunnerManagerTests {
         signInEmby(manager.appModel)
 
         manager.resumePendingServerPrepDownloads(allowWhileQueuePaused: true)
+        await manager.drainManagerOperationsForTesting()
 
         #expect(store.record(for: key)?.status == .preparing)
         #expect(store.metadata(for: key.ratingKey)?.hasEmbyConvertCrashWindowIdentity == true)

@@ -64,7 +64,7 @@ struct DeferredDownloadStartupActivationTests {
     try await withManager { manager, session in
       #expect(manager.startupActivationSubmissionCountForTesting == 0)
       manager.retryDownloadStartupRecovery()
-      #expect(manager.startupActivationSubmissionCountForTesting == 1)
+      #expect(await waitUntil { manager.startupActivationSubmissionCountForTesting == 1 })
 
       for _ in 0..<10 { await Task.yield() }
       #expect(manager.startupActivationSubmissionCountForTesting == 1)

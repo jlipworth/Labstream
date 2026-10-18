@@ -99,7 +99,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         fileprivate let validationLabel: String
         fileprivate let expectedExactBytes: Int?
         fileprivate let publishesWorkingFile: Bool
-        fileprivate let holdsBackgroundCompletion: Bool
+        fileprivate let backgroundOperation: DownloadWakeOperation?
         var isRevalidation: Bool { !publishesWorkingFile }
     }
 
@@ -123,7 +123,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         case active
     }
 
-    private static let backgroundCompletionPersistenceTimeout: TimeInterval = 5
 
     /// The fixed background-session identifier. Shared with the app delegate so it can
     /// route `handleEventsForBackgroundURLSession` to THIS session's completion handler.
@@ -274,6 +273,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// (as in the purge window) so healthy work is not cancelled and its bodies deleted while the
     /// manager waits to retry; only non-owned callbacks are rejected.
     private var startupFailedAfterSessionConstruction = false
+    private var startupWakeState: DownloadStartupWakeState = .deferred
+    #if DEBUG
+    private var testingBackgroundOperations: [DownloadWakeOperation] = []
+    #endif
     /// Cancellation completion can race a late body/progress callback. Once purge claims an ID it
     /// is rejected for the rest of this session object's life, even after admission opens.
     private var permanentlyRejectedTaskIdentifiers: Set<Int> = []
@@ -301,7 +304,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// reached a safe state. `urlSessionDidFinishEvents` must not release the app delegate
     /// background completion handler until these reach zero, or visionOS can suspend us between a
     /// temp-stash move and the append/finalize/status write that makes the row durable.
-    private let backgroundWakeCoordinator = BackgroundDownloadWakeCoordinator()
+    private let backgroundWakeCoordinator: BackgroundDownloadWakeCoordinator
+    private let transportWillConstruct: @Sendable () -> Void
+    private let appendWillPerformIO: @Sendable (URL, URL) -> Void
     /// Last scene phase recorded only for diagnostics; scene changes no longer alter the transfer
     /// shape because foreground and background both use one open-ended remainder task.
     /// Task identifiers intentionally abandoned while replacing a range task (duplicate supersede,
@@ -321,7 +326,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// completion handler must be held until that finishes or times out, or the OS suspends us
     /// between the append and the next task's creation and the transfer stalls until the next
     /// (rate-limited) wake — the decisive half of the off-head multi-GB stall.
-    private static let rangeRequestRebuildGraceSeconds: TimeInterval = 20
 
     /// One in-flight Range task of a static byte-range download. Unlike the opaque `downloadTask`
     /// lane, the bytes for the current task live in the OS temp file until `didFinishDownloadingTo`
@@ -582,6 +586,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private lazy var urlSession: URLSession = makeURLSession()
 
     private func makeURLSession() -> URLSession {
+        transportWillConstruct()
         #if PERFORMANCE_AUDIT
         let transportSpan = PerformanceInstrumentation.begin(
             .runtimeDownloadTransportConstruct,
@@ -708,17 +713,27 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         store: DownloadStore,
         protocolClasses: [AnyClass]? = nil,
         playbackValidator: (@Sendable (URL, Double?) async -> PlaybackValidation)? = nil,
+        wakeClockHooks: DownloadWakeClockHooks? = nil,
+        wakeBudget: DownloadWakeBudget = .application,
+        transportWillConstruct: @escaping @Sendable () -> Void = {},
+        appendWillPerformIO: @escaping @Sendable (URL, URL) -> Void = { _, _ in },
         releaseBackgroundCompletion: @escaping @MainActor @Sendable (
             BackgroundDownloadCompletionReleaseBatch
         ) -> Void = {
             BackgroundDownloadCompletionRegistry.shared.fireCompletions(in: $0)
         }
     ) {
+        self.backgroundWakeCoordinator = BackgroundDownloadWakeCoordinator(clockHooks: wakeClockHooks, budget: wakeBudget)
+        self.transportWillConstruct = transportWillConstruct
+        self.appendWillPerformIO = appendWillPerformIO
         self.store = store
         self.injectedProtocolClasses = protocolClasses
         self.injectedPlaybackValidator = playbackValidator
         self.releaseBackgroundCompletion = releaseBackgroundCompletion
         super.init()
+        backgroundWakeCoordinator.setEffectHandler { [weak self] drain in
+            self?.applyBackgroundWakeDrain(drain)
+        }
     }
 
     /// Break the foreground URLSession/delegate retain cycle used by deterministic transport
@@ -730,6 +745,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     #if DEBUG
     /// Deterministic interleavings at production claim, timer and registration boundaries.
+    /// Isolate opaque blob decoding only; admission still uses a real suspended URLSession task.
+    var opaqueResumeTaskForTesting: (@Sendable (URLSession, Data) -> URLSessionDownloadTask)?
+    var checkpointDidResolveForTesting: (@Sendable () -> Void)?
     var durableHeldBodyDidRenameForTesting: ((URL) -> Void)?
     var durableStashSweepDidEnumerateForTesting: (() -> Void)?
     var rangeStashSweepDidEnumerateForTesting: (() -> Void)?
@@ -748,6 +766,45 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     func releaseRangeBodyForTesting(_ url: URL) { releaseRangeBodyClaim(url) }
+
+    /// P6 scheduling seam invokes the same physical append primitive; no fixture copy algorithm.
+    func appendFileForP6Testing(at source: URL, onto destination: URL) throws -> Int {
+        guard let record = store.records.first(where: { record in
+            guard let id = record.attemptID else { return false }
+            return store.attemptWorkingFileURL(for: .init(ratingKey: record.ratingKey, attemptID: id))?
+                .standardizedFileURL == destination.standardizedFileURL
+        }), let id = record.attemptID else { throw CancellationError() }
+        return try appendFile(at: source, onto: destination,
+                              for: .init(ratingKey: record.ratingKey, attemptID: id))
+    }
+
+    func mutateWorkingPathForP6Testing(_ key: DownloadAttemptKey, stash: URL?,
+                                         completion: @escaping @Sendable () -> Void) {
+        guard let destination = store.attemptWorkingFileURL(for: key) else { completion(); return }
+        let entry = RangeTransfer(ratingKey: key.ratingKey, attemptID: key.attemptID,
+            request: nil, destination: destination, expectedBytes: 4, baseOffset: fileSize(at: destination) ?? 0,
+            segmentLength: nil, responseStatus: nil, bodyBytesWritten: 0, remainderReason: nil)
+        if let stash { claimRangeBody(stash, for: key, bytes: 4) }
+        rangeIOQueue.async { [self] in
+            if let stash {
+                applyFinishedRangeBody(entry: entry, write: .replaceWhole, stash: stash,
+                    validator: nil, contentRangeStart: nil, contentRangeTotal: nil,
+                    responseContentLength: 4, bodyTrainEpoch: 0)
+            } else { restartRangeFromChangedResource(entry: entry) }
+            completion()
+        }
+    }
+
+    func deliverSystemCancellationForP6Testing(heartbeat: @escaping @Sendable () -> Void) async {
+        guard let task = await urlSession.allTasks.first else { return }
+        let session = urlSession
+        session.delegateQueue.addOperation { [self] in
+            urlSession(session, task: task, didCompleteWithError: NSError(
+                domain: NSURLErrorDomain, code: NSURLErrorCancelled, userInfo: [
+                    NSURLErrorBackgroundTaskCancelledReasonKey: NSURLErrorCancelledReasonBackgroundUpdatesDisabled]))
+            session.delegateQueue.addOperation(heartbeat)
+        }
+    }
 
     func holdRangeIOForTesting() { rangeIOQueue.suspend() }
     func releaseRangeIOForTesting() { rangeIOQueue.resume() }
@@ -784,7 +841,20 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                   destination: destination, expectedBytes: store.sourceExactBytes(for: key),
                                   baseOffset: 0, segmentLength: nil, responseStatus: nil,
                                   bodyBytesWritten: 0, remainderReason: nil)
-        return recoverRangeMoveFailure(entry: entry, error: CocoaError(.fileNoSuchFile), stage: "test")
+        // This legacy DEBUG-only fixture exposes a synchronous acknowledgement. Production
+        // callbacks use the nonblocking helper; bound this fixture's wait independently.
+        let settled = DispatchSemaphore(value: 0)
+        let admitted = recoverRangeMoveFailure(entry: entry, error: CocoaError(.fileNoSuchFile),
+            stage: "test", settled: { settled.signal() })
+        return admitted && settled.wait(timeout: .now() + 2) == .success
+    }
+
+    func continueRangeAfterBodyForTesting(_ key: DownloadAttemptKey, partialSize: Int) {
+        guard let destination = store.attemptWorkingFileURL(for: key) else { return }
+        continueRangeAfterBody(entry: RangeTransfer(ratingKey: key.ratingKey, attemptID: key.attemptID,
+            request: nil, destination: destination, expectedBytes: 100, baseOffset: 0,
+            segmentLength: nil, responseStatus: 206, bodyBytesWritten: partialSize,
+            remainderReason: nil), partialSize: partialSize)
     }
 
     var rangeBodyDirectoryForTesting: URL?
@@ -793,11 +863,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     var rangeTrackingDroppedForTesting: ((String) -> Void)?
 
     func beginBackgroundCompletionOperationForTesting() {
-        beginPendingBackgroundCompletionOperation()
+        let operation = beginPendingBackgroundCompletionOperation(kind: .append)
+        lock.withLock { testingBackgroundOperations.append(operation) }
     }
 
     func endBackgroundCompletionOperationForTesting() {
-        endPendingBackgroundCompletionOperation()
+        guard let operation = lock.withLock({ testingBackgroundOperations.popLast() }) else { return }
+        endPendingBackgroundCompletionOperation(operation)
     }
 
     func finishBackgroundEventsForTesting(identifier: String) {
@@ -849,7 +921,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             destination: workingURL, expectedBytes: expectedBytes, baseOffset: baseOffset,
             segmentLength: segmentLength, responseStatus: 206, bodyBytesWritten: 0,
             remainderReason: nil)
-        beginPendingBackgroundCompletionOperation()
+        let backgroundOperation = beginPendingBackgroundCompletionOperation(kind: .append)
         beginPendingStaticRangeWork(ratingKey: entry.ratingKey)
         rangeIOQueue.async { [self] in
             applyFinishedRangeBody(entry: entry, write: .append, stash: stash,
@@ -858,7 +930,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                    responseContentLength: segmentLength,
                                    bodyTrainEpoch: 0)
             endPendingStaticRangeWork(ratingKey: entry.ratingKey)
-            endPendingBackgroundCompletionOperation()
+            endPendingBackgroundCompletionOperation(backgroundOperation)
             onApplied?()
         }
     }
@@ -1152,43 +1224,48 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
     }
 
-    /// Admission-only twin used on URLSession/range-I/O lifecycle paths. Persistence is observed
-    /// once, with a bound, when the completion gate drains. Treating acceptance as success keeps
-    /// exact-attempt control flow intact without letting a wedged writer block delegate delivery.
+    /// This synchronous edge reports admission only. Exact outcomes are supervised with bounded
+    /// async resolves in every context; dependent network work has its own commit barrier below.
     private func acceptedAttemptSubmission(
         _ result: DownloadStore.AttemptMutationSubmission,
         key: DownloadAttemptKey,
         phase: String
     ) -> Bool {
-        // Preserve the existing foreground contract: dependent task/file work starts only after
-        // the submitted snapshot commits. A stored OS handler switches this exact call to
-        // admission-only; the completion gate then owns the bounded outcome.
-        if !hasPendingBackgroundCompletionHandler() {
-            return acceptedAttemptMutation(
-                store.resolveSynchronously(result), key: key, phase: phase)
-        }
         switch result {
-        case .accepted:
-            return true
+        case .accepted: return true
         case .staleOrMissing:
             AppDiagnostics.record(.downloads, "downloads.stale_attempt_mutation_dropped", fields: [
-                "download_id": .identifier(key.ratingKey),
-                "phase": .label(phase),
+                "download_id": .identifier(key.ratingKey), "phase": .label(phase),
             ])
             return false
         }
     }
 
-    /// Every submission call goes through this context fence. Foreground callers retain the old
-    /// commit-before-return contract; only a stored OS background completion handler may defer the
-    /// outcome to the gate's bounded flush.
+    private func committedAttemptSubmission(
+        _ submission: DownloadStore.AttemptMutationSubmission,
+        key: DownloadAttemptKey,
+        phase: String
+    ) async -> Bool {
+        let result = await store.resolve(submission, deadline: persistenceDeadline)
+        return acceptedAttemptMutation(result, key: key, phase: phase)
+            && store.ownsAttempt(key) && !Task.isCancelled
+    }
+
     @discardableResult
     private func resolveLifecycleSubmission(
         _ submission: DownloadStore.AttemptMutationSubmission
     ) -> DownloadStore.AttemptMutationSubmission {
-        if !hasPendingBackgroundCompletionHandler() {
-            _ = store.resolveSynchronously(submission)
-        }
+        guard case .accepted(_, .some) = submission else { return submission }
+        let deadline = persistenceDeadline
+        DownloadStoreCallback.resolve(returningOn: rangeIOQueue, operation: { [store] in
+            await store.resolve(submission, deadline: deadline)
+        }, completion: { [self] result in
+            if case .persistenceFailed = result {
+                AppDiagnostics.record(.downloads, "downloads.session_persistence_unfinished", fields: [
+                    "kind": .label("mutation"),
+                ])
+            }
+        })
         return submission
     }
 
@@ -1332,9 +1409,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func resolveLifecycleSubmission(
         _ submission: DownloadStore.AttemptResumeDataSubmission
     ) -> DownloadStore.AttemptResumeDataSubmission {
-        if !hasPendingBackgroundCompletionHandler() {
-            _ = store.resolveSynchronously(submission)
-        }
+        let deadline = persistenceDeadline
+        DownloadStoreCallback.resolve(returningOn: rangeIOQueue, operation: { [store] in
+            await store.resolve(submission, deadline: deadline)
+        }, completion: { _ in })
         return submission
     }
 
@@ -1342,30 +1420,46 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func resolveLifecycleSubmission(
         _ submission: DownloadStore.AttemptArtifactMutationSubmission
     ) -> DownloadStore.AttemptArtifactMutationSubmission {
-        if !hasPendingBackgroundCompletionHandler() {
-            switch submission {
-            case .staleOrMissing:
-                break
-            case .accepted(_, let ticket):
-                _ = store.resolveArtifactSynchronously(ticket)
-            }
-        }
+        let deadline = persistenceDeadline
+        DownloadStoreCallback.resolve(returningOn: rangeIOQueue, operation: { [store] in
+            await store.resolve(submission, deadline: deadline)
+        }, completion: { _ in })
         return submission
     }
 
-    /// Held-body submissions must return to the URLSession/range queue before any index wait or
-    /// delete. The Store worker owns filesystem progress; this detached waiter only delivers the
-    /// terminal lifecycle result back onto the serialized range-processing queue.
     private func resolveHeldLifecycle(
         _ ticket: DownloadArtifactLifecycleCoordinator.Ticket,
         completion: @escaping @Sendable (DownloadArtifactLifecycleCoordinator.FlushResult) -> Void
     ) {
-        let store = self.store
-        let queue = rangeIOQueue
-        DispatchQueue.global(qos: .utility).async {
-            let outcome = store.resolveArtifactSynchronously(ticket)
-            queue.async { completion(outcome) }
-        }
+        let deadline = persistenceDeadline
+        DownloadStoreCallback.resolve(returningOn: rangeIOQueue, operation: { [store] in
+            await store.resolveArtifact(ticket, deadline: deadline)
+        }, completion: completion)
+    }
+
+    /// Task registration remains synchronous for ownership/cancellation. Only committed exact
+    /// prerequisites authorize the network resume, on the serialized range queue after rechecking
+    /// owner, halt, train and retry generation. Handler presence never selects durability semantics.
+    private func resumeAfterPersistence(_ task: URLSessionTask, for key: DownloadAttemptKey,
+                                        currency: DelayedRangeRetryCurrency? = nil) {
+        let boundary = DownloadWakePersistenceBoundary(
+            index: store.currentPersistenceTicket(), artifacts: store.currentArtifactLifecycleWatermark())
+        let epoch = lock.withLock { rangeTrainEpochs[key] ?? 0 }
+        let operation = beginPendingBackgroundCompletionOperation(kind: .heldLifecycle)
+        let deadline = persistenceDeadline
+        DownloadStoreCallback.resolve(returningOn: rangeIOQueue, operation: { [store] in
+            await store.flushPersistence(through: boundary.index, timeout: deadline.remaining)
+        }, completion: { [self] result in
+            defer { endPendingBackgroundCompletionOperation(operation) }
+            guard case .committed = result,
+                  store.attemptAdmitsWork(key),
+                  lock.withLock({ rangeHaltKinds[key] == nil && (rangeTrainEpochs[key] ?? 0) == epoch }),
+                  currency.map({ isDelayedRetryCurrent($0) }) ?? true else {
+                task.cancel()
+                return
+            }
+            task.resume()
+        })
     }
 
     private func fileSize(at url: URL) -> Int? {
@@ -1500,6 +1594,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         backgroundWakeCoordinator.hasPendingHandler
     }
 
+    var startupAuthorizationExpired: Bool { backgroundWakeCoordinator.hasExpiredBackgroundAuthorization }
+    var onBackgroundWakeAuthorized: (@Sendable () -> Void)?
+
+    func noteForegroundAuthorization() {
+        backgroundWakeCoordinator.noteForegroundAuthorization()
+    }
+
     /// Atomically observes the global wake gate and, for a revalidation request, registers the
     /// exact retry before that gate can drain. This closes the check-then-register lost-wakeup race.
     private func deferPlaybackProbeIfBackgroundWakePending(
@@ -1508,12 +1609,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         backgroundWakeCoordinator.deferRevalidationIfWakePending(revalidationKey)
     }
 
-    private func beginPendingBackgroundCompletionOperation() {
-        backgroundWakeCoordinator.beginOperation()
+    private func beginPendingBackgroundCompletionOperation(
+        kind: DownloadWakeOperation.Kind
+    ) -> DownloadWakeOperation {
+        backgroundWakeCoordinator.beginOperation(kind: kind)
     }
 
-    private func endPendingBackgroundCompletionOperation() {
-        applyBackgroundWakeDrain(backgroundWakeCoordinator.endOperation())
+    private func endPendingBackgroundCompletionOperation(_ operation: DownloadWakeOperation) {
+        applyBackgroundWakeDrain(backgroundWakeCoordinator.endOperation(operation))
     }
 
     func noteBackgroundCompletionHandlerStored(
@@ -1521,42 +1624,60 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         token: BackgroundDownloadCompletionHandlerToken = .init()
     ) {
         backgroundWakeCoordinator.storeHandler(identifier: identifier, token: token)
+        releaseIfStartupBlocked()
+        onBackgroundWakeAuthorized?()
     }
 
-    /// Startup persistence failed/timed out before URLSession could be safely activated, so its
-    /// finish-events callback cannot be awaited. The failure has already been observed by the
-    /// manager; release the OS wake explicitly and leave admission dormant.
+    func noteBackgroundCompletionHandlerStored(_ receipt: DownloadWakeHandlerReceipt) {
+        backgroundWakeCoordinator.storeHandler(receipt)
+        releaseIfStartupBlocked()
+        onBackgroundWakeAuthorized?()
+    }
+
+    func noteStartupWakeState(_ state: DownloadStartupWakeState) {
+        let accepted = lock.withLock {
+            guard state.supersedes(startupWakeState) else { return false }
+            startupWakeState = state
+            return true
+        }
+        guard accepted else { return }
+        switch state {
+        case .blockedBeforeTransport, .failedAfterTransport:
+            releaseBackgroundCompletionAfterStartupFailure()
+        case .deferred, .activating, .active: break
+        }
+    }
+
+    var canReleaseStartupWithoutTransport: Bool {
+        lock.withLock { startupAdmissionState == .dormant && !startupFailedAfterSessionConstruction }
+    }
+
+    private func releaseIfStartupBlocked() {
+        let blocked = lock.withLock {
+            switch startupWakeState {
+            case .blockedBeforeTransport, .failedAfterTransport: true
+            default: false
+            }
+        }
+        if blocked { releaseBackgroundCompletionAfterStartupFailure() }
+    }
+
+    /// B06 remembers terminal failure, including when the handler arrives after this call.
+    /// B05/B07 preserve live transport work; only pre-construction failure uses startup abort.
     func releaseBackgroundCompletionAfterStartupFailure() {
-        // B05: only a dormant session lacks a guaranteed finish-events callback. A runtime block
-        // (for example an indeterminate season persist) while admission is active or purging must
-        // not abort live gate operations and grace ownership mid-append; the normal finish-events
-        // path, or a later failed activation's own block, releases the wake.
         let (isDormant, transportIsLive) = lock.withLock {
-            (startupAdmissionState == .dormant, startupFailedAfterSessionConstruction)
+            let dormant = startupAdmissionState == .dormant
+            if dormant, case .deferred = startupWakeState {
+                startupWakeState = startupFailedAfterSessionConstruction
+                    ? .failedAfterTransport(generation: 0) : .blockedBeforeTransport(generation: 0)
+            }
+            return (dormant, startupFailedAfterSessionConstruction)
         }
-        guard isDormant else {
-            AppDiagnostics.record(.downloads, "downloads.startup_failure_release_skipped", fields: [
-                "reason": .label("session_not_dormant"),
-            ])
-            return
-        }
-        // B07: a failed activation leaves the transport live and still admits owned callbacks, so
-        // an append or finalizer may hold the gate. Keep those holds and graces; release the stored
-        // wakes as if events had finished, after the operations drain and the persistence barrier.
+        guard isDormant else { return }
         if transportIsLive {
             applyBackgroundWakeDrain(backgroundWakeCoordinator.finishAllAwaitingEvents())
-            return
-        }
-        let drain = backgroundWakeCoordinator.abortAwaitingHandlers()
-        if !drain.deferredRevalidationKeys.isEmpty {
-            onBackgroundCompletionGateDrained?(drain.deferredRevalidationKeys)
-        }
-        guard !drain.completionBatches.isEmpty else { return }
-        let releaseBackgroundCompletion = self.releaseBackgroundCompletion
-        Task { @MainActor in
-            for batch in drain.completionBatches {
-                releaseBackgroundCompletion(batch)
-            }
+        } else {
+            applyBackgroundWakeDrain(backgroundWakeCoordinator.abortAwaitingHandlers())
         }
     }
 
@@ -1565,57 +1686,49 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     private func applyBackgroundWakeDrain(_ drain: BackgroundDownloadWakeCoordinator.Drain) {
+        for (key, generation) in drain.expiredGraces {
+            rangeIOQueue.async { [self] in
+                endRangeRequestRebuildGrace(for: key, reason: "timeout", generation: generation)
+            }
+        }
         if !drain.deferredRevalidationKeys.isEmpty {
             onBackgroundCompletionGateDrained?(drain.deferredRevalidationKeys)
         }
-        flushPersistenceThenFireBackgroundCompletions(drain.completionBatches)
+        if let flush = drain.flush {
+            // Capture AFTER required operations settle. A new operation invalidates this epoch's
+            // proof, and tokens remain in the coordinator throughout the asynchronous flush.
+            Task { [self] in
+                let boundary = DownloadWakePersistenceBoundary(
+                    index: store.currentPersistenceTicket(), artifacts: store.currentArtifactLifecycleWatermark())
+                let remaining = backgroundWakeCoordinator.remainingTimeout(for: flush)
+                guard remaining > 0 else { return }
+                let result = await store.flushLifecycleAndPersistence(
+                    through: boundary.index, artifactWatermark: boundary.artifacts, timeout: remaining)
+                let committed: Bool
+                switch result {
+                case .committed: committed = true
+                case .failed, .timedOut: committed = false
+                }
+                applyBackgroundWakeDrain(backgroundWakeCoordinator.persistenceFinished(flush, committed: committed))
+            }
+        }
+        guard !drain.completionBatches.isEmpty else { return }
+        AppDiagnostics.record(.downloads, "downloads.background_wake_release", fields: [
+            "outcome": .label(drain.outcome?.diagnosticLabel ?? "unknown"),
+            "reason": .label(drain.reason ?? "unknown"),
+            "elapsed_ms": .int(Int(drain.elapsed * 1_000)),
+            "pending_kinds": .label(drain.pendingKinds.sorted().joined(separator: ",")),
+            "pending_operations": .int(backgroundWakeCoordinator.snapshot.pendingOperationCount),
+            "handler_count": .int(drain.completionBatches.reduce(0) { $0 + $1.tokens.count }),
+        ])
+        let release = releaseBackgroundCompletion
+        Task { @MainActor in
+            for batch in drain.completionBatches { release(batch) }
+        }
     }
 
-    private func flushPersistenceThenFireBackgroundCompletions(
-        _ batches: [BackgroundDownloadCompletionReleaseBatch]
-    ) {
-        guard !batches.isEmpty else { return }
-        let ticket = store.currentPersistenceTicket()
-        let artifactWatermark = store.currentArtifactLifecycleWatermark()
-        let store = self.store
-        let releaseBackgroundCompletion = self.releaseBackgroundCompletion
-        Task {
-            await BackgroundCompletionPersistenceBarrier.flushThenRelease(
-                releases: batches,
-                flush: {
-                    await store.flushLifecycleAndPersistence(
-                        through: ticket,
-                        artifactWatermark: artifactWatermark,
-                        timeout: Self.backgroundCompletionPersistenceTimeout
-                    )
-                },
-                observe: { result in
-                    let outcome: String
-                    let revision: UInt64
-                    switch result {
-                    case .committed(let committedRevision):
-                        outcome = "committed"
-                        revision = committedRevision
-                    case .failed(let failedRevision, _, _):
-                        outcome = "failed"
-                        revision = failedRevision
-                    case .timedOut(let targetRevision, _):
-                        outcome = "timed_out"
-                        revision = targetRevision
-                    }
-                    AppDiagnostics.record(.downloads, "downloads.background_completion_persistence", fields: [
-                        "outcome": .label(outcome),
-                        "revision": .int(Int(clamping: revision)),
-                        "handler_count": .int(batches.reduce(into: 0) {
-                            $0 += $1.tokens.count
-                        }),
-                    ])
-                },
-                release: { batch in
-                    releaseBackgroundCompletion(batch)
-                }
-            )
-        }
+    private var persistenceDeadline: DownloadStoreDeadline {
+        .after(backgroundWakeCoordinator.remainingTimeout)
     }
 
     /// #212: hold the app-delegate background completion handler while DownloadManager rebuilds an
@@ -1627,14 +1740,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         if start.acquiredHold {
             AppDiagnostics.record(.downloads, "downloads.range_request_rebuild_grace_start", fields: [
                 "download_id": .identifier(ratingKey),
-                "grace_seconds": .int(Int(Self.rangeRequestRebuildGraceSeconds)),
+                "grace_seconds": .int(Int(backgroundWakeCoordinator.operationTimeout)),
             ])
-        }
-        DispatchQueue.global(qos: .utility).asyncAfter(
-            deadline: .now() + Self.rangeRequestRebuildGraceSeconds
-        ) { [weak self] in
-            self?.endRangeRequestRebuildGrace(
-                for: key, reason: "timeout", generation: start.generation)
         }
     }
 
@@ -1660,25 +1767,21 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
            lifecycle == .transferring || lifecycle == .admitted {
             // An active static row without a URLSession owner is not active work. Park it at the
             // durable checkpoint instead of leaving a spinner that only Pause -> Resume can kick.
-            let reset = store.resetStaticRangeProgressToDurableCheckpoint(
-                for: key,
-                expectedBytes: record.metadata?.sourcePartSize)
-            let checkpointBytes: Int
-            switch reset {
-            case .applied(let bytes), .unchanged(let bytes), .notStatic(let bytes):
-                checkpointBytes = bytes
-            case .staleOrMissing, .persistenceFailed:
-                return
+            withDurableStaticCheckpoint(for: key, expectedBytes: record.metadata?.sourcePartSize,
+                                        context: "rebuild_grace_expired") { [self] checkpointBytes in
+                guard !isTrackingTransfer(ratingKey: ratingKey),
+                      let lifecycle = store.lifecycleState(for: key)?.lifecycle,
+                      lifecycle == .transferring || lifecycle == .admitted else { return }
+                _ = resolveLifecycleSubmission(
+                    submitLifecycleEvent(.rebuildExpired, for: key, phase: "rebuild_grace_expired"))
+                AppDiagnostics.record(.downloads, "downloads.range_request_rebuild_parked", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "checkpoint_bytes": .int(checkpointBytes),
+                    "reason": .label("no_replacement_task"),
+                ])
+                onError?(key, .interruptedResumable)
+                onChange?()
             }
-            _ = resolveLifecycleSubmission(
-                submitLifecycleEvent(.rebuildExpired, for: key, phase: "rebuild_grace_expired"))
-            AppDiagnostics.record(.downloads, "downloads.range_request_rebuild_parked", fields: [
-                "download_id": .identifier(ratingKey),
-                "checkpoint_bytes": .int(checkpointBytes),
-                "reason": .label("no_replacement_task"),
-            ])
-            onError?(key, .interruptedResumable)
-            onChange?()
         }
     }
 
@@ -2051,14 +2154,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 guard BackgroundReattachTaskGatePolicy.mayWriteActiveStatus(
                     currentStatus: self.store.record(for: attemptKey)?.status,
                     isAttemptHalted: self.isRangeHalted(for: attemptKey)) else { continue }
-                _ = self.store.resetStaticRangeProgressToDurableCheckpoint(
-                    for: attemptKey,
-                    expectedBytes: expectedBytes
-                )
-                self.beginRangeRequestRebuildGrace(for: attemptKey)
-                _ = self.resolveLifecycleSubmission(self.submitLifecycleEvent(
-                    .transferRebuilding, for: attemptKey, phase: "reattach_request_needed"))
-                self.requestRangeRebuild(for: attemptKey, reason: reason)
+                self.withDurableStaticCheckpoint(for: attemptKey, expectedBytes: expectedBytes,
+                                                 context: "reattach_request_needed") { [self] _ in
+                    guard BackgroundReattachTaskGatePolicy.mayWriteActiveStatus(
+                        currentStatus: store.record(for: attemptKey)?.status,
+                        isAttemptHalted: isRangeHalted(for: attemptKey)) else { return }
+                    self.beginRangeRequestRebuildGrace(for: attemptKey)
+                    _ = self.resolveLifecycleSubmission(self.submitLifecycleEvent(
+                        .transferRebuilding, for: attemptKey, phase: "reattach_request_needed"))
+                    self.requestRangeRebuild(for: attemptKey, reason: reason)
+                }
             }
             for ratingKey in adoptedRangeKeys {
                 guard let attemptID = recordsByKey[ratingKey]?.attemptID else { continue }
@@ -2068,7 +2173,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     currentStatus: self.store.record(for: attemptKey)?.status,
                     isAttemptHalted: self.isRangeHalted(for: attemptKey)) else { continue }
                 // Same commit-before-return contract as the legacy blocking `setStatus`.
-                _ = self.store.resolveSynchronously(self.submitLifecycleEvent(
+                _ = self.resolveLifecycleSubmission(self.submitLifecycleEvent(
                     .taskAdopted, for: attemptKey, liveTask: true, phase: "reattach_adopted"))
             }
             for (ratingKey, count) in adoptedSegmentCounts {
@@ -2435,7 +2540,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "expected_bytes": .bytes(expectedBytes),
             "has_expected_bytes": .bool(expectedBytes != nil),
         ])
-        task.resume()
+        resumeAfterPersistence(task, for: attemptKey, currency: rebuildCurrency)
     }
 
     /// Start the bounded static byte-range background task train (#169/#227).
@@ -2467,26 +2572,33 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ])
             throw CancellationError()
         }
-        try fileManager.createDirectory(at: destination.deletingLastPathComponent(),
-                                        withIntermediateDirectories: true)
         var offset = 0
-        if fileManager.fileExists(atPath: destination.path) {
-            offset = fileSize(at: destination) ?? 0
-            if let expectedBytes, offset > expectedBytes {
-                try? fileManager.removeItem(at: destination)
+        do {
+            guard case .acquired(let lease) = store.tryAcquirePathLease(for: attemptKey,
+                relativePaths: [destination.lastPathComponent], purpose: .append) else { throw CancellationError() }
+            defer { store.releasePathLease(lease) }
+            guard store.attemptAdmitsWork(attemptKey), !isRangeHalted(for: attemptKey),
+                  store.attemptWorkingFileURL(for: attemptKey) == destination else { throw CancellationError() }
+            try fileManager.createDirectory(at: destination.deletingLastPathComponent(),
+                                            withIntermediateDirectories: true)
+            if fileManager.fileExists(atPath: destination.path) {
+                offset = fileSize(at: destination) ?? 0
+                if let expectedBytes, offset > expectedBytes {
+                    try? fileManager.removeItem(at: destination)
+                    fileManager.createFile(atPath: destination.path, contents: nil)
+                    offset = 0
+                    _ = resolveLifecycleSubmission(store.submitProgress(for: attemptKey, bytes: 0, progress: 0))
+                    // The truncate is a train teardown: a body mid-hop against the old (oversized)
+                    // file must be discarded, not appended at offset 0 of the recreated one — and
+                    // its held siblings belong to the discarded bytes.
+                    lock.lock()
+                    rangeTrainEpochs[attemptKey] = (rangeTrainEpochs[attemptKey] ?? 0) + 1
+                    lock.unlock()
+                    purgeHeldRangeSegments(for: attemptKey)
+                }
+            } else {
                 fileManager.createFile(atPath: destination.path, contents: nil)
-                offset = 0
-                _ = resolveLifecycleSubmission(store.submitProgress(for: attemptKey, bytes: 0, progress: 0))
-                // The truncate is a train teardown: a body mid-hop against the old (oversized)
-                // file must be discarded, not appended at offset 0 of the recreated one — and
-                // its held siblings belong to the discarded bytes.
-                lock.lock()
-                rangeTrainEpochs[attemptKey] = (rangeTrainEpochs[attemptKey] ?? 0) + 1
-                lock.unlock()
-                purgeHeldRangeSegments(for: attemptKey)
             }
-        } else {
-            fileManager.createFile(atPath: destination.path, contents: nil)
         }
         // Continuation-path storage gate (mirrors `start()`'s preflight, which internal
         // continuations/retries bypass): never plan fetches the volume cannot hold — an
@@ -2797,7 +2909,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "segment_length": .int(plan.length ?? -1),
             "planned_body_bytes": .bytes(expectedBodyBytes),
         ])
-        task.resume()
+        resumeAfterPersistence(task, for: candidate.attemptKey, currency: retryCurrency)
         return task.taskIdentifier
     }
 
@@ -2815,15 +2927,59 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Reset the visible range watermark only while the callback still owns the row. A stale
     /// attempt shares the stable media path with its replacement, so treating `.staleOrMissing`
     /// as a zero-byte checkpoint would let late A work drive B's retry/failure state.
-    private func resetStaticRangeProgressToDurableCheckpoint(
-        for key: DownloadAttemptKey,
-        expectedBytes: Int?,
-        context: String
-    ) -> Int? {
-        switch store.resetStaticRangeProgressToDurableCheckpoint(
-            for: key,
-            expectedBytes: expectedBytes
-        ) {
+    /// Acceptance is not checkpoint proof. Retain the session hold while resolving the exact
+    /// ticket, then return to rangeIOQueue and reject a new owner, train, halt or manual generation.
+    private func withDurableStaticCheckpoint(
+        for key: DownloadAttemptKey, expectedBytes: Int?, context: String,
+        completion: @escaping @Sendable (Int) -> Void
+    ) {
+        let currency = checkpointCurrency(for: key)
+        let halt = lock.withLock { rangeHaltKinds[key] }
+        let submission = store.submitStaticRangeCheckpointReset(for: key, expectedBytes: expectedBytes)
+        let deadline = persistenceDeadline
+        beginPendingStaticRangeWork(ratingKey: key.ratingKey)
+        let operation = beginPendingBackgroundCompletionOperation(kind: .heldLifecycle)
+        DownloadStoreCallback.resolve(returningOn: rangeIOQueue, operation: { [store] in
+            await store.resolveStaticCheckpoint(submission, deadline: deadline)
+        }, completion: { [self] result in
+            defer {
+                endPendingStaticRangeWork(ratingKey: key.ratingKey)
+                endPendingBackgroundCompletionOperation(operation)
+            }
+            #if DEBUG
+            defer { checkpointDidResolveForTesting?() }
+            #endif
+            guard checkpointIsCurrent(currency, halt: halt),
+                  let bytes = checkpointBytes(result, key: key, context: context) else { return }
+            completion(bytes)
+        })
+    }
+
+    private func checkpointCurrency(for key: DownloadAttemptKey) -> DelayedRangeRetryCurrency {
+        lock.withLock { DelayedRangeRetryCurrency(attemptKey: key,
+            trainEpoch: rangeTrainEpochs[key] ?? 0, generation: delayedRetryGenerations[key] ?? 0) }
+    }
+
+    private func checkpointIsCurrent(_ currency: DelayedRangeRetryCurrency, halt: StaticRangeHaltKind?) -> Bool {
+        store.attemptAdmitsWork(currency.attemptKey) && lock.withLock {
+            (rangeTrainEpochs[currency.attemptKey] ?? 0) == currency.trainEpoch
+                && (delayedRetryGenerations[currency.attemptKey] ?? 0) == currency.generation
+                && rangeHaltKinds[currency.attemptKey] == halt && halt != .cancel
+        }
+    }
+
+    private func durableStaticCheckpoint(for key: DownloadAttemptKey, expectedBytes: Int?, context: String) async -> Int? {
+        let currency = checkpointCurrency(for: key)
+        let halt = lock.withLock { rangeHaltKinds[key] }
+        let submission = store.submitStaticRangeCheckpointReset(for: key, expectedBytes: expectedBytes)
+        let result = await store.resolveStaticCheckpoint(submission, deadline: persistenceDeadline)
+        guard !Task.isCancelled, checkpointIsCurrent(currency, halt: halt) else { return nil }
+        return checkpointBytes(result, key: key, context: context)
+    }
+
+    private func checkpointBytes(_ result: DownloadStore.AttemptStaticRangeCheckpointResetResult,
+                                 key: DownloadAttemptKey, context: String) -> Int? {
+        switch result {
         case .applied(let bytes), .unchanged(let bytes), .notStatic(let bytes):
             return bytes
         case .staleOrMissing:
@@ -2901,10 +3057,30 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
         guard store.attemptAdmitsWork(attemptKey),
               let workingDestination = store.attemptWorkingFileURL(for: attemptKey) else { return false }
-        let task = urlSession.downloadTask(withResumeData: resumeData)
+        // Manual Resume is a new generation. Establish it before task creation, so a later
+        // Pause/Delete cannot be erased by the registration or persistence continuation.
+        let currency = lock.withLock {
+            delayedRetryGenerations[attemptKey, default: 0] += 1
+            rangeTrainEpochs[attemptKey, default: 0] += 1
+            rangeHaltKinds.removeValue(forKey: attemptKey)
+            rangeHaltPauseCauses.removeValue(forKey: attemptKey)
+            return DelayedRangeRetryCurrency(attemptKey: attemptKey,
+                trainEpoch: rangeTrainEpochs[attemptKey]!, generation: delayedRetryGenerations[attemptKey]!)
+        }
+        let task: URLSessionDownloadTask
+        #if DEBUG
+        task = opaqueResumeTaskForTesting?(urlSession, resumeData) ?? urlSession.downloadTask(withResumeData: resumeData)
+        #else
+        task = urlSession.downloadTask(withResumeData: resumeData)
+        #endif
         task.taskDescription = DownloadAttemptMarker.taskDescription(
             ratingKey: ratingKey, attemptID: attemptID)
         lock.lock()
+        guard isDelayedRetryCurrentLocked(currency), store.attemptAdmitsWork(attemptKey) else {
+            lock.unlock()
+            task.cancel()
+            return false
+        }
         retryCounts[attemptKey] = 0
         lastProgressNotify = nil
         loggedProgressMilestones[task.taskIdentifier] = []
@@ -2919,7 +3095,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "download_id": .identifier(ratingKey),
             "resume_blob_bytes": .bytes(resumeData.count),
         ])
-        task.resume()
+        resumeAfterPersistence(task, for: attemptKey, currency: currency)
         return true
     }
 
@@ -3033,19 +3209,18 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 // Drop any stale range tracking; the durable partial keeps the row resumable.
                 let removedRangeEntries = self.removeRangeTransfers(taskIdentifiers: rangeIds)
                 let expectedBytes = removedRangeEntries.first?.expectedBytes
-                self.store.resetStaticRangeProgressToDurableCheckpoint(
-                    for: attemptKey,
-                    expectedBytes: expectedBytes
-                )
-                AppDiagnostics.record(.downloads, "downloads.pause_no_matching_task", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "background_task_ids": .int(ids.count),
-                    "range_task_ids": .int(rangeIds.count),
-                ])
-                if self.pauseStillApplies(for: attemptKey) {
-                    self.resolveLifecycleSubmission(self.submitLifecycleEvent(
-                        .pause(.user), for: attemptKey, phase: "user_pause_no_task"))
-                    self.onChange?()
+                self.withDurableStaticCheckpoint(for: attemptKey, expectedBytes: expectedBytes,
+                                                 context: "user_pause_no_task") { [self] _ in
+                    AppDiagnostics.record(.downloads, "downloads.pause_no_matching_task", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "background_task_ids": .int(ids.count),
+                        "range_task_ids": .int(rangeIds.count),
+                    ])
+                    if self.pauseStillApplies(for: attemptKey) {
+                        self.resolveLifecycleSubmission(self.submitLifecycleEvent(
+                            .pause(.user), for: attemptKey, phase: "user_pause_no_task"))
+                        self.onChange?()
+                    }
                 }
             }
         }
@@ -3132,29 +3307,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func finishRangePause(for key: DownloadAttemptKey, entry: RangeTransfer?) {
         let ratingKey = key.ratingKey
         let partialFilePresent = entry.map { fileManager.fileExists(atPath: $0.workingURL.path) } ?? false
-        let reset = store.resetStaticRangeProgressToDurableCheckpoint(
-            for: key,
-            expectedBytes: entry?.expectedBytes
-        )
-        let bytes: Int
-        switch reset {
-        case .applied(let value), .unchanged(let value), .notStatic(let value):
-            bytes = value
-        case .staleOrMissing, .persistenceFailed:
-            AppDiagnostics.record(.downloads, "downloads.range_checkpoint_reset_rejected", fields: [
+        withDurableStaticCheckpoint(for: key, expectedBytes: entry?.expectedBytes, context: "pause") { [self] bytes in
+            guard pauseStillApplies(for: key) else { return }
+            AppDiagnostics.record(.downloads, "downloads.range_paused", fields: [
                 "download_id": .identifier(ratingKey),
-                "phase": .label("pause"),
+                "bytes": .bytes(bytes),
+                "expected_bytes": .bytes(entry?.expectedBytes),
+                "partial_file_present": .bool(partialFilePresent),
+                "task_type": .label("rangeDownloadTask"),
             ])
-            return
+            markPausedAfterUserPause(for: key)
         }
-        AppDiagnostics.record(.downloads, "downloads.range_paused", fields: [
-            "download_id": .identifier(ratingKey),
-            "bytes": .bytes(bytes),
-            "expected_bytes": .bytes(entry?.expectedBytes),
-            "partial_file_present": .bool(partialFilePresent),
-            "task_type": .label("rangeDownloadTask"),
-        ])
-        markPausedAfterUserPause(for: key)
     }
 
 
@@ -3336,21 +3499,21 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 lock.unlock()
                 downloadTask.cancel()
                 _ = resolveLifecycleSubmission(store.submitClearResumeData(for: rangeEntry.attemptKey))
-                guard resetStaticRangeProgressToDurableCheckpoint(
-                    for: rangeEntry.attemptKey,
+                withDurableStaticCheckpoint(for: rangeEntry.attemptKey,
                     expectedBytes: rangeEntry.expectedBytes,
-                    context: "closed_range_oversized"
-                ) != nil else { return }
-                beginRangeRequestRebuildGrace(for: rangeEntry.attemptKey)
-                _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferRebuilding, for: rangeEntry.attemptKey, phase: "closed_range_oversized"))
-                AppDiagnostics.record(.downloads, "downloads.range_closed_body_oversized", fields: [
-                    "download_id": .identifier(rangeEntry.ratingKey),
-                    "task_id": .int(downloadTask.taskIdentifier),
-                    "base_offset": .int(rangeEntry.baseOffset),
-                    "segment_length": .int(segmentLength),
-                    "reported_body_bytes": .int(bodyBytesWritten),
-                ])
-                requestRangeRebuild(for: rangeEntry.attemptKey, reason: .requestRebuildNeeded)
+                    context: "closed_range_oversized") { [self] _ in
+                    beginRangeRequestRebuildGrace(for: rangeEntry.attemptKey)
+                    _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferRebuilding, for: rangeEntry.attemptKey, phase: "closed_range_oversized"))
+                    AppDiagnostics.record(.downloads, "downloads.range_closed_body_oversized", fields: [
+                        "download_id": .identifier(rangeEntry.ratingKey),
+                        "task_id": .int(downloadTask.taskIdentifier),
+                        "base_offset": .int(rangeEntry.baseOffset),
+                        "segment_length": .int(segmentLength),
+                        "reported_body_bytes": .int(bodyBytesWritten),
+                    ])
+                    requestRangeRebuild(for: rangeEntry.attemptKey, reason: .requestRebuildNeeded)
+                    return
+                }
                 return
             }
             let durableBytes = fileSize(at: rangeEntry.workingURL) ?? 0
@@ -3396,21 +3559,22 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 lastRangeProgressDiagnostic.removeValue(forKey: downloadTask.taskIdentifier)
                 lock.unlock()
                 downloadTask.cancel()
-                guard resetStaticRangeProgressToDurableCheckpoint(
-                    for: rangeEntry.attemptKey, expectedBytes: rangeEntry.expectedBytes,
-                    context: "counter_reset_rebuild") != nil else { return }
-                // Hold the background completion handler across the main-actor request rebuild
-                // (#212): releasing it here lets the OS suspend us before the next task exists.
-                beginRangeRequestRebuildGrace(for: rangeEntry.attemptKey)
-                _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferRebuilding, for: rangeEntry.attemptKey, phase: "counter_reset_rebuild"))
-                AppDiagnostics.record(.downloads, "downloads.range_counter_reset_rebuild", fields: [
-                    "download_id": .identifier(rangeEntry.ratingKey),
-                    "task_id": .int(downloadTask.taskIdentifier),
-                    "base_offset": .int(rangeEntry.baseOffset),
-                    "previous_body_bytes": .int(rangeEntry.bodyBytesWritten),
-                    "reset_body_bytes": .int(bodyBytesWritten),
-                ])
-                requestRangeRebuild(for: rangeEntry.attemptKey, reason: .requestRebuildNeeded)
+                withDurableStaticCheckpoint(for: rangeEntry.attemptKey, expectedBytes: rangeEntry.expectedBytes,
+                    context: "counter_reset_rebuild") { [self] _ in
+                    // Hold the background completion handler across the main-actor request rebuild
+                    // (#212): releasing it here lets the OS suspend us before the next task exists.
+                    beginRangeRequestRebuildGrace(for: rangeEntry.attemptKey)
+                    _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferRebuilding, for: rangeEntry.attemptKey, phase: "counter_reset_rebuild"))
+                    AppDiagnostics.record(.downloads, "downloads.range_counter_reset_rebuild", fields: [
+                        "download_id": .identifier(rangeEntry.ratingKey),
+                        "task_id": .int(downloadTask.taskIdentifier),
+                        "base_offset": .int(rangeEntry.baseOffset),
+                        "previous_body_bytes": .int(rangeEntry.bodyBytesWritten),
+                        "reset_body_bytes": .int(bodyBytesWritten),
+                    ])
+                    requestRangeRebuild(for: rangeEntry.attemptKey, reason: .requestRebuildNeeded)
+                    return
+                }
                 return
             }
             lock.lock()
@@ -3638,6 +3802,68 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             return
         }
 
+        // The daemon owns location only until this delegate returns. Preserve it before a
+        // lease can defer publication; the claim remains live until physical mutation completes.
+        let stash = rangeBodyStashURL(taskIdentifier: downloadTask.taskIdentifier, offset: 0)
+        do {
+            try fileManager.moveItem(at: location, to: stash)
+        } catch {
+            let outOfSpace = DownloadDiskSpacePolicy.isOutOfSpace(error)
+            AppDiagnostics.record(.downloads, "downloads.move_failed", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "error": .error(error),
+                "storage_full": .bool(outOfSpace),
+            ])
+            setFailedPurgingHeldSegments(for: entry.attemptKey, reason: outOfSpace ? .storage : .internalError)
+            onError?(entry.attemptKey, outOfSpace ? .storageFull : .transferFailed(
+                DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer")))
+            onChange?()
+            return
+        }
+        claimRangeBody(stash, for: entry.attemptKey, bytes: fileSize(at: stash) ?? 0)
+        let currency = checkpointCurrency(for: entry.attemptKey)
+        let response = downloadTask.response
+        let requestURL = downloadTask.originalRequest?.url
+        beginPendingStaticRangeWork(ratingKey: entry.ratingKey)
+        let operation = beginPendingBackgroundCompletionOperation(kind: .append)
+        rangeIOQueue.async { [self] in
+            defer {
+                endPendingStaticRangeWork(ratingKey: entry.ratingKey)
+                endPendingBackgroundCompletionOperation(operation)
+            }
+            finishOpaqueBody(entry: entry, response: response, requestURL: requestURL, stash: stash, currency: currency)
+        }
+    }
+
+    private func finishOpaqueBody(entry: OpaqueTransfer, response: URLResponse?, requestURL: URL?,
+                                  stash: URL, currency: DelayedRangeRetryCurrency,
+                                  acquiredLease: DownloadPathLease? = nil) {
+        guard checkpointIsCurrent(currency, halt: nil) else {
+            if let acquiredLease { store.releasePathLease(acquiredLease) }
+            releaseRangeBodyClaim(stash)
+            return
+        }
+        let lease: DownloadPathLease
+        switch acquiredLease.map(DownloadPathLeaseResult.acquired)
+            ?? store.tryAcquirePathLease(for: entry.attemptKey,
+                relativePaths: [entry.workingURL.lastPathComponent], purpose: .append) {
+        case .acquired(let value): lease = value
+        case .busy:
+            awaitWorkingPathLease(for: entry.attemptKey, paths: [entry.workingURL.lastPathComponent]) { [self] result in
+                switch result {
+                case .acquired(let lease):
+                    finishOpaqueBody(entry: entry, response: response, requestURL: requestURL,
+                        stash: stash, currency: currency, acquiredLease: lease)
+                case .staleOrMissing, .invalidPath: releaseRangeBodyClaim(stash)
+                case .busy, .timedOut: break
+                }
+            }
+            return
+        case .invalidPath, .staleOrMissing, .timedOut: releaseRangeBodyClaim(stash); return
+        }
+        defer { store.releasePathLease(lease); releaseRangeBodyClaim(stash) }
+        guard checkpointIsCurrent(currency, halt: nil),
+              store.attemptWorkingFileURL(for: entry.attemptKey) == entry.workingURL else { return }
         // Helper: a finished transfer that isn't actually a usable video must NOT be
         // left in place as "complete" (D1). Record a `.failed` row + surface why, and
         // delete the bad file so a retry starts clean.
@@ -3654,8 +3880,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             onChange?()
         }
 
-        let httpStatus = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? -1
-        let mime = (downloadTask.response as? HTTPURLResponse)?.mimeType ?? "nil"
+        let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? -1
+        let mime = (response as? HTTPURLResponse)?.mimeType ?? "nil"
         downloadLog.info("finished-transfer ratingKey=\(entry.ratingKey, privacy: .public) http=\(httpStatus, privacy: .public) mime=\(mime, privacy: .public)")
         AppDiagnostics.record(.downloads, "downloads.transfer_finished", fields: [
             "download_id": .identifier(entry.ratingKey),
@@ -3665,13 +3891,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         ])
 
         // 1. HTTP status — Plex returns 200 for a real file body.
-        if let http = downloadTask.response as? HTTPURLResponse {
+        if let http = response as? HTTPURLResponse {
             guard (200...299).contains(http.statusCode) else {
                 // A download task writes the response body to `location` even on a 4xx. Keep only
                 // the URL shape and body-size bucket at .error level — raw server bodies can carry
                 // paths, item names, or private server text that later gets pasted into issues.
-                let bodyBytes = fileSize(at: location)
-                let reqShape = DiagnosticRedactor.urlShape(downloadTask.originalRequest?.url)
+                let bodyBytes = fileSize(at: stash)
+                let reqShape = DiagnosticRedactor.urlShape(requestURL)
                 let bodyBucket = bodyBytes.map(DiagnosticRedactor.byteBucket) ?? "unknown"
                 downloadLog.error("download-http-error ratingKey=\(entry.ratingKey, privacy: .public) http=\(http.statusCode, privacy: .public) req_shape=\(reqShape, privacy: .public) body_bytes=\(bodyBucket, privacy: .public)")
                 fail("Server returned HTTP \(http.statusCode).",
@@ -3688,11 +3914,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
         }
 
-        // Move the temp file into place atomically before validating its contents
-        // (the system deletes `location` once this delegate returns).
+        // Publish the preserved body while the working path is exclusively leased.
         do {
             try? fileManager.removeItem(at: entry.workingURL)
-            try fileManager.moveItem(at: location, to: entry.workingURL)
+            try fileManager.moveItem(at: stash, to: entry.workingURL)
             // P3a.6: make the rename durable before `bodyAtWorking` records it, so a recorded
             // finalizing row never points at a body a power loss un-moved.
             try? DownloadPromotionFilesystem.live.syncParentDirectory(entry.workingURL)
@@ -3965,61 +4190,59 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // must not terminally fail or retry-churn the healthy owned train: discard and
             // reset to the durable checkpoint, nothing else.
             if adoptedRestriction == .discardAndResetOnly {
-                guard let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
-                for: entry.attemptKey, expectedBytes: entry.expectedBytes,
-                context: "unowned_http_failure"
-            ) else { return }
-                AppDiagnostics.record(.downloads, "downloads.range_unowned_finish_discarded", fields: [
-                    "download_id": .identifier(entry.ratingKey),
-                    "http_status": .int(code),
-                    "base_offset": .int(entry.baseOffset),
-                    "durable_bytes": .int(durableBytes),
-                ])
-                onChange?()
+                withDurableStaticCheckpoint(for: entry.attemptKey, expectedBytes: entry.expectedBytes,
+                context: "unowned_http_failure") { [self] durableBytes in
+                    AppDiagnostics.record(.downloads, "downloads.range_unowned_finish_discarded", fields: [
+                        "download_id": .identifier(entry.ratingKey),
+                        "http_status": .int(code),
+                        "base_offset": .int(entry.baseOffset),
+                        "durable_bytes": .int(durableBytes),
+                    ])
+                    onChange?()
+                    return
+                }
                 return
             }
-            guard let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
-                for: entry.attemptKey, expectedBytes: entry.expectedBytes,
-                context: "http_failure"
-            ) else { return }
-            if retryTransientRangeHTTPFailure(statusCode: code,
-                                              entry: entry,
-                                              durableBytes: durableBytes) {
-                return
-            }
-            if requestRangeRehydrationAfterHTTPFailure(statusCode: code,
-                                                       entry: entry,
-                                                       durableBytes: durableBytes) {
-                return
-            }
-            // Post-logout casualty: once transient retry + rehydration are exhausted on a 401/403, the
-            // remainder may simply be holding a token the user just revoked by signing out. Hand the
-            // terminal decision to the manager, which (on the main actor) parks the row in the deferred
-            // "waiting for a valid session" state when the backend session is actually gone, or fails
-            // it when still signed in (a genuine auth error). The manager owns both terminal paths:
-            // `quiesceStaticRangeForDeferredResume` (which resets the exhausted retry/rehydrate budget
-            // for a clean rehydration once signed back in) on deferral, or `failStaticRangeAuthTerminal`
-            // (which runs the normal purge+supersede+`.failed` teardown, budget intact) on real failure.
-            // Do NOT clear the budget here: that reset is intentional only for the deferral path.
-            if PostLogoutDownloadFailurePolicy.isDeferrableAuthStatus(code), let onRangeAuthHTTPFailure {
-                AppDiagnostics.record(.downloads, "downloads.range_auth_failure_handoff", fields: [
+            withDurableStaticCheckpoint(for: entry.attemptKey, expectedBytes: entry.expectedBytes,
+                context: "http_failure") { [self] durableBytes in
+                if retryTransientRangeHTTPFailure(statusCode: code,
+                                                  entry: entry,
+                                                  durableBytes: durableBytes) {
+                    return
+                }
+                if requestRangeRehydrationAfterHTTPFailure(statusCode: code,
+                                                           entry: entry,
+                                                           durableBytes: durableBytes) {
+                    return
+                }
+                // Post-logout casualty: once transient retry + rehydration are exhausted on a 401/403, the
+                // remainder may simply be holding a token the user just revoked by signing out. Hand the
+                // terminal decision to the manager, which (on the main actor) parks the row in the deferred
+                // "waiting for a valid session" state when the backend session is actually gone, or fails
+                // it when still signed in (a genuine auth error). The manager owns both terminal paths:
+                // `quiesceStaticRangeForDeferredResume` (which resets the exhausted retry/rehydrate budget
+                // for a clean rehydration once signed back in) on deferral, or `failStaticRangeAuthTerminal`
+                // (which runs the normal purge+supersede+`.failed` teardown, budget intact) on real failure.
+                // Do NOT clear the budget here: that reset is intentional only for the deferral path.
+                if PostLogoutDownloadFailurePolicy.isDeferrableAuthStatus(code), let onRangeAuthHTTPFailure {
+                    AppDiagnostics.record(.downloads, "downloads.range_auth_failure_handoff", fields: [
+                        "download_id": .identifier(entry.ratingKey),
+                        "status_code": .int(code),
+                        "bytes": .bytes(durableBytes),
+                    ])
+                    onRangeAuthHTTPFailure(entry.ratingKey, code, entry.attemptKey)
+                    onChange?()
+                    return
+                }
+                AppDiagnostics.record(.downloads, "downloads.range_failed", fields: [
                     "download_id": .identifier(entry.ratingKey),
                     "status_code": .int(code),
                     "bytes": .bytes(durableBytes),
                 ])
-                onRangeAuthHTTPFailure(entry.ratingKey, code, entry.attemptKey)
+                setFailedPurgingHeldSegments(for: entry.attemptKey, reason: Self.failureReason(httpStatus: code))
+                onError?(entry.attemptKey, .transferFailed("Server returned HTTP \(code)."))
                 onChange?()
-                return
             }
-            AppDiagnostics.record(.downloads, "downloads.range_failed", fields: [
-                "download_id": .identifier(entry.ratingKey),
-                "status_code": .int(code),
-                "bytes": .bytes(durableBytes),
-            ])
-            setFailedPurgingHeldSegments(for: entry.attemptKey, reason: Self.failureReason(httpStatus: code))
-            onError?(entry.attemptKey, .transferFailed("Server returned HTTP \(code)."))
-            onChange?()
-
         case .alreadyComplete:
             // HTTP 416: the body is a zero-length/error payload — the stash is not needed.
             try? fileManager.removeItem(at: stash)
@@ -4027,17 +4250,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // total, trigger a destructive changed-resource restart, terminally fail the row, or
             // even finalize — reset to the durable checkpoint and let the OWNED train decide.
             if adoptedRestriction == .discardAndResetOnly {
-                guard let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
-                for: entry.attemptKey, expectedBytes: entry.expectedBytes,
-                context: "unowned_already_complete"
-            ) else { return }
-                AppDiagnostics.record(.downloads, "downloads.range_unowned_finish_discarded", fields: [
-                    "download_id": .identifier(entry.ratingKey),
-                    "http_status": .int(status),
-                    "base_offset": .int(entry.baseOffset),
-                    "durable_bytes": .int(durableBytes),
-                ])
-                onChange?()
+                withDurableStaticCheckpoint(for: entry.attemptKey, expectedBytes: entry.expectedBytes,
+                context: "unowned_already_complete") { [self] durableBytes in
+                    AppDiagnostics.record(.downloads, "downloads.range_unowned_finish_discarded", fields: [
+                        "download_id": .identifier(entry.ratingKey),
+                        "http_status": .int(status),
+                        "base_offset": .int(entry.baseOffset),
+                        "durable_bytes": .int(durableBytes),
+                    ])
+                    onChange?()
+                    return
+                }
                 return
             }
             // Only "already complete" if the durable partial matches a total we know.
@@ -4084,12 +4307,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     // an in-flight apply between its epoch check and its append. Serialize it,
                     // holding the background-completion gate across the hop (mirrors the
                     // append/replace dispatch below).
-                    beginPendingBackgroundCompletionOperation()
+                    let backgroundOperation = beginPendingBackgroundCompletionOperation(kind: .append)
                     beginPendingStaticRangeWork(ratingKey: effectiveEntry.ratingKey)
                     rangeIOQueue.async { [self] in
                         defer {
                             endPendingStaticRangeWork(ratingKey: effectiveEntry.ratingKey)
-                            endPendingBackgroundCompletionOperation()
+                            endPendingBackgroundCompletionOperation(backgroundOperation)
                         }
                         restartRangeFromChangedResource(entry: effectiveEntry)
                     }
@@ -4107,13 +4330,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             let contentRangeStart = RangeTransferHTTPPolicy.contentRangeStart(from: http)
             let contentRangeTotal = RangeTransferHTTPPolicy.contentRangeTotal(from: http)
             let contentLength = (http?.expectedContentLength).flatMap { $0 > 0 ? Int($0) : nil }
-            beginPendingBackgroundCompletionOperation()
+            let backgroundOperation = beginPendingBackgroundCompletionOperation(kind: .append)
             beginPendingStaticRangeWork(ratingKey: entry.ratingKey)
             handedOffStash = true
             rangeIOQueue.async { [self] in
                 defer {
                     endPendingStaticRangeWork(ratingKey: entry.ratingKey)
-                    endPendingBackgroundCompletionOperation()
+                    endPendingBackgroundCompletionOperation(backgroundOperation)
                 }
                 applyFinishedRangeBody(entry: entry, write: write, stash: stash,
                                    validator: validator, contentRangeStart: contentRangeStart,
@@ -4130,8 +4353,40 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func applyFinishedRangeBody(entry: RangeTransfer, write: StaticRangeBodyWrite, stash: URL,
                                     validator: String?, contentRangeStart: Int?,
                                     contentRangeTotal: Int?, responseContentLength: Int?,
-                                    bodyTrainEpoch: Int) {
-        defer { releaseRangeBodyClaim(stash) }
+                                    bodyTrainEpoch: Int, acquiredLease: DownloadPathLease? = nil) {
+        // Try before dropping the stash claim. Retry may be physically copying this path;
+        // its lease survives waiter expiry and the completed network body must survive deferral.
+        var replacementLease: DownloadPathLease?
+        if write == .replaceWhole {
+            var paths: Set<String> = [entry.workingURL.lastPathComponent]
+            if stash.deletingLastPathComponent().standardizedFileURL == store.directory.standardizedFileURL {
+                paths.insert(stash.lastPathComponent)
+            }
+            switch acquiredLease.map(DownloadPathLeaseResult.acquired)
+                ?? store.tryAcquirePathLease(for: entry.attemptKey, relativePaths: paths, purpose: .append) {
+            case .acquired(let lease): replacementLease = lease
+            case .busy:
+                awaitWorkingPathLease(for: entry.attemptKey, paths: paths) { [self] result in
+                    switch result {
+                    case .acquired(let lease):
+                        applyFinishedRangeBody(entry: entry, write: write, stash: stash, validator: validator,
+                            contentRangeStart: contentRangeStart, contentRangeTotal: contentRangeTotal,
+                            responseContentLength: responseContentLength, bodyTrainEpoch: bodyTrainEpoch,
+                            acquiredLease: lease)
+                    case .staleOrMissing, .invalidPath: releaseRangeBodyClaim(stash)
+                    case .busy, .timedOut: break // preserve the completed body and its claim
+                    }
+                }
+                return
+            case .staleOrMissing, .invalidPath, .timedOut:
+                releaseRangeBodyClaim(stash)
+                return
+            }
+        }
+        defer {
+            if let replacementLease { store.releasePathLease(replacementLease) }
+            releaseRangeBodyClaim(stash)
+        }
         guard stillOwnsAttempt(entry.attemptKey, phase: "range_apply") else {
             try? fileManager.removeItem(at: stash)
             return
@@ -4217,17 +4472,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                storedValidator: store.rangeValidator(for: entry.attemptKey),
                responseValidator: validator) {
             try? fileManager.removeItem(at: stash)
-            guard let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
-                for: entry.attemptKey, expectedBytes: entry.expectedBytes,
-                context: "unowned_validator"
-            ) else { return }
-            AppDiagnostics.record(.downloads, "downloads.range_unknown_task_finish", fields: [
-                "download_id": .identifier(entry.ratingKey),
-                "offset": .int(entry.baseOffset),
-                "reason": .label(reason),
-                "durable_bytes": .int(durableBytes),
-            ])
-            onChange?()
+            // No working-path mutation remains; let the checkpoint artifact acquire its lease.
+            if let lease = replacementLease { store.releasePathLease(lease); replacementLease = nil }
+            withDurableStaticCheckpoint(for: entry.attemptKey, expectedBytes: entry.expectedBytes,
+                context: "unowned_validator") { [self] durableBytes in
+                AppDiagnostics.record(.downloads, "downloads.range_unknown_task_finish", fields: [
+                    "download_id": .identifier(entry.ratingKey),
+                    "offset": .int(entry.baseOffset),
+                    "reason": .label(reason),
+                    "durable_bytes": .int(durableBytes),
+                ])
+                onChange?()
+                return
+            }
             return
         }
 
@@ -4245,27 +4502,33 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 responseContentLength: responseContentLength
             ) else {
                 try? fileManager.removeItem(at: stash)
-                guard let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
-                for: entry.attemptKey, expectedBytes: entry.expectedBytes,
-                context: "replace_whole_size"
-            ) else { return }
-                AppDiagnostics.record(.downloads, "downloads.range_200_size_mismatch", fields: [
-                    "download_id": .identifier(entry.ratingKey),
-                    "body_bytes": .int(stashBytes ?? -1),
-                    "expected_bytes": .int(entry.expectedBytes ?? -1),
-                    "durable_bytes": .int(durableBytes),
-                ])
-                if retryRangeOffsetMismatch(entry: entry,
-                                            durableBytes: durableBytes,
-                                            serverOffset: nil) {
+                // No working-path mutation remains; let the checkpoint artifact acquire its lease.
+                if let lease = replacementLease { store.releasePathLease(lease); replacementLease = nil }
+                withDurableStaticCheckpoint(for: entry.attemptKey, expectedBytes: entry.expectedBytes,
+                                            context: "replace_whole_size") { [self] durableBytes in
+                    AppDiagnostics.record(.downloads, "downloads.range_200_size_mismatch", fields: [
+                        "download_id": .identifier(entry.ratingKey),
+                        "body_bytes": .int(stashBytes ?? -1),
+                        "expected_bytes": .int(entry.expectedBytes ?? -1),
+                        "durable_bytes": .int(durableBytes),
+                    ])
+                    if retryRangeOffsetMismatch(entry: entry,
+                                                durableBytes: durableBytes,
+                                                serverOffset: nil) {
+                        return
+                    }
+                    setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .server)
+                    onError?(entry.attemptKey, .transferFailed(
+                        "Server returned an incomplete full-file response for a ranged request."))
+                    onChange?()
                     return
                 }
-                setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .server)
-                onError?(entry.attemptKey, .transferFailed(
-                    "Server returned an incomplete full-file response for a ranged request."))
-                onChange?()
                 return
             }
+            guard store.attemptAdmitsWork(entry.attemptKey),
+                  store.attemptWorkingFileURL(for: entry.attemptKey) == entry.workingURL,
+                  lock.withLock({ (rangeTrainEpochs[entry.attemptKey] ?? 0) == bodyTrainEpoch
+                      && rangeHaltKinds[entry.attemptKey] != .cancel }) else { return }
             do {
                 try? fileManager.removeItem(at: entry.workingURL)
                 try fileManager.moveItem(at: stash, to: entry.workingURL)
@@ -4372,26 +4635,26 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         ])
                     } else if contentRangeStart != entry.baseOffset {
                         try? fileManager.removeItem(at: stash)
-                        guard let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
-                for: entry.attemptKey, expectedBytes: entry.expectedBytes,
-                context: "held_offset_mismatch"
-            ) else { return }
-                        AppDiagnostics.record(.downloads, "downloads.range_offset_mismatch", fields: [
-                            "download_id": .identifier(entry.ratingKey),
-                            "expected_offset": .bytes(entry.baseOffset),
-                            "expected_offset_exact": .int(entry.baseOffset),
-                            "server_offset": .bytes(contentRangeStart),
-                            "server_offset_exact": .int(contentRangeStart ?? -1),
-                            "bytes": .bytes(durableBytes),
-                            "bytes_exact": .int(durableBytes),
-                            "held": .bool(true),
-                        ])
-                        if retryRangeOffsetMismatch(entry: entry, durableBytes: durableBytes, serverOffset: contentRangeStart) {
+                        withDurableStaticCheckpoint(for: entry.attemptKey, expectedBytes: entry.expectedBytes,
+                context: "held_offset_mismatch") { [self] durableBytes in
+                            AppDiagnostics.record(.downloads, "downloads.range_offset_mismatch", fields: [
+                                "download_id": .identifier(entry.ratingKey),
+                                "expected_offset": .bytes(entry.baseOffset),
+                                "expected_offset_exact": .int(entry.baseOffset),
+                                "server_offset": .bytes(contentRangeStart),
+                                "server_offset_exact": .int(contentRangeStart ?? -1),
+                                "bytes": .bytes(durableBytes),
+                                "bytes_exact": .int(durableBytes),
+                                "held": .bool(true),
+                            ])
+                            if retryRangeOffsetMismatch(entry: entry, durableBytes: durableBytes, serverOffset: contentRangeStart) {
+                                return
+                            }
+                            setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .server)
+                            onError?(entry.attemptKey, .transferFailed("Server returned a misaligned byte range."))
+                            onChange?()
                             return
                         }
-                        setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .server)
-                        onError?(entry.attemptKey, .transferFailed("Server returned a misaligned byte range."))
-                        onChange?()
                         return
                     }
                     // M1: a zero-length/unreadable stash can never append at its offset (the assembly
@@ -4473,10 +4736,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     // completion below. Begin a nested gate operation NOW — while the outer one is
                     // still open — and end it inside the completion on every branch, so the gate
                     // can never hit zero (letting the OS suspend a background wake) in between.
-                    beginPendingBackgroundCompletionOperation()
+                    let backgroundOperation = beginPendingBackgroundCompletionOperation(kind: .heldLifecycle)
                     resolveHeldLifecycle(accepted.ticket) { [weak self, predecessorURLs] outcome in
                         guard let self else { return }
-                        defer { self.endPendingBackgroundCompletionOperation() }
+                        defer { self.endPendingBackgroundCompletionOperation(backgroundOperation) }
                         switch outcome {
                         case .completed:
                             self.lock.lock()
@@ -4595,25 +4858,25 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 ])
             } else if misaligned {
                 try? fileManager.removeItem(at: stash)
-                guard let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
-                for: entry.attemptKey, expectedBytes: entry.expectedBytes,
-                context: "offset_mismatch"
-            ) else { return }
-                AppDiagnostics.record(.downloads, "downloads.range_offset_mismatch", fields: [
-                    "download_id": .identifier(entry.ratingKey),
-                    "expected_offset": .bytes(entry.baseOffset),
-                    "expected_offset_exact": .int(entry.baseOffset),
-                    "server_offset": .bytes(contentRangeStart),
-                    "server_offset_exact": .int(contentRangeStart ?? -1),
-                    "bytes": .bytes(durableBytes),
-                    "bytes_exact": .int(durableBytes),
-                ])
-                if retryRangeOffsetMismatch(entry: entry, durableBytes: durableBytes, serverOffset: contentRangeStart) {
+                withDurableStaticCheckpoint(for: entry.attemptKey, expectedBytes: entry.expectedBytes,
+                context: "offset_mismatch") { [self] durableBytes in
+                    AppDiagnostics.record(.downloads, "downloads.range_offset_mismatch", fields: [
+                        "download_id": .identifier(entry.ratingKey),
+                        "expected_offset": .bytes(entry.baseOffset),
+                        "expected_offset_exact": .int(entry.baseOffset),
+                        "server_offset": .bytes(contentRangeStart),
+                        "server_offset_exact": .int(contentRangeStart ?? -1),
+                        "bytes": .bytes(durableBytes),
+                        "bytes_exact": .int(durableBytes),
+                    ])
+                    if retryRangeOffsetMismatch(entry: entry, durableBytes: durableBytes, serverOffset: contentRangeStart) {
+                        return
+                    }
+                    setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .server)
+                    onError?(entry.attemptKey, .transferFailed("Server returned a misaligned byte range."))
+                    onChange?()
                     return
                 }
-                setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .server)
-                onError?(entry.attemptKey, .transferFailed("Server returned a misaligned byte range."))
-                onChange?()
                 return
             }
             // IC-2: re-check the train epoch AND the on-disk size at the last instant. A
@@ -4660,7 +4923,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
             let bodyBytes: Int
             do {
-                bodyBytes = try appendFile(at: stash, onto: entry.workingURL)
+                bodyBytes = try appendFile(at: stash, onto: entry.workingURL, for: entry.attemptKey)
             } catch {
                 try? fileManager.removeItem(at: stash)
                 failRangeMove(entry: entry, error: error, stage: "append")
@@ -4937,7 +5200,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 break
             }
             do {
-                let appended = try appendFile(at: entry.url, onto: destination)
+                let appended = try appendFile(at: entry.url, onto: destination, for: key)
                 durable = onDisk + appended
                 if appended > 0 {
                     lock.withLock {
@@ -5169,6 +5432,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// continues from the durable partial (a relaunch-adopted task has no in-memory request — its
     /// auth headers can't be reconstructed).
     private func continueRangeAfterBody(entry: RangeTransfer, partialSize: Int) {
+        if backgroundWakeCoordinator.isWindingDown {
+            // Keep the committed checkpoint and system-resume intent for the next foreground
+            // recovery edge. Already admitted daemon tasks continue independently.
+            if !isRangeHalted(for: entry.attemptKey) {
+                _ = resolveLifecycleSubmission(submitLifecycleEvent(
+                    .transferRebuilding, for: entry.attemptKey, phase: "wake_budget_refill_deferred"))
+            }
+            return
+        }
         // Defense in depth alongside the `finishRangeRemainder` halt gate: never start a request
         // behind a concurrent cancel/pause.
         lock.lock(); let halted = rangeHaltKinds[entry.attemptKey] != nil; lock.unlock()
@@ -5324,11 +5596,65 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
     }
 
+    private func removeFileIfLeased(at url: URL, for key: DownloadAttemptKey) {
+        guard case .acquired(let lease) = store.tryAcquirePathLease(for: key,
+            relativePaths: [url.lastPathComponent], purpose: .append) else { return }
+        defer { store.releasePathLease(lease) }
+        guard store.ownsAttempt(key), !isRangeHalted(for: key) else { return }
+        try? fileManager.removeItem(at: url)
+    }
+
+    private func awaitWorkingPathLease(for key: DownloadAttemptKey, paths: Set<String>,
+        completion: @escaping @Sendable (DownloadPathLeaseResult) -> Void) {
+        let deadline = persistenceDeadline
+        beginPendingStaticRangeWork(ratingKey: key.ratingKey)
+        let operation = beginPendingBackgroundCompletionOperation(kind: .append)
+        DownloadStoreCallback.resolve(returningOn: rangeIOQueue, operation: { [store] in
+            await store.acquirePathLease(for: key, relativePaths: paths, purpose: .append, deadline: deadline)
+        }, completion: { [self] result in
+            defer {
+                endPendingStaticRangeWork(ratingKey: key.ratingKey)
+                endPendingBackgroundCompletionOperation(operation)
+            }
+            completion(result)
+        })
+    }
+
     /// The pinned resource validator changed mid-download (#169 HIGH 1, Plex path): the durable partial
     /// is now a stale prefix and the just-fetched body is bytes from a different resource. Throw both
     /// away and restart from offset 0 so the partial is rebuilt against the current resource — the only
     /// honest recovery when the server won't downgrade a changed resource to a whole-file 200.
     private func restartRangeFromChangedResource(entry: RangeTransfer) {
+        let currency = checkpointCurrency(for: entry.attemptKey)
+        restartRangeFromChangedResource(entry: entry, currency: currency)
+    }
+
+    private func restartRangeFromChangedResource(entry: RangeTransfer, currency: DelayedRangeRetryCurrency) {
+        guard checkpointIsCurrent(currency, halt: nil) else { return }
+        switch store.tryAcquirePathLease(for: entry.attemptKey,
+            relativePaths: [entry.workingURL.lastPathComponent], purpose: .append) {
+        case .acquired(let lease):
+            guard checkpointIsCurrent(currency, halt: nil),
+                  store.attemptWorkingFileURL(for: entry.attemptKey) == entry.workingURL else {
+                store.releasePathLease(lease)
+                return
+            }
+            restartRangeFromChangedResourceWithLease(entry: entry, lease: lease)
+        case .busy:
+            awaitWorkingPathLease(for: entry.attemptKey, paths: [entry.workingURL.lastPathComponent]) { [self] result in
+                guard case .acquired(let lease) = result else { return }
+                guard checkpointIsCurrent(currency, halt: nil),
+                      store.attemptWorkingFileURL(for: entry.attemptKey) == entry.workingURL else {
+                    store.releasePathLease(lease)
+                    return
+                }
+                restartRangeFromChangedResourceWithLease(entry: entry, lease: lease)
+            }
+        case .staleOrMissing, .invalidPath, .timedOut: return
+        }
+    }
+
+    private func restartRangeFromChangedResourceWithLease(entry: RangeTransfer, lease: DownloadPathLease) {
         lock.lock()
         let halted = rangeHaltKinds[entry.attemptKey] != nil
         let retryAttempt = staticRangeRetryBudget.recordValidatorChange(key: staticRangeRetryKey(for: entry.attemptKey))
@@ -5356,6 +5682,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "restart_count": .int(retryAttempt.attempt),
         ])
         try? fileManager.removeItem(at: entry.workingURL)
+        store.releasePathLease(lease)
         resolveLifecycleSubmission(store.submitRangeValidator(for: entry.attemptKey, nil))
         _ = resolveLifecycleSubmission(store.submitProgress(for: entry.attemptKey, bytes: 0, progress: 0))
         // C2: the durable partial (offset 0..) is being rebuilt against the CURRENT resource; any held
@@ -5466,7 +5793,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ])
             return .alreadyFinalizing
         }
-        if holdsBackgroundCompletion { beginPendingBackgroundCompletionOperation() }
+        let backgroundOperation = holdsBackgroundCompletion
+            ? beginPendingBackgroundCompletionOperation(kind: .finalization) : nil
         let request = FinalizerRequest(
             id: requestID,
             attemptKey: attemptKey,
@@ -5475,7 +5803,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             validationLabel: validationLabel,
             expectedExactBytes: expectedExactBytes,
             publishesWorkingFile: publishesWorkingFile,
-            holdsBackgroundCompletion: holdsBackgroundCompletion)
+            backgroundOperation: backgroundOperation)
         guard let onFinalizerRequest else {
             abandonFinalizerRequest(request)
             return .unavailable
@@ -5497,8 +5825,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             finalizerRequestIDsByAttempt.removeValue(forKey: request.attemptKey)
             return true
         }
-        if removed && request.holdsBackgroundCompletion {
-            endPendingBackgroundCompletionOperation()
+        if removed, let operation = request.backgroundOperation {
+            endPendingBackgroundCompletionOperation(operation)
         }
         if removed && !request.publishesWorkingFile {
             onRevalidationRequestFinished?(request.attemptKey, request.id, revalidationOutcome)
@@ -5576,7 +5904,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "preserved": .bool(false),
                 "validation": .label(validationLabel),
             ])
-            try? fileManager.removeItem(at: destination)
+            removeFileIfLeased(at: destination, for: key)
             clearRetryCount(for: key)
             setFailedPurgingHeldSegments(
                 for: key, reason: .validation,
@@ -5609,23 +5937,24 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "preserved": .bool(true),
                 "validation": .label(validationLabel),
             ])
-            _ = store.resetStaticRangeProgressToDurableCheckpoint(
-                for: key, expectedBytes: expectedExactBytes)
-            clearRetryCount(for: key)
-            setFailedPurgingHeldSegments(
-                for: key, reason: .validation,
-                event: finalizeVerdictEvent(
-                    for: key, outcome: .incompleteBytes, status: .failed,
-                    outcomeID: "\(attemptID.rawValue)-\(validationLabel)-precheck",
-                    publishesWorkingFile: false))
-            recordFinalizeFinished(ratingKey: ratingKey,
-                                   result: "failed_incomplete_bytes",
-                                   validationLabel: validationLabel,
-                                   durationMs: 0,
-                                   bytes: bytes)
-            onError?(key, .transferFailed(
-                "Download is incomplete (\(bytes / 1_000_000) of \(expectedExactBytes / 1_000_000) MB). Retry to continue."))
-            onChange?()
+            withDurableStaticCheckpoint(for: key, expectedBytes: expectedExactBytes,
+                                        context: "revalidate_incomplete") { [self] _ in
+                clearRetryCount(for: key)
+                setFailedPurgingHeldSegments(
+                    for: key, reason: .validation,
+                    event: finalizeVerdictEvent(
+                        for: key, outcome: .incompleteBytes, status: .failed,
+                        outcomeID: "\(attemptID.rawValue)-\(validationLabel)-precheck",
+                        publishesWorkingFile: false))
+                recordFinalizeFinished(ratingKey: ratingKey,
+                                       result: "failed_incomplete_bytes",
+                                       validationLabel: validationLabel,
+                                       durationMs: 0,
+                                       bytes: bytes)
+                onError?(key, .transferFailed(
+                    "Download is incomplete (\(bytes / 1_000_000) of \(expectedExactBytes / 1_000_000) MB). Retry to continue."))
+                onChange?()
+            }
             return .unavailable
         }
         AppDiagnostics.record(.downloads, "downloads.unverified_revalidate", fields: [
@@ -5716,45 +6045,60 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // "Transfer failed (system code 640)" or looping bounded retries. The durable partial
         // stays as the retry checkpoint.
         if DownloadDiskSpacePolicy.isOutOfSpace(error) {
-            guard let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
-                for: entry.attemptKey, expectedBytes: entry.expectedBytes,
-                context: "move_storage_full"
-            ) else { return }
-            AppDiagnostics.record(.downloads, "downloads.move_failed", fields: [
-                "download_id": .identifier(entry.ratingKey),
-                "stage": .label(stage),
-                "reason": .label("storage_full"),
-                "error": .error(error),
-                "bytes": .bytes(durableBytes),
-            ])
-            setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .storage)
-            onError?(entry.attemptKey, .storageFull)
-            onChange?()
+            withDurableStaticCheckpoint(for: entry.attemptKey, expectedBytes: entry.expectedBytes,
+                context: "move_storage_full") { [self] durableBytes in
+                AppDiagnostics.record(.downloads, "downloads.move_failed", fields: [
+                    "download_id": .identifier(entry.ratingKey),
+                    "stage": .label(stage),
+                    "reason": .label("storage_full"),
+                    "error": .error(error),
+                    "bytes": .bytes(durableBytes),
+                ])
+                setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .storage)
+                onError?(entry.attemptKey, .storageFull)
+                onChange?()
+                return
+            }
             return
         }
         if recoverRangeMoveFailure(entry: entry, error: error, stage: stage) {
             return
         }
-        guard let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
-                for: entry.attemptKey, expectedBytes: entry.expectedBytes,
-                context: "move_failure"
-            ) else { return }
-        AppDiagnostics.record(.downloads, "downloads.move_failed", fields: [
-            "download_id": .identifier(entry.ratingKey),
-            "stage": .label(stage),
-            "error": .error(error),
-            "bytes": .bytes(durableBytes),
-        ])
-        setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .internalError)
-        onError?(entry.attemptKey, .transferFailed(
-            DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer")))
-        onChange?()
+        failRangeMoveWithoutRecovery(entry: entry, error: error, stage: stage)
+    }
+
+    private func failRangeMoveWithoutRecovery(entry: RangeTransfer, error: Error, stage: String) {
+        withDurableStaticCheckpoint(for: entry.attemptKey, expectedBytes: entry.expectedBytes,
+                context: "move_failure") { [self] durableBytes in
+            AppDiagnostics.record(.downloads, "downloads.move_failed", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "stage": .label(stage),
+                "error": .error(error),
+                "bytes": .bytes(durableBytes),
+            ])
+            setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .internalError)
+            onError?(entry.attemptKey, .transferFailed(
+                DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer")))
+            onChange?()
+        }
     }
 
     /// Recover "Cocoa code=4" Range temp/body move/append failures by doing what the user's Retry button
     /// would do: preserve/reset to the app-owned checkpoint and reissue/rebuild the next Range request
     /// a bounded number of times instead of terminally failing the row.
-    private func recoverRangeMoveFailure(entry: RangeTransfer, error: Error, stage: String) -> Bool {
+    private func recoverRangeMoveFailure(entry: RangeTransfer, error: Error, stage: String,
+                                         settled: @escaping @Sendable () -> Void = {}) -> Bool {
+        withDurableStaticCheckpoint(for: entry.attemptKey, expectedBytes: entry.expectedBytes,
+                context: "move_recovery") { [self] durableBytes in
+            defer { settled() }
+            if !recoverRangeMoveFailureAfterCheckpoint(entry: entry, error: error, stage: stage, durableBytes: durableBytes) {
+                failRangeMoveWithoutRecovery(entry: entry, error: error, stage: stage)
+            }
+        }
+        return true
+    }
+
+    private func recoverRangeMoveFailureAfterCheckpoint(entry: RangeTransfer, error: Error, stage: String, durableBytes: Int) -> Bool {
         let schedulingCurrency = lock.withLock {
             DelayedRangeRetryCurrency(attemptKey: entry.attemptKey,
                 trainEpoch: rangeTrainEpochs[entry.attemptKey] ?? 0,
@@ -5762,10 +6106,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
 
         let nsError = error as NSError
-        guard let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
-                for: entry.attemptKey, expectedBytes: entry.expectedBytes,
-                context: "move_recovery"
-            ) else { return false }
+
         lock.lock()
         let decision = BackgroundDownloadTransientRetryPolicy.rangeMoveDecision(
             errorDomain: nsError.domain,
@@ -5847,7 +6188,30 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     /// Append `source` onto the end of `destination` in bounded blocks (never loading a whole
     /// temp file into memory). Returns the number of bytes appended.
-    private func appendFile(at source: URL, onto destination: URL) throws -> Int {
+    private func appendFile(at source: URL, onto destination: URL, for key: DownloadAttemptKey) throws -> Int {
+        // No session/range lock spans acquisition. Source can be a delegate-owned temp outside
+        // the store; reserve all paths in the shared store namespace, including held bodies.
+        let root = store.directory.standardizedFileURL
+        guard destination.deletingLastPathComponent().standardizedFileURL == root else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
+        let epoch = lock.withLock { rangeTrainEpochs[key] ?? 0 }
+        let sourceIdentity = try fileManager.attributesOfItem(atPath: source.path)[.systemFileNumber] as? NSNumber
+        let identity = try fileManager.attributesOfItem(atPath: destination.path)[.systemFileNumber] as? NSNumber
+        var paths: Set<String> = [destination.lastPathComponent]
+        if source.deletingLastPathComponent().standardizedFileURL == root { paths.insert(source.lastPathComponent) }
+        guard case .acquired(let lease) = store.tryAcquirePathLease(
+            for: key, relativePaths: paths, purpose: .append) else { throw CancellationError() }
+        // Only physical completion releases exclusion, after both handles close. Wake/persistence
+        // expiry never touches this lease, the body claim, or the pending-range-work count.
+        defer { store.releasePathLease(lease) }
+        let currentIdentity = try fileManager.attributesOfItem(atPath: destination.path)[.systemFileNumber] as? NSNumber
+        guard store.ownsAttempt(key),
+              store.attemptWorkingFileURL(for: key)?.standardizedFileURL == destination.standardizedFileURL,
+              identity == currentIdentity,
+              lock.withLock({ (rangeTrainEpochs[key] ?? 0) == epoch && rangeHaltKinds[key] != .cancel }) else {
+            throw CancellationError()
+        }
         // Append-only: the durable partial is created at `start` and must already exist. If it is
         // gone, a concurrent cancel/pause deleted it out from under us (the bounded HIGH 2 race) —
         // refuse rather than re-create an orphan partial with no index row. The caller surfaces this
@@ -5869,6 +6233,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         defer { try? reader.close() }
         let writer = try FileHandle(forWritingTo: destination)
         defer { try? writer.close() }
+        appendWillPerformIO(source, destination)
+        guard store.ownsAttempt(key),
+              lock.withLock({ (rangeTrainEpochs[key] ?? 0) == epoch && rangeHaltKinds[key] != .cancel }),
+              try fileManager.attributesOfItem(atPath: source.path)[.systemFileNumber] as? NSNumber == sourceIdentity,
+              try fileManager.attributesOfItem(atPath: destination.path)[.systemFileNumber] as? NSNumber == identity else {
+            throw CancellationError()
+        }
         try writer.seekToEnd()
         var appended = 0
         let blockSize = 4 * 1_024 * 1_024
@@ -5914,7 +6285,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // on `hev1`) BEFORE the playability probe. Gated on the CONTAINER, not the lane — any
         // mp4-family download can be `hev1`-tagged. `rewriteFile` no-ops on non-HEVC/non-`hev1` bodies.
         if DownloadCompletionValidation.needsHEVCTagFixup(pathExtension: destination.pathExtension) {
+            let currency = checkpointCurrency(for: attemptKey)
+            let identity = try? fileManager.attributesOfItem(atPath: destination.path)[.systemFileNumber] as? NSNumber
+            guard case .acquired(let lease) = await store.acquirePathLease(for: attemptKey,
+                relativePaths: [destination.lastPathComponent], purpose: .append,
+                deadline: persistenceDeadline) else { return }
             do {
+                defer { store.releasePathLease(lease) }
+                guard checkpointIsCurrent(currency, halt: nil),
+                      (try? fileManager.attributesOfItem(atPath: destination.path)[.systemFileNumber] as? NSNumber) == identity else { return }
                 let count = try HEVCTagFixup.rewriteFile(at: destination)
                 if count > 0 {
                     AppDiagnostics.record(.downloads, "downloads.hevc_tag_fixup", fields: [
@@ -6063,7 +6442,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 // `.noChange` is a replay: this body's outcome committed before a relaunch.
                 guard change == .applied else { break }
                 condemnBody(afterCommitOf: ticket)
-                guard acceptedAttemptSubmission(
+                guard await committedAttemptSubmission(
                     verdict, key: attemptKey, phase: "finalize_truncated_verdict") else { return }
                 truncationVerdictCommitted = true
             }
@@ -6105,7 +6484,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ])
             guard !Task.isCancelled else { return }
             clearRetryCount(for: attemptKey)
-            guard acceptedAttemptSubmission(
+            guard await committedAttemptSubmission(
                 resolveLifecycleSubmission(submitFinalizeVerdictStatus(
                     for: attemptKey, outcome: Self.finalizeOutcome(outcome),
                     status: finalizationResult.status, outcomeID: outcomeID,
@@ -6115,7 +6494,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             if finalizationResult.shouldDeleteFile,
                !Task.isCancelled,
                stillOwnsAttempt(attemptKey, phase: "finalize_empty_delete") {
-                try? fileManager.removeItem(at: destination)
+                removeFileIfLeased(at: destination, for: attemptKey)
             }
             guard !Task.isCancelled,
                   stillOwnsAttempt(attemptKey, phase: "finalize_empty_publish") else { return }
@@ -6139,7 +6518,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // its real position again.
             guard !Task.isCancelled else { return }
             clearRetryCount(for: attemptKey)
-            guard acceptedAttemptSubmission(
+            guard await committedAttemptSubmission(
                 resolveLifecycleSubmission(submitFinalizeVerdictStatus(
                     for: attemptKey, outcome: Self.finalizeOutcome(outcome),
                     status: finalizationResult.status, outcomeID: outcomeID,
@@ -6148,7 +6527,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ) else { return }
             if !Task.isCancelled,
                stillOwnsAttempt(attemptKey, phase: "finalize_incomplete_reset") {
-                guard resetStaticRangeProgressToDurableCheckpoint(
+                guard await durableStaticCheckpoint(
                     for: attemptKey, expectedBytes: expectedTotalBytes,
                     context: "finalize_incomplete") != nil else { return }
             }
@@ -6187,7 +6566,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 if case .accepted(.applied, let ticket) = verdict {
                     condemnBody(afterCommitOf: ticket)
                 }
-                guard acceptedAttemptSubmission(
+                guard await committedAttemptSubmission(
                     verdict, key: attemptKey, phase: "finalize_truncated_status") else { return }
             }
             guard !Task.isCancelled,
@@ -6213,10 +6592,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     for: attemptKey, status: .complete,
                     phase: "finalize_complete_promote") else { return }
             } else {
-                guard acceptedAttemptSubmission(
+                guard await committedAttemptSubmission(
                     resolveLifecycleSubmission(store.submitProgress(for: attemptKey, bytes: bytes, progress: 1)),
                     key: attemptKey, phase: "revalidate_complete_progress"
-                ), acceptedAttemptSubmission(
+                ), await committedAttemptSubmission(
                     resolveLifecycleSubmission(submitFinalizeVerdictStatus(
                     for: attemptKey, outcome: Self.finalizeOutcome(outcome),
                     status: finalizationResult.status, outcomeID: outcomeID,
@@ -6251,7 +6630,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     for: attemptKey, status: .unverified,
                     phase: "finalize_unverified_promote") else { return }
             } else {
-                guard acceptedAttemptSubmission(
+                guard await committedAttemptSubmission(
                     resolveLifecycleSubmission(submitFinalizeVerdictStatus(
                     for: attemptKey, outcome: Self.finalizeOutcome(outcome),
                     status: finalizationResult.status, outcomeID: outcomeID,
@@ -6277,7 +6656,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         var shouldSurfaceFailure = true
         var shouldMarkFailed = true
         let submission = store.submitValidatedPromotion(for: key, terminalStatus: status)
-        switch await store.resolveValidatedPromotion(submission) {
+        switch await store.resolveValidatedPromotion(submission, deadline: persistenceDeadline) {
         case .promoted:
             return true
         case .staleOrMissingOwner:
@@ -6563,19 +6942,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     resolveLifecycleSubmission(store.submitResumeData(
                         for: rangeEntry.attemptKey, rangeResumeData, displayBytes: displayBytes))
                 }
-                guard let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
-                    for: rangeEntry.attemptKey, expectedBytes: rangeEntry.expectedBytes,
-                    context: "system_cancel_park"
-                ) else { return }
-                AppDiagnostics.record(.downloads, "downloads.range_system_cancel_parked", fields: [
-                    "download_id": .identifier(rangeEntry.ratingKey),
-                    "cancel_reason": .int(
-                        (nsError.userInfo[NSURLErrorBackgroundTaskCancelledReasonKey] as? Int) ?? -1),
-                    "bytes": .bytes(durableBytes),
-                ])
-                _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferInterrupted(.cancelledBySystem), for: rangeEntry.attemptKey, phase: "system_cancel_park"))
-                onError?(rangeEntry.attemptKey, .interruptedResumable)
-                onChange?()
+                withDurableStaticCheckpoint(for: rangeEntry.attemptKey, expectedBytes: rangeEntry.expectedBytes,
+                    context: "system_cancel_park") { [self] durableBytes in
+                    AppDiagnostics.record(.downloads, "downloads.range_system_cancel_parked", fields: [
+                        "download_id": .identifier(rangeEntry.ratingKey),
+                        "cancel_reason": .int(
+                            (nsError.userInfo[NSURLErrorBackgroundTaskCancelledReasonKey] as? Int) ?? -1),
+                        "bytes": .bytes(durableBytes),
+                    ])
+                    _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferInterrupted(.cancelledBySystem), for: rangeEntry.attemptKey, phase: "system_cancel_park"))
+                    onError?(rangeEntry.attemptKey, .interruptedResumable)
+                    onChange?()
+                    return
+                }
                 return
             }
             if case .cancelled = rangeDisposition {
@@ -6591,24 +6970,24 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // again on the next byte. Fail with the real reason and tear the train down; the
             // durable partial stays as the checkpoint for after the user frees space.
             if DownloadDiskSpacePolicy.isOutOfSpace(nsError) {
-                let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
-                for: rangeEntry.attemptKey, expectedBytes: rangeEntry.expectedBytes,
-                context: "completion_storage_full"
-            ) ?? rangeEntry.baseOffset
-                var fields: [String: DiagnosticFieldValue] = [
-                    "download_id": .identifier(rangeEntry.ratingKey),
-                    "context": .label("task_completion"),
-                    "bytes": .bytes(durableBytes),
-                ]
-                if let measured = availableStorageMeasurement() {
-                    fields["free_bytes"] = .bytes(Int(measured.bytes))
-                    fields["free_bytes_exact"] = .int(Int(measured.bytes))
-                    fields["free_space_source"] = .label(measured.source.rawValue)
+                withDurableStaticCheckpoint(for: rangeEntry.attemptKey, expectedBytes: rangeEntry.expectedBytes,
+                context: "completion_storage_full") { [self] durableBytes in
+                    var fields: [String: DiagnosticFieldValue] = [
+                        "download_id": .identifier(rangeEntry.ratingKey),
+                        "context": .label("task_completion"),
+                        "bytes": .bytes(durableBytes),
+                    ]
+                    if let measured = availableStorageMeasurement() {
+                        fields["free_bytes"] = .bytes(Int(measured.bytes))
+                        fields["free_bytes_exact"] = .int(Int(measured.bytes))
+                        fields["free_space_source"] = .label(measured.source.rawValue)
+                    }
+                    AppDiagnostics.record(.downloads, "downloads.range_storage_full", fields: fields)
+                    setFailedPurgingHeldSegments(for: rangeEntry.attemptKey, reason: .storage)
+                    onError?(rangeEntry.attemptKey, .storageFull)
+                    onChange?()
+                    return
                 }
-                AppDiagnostics.record(.downloads, "downloads.range_storage_full", fields: fields)
-                setFailedPurgingHeldSegments(for: rangeEntry.attemptKey, reason: .storage)
-                onError?(rangeEntry.attemptKey, .storageFull)
-                onChange?()
                 return
             }
             // #227: a failed continuous remainder may carry many GB of non-durable temp in the
@@ -6667,31 +7046,31 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // pause rather than a failure. The partial IS the checkpoint; Resume re-requests only the
             // in-flight remainder from its current size.
             let summary = DiagnosticRedactor.safeErrorSummary(error)
-            guard let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
-                for: rangeEntry.attemptKey, expectedBytes: rangeEntry.expectedBytes,
-                context: "completion_pause"
-            ) else { return }
-            downloadLog.error("range-paused ratingKey=\(rangeEntry.ratingKey, privacy: .public) error=\(summary, privacy: .public) bytes=\(durableBytes, privacy: .public)")
-            AppDiagnostics.record(.downloads, "downloads.range_paused", fields: [
-                "download_id": .identifier(rangeEntry.ratingKey),
-                "error": .error(error),
-                "base_offset": .int(rangeEntry.baseOffset),
-                "optimistic_temp_bytes": .bytes(rangeEntry.bodyBytesWritten),
-                "bytes": .bytes(durableBytes),
-            ])
-            if case .requestNeeded(let reason) = rangeDisposition {
-                // Adopted failed remainders were active system work, not user pauses. Persist queued
-                // intent before the callback so backend restore can be missed/terminated safely.
-                // Hold the background completion handler across the main-actor request rebuild
-                // (#212): releasing it here lets the OS suspend us before the next task exists.
-                beginRangeRequestRebuildGrace(for: rangeEntry.attemptKey)
-                _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferRebuilding, for: rangeEntry.attemptKey, phase: "adopted_failed_remainder"))
-                requestRangeRebuild(for: rangeEntry.attemptKey, reason: reason)
+            withDurableStaticCheckpoint(for: rangeEntry.attemptKey, expectedBytes: rangeEntry.expectedBytes,
+                context: "completion_pause") { [self] durableBytes in
+                downloadLog.error("range-paused ratingKey=\(rangeEntry.ratingKey, privacy: .public) error=\(summary, privacy: .public) bytes=\(durableBytes, privacy: .public)")
+                AppDiagnostics.record(.downloads, "downloads.range_paused", fields: [
+                    "download_id": .identifier(rangeEntry.ratingKey),
+                    "error": .error(error),
+                    "base_offset": .int(rangeEntry.baseOffset),
+                    "optimistic_temp_bytes": .bytes(rangeEntry.bodyBytesWritten),
+                    "bytes": .bytes(durableBytes),
+                ])
+                if case .requestNeeded(let reason) = rangeDisposition {
+                    // Adopted failed remainders were active system work, not user pauses. Persist queued
+                    // intent before the callback so backend restore can be missed/terminated safely.
+                    // Hold the background completion handler across the main-actor request rebuild
+                    // (#212): releasing it here lets the OS suspend us before the next task exists.
+                    beginRangeRequestRebuildGrace(for: rangeEntry.attemptKey)
+                    _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferRebuilding, for: rangeEntry.attemptKey, phase: "adopted_failed_remainder"))
+                    requestRangeRebuild(for: rangeEntry.attemptKey, reason: reason)
+                    return
+                }
+                _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferInterrupted(.network), for: rangeEntry.attemptKey, phase: "range_interrupted_pause"))
+                onError?(rangeEntry.attemptKey, .interruptedResumable)
+                onChange?()
                 return
             }
-            _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferInterrupted(.network), for: rangeEntry.attemptKey, phase: "range_interrupted_pause"))
-            onError?(rangeEntry.attemptKey, .interruptedResumable)
-            onChange?()
             return
         }
 
@@ -6935,7 +7314,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "error": .error(error),
             "bytes_received": .bytes(Int(task.countOfBytesReceived)),
         ])
-        retryTask.resume()
+        resumeAfterPersistence(retryTask, for: entry.attemptKey)
         onChange?()
         return true
     }
@@ -6970,50 +7349,49 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         retryCounts[entry.attemptKey] = nextAttempt
         lock.unlock()
 
-        guard let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
-                for: entry.attemptKey, expectedBytes: entry.expectedBytes,
-                context: "transient_retry"
-            ) else { return false }
-        downloadLog.error("range-retry ratingKey=\(entry.ratingKey, privacy: .public) attempt=\(nextAttempt, privacy: .public) code=\(error.code, privacy: .public) bytes=\(durableBytes, privacy: .public)")
-        AppDiagnostics.record(.downloads, "downloads.range_retry", fields: [
-            "download_id": .identifier(entry.ratingKey),
-            "attempt": .int(nextAttempt),
-            "error": .error(error),
-            "bytes": .bytes(durableBytes),
-        ])
+        withDurableStaticCheckpoint(for: entry.attemptKey, expectedBytes: entry.expectedBytes,
+                context: "transient_retry") { [self] durableBytes in
+            downloadLog.error("range-retry ratingKey=\(entry.ratingKey, privacy: .public) attempt=\(nextAttempt, privacy: .public) code=\(error.code, privacy: .public) bytes=\(durableBytes, privacy: .public)")
+            AppDiagnostics.record(.downloads, "downloads.range_retry", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "attempt": .int(nextAttempt),
+                "error": .error(error),
+                "bytes": .bytes(durableBytes),
+            ])
 
-        scheduleRangeRetry(currency: schedulingCurrency, delay: BackgroundDownloadTransientRetryPolicy.rangeRetryDelay(nextAttempt: nextAttempt)) { [self] currency in
-            do {
-                try startRangeRemainder(ratingKey: entry.ratingKey,
-                                    with: request,
-                                    expectedBytes: entry.expectedBytes,
-                                    resetsRetryCount: false,
-                                    attemptID: entry.attemptID, retryCurrency: currency)
-                onChange?()
-                return
-            } catch {
-                if shouldSuppressRangeStartFailure(for: entry.attemptKey,
-                                                   error: error,
-                                                   context: "transient_retry") {
+            scheduleRangeRetry(currency: schedulingCurrency, delay: BackgroundDownloadTransientRetryPolicy.rangeRetryDelay(nextAttempt: nextAttempt)) { [self] currency in
+                do {
+                    try startRangeRemainder(ratingKey: entry.ratingKey,
+                                        with: request,
+                                        expectedBytes: entry.expectedBytes,
+                                        resetsRetryCount: false,
+                                        attemptID: entry.attemptID, retryCurrency: currency)
                     onChange?()
                     return
+                } catch {
+                    if shouldSuppressRangeStartFailure(for: entry.attemptKey,
+                                                       error: error,
+                                                       context: "transient_retry") {
+                        onChange?()
+                        return
+                    }
+                    if handleRangeStartStorageFull(for: entry.attemptKey,
+                                                   error: error,
+                                                   context: "transient_retry") {
+                        return
+                    }
+                    AppDiagnostics.record(.downloads, "downloads.range_retry_failed", fields: [
+                        "download_id": .identifier(entry.ratingKey),
+                        "attempt": .int(nextAttempt),
+                        "error": .error(error),
+                    ])
+                    _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferInterrupted(.network), for: entry.attemptKey, phase: "transient_retry_failed"))
+                    onError?(entry.attemptKey, .interruptedResumable)
+                    onChange?()
                 }
-                if handleRangeStartStorageFull(for: entry.attemptKey,
-                                               error: error,
-                                               context: "transient_retry") {
-                    return
-                }
-                AppDiagnostics.record(.downloads, "downloads.range_retry_failed", fields: [
-                    "download_id": .identifier(entry.ratingKey),
-                    "attempt": .int(nextAttempt),
-                    "error": .error(error),
-                ])
-                _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferInterrupted(.network), for: entry.attemptKey, phase: "transient_retry_failed"))
-                onError?(entry.attemptKey, .interruptedResumable)
-                onChange?()
             }
+            onChange?()
         }
-        onChange?()
         return true
     }
 
@@ -7073,10 +7451,18 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
         guard !isRangeHalted(for: entry.attemptKey) else { return false }
 
-        guard let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
-                for: entry.attemptKey, expectedBytes: entry.expectedBytes,
-                context: "resume_data_fallback"
-            ) else { return false }
+        withDurableStaticCheckpoint(for: entry.attemptKey, expectedBytes: entry.expectedBytes,
+                context: "resume_data_fallback") { [self] durableBytes in
+            if !restartRangeFromDurableCheckpointAfterResumeDataFailureAfterCheckpoint(entry: entry, error: error, reason: reason, durableBytes: durableBytes) {
+                _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferInterrupted(.network), for: entry.attemptKey, phase: "resume_data_fallback_failed"))
+                onError?(entry.attemptKey, .interruptedResumable)
+                onChange?()
+            }
+        }
+        return true
+    }
+
+    private func restartRangeFromDurableCheckpointAfterResumeDataFailureAfterCheckpoint(entry: RangeTransfer, error: NSError, reason: StaticRangeResumeDataPolicy.DurableFallbackReason, durableBytes: Int) -> Bool {
         AppDiagnostics.record(.downloads, "downloads.range_resume_data_fallback", fields: [
             "download_id": .identifier(entry.ratingKey),
             "reason": .label(reason.rawValue),
@@ -7157,11 +7543,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // Refusal is not evidence that CFNetwork's blob is unusable. Publish it before failing,
             // so both a manual Resume and a transient-error handoff retain the exact authority.
             guard store.ownsAttempt(attemptKey), isDelayedRetryCurrent(currency) else { return .staleOrCancelled }
-            _ = resolveLifecycleSubmission(store.submitResumeData(
-                for: attemptKey, resumeData,
-                displayBytes: displayBytes ?? store.resumeDisplayBytes(for: attemptKey)))
-            _ = handleRangeStartStorageFull(for: attemptKey, error: DownloadManager.DownloadError.storageFull,
-                                           context: "blob_resume_preflight")
+            let submission = store.submitResumeData(for: attemptKey, resumeData,
+                displayBytes: displayBytes ?? store.resumeDisplayBytes(for: attemptKey))
+            let operation = beginPendingBackgroundCompletionOperation(kind: .heldLifecycle)
+            let deadline = persistenceDeadline
+            DownloadStoreCallback.resolve(returningOn: rangeIOQueue, operation: { [store] in
+                await store.resolve(submission, deadline: deadline)
+            }, completion: { [self] result in
+                defer { endPendingBackgroundCompletionOperation(operation) }
+                guard case .applied = result,
+                      store.ownsAttempt(attemptKey), isDelayedRetryCurrent(currency) else { return }
+                _ = handleRangeStartStorageFull(for: attemptKey,
+                    error: DownloadManager.DownloadError.storageFull, context: "blob_resume_preflight")
+            })
             return .storageRefused
         }
         let task = urlSession.downloadTask(withResumeData: resumeData)
@@ -7245,7 +7639,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 task.cancel()
                 return .unusableOrStaleBlob
             }
-            _ = store.clearResumeData(for: attemptKey, clearDisplayBytes: false)
+            let clear = store.submitClearResumeData(for: attemptKey, clearDisplayBytes: false)
             AppDiagnostics.record(.downloads, "downloads.range_blob_resume", fields: [
                 "download_id": .identifier(ratingKey),
                 "task_id": .int(task.taskIdentifier),
@@ -7254,7 +7648,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "attempt": .int(attempt ?? 0),
                 "reason": .label(remainderReason),
             ])
-            task.resume()
+            let operation = beginPendingBackgroundCompletionOperation(kind: .heldLifecycle)
+            let deadline = persistenceDeadline
+            DownloadStoreCallback.resolve(returningOn: rangeIOQueue, operation: { [store] in
+                await store.resolve(clear, deadline: deadline)
+            }, completion: { [self] result in
+                defer { endPendingBackgroundCompletionOperation(operation) }
+                switch result {
+                case .applied, .noChange:
+                    resumeAfterPersistence(task, for: attemptKey, currency: currency)
+                case .staleOrMissing, .persistenceFailed:
+                    task.cancel()
+                }
+            })
             onChange?()
             return .resumed
         }
@@ -7437,12 +7843,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func scheduleRangeRetry(currency: DelayedRangeRetryCurrency, delay: TimeInterval,
                                     action: @escaping @Sendable (DelayedRangeRetryCurrency) -> Void) {
         let key = currency.attemptKey
-        beginPendingBackgroundCompletionOperation()
+        let backgroundOperation = beginPendingBackgroundCompletionOperation(kind: .delayedRetry)
         beginPendingStaticRangeWork(ratingKey: key.ratingKey)
         rangeRetryQueue.asyncAfter(deadline: .now() + delay) { [self] in
             defer {
                 endPendingStaticRangeWork(ratingKey: key.ratingKey)
-                endPendingBackgroundCompletionOperation()
+                endPendingBackgroundCompletionOperation(backgroundOperation)
             }
             guard isDelayedRetryCurrent(currency) else { return }
             #if DEBUG

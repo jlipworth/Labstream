@@ -91,8 +91,9 @@ struct BackgroundDownloadRangeOwnershipTests {
         let store = DownloadStore(
             baseDirectory: directory,
             indexPersistence: .init(atomicWrite: { _, _ in throw CocoaError(.fileWriteOutOfSpace) }))
+        let clock = P6WakeClock()
         let session = BackgroundDownloadSession(
-            store: store, protocolClasses: [], releaseBackgroundCompletion: { _ in })
+            store: store, protocolClasses: [], wakeClockHooks: clock.hooks, releaseBackgroundCompletion: { _ in })
         defer { session.invalidateInjectedSessionForTesting() }
         let failed = await withCheckedContinuation { continuation in
             session.activateAfterResettingUnsupportedStore { continuation.resume(returning: $0) }
@@ -111,6 +112,8 @@ struct BackgroundDownloadRangeOwnershipTests {
         #expect(held.backgroundCompletionHandlerCount == 1)
 
         session.endBackgroundCompletionOperationForTesting()
+        // Failed persistence is not a normal drain. The original absolute wake timer owns release.
+        clock.advance(to: 25)
         let drained = session.diagnosticSnapshot(includePendingTempCleanupBytes: false)
         #expect(drained.pendingBackgroundCompletionOperationCount == 0)
         #expect(drained.backgroundCompletionHandlerCount == 0)
