@@ -60,11 +60,23 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
+    private var pathLeaseReleaseHandler: (@Sendable (DownloadPathLease) -> Void)?
+
+    func setPathLeaseReleaseHandler(_ handler: @escaping @Sendable (DownloadPathLease) -> Void) {
+        lock.withLock { pathLeaseReleaseHandler = handler }
+    }
+
     func releasePathLease(_ lease: DownloadPathLease) {
-        lock.lock(); defer { lock.unlock() }
-        for path in lease.relativePaths where reservedArtifactDeletionPaths[path] == lease.id {
-            reservedArtifactDeletionPaths.removeValue(forKey: path)
+        let notify = lock.withLock { () -> (@Sendable (DownloadPathLease) -> Void)? in
+            var released = false
+            for path in lease.relativePaths where reservedArtifactDeletionPaths[path] == lease.id {
+                reservedArtifactDeletionPaths.removeValue(forKey: path)
+                released = true
+            }
+            return released ? pathLeaseReleaseHandler : nil
         }
+        // Never enter session state while holding the store lock; duplicate releases do not wake.
+        notify?(lease)
     }
 
     #if DEBUG

@@ -379,7 +379,9 @@ background-session registration, or migration/recovery work.
       improvement must not trigger another recovery of that attempt in the same process.
 - [ ] #409 negative controls: uniformly slow networking, network loss, near-complete tasks,
       bodies over 256 MiB, unknown relaunch provenance, queue pause, inactivity during persistence,
-      and admission settings 1/3/5. Restore connectivity before baseline and confirm a subsequent
+      and admission settings 1/3/5. Hold a competing path lease or fail persistence beyond three
+      seconds, then restore it without a scene change: the missing interval must refill in the same
+      attempt beside its live sibling, with no extra one-shot budget spent. Restore connectivity before baseline and confirm a subsequent
       uninterrupted window is eligible; interrupt inside that window and confirm deferral. Reactivate
       after inactivity during replacement persistence: the missing head must resume beside its live
       sibling without another recovery budget. Race a sibling finish after claim and before refill:

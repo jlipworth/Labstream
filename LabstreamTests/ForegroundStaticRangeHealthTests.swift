@@ -267,9 +267,18 @@ struct ForegroundStaticRangeHealthTests {
             #expect(store.ownsAttempt(key))
             #expect(await session.healthTasksForTesting().contains { $0.taskIdentifier == tail.taskIdentifier })
             if fails {
+                // Persistence stays unavailable well beyond the former three-second cutoff.
+                // The retry cadence grows to 30 s and remains capped, with one pending timer.
+                for (second, next) in [(UInt64(71), UInt64(73)), (73, 77), (77, 85),
+                                       (85, 101), (101, 131), (131, 161)] {
+                    try #require(await wait { hasTimer(clock, at: second) })
+                    clock.advance(to: second)
+                    try #require(await wait { hasTimer(clock, at: next) })
+                    #expect(clock.state.withLock { $0.timers.filter { $0.0.kind == .foregroundHealth }.count } == 1)
+                    #expect(await requests.count == 2)
+                }
                 failWrite.withLock { $0 = false }
-                try #require(await wait { hasTimer(clock, at: 71) })
-                clock.advance(to: 71)
+                clock.advance(to: 161)
                 try #require(await requests.waitForCount(3).count == 3)
                 let live = await session.healthTasksForTesting()
                 #expect(live.count == 2)
@@ -295,9 +304,25 @@ struct ForegroundStaticRangeHealthTests {
         }
     }
 
-    @Test("Competing lease retries are bounded and refill or hand off without a scene transition", arguments: [false, true])
-    func competingLeaseRefill(exhausted: Bool) async throws {
+    @Test("A real manager with full static lanes refills after a long competing lease", arguments: [false, true])
+    @MainActor
+    func competingLeaseRefill(reactivate: Bool) async throws {
         try await withSession { session, store, requests, clock, counters, key in
+            let suite = "health-lease-\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+            defaults.set(1, forKey: PlaybackPreferences.Keys.simultaneousDownloads)
+            let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "health-lease"))
+            let manager = DownloadManager(appModel: model, store: store, session: session,
+                registerForBackgroundEvents: false, preferencesDefaults: defaults)
+            try #require(await manager.awaitStartupRecoveryForTesting())
+            manager.setQueuePausedForTesting(false)
+            manager.activeJobs.insert(key.ratingKey)
+            manager.inFlightAttempts.acquire(key)
+            manager.refreshRecords()
+            #expect(!manager.admissionHasRoom(for: "another-row", lane: .staticFile))
+            // Keep the production onRangeRequestNeeded callback installed. Whole-row backend
+            // retry cannot repair this ordinary gap while retaining the active slot/token.
             let tail = try #require(await session.healthTasksForTesting().max { $0.taskIdentifier < $1.taskIdentifier })
             let lease = Mutex<DownloadPathLease?>(nil)
             defer { if let value = lease.withLock({ $0 }) { store.releasePathLease(value) } }
@@ -309,41 +334,44 @@ struct ForegroundStaticRangeHealthTests {
             }
             let result = P6Acknowledgement<String>()
             session.healthResultForTesting = { result.signal($0) }
-            let handedOff = P6Acknowledgement<Bool>()
-            session.onRangeRequestNeeded = { handedKey, reason, _ in
-                handedOff.signal(handedKey == key && reason == .requestRebuildNeeded)
-            }
             try await baseline(session, clock)
-            counters.withLock { $0[tail.taskIdentifier] = 60 * 1_024 * 1_024 }
+            counters.withLock { $0[tail.taskIdentifier] = 3 * 1_024 * 1_024 } // Live crawling sibling.
             clock.advance(to: 70)
             #expect(await result.wait(seconds: 3) == "refill_deferred")
             let acquired = try #require(lease.withLock { $0 })
-            #expect(await requests.count == 2)
-            // Completion callbacks cannot spin on a prerequisite that is still unavailable.
-            await session.drainRangeIOForTesting()
-            #expect(await requests.count == 2)
-            if exhausted {
-                for second: UInt64 in 71...73 {
-                    try #require(await wait { hasTimer(clock, at: second) })
-                    clock.advance(to: second)
-                    await session.drainRangeIOForTesting()
-                }
-                #expect(await handedOff.wait(seconds: 3) == true)
-                clock.advance(to: 90)
+            for (second, next) in [(UInt64(71), UInt64(73)), (73, 77), (77, 85)] {
+                try #require(await wait { hasTimer(clock, at: second) })
+                clock.advance(to: second)
+                try #require(await wait { hasTimer(clock, at: next) })
                 await session.drainRangeIOForTesting()
                 #expect(await requests.count == 2)
-                #expect(await session.healthTasksForTesting().contains { $0.taskIdentifier == tail.taskIdentifier })
-                #expect(session.healthBookkeepingForTesting.used == 1)
-                return
             }
+            #expect(session.healthBookkeepingForTesting.used == 1)
+            #expect(manager.inFlightAttempts.owns(key))
+            #expect(!manager.admissionHasRoom(for: "another-row", lane: .staticFile))
+            if reactivate { session.noteStaticRangeHealthActivity(false) }
+            // Release at second 78, between retry deadlines. The real release must wake it
+            // without advancing the next timer or creating a new attempt/budget.
+            clock.advance(to: 78)
             store.releasePathLease(acquired)
             lease.withLock { $0 = nil }
-            try #require(await wait { hasTimer(clock, at: 71) })
-            clock.advance(to: 71)
+            await session.drainRangeIOForTesting()
+            if reactivate {
+                #expect(await requests.count == 2)
+                clock.advance(to: 85)
+                await session.drainRangeIOForTesting()
+                #expect(!hasTimer(clock, at: 86)) // No inactive retry chain.
+                session.noteForegroundAuthorization()
+                session.noteStaticRangeHealthActivity(true)
+                session.observeStaticRangeHealthAfterReconciliation()
+            }
             try #require(await requests.waitForCount(3).count == 3)
             let live = await session.healthTasksForTesting()
             #expect(live.count == 2)
             #expect(live.contains { $0.taskIdentifier == tail.taskIdentifier })
+            #expect(store.record(for: key)?.attemptID == key.attemptID)
+            #expect(manager.inFlightAttempts.owns(key))
+            #expect(manager.activeJobs.contains(key.ratingKey))
             #expect(session.healthBookkeepingForTesting.used == 1)
         }
     }
@@ -383,6 +411,33 @@ struct ForegroundStaticRangeHealthTests {
             session.endBackgroundCompletionOperationForTesting()
             clock.advance(to: 71)
             #expect(await requests.waitForCount(3).count == 3)
+        }
+    }
+
+    @Test("Physical completion wakes a retained intent after claim without a timer or scene edge")
+    func expiredPhysicalOperationAfterClaim() async throws {
+        try await withSession { session, _, requests, clock, _, _ in
+            defer {
+                session.healthDidClaimForTesting = nil
+                session.endBackgroundCompletionOperationForTesting()
+            }
+            session.healthDidClaimForTesting = {
+                session.noteBackgroundCompletionHandlerStored(identifier: BackgroundDownloadSession.identifier)
+                session.beginBackgroundCompletionOperationForTesting()
+                clock.advance(to: 110)
+                session.noteForegroundAuthorization() // The expired physical operation still fences work.
+            }
+            let result = P6Acknowledgement<String>()
+            session.healthResultForTesting = { result.signal($0) }
+            try await baseline(session, clock)
+            clock.advance(to: 70)
+            #expect(await result.wait(seconds: 3) == "refill_deferred")
+            await session.drainRangeIOForTesting()
+            #expect(await requests.count == 2)
+            #expect(clock.state.withLock { $0.timers.allSatisfy { $0.0.kind != .foregroundHealth } })
+            session.endBackgroundCompletionOperationForTesting()
+            #expect(await requests.waitForCount(3).count == 3)
+            #expect(session.healthBookkeepingForTesting.used == 1)
         }
     }
 
@@ -541,7 +596,7 @@ struct ForegroundStaticRangeHealthTests {
         clock.advance(to: 10)
         try #require(await wait { hasTimer(clock, at: 70) })
     }
-    private func wait(_ predicate: () -> Bool) async -> Bool {
+    private func wait(isolation: isolated (any Actor)? = #isolation, _ predicate: () -> Bool) async -> Bool {
         for _ in 0..<300 {
             if predicate() { return true }
             try? await Task.sleep(for: .milliseconds(10))

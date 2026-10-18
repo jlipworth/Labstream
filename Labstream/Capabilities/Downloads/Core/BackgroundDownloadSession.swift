@@ -347,6 +347,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var healthResults: [Int: HealthCandidate] = [:]
     // A cancelled interval still needs refill even when reattach finds a live sibling.
     private var healthRefills: [DownloadAttemptKey: (HealthCandidate, DelayedRangeRetryCurrency, retryAt: Double)] = [:]
+    private var healthRefillTimerScheduled = false
+    private enum HealthRefillError: Error { case leaseBusy }
     private struct HealthCandidate {
         let task: URLSessionTask
         let entry: RangeTransfer
@@ -360,6 +362,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         var newID = -1
         var resultStart: Double = 0
         var refillRetries = 0
+        var waitingForLease = false
+        var waitingForPhysicalOperation = false
     }
 
     private struct RangeTransfer {
@@ -581,6 +585,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         return inflight.values.contains { $0.ratingKey == ratingKey }
             || rangeInflight.values.contains { $0.ratingKey == ratingKey }
             || (pendingStaticRangeWorkCounts[ratingKey] ?? 0) > 0
+            || healthRefills.keys.contains { $0.ratingKey == ratingKey }
     }
 
     private func beginPendingStaticRangeWork(ratingKey: String) {
@@ -770,6 +775,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         self.injectedPlaybackValidator = playbackValidator
         self.releaseBackgroundCompletion = releaseBackgroundCompletion
         super.init()
+        store.setPathLeaseReleaseHandler { [weak self] lease in
+            self?.rangeIOQueue.async { [weak self] in self?.resumeDeferredHealthRefill(releasedPaths: lease.relativePaths) }
+        }
         backgroundWakeCoordinator.setEffectHandler { [weak self] drain in
             self?.applyBackgroundWakeDrain(drain)
         }
@@ -1694,6 +1702,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
         _ = resolveLifecycleSubmission(submitLifecycleEvent(.transferRebuilding, for: key, phase: "health_reissue"))
         guard healthIsAuthorized(candidate.generation) else {
+            lock.withLock { healthCurrent?.waitingForPhysicalOperation = backgroundWakeCoordinator.isWindingDown }
             finishHealthResult("refill_deferred", generation: candidate.generation); return
         }
         do {
@@ -1705,19 +1714,27 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 lock.withLock { healthRefills.removeValue(forKey: key) }
                 finishHealthResult("body_settled", generation: candidate.generation)
             }
-        } catch { finishHealthResult("refill_deferred", generation: candidate.generation) }
+        } catch {
+            lock.withLock { healthCurrent?.waitingForLease = error is HealthRefillError }
+            finishHealthResult("refill_deferred", generation: candidate.generation)
+        }
     }
 
-    private func resumeDeferredHealthRefill() {
+    private func resumeDeferredHealthRefill(releasedPaths: Set<String> = []) {
+        defer { scheduleDeferredHealthRefill() }
         let intent = lock.withLock { () -> (HealthCandidate, DelayedRangeRetryCurrency)? in
             guard healthActive, healthCurrent == nil, !backgroundWakeCoordinator.isWindingDown,
                   let (saved, currency, _) = healthRefills.values.first(where: {
                       $0.0.generation != healthGeneration || $0.retryAt <= healthNow
+                          || ($0.0.waitingForLease && releasedPaths.contains($0.0.entry.workingURL.lastPathComponent))
+                          || $0.0.waitingForPhysicalOperation
                   }) else { return nil }
             var candidate = saved
             candidate.generation = healthGeneration
             candidate.newID = -1
-            candidate.refillRetries += 1
+            candidate.refillRetries = min(5, candidate.refillRetries + 1)
+            candidate.waitingForLease = false
+            candidate.waitingForPhysicalOperation = false
             healthCurrent = candidate
             healthRefills[candidate.entry.attemptKey] = (candidate, currency, .infinity)
             pendingStaticRangeWorkCounts[candidate.entry.ratingKey, default: 0] += 1
@@ -1754,32 +1771,40 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             defer { healthCurrent = nil }; return healthCurrent
         }
         guard let candidate else { return }
-        // Failure is retry-ready only after a delay: physical-operation callbacks must not
-        // immediately loop on the same failed flush/lease. Never cancel or spend budget again.
-        let deferred = lock.withLock { () -> DelayedRangeRetryCurrency? in
+        // Retain continuation authority until coverage or explicit retirement. Only real lease/
+        // physical release bypasses backoff; persistence completion itself must not spin retries.
+        lock.withLock {
             let key = candidate.entry.attemptKey
-            guard ["refill_deferred", "resume_deferred"].contains(outcome),
-                  let (_, currency, _) = healthRefills[key] else { return nil }
-            if candidate.refillRetries < 3 {
-                healthRefills[key] = (candidate, currency, healthNow + 1)
-            } else {
-                healthRefills.removeValue(forKey: key)
+            if ["refill_deferred", "resume_deferred"].contains(outcome),
+               let (_, currency, _) = healthRefills[key] {
+                let delay = min(30, pow(2, Double(candidate.refillRetries)))
+                healthRefills[key] = (candidate, currency, healthNow + delay)
             }
-            return currency
         }
         emitHealthResult(candidate, outcome: outcome)
-        if let deferred {
-            if candidate.refillRetries < 3 {
-                scheduleHealth(after: 1) { [weak self] in
-                    self?.rangeIOQueue.async { [weak self] in self?.resumeDeferredHealthRefill() }
-                }
-            } else if isDelayedRetryCurrent(deferred), store.attemptAdmitsWork(deferred.attemptKey) {
-                // Persistent failure belongs to ordinary missing-interval/backend recovery.
-                requestRangeRebuild(for: deferred.attemptKey, reason: .requestRebuildNeeded, currency: deferred)
-            }
-        }
+        scheduleDeferredHealthRefill()
         runNextHealthCandidate()
         resumeDeferredHealthRefill()
+    }
+
+    /// At most one retry timer is registered, even when release events beat its deadline.
+    /// Inactivity stops the chain; reconciliation consumes retained intents on next activation.
+    private func scheduleDeferredHealthRefill() {
+        let delay = lock.withLock { () -> Double? in
+            guard healthActive, healthCurrent == nil, !backgroundWakeCoordinator.isWindingDown,
+                  !healthRefillTimerScheduled,
+                  let next = healthRefills.values.map(\.retryAt).filter(\.isFinite).min() else { return nil }
+            healthRefillTimerScheduled = true
+            return max(1, next - healthNow)
+        }
+        guard let delay else { return }
+        scheduleHealth(after: delay) { [weak self] in
+            self?.rangeIOQueue.async { [weak self] in
+                guard let self else { return }
+                self.lock.withLock { self.healthRefillTimerScheduled = false }
+                self.resumeDeferredHealthRefill()
+            }
+        }
     }
 
     private func emitHealthResult(_ candidate: HealthCandidate, outcome: String, postBytes: Int = 0) {
@@ -1849,6 +1874,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                             for: key, phase: "health_resume_deferred"))
                     }
                     if lock.withLock({ healthCurrent?.newID == task.taskIdentifier }) {
+                        lock.withLock { healthCurrent?.waitingForPhysicalOperation = backgroundWakeCoordinator.isWindingDown }
                         finishHealthResult("resume_deferred", generation: healthAuthorization)
                     }
                 }
@@ -3009,7 +3035,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         var offset = 0
         do {
             guard case .acquired(let lease) = store.tryAcquirePathLease(for: attemptKey,
-                relativePaths: [destination.lastPathComponent], purpose: .append) else { throw CancellationError() }
+                relativePaths: [destination.lastPathComponent], purpose: .append) else {
+                if healthAuthorization != nil { throw HealthRefillError.leaseBusy }
+                throw CancellationError()
+            }
             defer { store.releasePathLease(lease) }
             guard store.attemptAdmitsWork(attemptKey), !isRangeHalted(for: attemptKey),
                   store.attemptWorkingFileURL(for: attemptKey) == destination else { throw CancellationError() }
