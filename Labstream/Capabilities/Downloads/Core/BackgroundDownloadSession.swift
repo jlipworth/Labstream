@@ -210,7 +210,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
     /// Claimed BEFORE renames; retained through queued append and held manifest publication.
     /// Both orphan sweeps check this under `lock` while deleting.
-    private var claimedRangeBodyURLs: [URL: (key: DownloadAttemptKey, bytes: Int, offset: Int?)] = [:]
+    private var claimedRangeBodyURLs: [URL: (key: DownloadAttemptKey, bytes: Int, offset: Int?, trainEpoch: Int)] = [:]
     /// RatingKeys whose static Range lane must not create replacement work — inserted by
     /// `cancel`/`pause`, checked before each continuation/retry, and cleared on fresh user start/resume.
     /// Without it, a delegate callback racing after `cancel`/`pause` could resurrect a deleted file.
@@ -346,7 +346,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var healthCurrent: HealthCandidate?
     private var healthResults: [Int: HealthCandidate] = [:]
     // A cancelled interval still needs refill even when reattach finds a live sibling.
-    private var healthRefills: [DownloadAttemptKey: (HealthCandidate, DelayedRangeRetryCurrency)] = [:]
+    private var healthRefills: [DownloadAttemptKey: (HealthCandidate, DelayedRangeRetryCurrency, retryAt: Double)] = [:]
     private struct HealthCandidate {
         let task: URLSessionTask
         let entry: RangeTransfer
@@ -359,6 +359,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         var discarded = 0
         var newID = -1
         var resultStart: Double = 0
+        var refillRetries = 0
     }
 
     private struct RangeTransfer {
@@ -879,7 +880,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     func installHeldBodyForTesting(_ url: URL, for key: DownloadAttemptKey, offset: Int, length: Int) {
         lock.withLock {
-            claimedRangeBodyURLs[url.standardizedFileURL] = (key, length, offset)
+            claimedRangeBodyURLs[url.standardizedFileURL] = (key, length, offset, rangeTrainEpochs[key] ?? 0)
             heldRangeSegments[key, default: [:]][offset] = (url, length, nil)
         }
     }
@@ -1661,7 +1662,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             pendingStaticRangeWorkCounts[key.ratingKey, default: 0] += 1
             healthUsed.insert(key)
             healthCurrent?.discarded = bytes
-            if let current = healthCurrent { healthRefills[key] = (current, currency) }
+            if let current = healthCurrent { healthRefills[key] = (current, currency, .infinity) }
             healthWaiting.remove(candidate.task.taskIdentifier)
             rangeInflight.removeValue(forKey: candidate.task.taskIdentifier)
             supersededRangeTaskIdentifiers.insert(candidate.task.taskIdentifier)
@@ -1710,12 +1711,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func resumeDeferredHealthRefill() {
         let intent = lock.withLock { () -> (HealthCandidate, DelayedRangeRetryCurrency)? in
             guard healthActive, healthCurrent == nil, !backgroundWakeCoordinator.isWindingDown,
-                  let (saved, currency) = healthRefills.values.first(where: { $0.0.generation != healthGeneration }) else { return nil }
+                  let (saved, currency, _) = healthRefills.values.first(where: {
+                      $0.0.generation != healthGeneration || $0.retryAt <= healthNow
+                  }) else { return nil }
             var candidate = saved
             candidate.generation = healthGeneration
             candidate.newID = -1
+            candidate.refillRetries += 1
             healthCurrent = candidate
-            healthRefills[candidate.entry.attemptKey] = (candidate, currency)
+            healthRefills[candidate.entry.attemptKey] = (candidate, currency, .infinity)
             pendingStaticRangeWorkCounts[candidate.entry.ratingKey, default: 0] += 1
             return (candidate, currency)
         }
@@ -1750,9 +1754,31 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             defer { healthCurrent = nil }; return healthCurrent
         }
         guard let candidate else { return }
+        // Failure is retry-ready only after a delay: physical-operation callbacks must not
+        // immediately loop on the same failed flush/lease. Never cancel or spend budget again.
+        let deferred = lock.withLock { () -> DelayedRangeRetryCurrency? in
+            let key = candidate.entry.attemptKey
+            guard ["refill_deferred", "resume_deferred"].contains(outcome),
+                  let (_, currency, _) = healthRefills[key] else { return nil }
+            if candidate.refillRetries < 3 {
+                healthRefills[key] = (candidate, currency, healthNow + 1)
+            } else {
+                healthRefills.removeValue(forKey: key)
+            }
+            return currency
+        }
         emitHealthResult(candidate, outcome: outcome)
+        if let deferred {
+            if candidate.refillRetries < 3 {
+                scheduleHealth(after: 1) { [weak self] in
+                    self?.rangeIOQueue.async { [weak self] in self?.resumeDeferredHealthRefill() }
+                }
+            } else if isDelayedRetryCurrent(deferred), store.attemptAdmitsWork(deferred.attemptKey) {
+                // Persistent failure belongs to ordinary missing-interval/backend recovery.
+                requestRangeRebuild(for: deferred.attemptKey, reason: .requestRebuildNeeded, currency: deferred)
+            }
+        }
         runNextHealthCandidate()
-        // Each retained intent is retried once per renewed foreground generation.
         resumeDeferredHealthRefill()
     }
 
@@ -1866,7 +1892,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     private func claimRangeBody(_ url: URL, for key: DownloadAttemptKey, bytes: Int, offset: Int? = nil) {
-        lock.withLock { claimedRangeBodyURLs[url.standardizedFileURL] = (key, max(0, bytes), offset) }
+        lock.withLock { claimedRangeBodyURLs[url.standardizedFileURL] = (key, max(0, bytes), offset, rangeTrainEpochs[key] ?? 0) }
     }
 
     private func releaseRangeBodyClaim(_ url: URL) {
@@ -1927,7 +1953,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             var bodies = Dictionary(uniqueKeysWithValues: held.map {
                 ($0.value.url.standardizedFileURL, (offset: Optional($0.key), bytes: $0.value.length))
             })
-            for (url, claim) in claimedRangeBodyURLs where claim.key == key {
+            for (url, claim) in claimedRangeBodyURLs where claim.key == key
+                && claim.trainEpoch == (rangeTrainEpochs[key] ?? 0) {
                 bodies[url] = (claim.offset, claim.bytes)
             }
             // Only complete, nonoverlapping bodies beyond the checkpoint can replace network
@@ -1949,7 +1976,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 creditedThrough = range.upperBound
             }
             let live = rangeInflight.values.filter { $0.attemptKey == key }
-            let pending = claimedRangeBodyURLs.values.filter { $0.key == key }.compactMap { claim in
+            let pending = claimedRangeBodyURLs.values.filter { $0.key == key
+                && $0.trainEpoch == (rangeTrainEpochs[key] ?? 0) }.compactMap { claim in
                 claim.offset.map { StaticRangeSegmentPlan(offset: $0, length: claim.bytes) }
             }
             let coverage = held.map { StaticRangeSegmentPlan(offset: $0.key, length: $0.value.length) }
@@ -1964,7 +1992,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 guard let offset = body.offset else { return true }
                 return offset > checkpoint - body.bytes
             }.map(\.bytes)
-            let peak = (pendingBodySizes + live.map { $0.segmentLength ?? $0.bodyBytesWritten }
+            let retiringBodySizes = claimedRangeBodyURLs.values.filter { $0.key == key
+                && $0.trainEpoch != (rangeTrainEpochs[key] ?? 0) }.map(\.bytes)
+            let peak = (pendingBodySizes + retiringBodySizes + live.map { $0.segmentLength ?? $0.bodyBytesWritten }
                         + upcoming.compactMap(\.length)).max() ?? 0
             return (heldBytes, peak)
         }
@@ -2678,7 +2708,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 }
                 lock.lock()
                 let alreadyRestored = heldRangeSegments[attemptKey]?[manifest.offset]?.url == url
-                claimedRangeBodyURLs[url.standardizedFileURL] = (attemptKey, manifest.length, manifest.offset)
+                claimedRangeBodyURLs[url.standardizedFileURL] = (attemptKey, manifest.length, manifest.offset, rangeTrainEpochs[attemptKey] ?? 0)
                 heldRangeSegments[attemptKey, default: [:]][manifest.offset] =
                     (url: url, length: manifest.length, validator: manifest.validator)
                 lock.unlock()
@@ -3080,7 +3110,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
         // A finished delegate body is coverage before the assembly queue receives it. Held
         // bodies also retain claims, so count each interval once against the depth-two budget.
-        for claim in claimedRangeBodyURLs.values where claim.key == attemptKey {
+        // Old train claims retain physical ownership until apply retires them, but cover no new work.
+        for claim in claimedRangeBodyURLs.values where claim.key == attemptKey
+            && claim.trainEpoch == (rangeTrainEpochs[attemptKey] ?? 0) {
             guard let offset = claim.offset, claim.bytes > 0 else { continue }
             let plan = StaticRangeSegmentPlan(offset: offset, length: claim.bytes)
             if !liveSegments.contains(plan) { liveSegments.append(plan) }
@@ -4553,7 +4585,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         var handedOffStash = false
         defer { if !handedOffStash { releaseRangeBodyClaim(stash) } }
         lock.lock()
-        claimedRangeBodyURLs[stash.standardizedFileURL] = (entry.attemptKey, bodyBytes, entry.baseOffset)
+        let bodyTrainEpoch = rangeTrainEpochs[entry.attemptKey] ?? 0
+        claimedRangeBodyURLs[stash.standardizedFileURL] = (entry.attemptKey, bodyBytes, entry.baseOffset, bodyTrainEpoch)
         rangeInflight.removeValue(forKey: taskIdentifier)
         healthWaiting.remove(taskIdentifier)
         healthInvalidSamples.remove(taskIdentifier)
@@ -4564,7 +4597,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         loggedProgressMilestones.removeValue(forKey: taskIdentifier)
         lastRangeProgressDiagnostic.removeValue(forKey: taskIdentifier)
         let haltKind = rangeHaltKinds[entry.attemptKey]
-        let bodyTrainEpoch = rangeTrainEpochs[entry.attemptKey] ?? 0
         lock.unlock()
         defer { endPendingStaticRangeWork(ratingKey: entry.ratingKey) }
         #if DEBUG

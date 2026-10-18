@@ -193,9 +193,14 @@ healthy sibling, resource validator, train epoch and 512 MiB/depth-two sizing su
 failure leaves the original task running. Inactivity or P6 winding-down at the real persistence-to-
 resume edge parks the replacement with an exact-attempt refill intent. Renewed foreground
 reconciliation runs the gap planner even beside a live sibling, without spending another recovery.
-Finished bodies remain planner coverage throughout the delegate-to-assembly handoff, including
-before they become held. Expired physical workers retain their leases and defer recovery. No health
-state or revocation history is persisted, so a kill loses provenance and the experimental budget; normal reattachment may adopt the old task.
+Temporary refill or resume failures also retry within the same activation, at one-second intervals
+for at most three retries, then hand off to ordinary request recovery. These retries preserve the
+sibling and spend no additional health-recovery budget. Finished bodies remain planner coverage
+throughout the delegate-to-assembly handoff, including before they become held; an invalidated
+train's pending bodies retain cleanup ownership but cannot cover replacement requests. Expired
+physical workers retain their leases and defer recovery. No health state or revocation history is
+persisted, so a kill loses provenance and the experimental budget; normal reattachment may adopt
+the old task.
 
 Diagnostics extend `downloads.range_start` with creation context, session kind and registration
 phase, and distinguish actual `downloads.range_resume`. One `downloads.range_health_reissue`

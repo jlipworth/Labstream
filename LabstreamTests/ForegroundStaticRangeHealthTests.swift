@@ -110,6 +110,38 @@ struct ForegroundStaticRangeHealthTests {
         }
     }
 
+    @Test("Changed-resource restart excludes both pending bodies before held manifests exist")
+    func pendingBodiesFromInvalidatedTrain() async throws {
+        try await withSession(bytes: 3 * segment, initialBytes: segment) { session, store, requests, _, _, key in
+            _ = store.submitRangeValidator(for: key, "etag:old")
+            let originals = await requests.waitForCount(2)
+            session.holdRangeIOForTesting()
+            var held = true
+            defer { if held { session.releaseRangeIOForTesting() } }
+            for index in 0..<2 {
+                let offset = (index + 1) * segment
+                let request = try #require(originals.first { $0.range == "bytes=\(offset)-\(offset + segment - 1)" })
+                // Validator rejection precedes length validation; tiny bodies keep this fixture cheap.
+                request.finish(status: 206, body: Data(repeating: 7, count: 64), headers: [
+                    "Content-Range": "bytes \(offset)-\(offset + segment - 1)/\(3 * segment)", "ETag": "\"new\"",
+                ])
+                try #require(await wait { session.claimedRangeBodiesForTesting().count == index + 1 })
+            }
+            #expect(store.record(for: key)?.metadata?.heldRangeSegments?.isEmpty != false)
+            held = false
+            session.releaseRangeIOForTesting()
+            let all = await requests.waitForCount(4)
+            #expect(Array(all.dropFirst(2)).compactMap(\.range).sorted() == [
+                "bytes=0-\(segment - 1)", "bytes=\(segment)-\(2 * segment - 1)",
+            ])
+            try #require(await wait { session.claimedRangeBodiesForTesting().isEmpty })
+            #expect(await session.healthTasksForTesting().count == 2)
+            #expect(store.record(for: key)?.bytes == 0)
+            #expect(store.rangeValidator(for: key) == nil)
+            #expect(store.record(for: key)?.metadata?.heldRangeSegments?.isEmpty != false)
+        }
+    }
+
     @Test("Connectivity restored before baseline is eligible; interruption inside measurement defers", arguments: [false, true])
     func connectivityWindow(interruptDuringWindow: Bool) async throws {
         try await withSession(bytes: segment) { session, _, requests, clock, counters, _ in
@@ -206,7 +238,7 @@ struct ForegroundStaticRangeHealthTests {
         }
     }
 
-    @Test("Inactivity during the real resume flush parks then refills the missing head beside a live sibling", arguments: [false, true])
+    @Test("Inactivity or flush failure parks then refills the missing head beside a live sibling", arguments: [false, true])
     func inactiveOrFailedFlush(fails: Bool) async throws {
         let hold = P6Hold()
         let failWrite = Mutex(false)
@@ -234,7 +266,16 @@ struct ForegroundStaticRangeHealthTests {
             #expect(await requests.count == 2)
             #expect(store.ownsAttempt(key))
             #expect(await session.healthTasksForTesting().contains { $0.taskIdentifier == tail.taskIdentifier })
-            if !fails {
+            if fails {
+                failWrite.withLock { $0 = false }
+                try #require(await wait { hasTimer(clock, at: 71) })
+                clock.advance(to: 71)
+                try #require(await requests.waitForCount(3).count == 3)
+                let live = await session.healthTasksForTesting()
+                #expect(live.count == 2)
+                #expect(live.contains { $0.taskIdentifier == tail.taskIdentifier })
+                #expect(session.healthBookkeepingForTesting.used == 1)
+            } else {
                 session.noteForegroundAuthorization()
                 session.noteStaticRangeHealthActivity(true)
                 session.observeStaticRangeHealthAfterReconciliation()
@@ -251,6 +292,59 @@ struct ForegroundStaticRangeHealthTests {
                 try #require(await evaluated.wait(seconds: 3) == true)
                 #expect(await requests.count == 3)
             }
+        }
+    }
+
+    @Test("Competing lease retries are bounded and refill or hand off without a scene transition", arguments: [false, true])
+    func competingLeaseRefill(exhausted: Bool) async throws {
+        try await withSession { session, store, requests, clock, counters, key in
+            let tail = try #require(await session.healthTasksForTesting().max { $0.taskIdentifier < $1.taskIdentifier })
+            let lease = Mutex<DownloadPathLease?>(nil)
+            defer { if let value = lease.withLock({ $0 }) { store.releasePathLease(value) } }
+            session.healthDidClaimForTesting = {
+                let path = store.attemptWorkingFileURL(for: key)!.lastPathComponent
+                if case .acquired(let value) = store.tryAcquirePathLease(for: key, relativePaths: [path], purpose: .reconcile) {
+                    lease.withLock { $0 = value }
+                }
+            }
+            let result = P6Acknowledgement<String>()
+            session.healthResultForTesting = { result.signal($0) }
+            let handedOff = P6Acknowledgement<Bool>()
+            session.onRangeRequestNeeded = { handedKey, reason, _ in
+                handedOff.signal(handedKey == key && reason == .requestRebuildNeeded)
+            }
+            try await baseline(session, clock)
+            counters.withLock { $0[tail.taskIdentifier] = 60 * 1_024 * 1_024 }
+            clock.advance(to: 70)
+            #expect(await result.wait(seconds: 3) == "refill_deferred")
+            let acquired = try #require(lease.withLock { $0 })
+            #expect(await requests.count == 2)
+            // Completion callbacks cannot spin on a prerequisite that is still unavailable.
+            await session.drainRangeIOForTesting()
+            #expect(await requests.count == 2)
+            if exhausted {
+                for second: UInt64 in 71...73 {
+                    try #require(await wait { hasTimer(clock, at: second) })
+                    clock.advance(to: second)
+                    await session.drainRangeIOForTesting()
+                }
+                #expect(await handedOff.wait(seconds: 3) == true)
+                clock.advance(to: 90)
+                await session.drainRangeIOForTesting()
+                #expect(await requests.count == 2)
+                #expect(await session.healthTasksForTesting().contains { $0.taskIdentifier == tail.taskIdentifier })
+                #expect(session.healthBookkeepingForTesting.used == 1)
+                return
+            }
+            store.releasePathLease(acquired)
+            lease.withLock { $0 = nil }
+            try #require(await wait { hasTimer(clock, at: 71) })
+            clock.advance(to: 71)
+            try #require(await requests.waitForCount(3).count == 3)
+            let live = await session.healthTasksForTesting()
+            #expect(live.count == 2)
+            #expect(live.contains { $0.taskIdentifier == tail.taskIdentifier })
+            #expect(session.healthBookkeepingForTesting.used == 1)
         }
     }
 
@@ -454,7 +548,7 @@ struct ForegroundStaticRangeHealthTests {
         }
         return predicate()
     }
-    private func withSession(index: DownloadStore.IndexPersistence = .live, bytes: Int? = nil,
+    private func withSession(index: DownloadStore.IndexPersistence = .live, bytes: Int? = nil, initialBytes: Int = 0,
         isolation: isolated (any Actor)? = #isolation,
         _ body: (BackgroundDownloadSession, DownloadStore, HeldRangeRequests, P6WakeClock,
                  HealthCounters, DownloadAttemptKey) async throws -> Void) async throws {
@@ -464,6 +558,12 @@ struct ForegroundStaticRangeHealthTests {
         row.metadata?.sourcePartSize = bytes ?? 2 * segment
         let key = DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: row.attemptID!)
         try #require(store.createAttemptOwnedRecord(row, attemptID: key.attemptID) == .committed(key))
+        if initialBytes > 0 {
+            let working = try fixture.working(store, key)
+            let handle = try FileHandle(forWritingTo: working)
+            try handle.truncate(atOffset: UInt64(initialBytes))
+            try handle.close()
+        }
         let requests = HeldRangeRequests()
         HealthHeldURLProtocol.requests = requests
         let clock = P6WakeClock()
