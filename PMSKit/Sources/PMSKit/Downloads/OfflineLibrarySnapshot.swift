@@ -47,6 +47,7 @@ public struct OfflineDownloadRowSnapshot: Identifiable, Sendable, Equatable {
     public let attemptID: DownloadAttemptID?
     public let title: String
     public let subtitle: String?
+    /// Requested quality for unfinished rows; finished quality is part of the status summary.
     public let qualityText: String?
     public let status: DownloadStatus
     public let lifecycle: DownloadLifecycle
@@ -86,7 +87,7 @@ public struct OfflineDownloadRowSnapshot: Identifiable, Sendable, Equatable {
         self.attemptID = attemptID
         self.title = title
         self.subtitle = subtitle
-        self.qualityText = qualityText
+        self.qualityText = status == .complete || status == .unverified ? nil : qualityText
         self.status = status
         self.lifecycle = lifecycle ?? .structural(from: status, admissionPending: false, finalizingEvidence: false)
         self.isWaitingForAdmission = isWaitingForAdmission

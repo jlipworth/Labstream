@@ -19,6 +19,7 @@ public enum DownloadRowStatusCaptionPolicy {
         public let resumeMode: DownloadResumeMode?
         public let isServerPreparedVersion: Bool
         public let resolutionLabel: String?
+        public let durationMs: Int?
         public let displayFraction: DownloadProgressDisplay.Fraction?
         public let isActive: Bool
         public let isBackendConfigured: Bool
@@ -54,7 +55,8 @@ public enum DownloadRowStatusCaptionPolicy {
                     hasServerPrepQueueTitle: Bool,
                     isRetrying: Bool,
                     failureCaption: String?,
-                    lifecycle: DownloadLifecycle? = nil) {
+                    lifecycle: DownloadLifecycle? = nil,
+                    durationMs: Int? = nil) {
             self.lifecycle = lifecycle
             self.status = status
             self.progress = progress
@@ -66,6 +68,7 @@ public enum DownloadRowStatusCaptionPolicy {
             self.resumeMode = resumeMode
             self.isServerPreparedVersion = isServerPreparedVersion
             self.resolutionLabel = resolutionLabel
+            self.durationMs = durationMs
             self.displayFraction = displayFraction
             self.isActive = isActive
             self.isBackendConfigured = isBackendConfigured
@@ -118,7 +121,8 @@ public enum DownloadRowStatusCaptionPolicy {
                       hasServerPrepQueueTitle: record.metadata?.optimizeQueueTitle?.isEmpty == false,
                       isRetrying: isRetrying,
                       failureCaption: failureCaption,
-                      lifecycle: record.lifecycle)
+                      lifecycle: record.lifecycle,
+                      durationMs: record.metadata?.duration)
         }
     }
 
@@ -197,7 +201,8 @@ public enum DownloadRowStatusCaptionPolicy {
             return DownloadRowDisplayPolicy.completeCaption(isUnverified: isUnverified,
                                                             bytes: context.captionBytes,
                                                             sideAssetBytes: context.sideAssetBytes,
-                                                            resolutionLabel: context.resolutionLabel)
+                                                            resolutionLabel: context.resolutionLabel,
+                                                            durationMs: context.durationMs)
         case .transferFinalizing:
             return transferFinalizingCaption(context)
         case .activeStaticZeroByteTransfer:

@@ -4,6 +4,14 @@ import Testing
 
 @Suite("Download row status caption policy")
 struct DownloadRowStatusCaptionPolicyTests {
+    @Test(arguments: [DownloadStatus.complete, .unverified])
+    func finishedCaptions(status: DownloadStatus) {
+        let word = status == .complete ? "Downloaded" : "Not verified"
+        #expect(DownloadRowStatusCaptionPolicy.caption(context(status: status,
+            bytes: 1_600_000_000, resolutionLabel: "1080p"))
+            == "\(word) • 1080p • 1.6 GB")
+    }
+
     @Test("Static byte-range zero-byte active rows stay in download language")
     func activeStaticZeroByteCaption() {
         let caption = DownloadRowStatusCaptionPolicy.caption(context(

@@ -108,15 +108,33 @@ struct DownloadRowDisplayPolicyTests {
         #expect(caption.contains("MB"))
     }
 
-    @Test("Complete caption preserves unverified warning and resolution")
+    @Test("Finished summaries order status, resolution, artifact bitrate and media plus extras")
     func completeCaption() {
-        let caption = DownloadRowDisplayPolicy.completeCaption(isUnverified: true,
-                                                               bytes: 1_000_000,
-                                                               sideAssetBytes: 25_000,
-                                                               resolutionLabel: "1080p")
-        #expect(caption.hasPrefix("Downloaded — playback not verified • 1 MB media • "))
-        #expect(caption.contains("25 KB extras"))
-        #expect(caption.hasSuffix(" • 1080p"))
+        #expect(DownloadRowDisplayPolicy.completeCaption(isUnverified: false,
+            bytes: 1_600_000_000, sideAssetBytes: 12_000_000,
+            resolutionLabel: "1080p", durationMs: 2_245_614)
+            == "Downloaded • 1080p • 5.7 Mbps avg • 1.6 GB + 12 MB extras")
+        #expect(DownloadRowDisplayPolicy.completeCaption(isUnverified: false,
+            bytes: 1_600_000_000, resolutionLabel: "1080p", durationMs: 2_245_614)
+            == "Downloaded • 1080p • 5.7 Mbps avg • 1.6 GB")
+        #expect(DownloadRowDisplayPolicy.completeCaption(isUnverified: true,
+            bytes: 1_800_000_000, resolutionLabel: "1080p", durationMs: 2_360_656)
+            == "Not verified • 1080p • 6.1 Mbps avg • 1.8 GB")
+    }
+
+    @Test("Finished summaries omit unknown resolution, runtime and bytes")
+    func incompleteSummaryFacts() {
+        #expect(DownloadRowDisplayPolicy.completeCaption(isUnverified: false,
+            bytes: 1_600_000_000, resolutionLabel: nil, durationMs: 2_245_614)
+            == "Downloaded • 5.7 Mbps avg • 1.6 GB")
+        #expect(DownloadRowDisplayPolicy.completeCaption(isUnverified: false,
+            bytes: 1_600_000_000, resolutionLabel: "1080p")
+            == "Downloaded • 1080p • 1.6 GB")
+        #expect(DownloadRowDisplayPolicy.completeCaption(isUnverified: true,
+            bytes: 0, resolutionLabel: " ", durationMs: 2_245_614) == "Not verified")
+        #expect(DownloadRowDisplayPolicy.completeCaption(isUnverified: false,
+            bytes: 0, sideAssetBytes: 12_000_000, resolutionLabel: nil)
+            == "Downloaded • 12 MB extras")
     }
 
     @Test("Requested profile text trims empty labels")
@@ -160,7 +178,7 @@ struct DownloadRowDisplayPolicyTests {
                 == "Requested: 1080p 8 Mbps")
     }
 
-    @Test("Completed quality text derives average from local media bytes and runtime")
+    @Test("Completed rows omit the separate quality line")
     func completedQualityTextUsesLocalArtifactAverage() {
         let metadata = OfflineMetadata(ratingKey: "plex:item",
                                        title: "Title",
@@ -179,10 +197,10 @@ struct DownloadRowDisplayPolicyTests {
         #expect(DownloadRowDisplayPolicy.averageDownloadedBitrateKbps(
             bytes: complete.bytes, durationMs: metadata.duration) == 2_686)
         #expect(DownloadRowDisplayPolicy.downloadQualityText(for: complete)
-                == "Downloaded: 2.7 Mbps avg")
+                == nil)
     }
 
-    @Test("Completed quality text ignores stale converted-source bitrate")
+    @Test("Unverified rows omit requested and stale source bitrate lines")
     func completedQualityTextIgnoresStaleBackendBitrate() {
         let metadata = OfflineMetadata(ratingKey: "emby:item",
                                        title: "Title",
@@ -195,11 +213,11 @@ struct DownloadRowDisplayPolicyTests {
                                       localURL: URL(fileURLWithPath: "/tmp/title.mp4"),
                                       bytes: 2_164_047_744,
                                       progress: 1,
-                                      status: .complete,
+                                      status: .unverified,
                                       metadata: metadata)
 
         #expect(DownloadRowDisplayPolicy.downloadQualityText(for: complete)
-                == "Downloaded: 5.7 Mbps avg")
+                == nil)
     }
 
     private func record(bytes: Int,

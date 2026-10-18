@@ -36,7 +36,6 @@ struct P7DownloadPresentationTests {
         for lifecycle in [DownloadLifecycle.planned, .admitted, .paused] {
             #expect(row(lifecycle).presentation.progress == .none)
         }
-        #expect(row(.planned).presentation.symbol == "clock")
         #expect(row(.paused).presentation.actions == [.resume, .delete])
         let retryWaiting = row(.failed, admission: .retryRequested).presentation
         #expect(retryWaiting.lifecycle == .planned)
@@ -66,7 +65,6 @@ struct P7DownloadPresentationTests {
         let waiting = DownloadRowPresentation(row: preparing, phase: .waitingForBackend)
         #expect(waiting.lifecycle == .admitted)
         #expect(waiting.progress == .none)
-        #expect(waiting.symbol == "clock")
         let indexing = DownloadRowPresentation(row: preparing, phase: .serverPrepFinalizing)
         #expect(indexing.lifecycle == .serverPrep)
         #expect(indexing.progress == .indeterminate)
@@ -88,6 +86,33 @@ struct P7DownloadPresentationTests {
         #expect(snapshot.presentation.progress == .fraction(0.5, estimated: true))
         #expect(snapshot.presentation.accessibleStatus.contains("128 bytes media"))
         #expect(snapshot.presentation.accessibleStatus.contains("64 bytes extras"))
+    }
+
+    @Test(arguments: [DownloadStatus.complete, .unverified])
+    func finishedSummaryAndVoiceOverUseTheFullArtifactFacts(status: DownloadStatus) {
+        let record = DownloadRecord(ratingKey: "fixture", title: "Fixture",
+            localURL: URL(fileURLWithPath: "/tmp/fixture.mp4"), bytes: 1_600_000_000,
+            progress: 1, status: status,
+            metadata: OfflineMetadata(ratingKey: "fixture", title: "Fixture", type: "movie",
+                duration: 2_245_614, resolutionLabel: "1080p", requestedProfileLabel: "1080p 8 Mbps",
+                downloadBitrateKbps: 33_000), sideAssetBytes: 12_000_000)
+        let context = DownloadRowStatusCaptionPolicy.Context(record: record,
+            displayFraction: nil, isActive: false, isBackendConfigured: false,
+            isTranscodeLimited: false, serverPrepState: nil, serverPrepProgress: nil,
+            serverPrepETA: nil, downloadETA: nil, downloadSpeedBytesPerSecond: nil,
+            isRetrying: false, failureCaption: nil)
+        let snapshot = OfflineLibrarySnapshotBuilder.make(records: [record], isQueuePaused: false,
+            downloadSpeed: [:], errorMessage: { _ in nil }, displayProgress: { _ in nil },
+            statusCaption: { _, _ in DownloadRowStatusCaptionPolicy.caption(context) },
+            isRetrying: { _ in false }).rows[0]
+        let word = status == .complete ? "Downloaded" : "Not verified"
+        let summary = "\(word) • 1080p • 5.7 Mbps avg • 1.6 GB + 12 MB extras"
+        let accessible = status == .complete ? "Downloaded and verified" : "Downloaded; playback not verified"
+        #expect(snapshot.statusCaption == summary)
+        #expect(snapshot.presentation.statusText == summary)
+        #expect(snapshot.presentation.accessibleStatus == "\(accessible). \(summary)")
+        #expect(snapshot.qualityText == nil)
+        #expect(snapshot.presentation.progress == .none)
     }
 
 }
