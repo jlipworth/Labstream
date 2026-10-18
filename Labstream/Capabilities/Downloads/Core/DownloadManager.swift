@@ -564,9 +564,10 @@ public final class DownloadManager {
         // D3: surface background-delegate failures instead of silently dropping the
         // row. Hard failures record a `.failed` status in the store and hand us the
         // reason here so `lastError` can drive the OfflineLibraryView message + retry.
-        self.session.onError = { [weak self] ratingKey, error in
+        self.session.onError = { [weak self] attemptKey, error in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.store.ownsAttempt(attemptKey) else { return }
+                let ratingKey = attemptKey.ratingKey
                 // A-3 (audit lens 8): the range engine's terminal branch surfaces persistent
                 // 401/403 rehydration exhaustion as a generic "Server returned HTTP 401." — remap
                 // it here (manager-side) to the sign-in-again affordance.
@@ -585,9 +586,12 @@ public final class DownloadManager {
                 self.refreshRecords()
             }
         }
-        self.session.onRangeRequestNeeded = { [weak self] ratingKey, reason in
+        self.session.onRangeRequestNeeded = { [weak self] attemptKey, reason, currency in
             Task { @MainActor in
-                self?.resumeStaticRangeWhenReady(ratingKey: ratingKey, reason: reason.rawValue)
+                guard let self, self.store.ownsAttempt(attemptKey) else { return }
+                self.session.withRangeRequestRebuild(currency) {
+                    self.resumeStaticRangeWhenReady(ratingKey: attemptKey.ratingKey, reason: reason.rawValue)
+                }
             }
         }
         // Finding 6: logout revokes the JF/Emby token server-side, so an in-flight remainder can
@@ -1584,6 +1588,7 @@ public final class DownloadManager {
     func startAttemptStillCurrent(_ handle: DownloadStartAttemptHandle,
                                   backend: String,
                                   phase: String) -> Bool {
+        guard session.rangeRequestRebuildIsCurrent(for: handle.ratingKey) else { return false }
         let row = store.record(for: handle.ratingKey)
         let verdict = DownloadStartGuardPolicy.verdict(
             tokenIsCurrent: startAttempts.isCurrent(handle.ratingKey, id: handle.attemptID),
@@ -1636,6 +1641,9 @@ public final class DownloadManager {
         )
         switch result {
         case .committed(let key) where key.attemptID == handle.attemptID:
+            guard session.advanceRangeRequestRebuild(to: key, replacing: handle.expectedPreviousOwner) else {
+                return false
+            }
             if let previousOwner = handle.expectedPreviousOwner,
                previousOwner != key.attemptID {
                 let previousKey = DownloadAttemptKey(
@@ -1830,6 +1838,9 @@ public final class DownloadManager {
     func setQueuePausedForTesting(_ paused: Bool) {
         isQueuePaused = paused
     }
+
+    /// A per-manager storage cap, so cap tests never write the shared defaults.
+    @ObservationIgnored var storageLimitBytesOverrideForTesting: Int?
 
     /// Pause all non-terminal work and persist the queue gate across relaunch.
     public func pauseQueue() {
@@ -2350,22 +2361,20 @@ public final class DownloadManager {
         var lastFailureWasStorageFull = false
         if case .storageFull = lastError[ratingKey] { lastFailureWasStorageFull = true }
         if lastFailureWasStorageFull {
-            let expectedBytes = expectedDownloadBytes(for: record) ?? 0
-            let remainingBytes = Int64(max(0, expectedBytes - checkpointBytes))
+            let expectedBytes = expectedDownloadBytes(for: record)
+            let remainingBytes = Int64(max(0, (expectedBytes ?? 0) - checkpointBytes))
+            let requiredBytes = session.requiredAdditionalFreeBytes(
+                for: key, expectedBytes: expectedBytes, durableCheckpointBytes: checkpointBytes)
             let measured = DownloadVolumeFreeSpace.measure(directory: store.directory)
-            if StaticRangeRecoveryPolicy.shouldParkAutoResumeAfterStorageFull(
-                lastFailureWasStorageFull: true,
-                freeBytes: measured?.bytes,
-                remainingBytes: remainingBytes
-            ) {
+            if let measured, measured.bytes < requiredBytes {
                 staticRangeRecovery.addPendingResume(ratingKey)
                 recordDownloadDiagnostic("downloads.range_auto_resume_parked", fields: [
                     "download_id": .identifier(ratingKey),
                     "reason": .label("storage_full"),
                     "resume_reason": .label(reason),
                     "remaining_bytes": .bytes(Int(remainingBytes)),
-                    "free_bytes": .bytes(Int(measured?.bytes ?? 0)),
-                    "free_space_source": .label(measured?.source.rawValue ?? "unavailable"),
+                    "free_bytes": .bytes(Int(measured.bytes)),
+                    "free_space_source": .label(measured.source.rawValue),
                 ])
                 return
             }
@@ -2598,22 +2607,19 @@ public final class DownloadManager {
             supportsPersistedResumeData: supportsPersistedResumeData,
             hasResumeData: persistedResumeData != nil
         ), let resumeData = persistedResumeData {
-            // Consume the blob path, but keep its display watermark until the resumed task proves
-            // equal/greater progress. URLSession can report a blob-resumed download task's
-            // `countOfBytesReceived` from near zero even while it still owns a large resumable temp
-            // body; clearing the watermark here made the Offline UI flash 0% / tiny bytes on Resume.
-            switch store.clearResumeData(for: retryAttemptKey, clearDisplayBytes: false) {
-            case .applied, .noChange:
-                break
-            case .staleOrMissing:
-                retryState.removeRetrying(ratingKey)
-                return nil
-            case .persistenceFailed(let failure):
-                recordDownloadDiagnostic("downloads.resume_manifest_clear_failed", fields: [
+            // P5 (B24): a blob Resume continues the same row, so it passes the self-excluding cap
+            // projection first. A refusal keeps the blob and the checkpoint for a later Retry.
+            if let message = storageLimitMessage(adding: expectedDownloadBytes(for: record),
+                                                 replacingRatingKey: ratingKey) {
+                recordDownloadDiagnostic("downloads.enqueue_failed", fields: [
                     "download_id": .identifier(ratingKey),
-                    "failure": .label(Self.startupPersistenceFailureLabel(failure)),
+                    "reason": .label("storage_limit"),
+                    "lane": .label("resume_blob"),
                 ])
+                lastError[ratingKey] = .storageLimitExceeded(message)
+                clearStaticRangePendingResume(ratingKey: ratingKey)
                 retryState.removeRetrying(ratingKey)
+                refreshRecords()
                 return nil
             }
             guard applyLifecycleEvent(
@@ -2630,13 +2636,25 @@ public final class DownloadManager {
             let resumed: Bool
             switch lane {
             case .staticRange:
-                resumed = session.resumeRange(
+                switch session.resumeRange(
                     ratingKey: ratingKey,
                     resumeData: resumeData,
                     expectedBytes: BackgroundDownloadProgressPolicy.derivedExpectedBytes(record)
-                )
+                ) {
+                case .resumed: resumed = true
+                case .unusableOrStaleBlob: resumed = false
+                case .storageRefused:
+                    lastError[ratingKey] = .storageFull
+                    retryState.removeRetrying(ratingKey)
+                    refreshRecords()
+                    return nil
+                case .staleOrCancelled:
+                    retryState.removeRetrying(ratingKey)
+                    return nil
+                }
             case .opaque:
                 resumed = session.resume(ratingKey: ratingKey, resumeData: resumeData)
+                if resumed { _ = store.clearResumeData(for: retryAttemptKey, clearDisplayBytes: false) }
             }
             if resumed {
                 activeJobs.insert(ratingKey)
@@ -3662,13 +3680,51 @@ public final class DownloadManager {
     }
 
     public var storageLimitBytes: Int {
-        PlaybackPreferences.downloadStorageLimitBytes()
+        storageLimitBytesOverrideForTesting ?? PlaybackPreferences.downloadStorageLimitBytes()
     }
 
-    public func storageLimitMessage(adding expectedBytes: Int?) -> String? {
-        DownloadStorageLimitPolicy.rejectionMessage(adding: expectedBytes,
-                                                    currentBytes: totalDownloadedBytes,
-                                                    limitBytes: storageLimitBytes)
+    /// P5 (B24): the one cap rule. Every row is counted once, active rows reserve their known
+    /// remaining bytes, and a start that replaces an existing row (a retry or re-download) swaps
+    /// that row's contribution for its new estimate instead of adding to it.
+    public func storageLimitMessage(adding expectedBytes: Int?,
+                                    replacingRatingKey: String? = nil) -> String? {
+        DownloadStorageAdmissionPolicy.capRejection(
+            rows: storageCapRows(), addingBytes: expectedBytes,
+            replacingRowID: replacingRatingKey, limitBytes: storageLimitBytes)
+    }
+
+    func storageCapRows() -> [DownloadStorageAdmissionPolicy.CapRow] {
+        store.records.map { record in
+            let reserves = record.lifecycle == .admitted || record.lifecycle == .serverPrep
+                || record.lifecycle == .transferring
+            return DownloadStorageAdmissionPolicy.CapRow(
+                id: record.ratingKey, retainedBytes: retainedCapBytes(for: record),
+                sideAssetBytes: record.sideAssetBytes,
+                estimatedTotalBytes: reserves ? expectedDownloadBytes(for: record) : nil,
+                reservesRemaining: reserves)
+        }
+    }
+
+    /// What a row holds on disk for the cap: the larger of its exact-attempt durable checkpoint and
+    /// its published `bytes` (an append can grow the working file before progress is published).
+    func retainedCapBytes(for record: DownloadRecord) -> Int {
+        guard record.status != .complete, record.status != .unverified,
+              let key = attemptKey(for: record),
+              let checkpoint = store.durableStaticRangeCheckpointSize(for: key) else { return record.bytes }
+        return max(record.bytes, checkpoint)
+    }
+
+    /// The season projection (P5.2): new rows' known bytes plus each included retry row's
+    /// remaining estimate, against the self-consistent usage.
+    func seasonStorageLimitMessage(newKnownBytes: Int, retryAttempts: [DownloadAttemptKey]) -> String? {
+        let retryRemaining = retryAttempts.reduce(0) { total, key in
+            guard let record = store.record(for: key),
+                  let expected = expectedDownloadBytes(for: record) else { return total }
+            return total + max(0, expected - retainedCapBytes(for: record))
+        }
+        let adding = newKnownBytes + retryRemaining
+        guard adding > 0 else { return nil }
+        return storageLimitMessage(adding: adding)
     }
 
     public func estimatedBytes(for item: MediaItem, choice: DownloadChoice,
@@ -3685,7 +3741,8 @@ public final class DownloadManager {
                                                                  partIndex: partIndex)
     }
     func rejectIfOverStorageLimit(ratingKey: String, backend: String, expectedBytes: Int?) -> Bool {
-        guard let message = storageLimitMessage(adding: expectedBytes) else { return false }
+        guard let message = storageLimitMessage(adding: expectedBytes,
+                                                replacingRatingKey: ratingKey) else { return false }
         recordDownloadDiagnostic("downloads.enqueue_failed", fields: [
             "download_id": .identifier(ratingKey),
             "backend": .label(backend),

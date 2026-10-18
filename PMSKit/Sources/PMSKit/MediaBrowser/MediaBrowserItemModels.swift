@@ -484,10 +484,14 @@ public struct MediaBrowserItemMediaSourceDto<Flavor: MediaBrowserFlavor>: Decoda
     public let supportsDirectPlay: Bool?
     public let supportsDirectStream: Bool?
     public let supportsTranscoding: Bool?
+    /// File size in bytes (B56, P5). Feeds `Part.size`, so storage gates see the real size of a
+    /// Jellyfin/Emby original instead of an unknown one.
+    public let size: Int?
     public let mediaStreams: [MediaBrowserItemMediaStreamDto]
 
     enum CodingKeys: String, CodingKey {
         case id = "Id"
+        case size = "Size"
         case container = "Container"
         case bitrate = "Bitrate"
         case width = "Width"
@@ -512,6 +516,8 @@ public struct MediaBrowserItemMediaSourceDto<Flavor: MediaBrowserFlavor>: Decoda
         supportsDirectPlay = try c.decodeIfPresent(Bool.self, forKey: .supportsDirectPlay)
         supportsDirectStream = try c.decodeIfPresent(Bool.self, forKey: .supportsDirectStream)
         supportsTranscoding = try c.decodeIfPresent(Bool.self, forKey: .supportsTranscoding)
+        size = (try? c.decodeIfPresent(Int64.self, forKey: .size)).flatMap { $0 }
+            .flatMap { $0 > 0 ? Int(clamping: $0) : nil }
         mediaStreams = try c.decodeIfPresent([MediaBrowserItemMediaStreamDto].self, forKey: .mediaStreams) ?? []
     }
 
@@ -520,7 +526,7 @@ public struct MediaBrowserItemMediaSourceDto<Flavor: MediaBrowserFlavor>: Decoda
                         key: "\(Flavor.syntheticScheme)://item/\(itemId)/media/\(id ?? String(index))",
                         duration: nil,
                         file: nil,
-                        size: nil,
+                        size: size,
                         container: container,
                         streams: mediaStreams.enumerated().compactMap { $0.element.toCanonicalStream(fallbackID: $0.offset + 1) })
         // Jellyfin/Emby carry resolution & codecs on the per-stream `MediaStreams`, not on the

@@ -163,6 +163,12 @@ extension DownloadManager {
                     releaseInFlight(for: attemptKey)
                     return
                 }
+                if rejectOptimizeFallbackOverStorageLimit(
+                    ratingKey: ratingKey, item: item, target: fallback,
+                    mediaIndex: mediaIndex, partIndex: partIndex) {
+                    releaseInFlight(for: attemptKey)
+                    return
+                }
                 await selectPlexAudioForPreparedDownloadIfNeeded(
                     part: part, audioStreamIndex: audioStreamIndex,
                     server: server, token: token)
@@ -312,6 +318,11 @@ extension DownloadManager {
         guard admissionMayEnterServerPrep(ratingKey) else { return }
         let item = metadata.makeMediaItem()
         let target = Self.originalFallbackOptimizeTarget()
+        if rejectOptimizeFallbackOverStorageLimit(
+            ratingKey: ratingKey, item: item, target: target,
+            mediaIndex: metadata.mediaIndex ?? 0, partIndex: metadata.partIndex ?? 0) {
+            return
+        }
         recordDownloadDiagnostic("downloads.original_validation_fallback", fields: [
             "download_id": .identifier(ratingKey),
             "target": .label(target),
@@ -322,6 +333,17 @@ extension DownloadManager {
         await triggerOptimizeAndDownload(item: item, targetName: target,
                                          metadata: metadata, session: backendSession,
                                          attemptKey: attemptKey)
+    }
+
+    /// B41 (P5): both original → optimize fallbacks check the storage cap with the optimize
+    /// estimate before asking the server to render.
+    func rejectOptimizeFallbackOverStorageLimit(ratingKey: String, item: MediaItem, target: String,
+                                                mediaIndex: Int, partIndex: Int) -> Bool {
+        rejectIfOverStorageLimit(
+            ratingKey: ratingKey, backend: "Plex",
+            expectedBytes: estimatedBytes(for: item, choice: .optimize(targetName: target),
+                                          mediaIndex: mediaIndex, partIndex: partIndex,
+                                          backend: .plex))
     }
 
     static func originalFallbackOptimizeTarget(defaults: UserDefaults = .standard) -> String {

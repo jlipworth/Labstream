@@ -94,4 +94,45 @@ struct HEVCTagFixupTests {
         #expect(contains(rewritten, "hvc1") == true)
         #expect(contains(rewritten, "hev1") == false)
     }
+    @Test("A middle moov is scanned even after a window match, past an extended-size predecessor")
+    func scansWholeMiddleMoovAfterWindowMatch() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        let handle = try FileHandle(forUpdating: url)
+        defer { try? handle.close() }
+        let middle: UInt64 = 66 * 1024 * 1024
+        let end: UInt64 = 140 * 1024 * 1024
+        // Extended-size free box contains a visible sample entry in the front scan window.
+        try handle.write(contentsOf: boxHeader(size: 1, type: "free") + uint64(middle))
+        try handle.write(contentsOf: sampleEntry(fourcc: "hev1", gap: 78))
+        try handle.seek(toOffset: middle)
+        let entry = sampleEntry(fourcc: "hev1", gap: 78)
+        try handle.write(contentsOf: boxHeader(size: UInt32(entry.count + 8), type: "moov") + entry)
+        try handle.write(contentsOf: boxHeader(size: 0, type: "mdat"))
+        try handle.truncate(atOffset: end)
+        #expect(try HEVCTagFixup.rewriteFile(at: url) == 2)
+        try handle.seek(toOffset: middle + 8)
+        let rewritten = try handle.read(upToCount: entry.count) ?? Data()
+        #expect(contains(rewritten, "hvc1"))
+        #expect(!contains(rewritten, "hev1"))
+    }
+
+    @Test("Malformed box lengths stop walking safely", arguments: [UInt32(0), 1, 4, 7, UInt32.max])
+    func malformedPredecessorStopsSafely(size: UInt32) throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        // Size 0 is a valid final box consuming the file; the apparent moov is inside its payload.
+        try boxHeader(size: size, type: "free").write(to: url)
+        #expect(try HEVCTagFixup.rewriteFile(at: url) == 0)
+    }
+
+    private func uint64(_ value: UInt64) -> Data {
+        withUnsafeBytes(of: value.bigEndian) { Data($0) }
+    }
+
+    private func boxHeader(size: UInt32, type: String) -> Data {
+        withUnsafeBytes(of: size.bigEndian) { Data($0) } + Data(type.utf8)
+    }
+
 }

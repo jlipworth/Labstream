@@ -128,6 +128,55 @@ struct ManagerLifecycleEventTests {
 
     // MARK: - Fixtures
 
+    @Test("Stale session error and rebuild callbacks cannot act on the current row (P5 pin 11)")
+    func staleSessionCallbacksAreIgnored() async throws {
+        let directory = try makeDirectory("stale-callback")
+        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+        let store = DownloadStore(baseDirectory: directory)
+        let (manager, session) = makeManager(store: store)
+        defer { session.invalidateInjectedSessionForTesting() }
+        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        let key = try seedPlexPrepRow(in: store)
+        let stale = DownloadAttemptKey(ratingKey: key.ratingKey, attemptID: .init(uuid: UUID()))
+        let before = store.lifecycleState(for: key)
+        session.onError?(stale, .storageFull)
+        session.onRangeRequestNeeded?(stale, .requestRebuildNeeded,
+            .init(attemptKey: stale, trainEpoch: 0, generation: 0))
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(manager.lastError[key.ratingKey] == nil)
+        #expect(store.lifecycleState(for: key) == before)
+        // Exact ownership still delivers the presentation callback.
+        session.onError?(key, .storageFull)
+        #expect(await waitUntil { manager.lastError[key.ratingKey] == .storageFull })
+    }
+
+    @Test("A same-attempt rebuild queued before Pause cannot requeue the paused row (P5 after-review 1)")
+    func pausedSessionRebuildCallbackIsIgnored() async throws {
+        let directory = try makeDirectory("paused-rebuild-callback")
+        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+        let store = DownloadStore(baseDirectory: directory)
+        let (manager, session) = makeManager(store: store)
+        defer { session.invalidateInjectedSessionForTesting() }
+        #expect(await waitUntil { manager.startupRecoveryState == .ready })
+        manager.setQueuePausedForTesting(false)
+        let key = DownloadAttemptKey(ratingKey: "plex:callback", attemptID: .init(uuid: UUID()))
+        let record = DownloadRecord(ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Item",
+            localURL: store.destinationURL(ratingKey: key.ratingKey, ext: "mp4"), status: .queued,
+            metadata: OfflineMetadata(ratingKey: key.ratingKey, title: "Item", type: "movie",
+                sourcePartSize: 1_024, backendKind: .plex, resumeMode: .staticByteRange))
+        #expect(store.createAttemptOwnedRecord(record, attemptID: key.attemptID) == .committed(key))
+        let currency = BackgroundDownloadSession.DelayedRangeRetryCurrency(
+            attemptKey: key, trainEpoch: 0, generation: 0)
+        // The callback queues its MainActor Task; Pause wins before this actor yields to it.
+        session.onRangeRequestNeeded?(key, .serverAuthorizationRejected, currency)
+        #expect(manager.pause(OfflineDownloadRowActionIdentity(ratingKey: key.ratingKey, attemptID: key.attemptID)))
+        #expect(store.record(for: key)?.status == .paused)
+        #expect(!manager.hasPendingStaticRangeResumes)
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(store.record(for: key)?.status == .paused)
+        #expect(!manager.hasPendingStaticRangeResumes)
+    }
+
     /// A Plex optimize row still in server prep: queued, no bytes, no poller.
     private func seedPlexPrepRow(in store: DownloadStore) throws -> DownloadAttemptKey {
         let key = DownloadAttemptKey(ratingKey: "plex:201", attemptID: DownloadAttemptID(uuid: UUID()))

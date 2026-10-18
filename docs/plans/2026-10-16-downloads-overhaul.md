@@ -92,7 +92,7 @@ An adversarial skeptic then re-checked the high-severity claims and looked for g
 **Results:**
 
 - 329 edge cases, of which 299 must be preserved. 164 of the required cases cite no test.
-- 82 bug rows: 81 from the first pass plus B81 from the second review.
+- 86 bug rows: 81 from the first pass, B81 from the second review, and B82–B85 from the build-1506 field report.
 - 63 confirmed bugs, 1 refuted (B29) and 1 misdiagnosed (B64).
 
 The full result is kept outside git at `build/downloads-overhaul/archaeology.json`.
@@ -349,7 +349,7 @@ maintainer gate**. It is never claimed as passed.
 | **P4** | Admission coordinator and server-prep runners | Sections 2 and 3. |
 | **P5** | Transport and storage consolidation | Sections 5 and 6 (session). |
 | **P6** | Store internals | Section 6 (store). |
-| **P7** | MediaBrowser, offline playback and row UX | Section 7. |
+| **P7** | MediaBrowser, offline playback and row UX | Section 7. Its last commit bumps the marketing version to **1.8.0** for every platform target (maintainer request, 2026-10-17), with the matching `docs/RELEASES.md` note. |
 
 Bug counts and estimated line removal (roughly 5–8k net) are indicators, not acceptance criteria.
 Acceptance is a phase's pins and inventory rows staying green.
@@ -807,6 +807,94 @@ Acceptance is a phase's pins and inventory rows staying green.
   5. **Missing items.** A refresh that proves the item gone (HTTP 404/410, no metadata item) fails
      the planned row as source-missing; other refresh errors defer.
   - **Pin:** missing-item classification. The others are code-reviewed only.
+- **2026-10-17 — P5 plan co-review, round 1: rework (1 blocker, 14 majors, 1 minor).**
+  - **Blocker:** the owned-work snapshot conflated retained files with live transport.
+  - **Majors:**
+    - sweep claim boundaries;
+    - rebuild authorisation and generations;
+    - the B08 reset watermark;
+    - the admission continuation contract;
+    - the free-space formula double-counting held bodies;
+    - cap reservation atomicity;
+    - unknown-size consent semantics;
+    - blob resumes bypassing gates;
+    - B06 and B13 release safety;
+    - paused-body finalization;
+    - B56 precedence;
+    - the regression gate and integration ownership.
+  - **Response, revision 2:**
+    - targeted fixes only: B01, B03, B04, B08, B12, B14, B24, B41, B56, B81 and pu-13;
+    - corrected physical and cap formulas, with the concurrent-start residual stated;
+    - a claim set for stashes;
+    - epoch-checked, operation-held delayed retries;
+    - a durable-advance budget reset;
+    - blob-resume preflights;
+    - an informational unknown-size note;
+    - deferred: the rebuild primitive, `RangeAttemptState`, the owned-work snapshot, opaque
+      removal, the DEBUG move, B06, B13 and the paused-finish item;
+    - the lead owns the contracts and manager edits.
+- **2026-10-17 — P5 plan co-review, round 2: approve with changes (4 major, 1 minor).** The
+  changes amend revision 2 and were sent to the transport delegate while it worked:
+  1. **B03.** It covers both the tmp sweep and the durable-held sweep. Destinations are claimed
+     before either rename, the claim survives through manifest publication, and the claim check
+     and the deletion share one lock.
+  2. **Delayed retries.** Each carries a per-attempt delayed-retry generation that pause, cancel
+     and explicit restart invalidate. It is checked when the timer fires and again when
+     replacement work registers. The held operation ends only after the successor registers, or
+     after a suppressed return.
+  3. **Blob resume.** It returns a typed outcome. A storage refusal keeps the blob and its
+     watermark, reports `.storage`, and never falls back to a restart, on both the persisted
+     path and the transient path.
+  4. **B56 (lead, done).** An Emby static original or converted handoff persists the negotiated
+     MediaSource size as `sourcePartSize`. A remux keeps the negotiated size only as its estimate.
+  5. **B14.** Valid 64-bit box sizes are supported with checked bounds; only malformed or
+     truncated lengths stop the walk. HEVC is assigned to the delegate.
+  - **Also:** the append peak is the largest upcoming planned append. The B08 reset covers
+    ordinary and held appends, ignores zero-byte advances, and resets at start only for an
+    explicit user start or resume.
+
+- **2026-10-17 — P5 session transport implemented** on `downloads/p5-transport` from the P5
+  contract base. Session starts/continuations, blob resumes and manager storage-full parking use
+  the physical storage policy without changing its semantics. Typed blob outcomes preserve authority
+  on storage refusal; callbacks carry exact attempts; delayed retries hold the wake gate and check
+  attempt, epoch and pause/restart generation through task registration. Transport drops get four
+  retries (1/2/4/8 seconds), reset only by positive ordinary/held appends or explicit user resume.
+  Both stash sweeps re-check locked claims, including the durable rename-to-manifest window; HEVC
+  fixup walks bounded top-level boxes (including extended/zero sizes) and scans every `moov`.
+  Red-checked pins 2, 7–12 by restoring the original affected behaviors behind the test seams;
+  pin 13 failed against the original HEVC implementation. The durable sweep's existing legacy-name
+  filter remains narrow; current attempt-stage files are not added to orphan deletion authority.
+  Validation: 1,614 hermetic PMSKit tests; 785 Swift Testing + 66 XCTest Mac tests; hygiene
+  (386 tooling tests and strict documentation/link/Mermaid checks). No simulator or live gate run.
+- **2026-10-17 — P5 implementation review, round 1: approve with fixes (5 P2, 1 P3).** All fixed
+  with pins that fail on the reverted code:
+  1. **Auth retries (delegate).** They carry their generation through the manager hop, the
+     backend rebuild and successor registration.
+  2. **Held bodies (delegate).** Consumed claims retire before continuation admission, and
+     checkpointed or overlapping ranges get no second credit.
+  3. **Blob Resume (lead).** It passes the self-excluding cap projection first, and a refusal
+     keeps the blob.
+  4. **Cap rows (lead).** They count `max(durable checkpoint, bytes)`, in the season retry
+     projection as well.
+  5. **Side assets (delegate).** Every physical gate charges the side assets still to be cached.
+  6. **Pins (lead).** The validation fallback refuses an over-cap optimize create. Both fallback
+     sites share one check, `rejectOptimizeFallbackOverStorageLimit`. A season commit charges its
+     retried rows' remaining bytes.
+
+
+- **2026-10-17 — P5 after-review session fixes (findings 1, 2 and 5).** Rebuild callbacks now
+  carry the timer's epoch/generation through the main-actor hop and backend Tasks. The exact
+  committed successor seed hands off that fence and the wake hold; post-await guards and task
+  registration re-check it. A backend rebuild cannot clear a newer Pause/Resume halt or acquire
+  fresh user-Resume authority. Manager edits are limited to callback/start/seed plumbing.
+  Consumed append claims retire before continuation admission; already-checkpointed,
+  checkpoint-straddling and overlapping bodies receive no duplicate network-byte credit.
+  The shared start/continuation/blob/parking preflight now adds the duration/chapter side-asset
+  estimate less bytes already cached, floored at zero. Current storage guidance reflects this.
+  Nine new pins were red-checked by restoring the old callback/fence behavior, claim accounting
+  and zero future-side-asset input: four auth/manager handoff pins, two consumed/overlap pins and
+  three side-asset admission pins all failed. The backend pin also proves a current successor
+  can start after an attempt re-seed. No simulator or live acceptance was run in this lane.
 
 ## P2 detailed plan — cleanup foundation
 
@@ -2043,6 +2131,176 @@ These amendments override the sections above where they differ.
 - Fuller row UX (P7).
 - Plex `serverPrep` lifecycle. It can be revisited in P7 if row presentation needs it.
 
+## P5 detailed plan — storage admission and session transport
+
+**Status:** revision 2 (2026-10-17). Revision 1 got **rework** from the co-review. Revision 2 cuts
+P5 down to the confirmed, still-reproducing bugs, with the formulas the review corrected. The
+optional consolidation is deferred, as the review suggested, so the overhaul can reach P7.
+
+**Shape:**
+- One PR.
+- The lead owns the storage half, the PMSKit policy contracts and every manager-side edit.
+- A delegate owns the transport fixes inside `BackgroundDownloadSession.swift`, including the
+  session side of the attempt-keyed callbacks, against a policy and callback contract the lead
+  commits first.
+- The PR closes with one combined regression gate.
+
+### Deferred out of P5 (journaled; not dropped silently)
+
+| Item | Why it is deferred |
+|---|---|
+| The single rebuild primitive replacing the 12 restart sites | No listed bug needs it. Consolidating safely needs operation generations, halt-aware authorisation and epoch serialisation (round-1 findings 3–4). |
+| `RangeAttemptState` packaging of the eight dictionaries | Behaviour-neutral. |
+| A unified owned-work snapshot | B03 gets a targeted claim set instead (round-1 findings 1–2). |
+| Deleting the opaque resume-data path | Still reachable for legacy rows without metadata. |
+| Moving DEBUG fault injection out of the session file | Behaviour-neutral. |
+| B06, the late OS handler | Uncertain. A safe fix needs startup-state distinctions (finding 11). |
+| B13, the leaked-operation timeout | Uncertain. A safe fix needs identified operation handles (finding 12). |
+| The P3 carry-over: a paused body that finishes before reattach | `writeThenPause` already preserves validated bytes. Finalizing needs whole-file rules (finding 13). |
+
+These are candidates for P6, or for separate issues if P6 does not reach them.
+
+**Field report (2026-10-17, build 1506, visionOS).** The app terminated soon after it relaunched
+with background downloads that had completed while the headset slept. The redacted report holds no
+termination signature. Its ring buffer shows a recovery burst of six starts and twelve range starts,
+and no completion or handler events. The ranked causes are:
+
+1. a watchdog termination from recovery fan-out plus synchronous persistence on the main actor;
+2. an unbounded background wake;
+3. a reattach/append ownership race.
+
+Coverage:
+
+- **Fixed in the stack:** P4 caps new starts. B11 is fixed in P1. B03, B04, B08 and B12 are fixed
+  in P5.
+- **Planned for P6:** the synchronous store wrappers (§6, B20) remain. B06 and B13 move from
+  "candidate" into P6 scope, and B82–B85 are new.
+- **Still open:** the root cause, until the matching `.ips` (Analytics Data) is captured.
+
+### P5.1 Storage policy (PMSKit, pure) — lead, committed first as the contract
+
+**`DownloadStorageAdmissionPolicy`**
+
+- **`requiredAdditionalFreeBytes`**
+  - **Inputs:** `expectedBytes: Int?`, `durableCheckpointBytes`, `heldBodyBytes`,
+    `largestPendingAppendBytes`, `futureSideAssetBytes`, `headroom = 500 MB`.
+  - **Result:**
+
+    ```
+    remainingNetworkBytes = max(0, expected − checkpoint − heldBodyBytes)
+    required = remainingNetworkBytes + largestPendingAppendBytes + futureSideAssetBytes + headroom
+    ```
+
+    This is the physical timeline (finding 7): bytes already on disk, held bodies included, are
+    never counted again. Only the append duplication peak, the largest single body being copied,
+    is added.
+  - **Unknown size.** An unknown `expected` requires the append peak, future side assets and
+    headroom only, which is today's behaviour. Reactive ENOSPC handling stays.
+  - **Measurement.** It stays purgeable-inclusive (sd-01). An unavailable measurement fails open,
+    as it does today.
+- **`capUsage(rows:)`**
+  - Each row counts once: the larger of its durable checkpoint and `bytes`, plus its side-asset
+    bytes (B24).
+  - **Retry self-exclusion.** `capProjection(adding:replacingRow:)` subtracts the replaced row's
+    own current contribution before adding its full estimate (B24).
+  - **Reservations.** Admitted, server-prep and transferring rows with a known estimate add their
+    remaining bytes, `max(0, estimate − counted)`.
+  - **Unknown estimates** add nothing. They are surfaced by the unknown-size UI (P5.3).
+  - **Residual.** Two starts that pass the cap concurrently, before either publishes its size, are
+    not fenced. P4 admission caps concurrency at 3, and reactive ENOSPC and the cap's next check
+    bound the overshoot. This is a stated residual (finding 8).
+- **`DownloadStorageEstimatePolicy.totalBytes`.** An unknown media size stays unknown, whatever the
+  side assets (B81). The wrong test is replaced.
+
+### P5.2 Gates using it — lead (manager and UI), delegate (session preflights)
+
+- **Manager cap check (lead).** It uses `capProjection(replacingRow:)` for every start, including
+  retries.
+- **Before any server-prep create (B41, lead).** The Plex original → optimize fallback and the
+  fallback after an original fails validation both get a cap check before the create.
+- **Session preflights (delegate).** The start, continuation and storage-full park checks call
+  `requiredAdditionalFreeBytes` with held-body and append-peak inputs from session state. Both
+  blob-resume entry points (`adoptBlobResumedRangeTask`) get the same preflight (finding 10).
+  - **On refusal**, the checkpoint and blob authority are preserved, and the row fails or parks
+    with `.storage` exactly as the existing storage-full path does.
+- **Season commit (lead).** The projection includes the retry rows' remaining estimates.
+
+### P5.3 Sizes and unknown sizes — lead
+
+- **B56.** Decode `Size` in the MediaBrowser item `MediaSource` DTO into `Part.size`.
+  - **Precedence.** The negotiated PlaybackInfo size keeps priority wherever it already applies:
+    Jellyfin remux, and Emby original and remux. A remux size is an estimate.
+  - **Jellyfin Original.** It uses the decoded item size.
+- **pu-13, single-item sheet.** An unknown size shows "Size unknown — not counted toward the
+  storage limit." This is informational: no persisted consent and no reservation. The season sheet
+  keeps its confirmation, which now actually triggers because B81 is fixed.
+
+### P5.4 Transport fixes — delegate (`BackgroundDownloadSession.swift`)
+
+1. **B04.**
+   - The move-failure rehydrate begins the rebuild grace.
+   - The move-retry and HTTP 52x/503 delayed retries hold a background completion operation
+     (`begin/endPendingBackgroundCompletionOperation`) from scheduling until the closure has run
+     its currency check. The auth rehydrate already holds its grace.
+   - Each closure re-checks attempt **and train epoch**, so an old timer after a same-attempt
+     Pause → Resume does not fire (finding 4).
+2. **B08.**
+   - The transport-drop retry budget resets only when the durable checkpoint advances (the
+     append path), never on `didWriteData`.
+   - Internal rebuilds preserve the budget; a user start or resume resets it (bg-48).
+   - The transport-drop retry gets backoff (1, 2, 4, 8 s) through the same gated delayed path.
+3. **B12.**
+   - `onError` and `onRangeRequestNeeded` carry the `DownloadAttemptKey`.
+   - The manager handlers ignore a stale attempt. Owned continuations keep going through
+     `resumeStaticRangeWhenReady`, which P4 already admits as a continuation. `onError` stays an
+     error and presentation callback.
+4. **B03.**
+   - A stash URL is claimed in a locked set when it is created, synchronously in the delegate, and
+     released after its append or discard.
+   - The tmp sweep re-checks the claim set under the same lock immediately before deleting each
+     path, so a stash created after enumeration is never deleted (finding 2).
+5. **B14.** HEVC: walk the top-level boxes to locate `moov`, and scan the whole `moov` with
+   bounded reads, in addition to the windows. Malformed or extended box sizes stop the walk
+   safely.
+
+### Pins (each fails on the current code)
+
+**Storage:**
+1. B81: an unknown size plus side assets is unknown.
+2. B01 numeric:
+   - a held-only completion needs the append peak plus headroom;
+   - future segments;
+   - side assets.
+3. B24:
+   - a retried partial is counted once;
+   - an admitted row's remaining bytes are reserved;
+   - a failed row counts its bytes only.
+4. B41: the fallback create is refused over the cap.
+5. B56: the item DTO decodes `Size` (large, missing and null values).
+6. The season projection includes retries.
+7. A blob resume refused for space keeps its blob.
+
+**Transport:**
+8. B04: the move rehydrate holds the grace; a delayed retry holds an operation.
+9. An old timer after the same attempt's Pause → Resume does nothing.
+10. B08: repeated identical segment prefixes exhaust the budget.
+11. B12: a stale-attempt callback is ignored.
+12. B03: a stash created after enumeration survives.
+13. B14: an out-of-window `hev1` is rewritten when another sample entry was found in a window.
+
+**Retained.** The behaviour of the handled-but-unpinned rows that P5 touches is preserved:
+bg-19, bg-27, bg-29, bg-30, bg-33, bg-34, bg-35, bg-48. Named coverage is added only where a
+P5 edit touches the row.
+
+### Commits
+
+1. **Policy contract** (lead): PMSKit `DownloadStorageAdmissionPolicy`, B81, and the callback
+   signatures.
+2. **Storage gates** (lead): manager, UI, B56, season.
+3. **Transport fixes** (delegate).
+4. **Integration** (lead).
+5. **Docs**, then the combined matrix.
+
 ## Open gates (never claimed by this work)
 
 - Live Plex, Jellyfin and Emby acceptance for every shared-behaviour phase.
@@ -2151,6 +2409,10 @@ Severity is the area agent's confidence, and *verified* is the result of the ske
 | B79 | offline-playback | low | confirmed | - | The launch gate stats every record's file on each ContentView body evaluation | `Labstream/Capabilities/Downloads/Core/DownloadManager.swift:255-259; Labstream/Shared/App/ContentView.swift:225-233` | P7 |
 | B80 | offline-playback | medium | uncertain | - | Sidecar subtitles hide subtitle tracks embedded in the downloaded file | `Labstream/Shared/Player/PlaybackController.swift:1280-1283, 1359-1376` | P7 |
 | B81 | storage-delete | high | 2nd review | never handled | An unknown media size plus known side-asset bytes yields a known extras-only estimate, so the item evades the unknown-size confirmation (the test pins the wrong contract) | `PMSKit/Sources/PMSKit/Downloads/DownloadStorageEstimatePolicy.swift:43; PMSKit/Tests/PMSKitTests/DownloadStorageEstimatePolicyTests.swift:45` | P5 |
+| B82 | background-wake | medium | field report | never handled | A background wake has no aggregate time bound: each gate operation balances, but queued completions plus slow append/index I/O can keep the wake open past the OS budget | `Labstream/Capabilities/Downloads/Core/BackgroundDownloadWakeCoordinator.swift:67; Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift:1141, 3526` | P6 |
+| B83 | background-wake | low | field report | never handled | No memory ceiling is established for an inherited backlog of completed bodies plus side assets at relaunch | `Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift:5194` | P6 |
+| B84 | store | low | field report | never handled | Duplicate persisted row identities trap during index load instead of salvaging or blocking recovery | `Labstream/Capabilities/Downloads/Core/DownloadStore.swift:5169` | P6 |
+| B85 | storage-delete | low | field report | never handled | Static append re-copies already downloaded bodies; write amplification is unmeasured and unbounded (MetricKit disk-write exceptions) | `Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift:5188-5199; Labstream/Shared/Diagnostics/MetricKitDiagnostics.swift:107, 135` | P6 |
 
 ## Appendix B — Edge-case inventory
 

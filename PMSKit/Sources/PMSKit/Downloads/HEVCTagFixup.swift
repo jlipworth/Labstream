@@ -68,10 +68,9 @@ public enum HEVCTagFixup {
 
     /// Apply the fixup to a completed download file on disk. MP4 sample descriptions live in the
     /// `moov` metadata, not in the multi-GB `mdat` media payload. To keep headset finalization
-    /// bounded, scan only the normal metadata locations (the first and last 64 MiB windows) in small
-    /// chunks instead of walking every byte of a large movie. This still covers both fast-start MP4s
-    /// (`moov` at the front) and non-fast-start MP4s (`moov` at the end) without materializing the
-    /// full file or burning minutes of CPU while the app appears stuck at “Verifying download…”.
+    /// bounded, scan the first and last 64 MiB windows, then walk top-level box headers and scan
+    /// every `moov` in small chunks. This also covers metadata in the middle of a large file, even
+    /// when a window already found another sample entry, without scanning the media payload.
     /// Returns the number of entries rewritten; 0 when nothing matched. Throws only on I/O.
     @discardableResult
     public static func rewriteFile(at url: URL) throws -> Int {
@@ -86,10 +85,45 @@ public enum HEVCTagFixup {
         for range in metadataScanRanges(fileSize: fileSize) {
             rewritten += try scanAndRewrite(handle: handle, range: range, rewrittenOffsets: &rewrittenOffsets)
         }
+        for range in try movieBoxRanges(handle: handle, fileSize: fileSize) {
+            rewritten += try scanAndRewrite(handle: handle, range: range, rewrittenOffsets: &rewrittenOffsets)
+        }
         if rewritten > 0 {
             try handle.synchronize()
         }
         return rewritten
+    }
+
+    /// Read only headers while skipping media. Extended lengths and final size-zero boxes are
+    /// valid; every malformed/truncated length stops the walk before seeking outside the file.
+    private static func movieBoxRanges(handle: FileHandle, fileSize: UInt64) throws -> [Range<UInt64>] {
+        var offset: UInt64 = 0
+        var ranges: [Range<UInt64>] = []
+        while offset < fileSize {
+            guard fileSize - offset >= 8 else { break }
+            try handle.seek(toOffset: offset)
+            let header = [UInt8](try handle.read(upToCount: 8) ?? Data())
+            guard header.count == 8 else { break }
+            let shortSize = header.prefix(4).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+            var headerSize: UInt64 = 8
+            let size: UInt64
+            if shortSize == 1 {
+                guard fileSize - offset >= 16 else { break }
+                let extended = [UInt8](try handle.read(upToCount: 8) ?? Data())
+                guard extended.count == 8 else { break }
+                size = extended.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+                headerSize = 16
+            } else {
+                size = shortSize == 0 ? fileSize - offset : shortSize
+            }
+            guard size >= headerSize, size <= fileSize - offset else { break }
+            let end = offset + size // bounded by subtraction above; strictly advances
+            if header[4..<8].elementsEqual("moov".utf8) {
+                ranges.append((offset + headerSize)..<end)
+            }
+            offset = end
+        }
+        return ranges
     }
 
     private static func metadataScanRanges(fileSize: UInt64) -> [Range<UInt64>] {

@@ -1451,7 +1451,7 @@ struct HeldRangeBodyCompletionGateTests {
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         defer { session.invalidateInjectedSessionForTesting() }
         let rebuildNeeded = DispatchSemaphore(value: 0)
-        session.onRangeRequestNeeded = { _, _ in rebuildNeeded.signal() }
+        session.onRangeRequestNeeded = { _, _, _ in rebuildNeeded.signal() }
 
         // A stored (unfired) OS background-completion handler is the precondition: the gate is
         // what keeps it — and the app — alive until the next task/hold exists.

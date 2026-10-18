@@ -91,7 +91,8 @@ extension DownloadManager {
         }
         let knownBytes = plans.filter(\.shouldStart).compactMap(\.estimatedBytes)
             .filter { $0 > 0 }.reduce(0, +)
-        if let message = storageLimitMessage(adding: knownBytes), knownBytes > 0 {
+        if let message = seasonStorageLimitMessage(newKnownBytes: knownBytes,
+                                                   retryAttempts: retryAttempts) {
             return .init(added: 0, retried: 0, failureMessage: message)
         }
 
