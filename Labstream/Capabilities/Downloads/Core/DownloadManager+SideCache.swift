@@ -19,13 +19,13 @@ extension DownloadManager {
         guard startupRecoveryState == .ready, !isQueuePaused,
               seasonPlanCommitsInFlight == 0 else { return }
         for record in candidates where record.status.isActiveWork {
-            guard let key = attemptKey(for: record), store.attemptAdmitsWork(key),
-                  let metadata = record.metadata,
-                  DownloadSideAssetPolicy.offlinePosterRef(for: metadata.makeMediaItem())?.isEmpty == false
-            else { continue }
+            // Runs on every refresh: check the cheap offer set before store and metadata work.
+            guard let key = attemptKey(for: record), let metadata = record.metadata else { continue }
             let identity = DownloadSideAssetRetryIdentity(
                 attemptKey: key, source: metadata.sideAssetSourceIdentity, kind: .poster)
-            guard !earlyPosterOffers.contains(identity) else { continue }
+            guard !earlyPosterOffers.contains(identity), store.attemptAdmitsWork(key),
+                  DownloadSideAssetPolicy.offlinePosterRef(for: metadata.makeMediaItem())?.isEmpty == false
+            else { continue }
             if rehydrateMissingOptionalSideAssets(record: record, attemptKey: key,
                                                   kinds: [.poster], reason: "queued_poster") {
                 earlyPosterOffers.insert(identity)
