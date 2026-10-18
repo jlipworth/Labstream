@@ -156,11 +156,12 @@ struct ServerPrepRunnerIntegrationTests {
         try? await Task.sleep(for: .milliseconds(300))
         #expect(fixture.transfers.value.isEmpty)
         if deleteWhileWaiting {
+            let poller = try #require(fixture.manager.serverPrepPollerTaskForTesting(for: key))
             fixture.manager.delete(ratingKey: key.ratingKey)
             try #require(await fixture.wait { fixture.store.record(for: key) == nil })
-            try #require(await fixture.wait { fixture.manager.staticHandoffWaiters.isEmpty })
             for (id, generation) in generations { _ = fixture.manager.admission.endSupervision(id, generation: generation) }
-            try? await Task.sleep(for: .milliseconds(1_500))
+            await poller.value // Join the cancelled producer before asserting no late transfer.
+            #expect(fixture.manager.staticHandoffWaiters.isEmpty)
             #expect(fixture.transfers.value.isEmpty)
         } else {
             _ = fixture.manager.admission.endSupervision(generations[0].0, generation: generations[0].1)
