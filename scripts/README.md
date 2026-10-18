@@ -59,7 +59,8 @@ media details out of commits and public issues.
   affected-platform, and full native validation planning, with explicitly gated
   lane-at-a-time execution. Simulator-hosted lanes require the exact ID owned by the current
   worktree, sole-booted state, and an explicit lease assertion; generic simulator build lanes do
-  not. See
+  not. `--run --lane macos-hosted` runs deterministic download/store/player pin suites without
+  a simulator; retain normal test parallelism and serialize Xcode lanes for the final gate. See
   [Testing strategy](../docs/TESTING-STRATEGY.md#native-apple-matrix-driver).
 - `app-store-screenshots.py` + `app-store-screenshot-specs.json` — serial credential-free fixture
   capture for visionOS, iPhone, iPad, tvOS, and the isolated Mac target. It uses exact worktree

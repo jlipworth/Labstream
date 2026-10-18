@@ -43,9 +43,9 @@ struct P6ManagerPersistenceTests {
             try #require(await p6Signal(acknowledged))
             #expect(!store.ownsAttempt(key))
         }
-        let heartbeat = DispatchSemaphore(value: 0)
-        Task { @MainActor in heartbeat.signal() }
-        let acknowledged = await p6Signal(heartbeat)
+        let heartbeat = P6HeldProgress()
+        Task { @MainActor in heartbeat.acknowledge(hold) }
+        let acknowledged = await heartbeat.wait()
         #expect(acknowledged)
 
         hold.release.signal()
@@ -87,9 +87,9 @@ struct P6ManagerPersistenceTests {
             return await pair.0.applyLifecycleEvent(.pause(.user), for: key, context: "p6_stat")
         }
         try #require(await p6Signal(actionStarted))
-        let heartbeat = DispatchSemaphore(value: 0)
-        Task { @MainActor in heartbeat.signal() }
-        let acknowledged = await p6Signal(heartbeat)
+        let heartbeat = P6HeldProgress()
+        Task { @MainActor in heartbeat.acknowledge(hold) }
+        let acknowledged = await heartbeat.wait()
         #expect(acknowledged)
 
         hold.release.signal()

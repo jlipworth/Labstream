@@ -2,7 +2,7 @@ import SwiftUI
 import PMSKit
 
 /// Lists offline downloads with live progress + delete, and plays a completed
-/// file through the custom player (`CustomPlayerView(localFile:item:)`).
+/// file through the shared admitted-launch custom player.
 ///
 /// Surfaces the offline-transfer reality (research/10): background transfers may be
 /// deferred while the app is backgrounded or the device is locked/asleep, then resume
@@ -14,7 +14,10 @@ public struct OfflineLibraryView: View {
     @Environment(\.macPlayerPresentationStore) private var macPlayerPresenter
     #endif
     @State private var manager: DownloadManager
-    @State private var playing: DownloadRecord?
+    @State private var playing: PresentedOfflineLaunch?
+    @State private var playbackPresentation: OfflineLibraryPlaybackPresentation
+    @State private var playbackError: OfflinePlaybackLaunchRejection?
+    @AppStorage(PlaybackPreferences.Keys.resumeRewindSeconds) private var resumeRewindSeconds = 0
     #if os(iOS)
     @State private var mobilePlayerOrientationCoordinator = MobilePlayerOrientationCoordinator()
     #endif
@@ -29,14 +32,27 @@ public struct OfflineLibraryView: View {
 
     #if os(visionOS)
     public init(manager: DownloadManager, focusedRatingKey: Binding<String?> = .constant(nil)) {
+        self.init(manager: manager, launchFactory: Self.defaultLaunchFactory(manager), focusedRatingKey: focusedRatingKey)
+    }
+    init(manager: DownloadManager, launchFactory: any OfflinePlaybackLaunchFactory,
+         focusedRatingKey: Binding<String?> = .constant(nil)) {
         _manager = State(initialValue: manager)
+        _playbackPresentation = State(initialValue: OfflineLibraryPlaybackPresentation(factory: launchFactory))
         _focusedRatingKey = focusedRatingKey
     }
     #else
     public init(manager: DownloadManager) {
+        self.init(manager: manager, launchFactory: Self.defaultLaunchFactory(manager))
+    }
+    init(manager: DownloadManager, launchFactory: any OfflinePlaybackLaunchFactory) {
         _manager = State(initialValue: manager)
+        _playbackPresentation = State(initialValue: OfflineLibraryPlaybackPresentation(factory: launchFactory))
     }
     #endif
+
+    static func defaultLaunchFactory(_ manager: DownloadManager) -> any OfflinePlaybackLaunchFactory {
+        manager.offlinePlaybackLaunchFactory
+    }
 
     public var body: some View {
         platformPresentedContent
@@ -48,6 +64,14 @@ public struct OfflineLibraryView: View {
                 deletionDialogActions
             } message: {
                 deletionDialogMessage
+            }
+            .alert("Can't play offline", isPresented: Binding(
+                get: { playbackError != nil }, set: { if !$0 { playbackError = nil } })) {
+                Button("OK", role: .cancel) { playbackError = nil }
+            } message: {
+                Text(playbackError == .missingFile
+                    ? "The downloaded file is no longer available on this device."
+                    : "This downloaded copy is no longer available for playback. Refresh Offline and try again.")
             }
     }
 
@@ -105,7 +129,10 @@ public struct OfflineLibraryView: View {
 
     @ViewBuilder
     private func offlineRowsOrEmpty(snapshot: OfflineLibrarySnapshot) -> some View {
-        if snapshot.rows.isEmpty {
+        if snapshot.rows.isEmpty && manager.startupRecoveryState == .preparing {
+            ProgressView("Restoring downloads…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if snapshot.rows.isEmpty {
             ContentUnavailableView(
                 "No Offline Downloads",
                 systemImage: "arrow.down.circle",
@@ -135,10 +162,12 @@ public struct OfflineLibraryView: View {
         #if os(iOS)
         row(for: rowSnapshot)
             .id(rowSnapshot.id)
+            .deleteDisabled(manager.startupRecoveryState != .ready)
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                 Button(role: .destructive) { confirmDelete(rowSnapshot) } label: {
                     Label("Delete", systemImage: "trash")
                 }
+                .disabled(manager.startupRecoveryState != .ready)
             }
         #else
         row(for: rowSnapshot)
@@ -182,27 +211,22 @@ public struct OfflineLibraryView: View {
         }
     }
 
-    private func offlinePlayerView(for record: DownloadRecord) -> some View {
-        CustomPlayerView(localFile: record.localURL,
-                         item: offlineItem(from: record),
-                         trickPlayProvider: localTrickPlayProvider(for: record),
-                         offlineArtworkSource: OfflineArtworkSource(fileURL: record.posterURL,
-                                                                    metadata: record.metadata,
-                                                                    ratingKey: record.ratingKey),
-                         offlineTextSubtitles: record.metadata?.offlineTextSubtitles ?? [],
-                         offlineChapterImageURLs: record.chapterImageURLs,
-                         onLocalPlaybackProgress: { positionMs, durationMs in
-                             manager.updateLocalPlaybackPosition(ratingKey: record.ratingKey,
-                                                                 positionMs: positionMs,
-                                                                 durationMs: durationMs)
-                         },
-                         onClose: { playing = nil })
+    private func offlinePlayerView(for presented: PresentedOfflineLaunch) -> some View {
+        Self.makeOfflinePlayer(launch: presented.launch, onClose: { playing = nil })
         #if os(iOS)
         .withMobileOrientationCoordinator(mobilePlayerOrientationCoordinator)
         #endif
         #if os(visionOS)
-        .withCinemaOrigin(.offline(ratingKey: record.ratingKey))
+        .withCinemaOrigin(.offline(ratingKey: presented.launch.attemptKey.ratingKey))
         #endif
+    }
+
+    /// All production library inputs and event authority come from the injected launch factory.
+    static func makeOfflinePlayer(launch: OfflinePlaybackLaunch,
+                                  onClose: @escaping () -> Void) -> CustomPlayerView {
+        CustomPlayerView(offlineLaunch: launch,
+                         trickPlayProvider: launch.makeTrickPlayProvider(),
+                         onClose: onClose)
     }
 
     #if os(macOS)
@@ -250,17 +274,9 @@ public struct OfflineLibraryView: View {
         }
 
         var message: String {
-            let base: String
-            if isMultiple {
-                base = "This removes \(entries.count) downloads from offline storage. You can download them again later."
-            } else if let title, !title.isEmpty {
-                base = "This removes “\(title)” from offline storage. You can download it again later."
-            } else {
-                base = "This removes the download from offline storage. You can download it again later."
-            }
-            guard cancelsServerPrep else { return base }
-            return base + " Server preparation that is still in progress is cancelled where possible; finished server versions stay on the server."
+            DownloadRemovalMessage.message(count: entries.count, cancelsServerPrep: cancelsServerPrep)
         }
+
     }
 
     /// The Offline toolbar. On iOS 26 bare toolbar items get Liquid Glass (and adjacent items
@@ -417,34 +433,28 @@ public struct OfflineLibraryView: View {
         DownloadStorageLimitPolicy.byteString(bytes)
     }
 
-    /// Match DetailView's iPhone presentation contract: rotate the presenting browse surface
-    /// before introducing the full-screen player, then pass that same coordinator into the player
-    /// so Close/natural-end restoration uses the instance that captured the prior orientation.
-    private func presentOfflinePlayer(_ record: DownloadRecord) {
-        #if os(iOS)
+    /// Admission is deliberately after orientation. The presentation coordinator additionally
+    /// fences this surface's superseded tasks, independently of the factory's request generation.
+    private func presentOfflinePlayer(_ identity: OfflineDownloadRowActionIdentity) {
         Task { @MainActor in
-            await mobilePlayerOrientationCoordinator.enterLandscapeBeforePresentationIfNeeded()
-            playing = record
+            let result = await playbackPresentation.launch(for: identity,
+                resumeRewindSeconds: resumeRewindSeconds, orientation: {
+                    #if os(iOS)
+                    await mobilePlayerOrientationCoordinator.enterLandscapeBeforePresentationIfNeeded()
+                    #endif
+                }, restoreOrientation: {
+                    #if os(iOS)
+                    mobilePlayerOrientationCoordinator.restoreIfNeeded()
+                    #endif
+                })
+            switch result {
+            case .success(let launch):
+                musicPlayer.pauseForVideo()
+                playing = PresentedOfflineLaunch(launch: launch)
+            case .failure(.supersededPresentation): break
+            case .failure(let rejection): playbackError = rejection
+            }
         }
-        #else
-        playing = record
-        #endif
-    }
-
-    private func localTrickPlayProvider(for record: DownloadRecord) -> (any TrickPlayThumbnailProviding)? {
-        if backendKind(for: record) == .emby {
-            let providers = ([
-                LocalBIFTrickPlayThumbnailProvider(bifURL: record.embyBIFURL),
-                LocalEmbyChapterTrickPlayThumbnailProvider(
-                    chapters: record.metadata?.chapters ?? [],
-                    imageURLsByChapterIndex: record.chapterImageURLs),
-            ] as [(any TrickPlayThumbnailProviding)?]).compactMap { $0 }
-            return providers.isEmpty ? nil : HierarchicalTrickPlayThumbnailProvider(providers)
-        }
-        if let playlist = record.jellyfinTrickPlayPlaylistURL {
-            return LocalJellyfinTrickPlayThumbnailProvider(playlistURL: playlist)
-        }
-        return LocalBIFTrickPlayThumbnailProvider(bifURL: record.plexBIFURL)
     }
 
     private var showsInlineDeleteControl: Bool {
@@ -468,7 +478,7 @@ public struct OfflineLibraryView: View {
             title: title,
             cancelsServerPrep: rows.contains { row in
                 DownloadDeletePolicy.deletionCancelsServerPrep(
-                    manager.records.first { $0.ratingKey == row.id })
+                    manager.currentRecord(for: row.actionIdentity))
             })
     }
 
@@ -484,149 +494,30 @@ public struct OfflineLibraryView: View {
 
     @ViewBuilder
     private func row(for rowSnapshot: OfflineDownloadRowSnapshot) -> some View {
-        // Drive the row off the explicit, persisted status (D2) instead of inferring
-        // completion from `progress >= 1.0` — a stalled job that froze at <100% and a
-        // failed-but-100% body are now distinct, observable states.
-        let isComplete = rowSnapshot.isComplete
-        let isRetrying = rowSnapshot.isRetrying
-        let isFailed = rowSnapshot.status == .failed && !isRetrying
-        let isUnverified = rowSnapshot.isUnverified
-        // #95: a recoverable interruption is resumable, not failed — show a non-red "will resume"
-        // affordance and a Resume control that continues from the saved byte offset.
-        let isPaused = rowSnapshot.status == .paused
-
+        let presentation = Self.rowPresentation(rowSnapshot)
         HStack(spacing: 16) {
-            // D5: show the locally-cached poster when present (works fully offline);
-            // otherwise fall back to a small offline glyph tile.
             OfflinePosterTile(source: rowSnapshot.artwork.flatMap(OfflineArtworkSource.init),
-                              isComplete: isComplete,
-                              isFailed: isFailed,
-                              isUnverified: isUnverified)
-
-            VStack(alignment: .leading, spacing: 4) {
-                // On compact width (iPhone) the title column is too narrow to share a line with
-                // the lane + backend capsules — they crush a long episode string — so drop the
-                // badges onto their own row beneath a 2-line-truncating title. Regular/visionOS
-                // keep the single-line title-plus-badges HStack.
-                if compactWidth {
-                    Text(rowSnapshot.title).font(.headline).lineLimit(2)
-                    HStack(spacing: 8) {
-                        titleBadges(for: rowSnapshot)
-                    }
-                } else {
-                    HStack(spacing: 8) {
-                        Text(rowSnapshot.title).font(.headline)
-                        titleBadges(for: rowSnapshot)
-                    }
-                }
-                if let subtitle = rowSnapshot.subtitle {
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if let bitrate = rowSnapshot.qualityText {
-                    Text(bitrate)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if isFailed {
-                    // Prefer the surfaced reason; fall back to a generic failed line so
-                    // a `.failed` row reconciled at launch (no live error) still explains.
-                    Text(rowSnapshot.errorMessage ?? rowSnapshot.statusCaption)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                } else if isRetrying {
-                    ProgressView()
-                    downloadStatusCaption(rowSnapshot.statusCaption, isHot: true)
-                } else if isPaused {
-                    // #95: paused (recoverably interrupted). Show how far it got and that it
-                    // resumes, in secondary (not red) — it's not a failure.
-                    downloadStatusCaption(
-                        rowSnapshot.errorMessage ?? rowSnapshot.statusCaption,
-                        isHot: false
-                    )
-                } else if isComplete {
-                    Text(rowSnapshot.statusCaption)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    // Unified bar (#97): an exact Content-Length fraction for Plex/static
-                    // originals, an estimated fraction for transcoder-streamed JF/Emby rows;
-                    // nil only before any bytes flow, when we keep the spinner below.
-                    if let progress = rowSnapshot.displayProgress {
-                        ProgressView(value: progress)
-                            .animation(.linear(duration: 0.2), value: progress)
-                        downloadStatusCaption(rowSnapshot.statusCaption, isHot: true)
-                    } else {
-                        ProgressView()
-                        downloadStatusCaption(rowSnapshot.statusCaption, isHot: true)
-                    }
-                }
-            }
-            Spacer()
+                isComplete: rowSnapshot.isComplete,
+                isFailed: presentation.tone == .failure, isUnverified: rowSnapshot.isUnverified)
+            DownloadRowContent(presentation: presentation)
             HStack(spacing: 12) {
-                if isComplete {
+                ForEach(presentation.actions.filter { $0 != .delete || showsInlineDeleteControl }, id: \.rawValue) { action in
                     Button {
-                        guard let record = currentPlayableRecord(for: rowSnapshot.actionIdentity) else {
-                            return
+                        switch action {
+                        case .play: presentOfflinePlayer(presentation.actionIdentity)
+                        case .pause: manager.pause(presentation.actionIdentity)
+                        case .resume, .retry: manager.retry(presentation.actionIdentity)
+                        case .delete: confirmDelete(rowSnapshot)
                         }
-                        // Music and video share one audio session — yield music
-                        // before launching the offline player (#17).
-                        musicPlayer.pauseForVideo()
-                        presentOfflinePlayer(record)
                     } label: {
-                        Image(systemName: "play.circle.fill")
+                        Image(systemName: Self.actionSymbol(action))
                     }
                     .buttonStyle(.plain)
                     .offlineRowActionControl()
-                    .accessibilityLabel("Play offline download")
-                } else if isFailed {
-                    Button {
-                        manager.retry(rowSnapshot.actionIdentity)
-                    } label: {
-                        Image(systemName: "arrow.clockwise.circle.fill")
-                    }
-                    .buttonStyle(.plain)
-                    .offlineRowActionControl()
-                } else if isRetrying {
-                    ProgressView()
-                        .controlSize(.small)
-                        .accessibilityLabel("Retrying download")
-                } else if isPaused {
-                    // #95: Resume continues from the saved byte offset (manager.retry resumes a
-                    // `.paused` row from persisted resume data).
-                    Button {
-                        manager.retry(rowSnapshot.actionIdentity)
-                    } label: {
-                        Image(systemName: "play.circle.fill")
-                    }
-                    .buttonStyle(.plain)
-                    .offlineRowActionControl()
-                    .accessibilityLabel("Resume download")
-                } else {
-                    Button {
-                        manager.pause(rowSnapshot.actionIdentity)
-                    } label: {
-                        Image(systemName: "pause.circle.fill")
-                    }
-                    .buttonStyle(.plain)
-                    .offlineRowActionControl()
-                    .accessibilityLabel("Pause download")
-                }
-
-                if showsInlineDeleteControl {
-                    // Explicit delete stays visible on visionOS / regular-width layouts, where
-                    // swipe affordances are less discoverable. Compact iOS relies on the trailing
-                    // swipe action to keep the row controls from crowding the title column.
-                    Button {
-                        confirmDelete(rowSnapshot)
-                    } label: {
-                        Image(systemName: "trash.circle.fill")
-                    }
-                    .buttonStyle(.plain)
-                    .offlineRowActionControl()
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("Delete download")
+                    .foregroundStyle(action == .delete ? Color.red : Color.accentColor)
+                    .accessibilityLabel(presentation.actionLabel(action))
+                    .accessibilityIdentifier("download.\(action.rawValue)")
+                    .disabled(action != .play && manager.startupRecoveryState != .ready)
                 }
             }
         }
@@ -642,56 +533,25 @@ public struct OfflineLibraryView: View {
         #endif
         .contentShape(Rectangle())
         .onTapGesture {
-            if isComplete {
-                guard let record = currentPlayableRecord(for: rowSnapshot.actionIdentity) else {
-                    return
-                }
-                musicPlayer.pauseForVideo()
-                presentOfflinePlayer(record)
-            } else if isFailed || isPaused {
-                // #95: tapping a paused row resumes it (manager.retry continues from the offset).
-                manager.retry(rowSnapshot.actionIdentity)
+            if presentation.actions.contains(.play) {
+                presentOfflinePlayer(presentation.actionIdentity)
+            } else if presentation.actions.contains(.resume) || presentation.actions.contains(.retry) {
+                manager.retry(presentation.actionIdentity)
             }
         }
     }
 
-    /// Compact portrait treats each semantic bullet-delimited metric as an atomic field and lets
-    /// the fields flow onto deliberate rows. This prevents a single long `Text` from clipping the
-    /// trailing speed/size or wrapping midway through a value. VoiceOver still receives the exact
-    /// unabridged caption as one value.
-    @ViewBuilder
-    private func downloadStatusCaption(_ caption: String, isHot: Bool) -> some View {
-        if compactWidth && isHot {
-            OfflineMetricFlowLayout(horizontalSpacing: 8, verticalSpacing: 3) {
-                ForEach(Array(OfflineMetricToken.tokenize(caption).enumerated()), id: \.offset) {
-                    _, token in
-                    if let envelope = token.envelope {
-                        Text(token.text)
-                            .font(.caption)
-                            .stableHotMetric(envelope, alignment: .leading)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text(token.text)
-                            .font(.caption)
-                            .lineLimit(1)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Download status")
-            .accessibilityValue(caption)
-        } else {
-            Text(caption)
-                .font(.caption)
-                .monospacedDigit()
-                .lineLimit(isHot ? 1 : 2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .foregroundStyle(.secondary)
-                .accessibilityValue(caption)
+    static func rowPresentation(_ row: OfflineDownloadRowSnapshot,
+                                phase: DownloadJobPhase? = nil) -> DownloadRowPresentation {
+        DownloadRowPresentation(row: row, phase: phase)
+    }
+
+    private static func actionSymbol(_ action: DownloadRowPresentation.Action) -> String {
+        switch action {
+        case .play, .resume: "play.circle.fill"
+        case .pause: "pause.circle.fill"
+        case .retry: "arrow.clockwise.circle.fill"
+        case .delete: "trash.circle.fill"
         }
     }
 
@@ -720,88 +580,6 @@ public struct OfflineLibraryView: View {
     }
     #endif
 
-    /// The lane + (mixed-library only) backend capsules that sit with the title. Factored out
-    /// so the compact stacked layout and the regular inline HStack share one definition.
-    @ViewBuilder
-    private func titleBadges(for rowSnapshot: OfflineDownloadRowSnapshot) -> some View {
-        downloadLaneBadge(rowSnapshot.routeBadge)
-        // Only label the backend when the library mixes them, so a
-        // simultaneous Plex + Jellyfin/Emby library (#84) stays legible
-        // and single-backend libraries carry no visual noise.
-        if rowSnapshot.showBackendBadge {
-            backendBadge(name: rowSnapshot.backendName)
-        }
-    }
-
-    /// A subtle source chip ("Plex" / "Jellyfin" / "Emby") shown beside the title
-    /// when the library mixes backends (#84). Matches the caption typography so it
-    /// reads as part of the row rather than a bolted-on control.
-    private func backendBadge(name: String) -> some View {
-        Text(name)
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 2)
-            .background(.thinMaterial, in: Capsule())
-            .accessibilityLabel("Source: \(name)")
-    }
-
-    /// Show the download route next to the title so Jellyfin/Emby rows make it clear whether
-    /// the server is sending a raw file, a compatible remux, or a live transcode. This is useful
-    /// context for resumability and "why is this slower?" without making normal downloads look
-    /// like failures.
-    private func downloadLaneBadge(_ badge: DownloadRowDisplayPolicy.RouteBadge) -> some View {
-        let label = badge.rawValue
-        let systemImage: String
-        let tint: Color
-        switch badge {
-        case .optimized:
-            // B4: a server-prepared version rides the `.original` STATIC byte-range lane — it is a
-            // finished file transferred/resumed byte-for-byte, NOT a live server transcode. Badge it
-            // "Optimized" (distinct from a true source "Original", but never the alarming orange
-            // "Transcode", which is reserved for the encoder-gated `.optimize`/remux lanes below).
-            systemImage = "checkmark.seal"
-            tint = .secondary
-        case .original:
-            systemImage = "checkmark.seal"
-            tint = .secondary
-        case .remux:
-            systemImage = "arrow.triangle.2.circlepath"
-            tint = .orange
-        case .transcode:
-            systemImage = "gauge.with.dots.needle.bottom.50percent"
-            tint = .orange
-        }
-        return Label(label, systemImage: systemImage)
-            .labelStyle(.titleAndIcon)
-            .font(.caption2)
-            .foregroundStyle(tint)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 2)
-            .background(tint.opacity(0.14), in: Capsule())
-            .accessibilityLabel("Download route: \(label)")
-    }
-
-    private func currentPlayableRecord(
-        for identity: OfflineDownloadRowActionIdentity
-    ) -> DownloadRecord? {
-        manager.currentRecord(for: identity).flatMap {
-            $0.isComplete && FileManager.default.fileExists(atPath: $0.localURL.path) ? $0 : nil
-        }
-    }
-
-    private func backendKind(for record: DownloadRecord) -> DownloadBackendKind {
-        record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
-            ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
-    }
-
-    /// Reconstruct a faithful `MediaItem` from the persisted snapshot (D5) so the
-    /// offline file flows through the same `CustomPlayerView` path with real title/metadata.
-    /// Rows persisted before D5 fall back to a minimal movie.
-    private func offlineItem(from record: DownloadRecord) -> MediaItem {
-        record.metadata?.makeMediaItem()
-            ?? MediaItem(ratingKey: record.ratingKey, title: record.title, type: "movie")
-    }
 
 }
 
@@ -850,7 +628,7 @@ private struct OfflinePosterTile: View {
             .overlay {
                 Image(systemName: tileGlyph)
                     .font(.title3)
-                    .foregroundStyle(isUnverified ? .yellow : (isComplete ? .green : (isFailed ? .red : .secondary)))
+                    .foregroundStyle(isUnverified ? .orange : (isComplete ? .green : (isFailed ? .red : .secondary)))
             }
     }
 
@@ -994,5 +772,33 @@ struct OfflineMetricFlowLayout: Layout {
 private extension View {
     func offlineRowActionControl() -> some View {
         modifier(OfflineRowActionControlModifier())
+    }
+}
+
+@MainActor
+private struct PresentedOfflineLaunch: Identifiable {
+    let launch: OfflinePlaybackLaunch
+    nonisolated let id: UInt64
+    init(launch: OfflinePlaybackLaunch) {
+        self.launch = launch
+        id = launch.presentationRequest.generation
+    }
+}
+
+@MainActor
+final class OfflineLibraryPlaybackPresentation {
+    private let factory: any OfflinePlaybackLaunchFactory
+    private var generation: UInt64 = 0
+    init(factory: any OfflinePlaybackLaunchFactory) { self.factory = factory }
+
+    func launch(for identity: OfflineDownloadRowActionIdentity, resumeRewindSeconds: Int,
+                orientation: () async -> Void, restoreOrientation: () -> Void = {}) async
+        -> Result<OfflinePlaybackLaunch, OfflinePlaybackLaunchRejection> {
+        generation += 1
+        let captured = generation
+        let request = factory.beginPresentationRequest()
+        return await factory.makeLaunchAfterOrientation(for: identity, request: request,
+            resumeRewindSeconds: resumeRewindSeconds, orientation: orientation,
+            restoreOrientation: restoreOrientation, isCurrent: { generation == captured })
     }
 }

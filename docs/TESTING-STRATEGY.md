@@ -42,6 +42,40 @@ Mac, and TV app scenes inert so hosted tests do not boot the real app. UI tests 
 `app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"` explicitly, and any new test plan must
 choose `1` or `0` deliberately; otherwise a UI test can silently drive an inert host app.
 
+### Downloads overhaul pin suites
+
+Pure lifecycle, admission, cleanup, container, storage and presentation pins run in the hermetic
+PMSKit suite. App-owned pins use `LabstreamTests/` on the mobile host or `LabstreamMacTests` on
+macOS; tvOS excludes the Downloads capability. There is still no visionOS-hosted target.
+
+| Phase | Principal guards |
+| --- | --- |
+| P1 | `BackgroundDownloadRangeOwnershipTests`, startup admission/registry tests and backend route/source policy regressions. |
+| P2 | `DurableJournalCommitTests`, `DownloadCleanupIntentRunnerTests`, `CleanupRunnerManagerTests`, `CleanupAuthorityContractTests` and cleanup ordering/journal tests. |
+| P3a | `DownloadLifecycleReducerTests`, `DownloadLifecycleStoreTests`: finalization/relaunch, condemnation, exact ownership and recovery. |
+| P3b | `DownloadSchemaUpgradeTests`: D1 paused partials, deletion barriers/capsules, durable notice and v4/v5 boundaries. |
+| P4 | `DownloadAdmissionCoordinatorTests`, `SeasonPlannerIntegrationTests`, `ServerPrepRunnerIntegrationTests`, admission/prep policy tests. |
+| P5 | `P5SessionTransportTests`, storage admission/estimate/source-size tests and season cap/fallback integration controls. |
+| P6 | `P6ContractTests`, store resolution/I/O/load/inventory/artifact/reconcile/path-lease suites, manager persistence/rework/review suites and session wake/checkpoint/opaque-resume/lease suites. |
+| P7 | `P7OfflinePlaybackTests`, subtitle/source-recovery, availability/return, MediaBrowser negotiation, row, joined-control and side-asset ordering suites; PMSKit P7 container/presentation/lifecycle tests. |
+
+Use the no-simulator Mac hosted lane for deterministic app-level download checks:
+
+```sh
+scripts/native-test-matrix.py affected \
+  --changed-file Labstream/Capabilities/Downloads/Core/DownloadManager.swift \
+  --run --lane macos-hosted
+```
+
+Run one Xcode lane at a time; do not launch competing build/test processes. Keep the checked
+manifest and normal test parallelism for the final combined gate. A focused serialized diagnostic
+run can isolate deliberately held workers, but it is not a substitute for the full normal-parallel
+hosted run. Fixtures must isolate coordinators/identities and acknowledge worker entry, commit or
+recovery completion with bounded waits; do not widen heartbeat deadlines to hide ordering races.
+Require terminal xcodebuild success and the result bundle, not merely a printed test summary.
+Expected known issues must be named explicitly: P7 release pin 15 remains a pending P7.7/version
+gate at this checkpoint. No hosted suite establishes live backend or physical-device acceptance.
+
 ### Suspended-request integration regressions
 
 Keep async ownership tests at the production publication boundary, not only in pure authority

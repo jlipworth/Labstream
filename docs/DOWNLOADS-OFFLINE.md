@@ -9,18 +9,28 @@ background recovery remains a pre-release acceptance gate rather than a reliabil
 ```mermaid
 flowchart TD
   accTitle: Static and live-forward download routes
-  accDescr: Backend inspection selects either a durable static source or a live-forward server stream. Static files use byte-range checkpoints; live-forward streams can require a restart from the beginning after interruption. Both routes keep a file only after completion validation.
-  Request[User taps download] --> Inspect[Inspect backend media options]
+  accDescr: User and recovery requests share admission. Backend inspection selects a static source, server preparation, or live-forward stream. Completion captures and validates the body before publication as complete or unverified. Both local launch surfaces use one exact-attempt factory and event sink.
+  Request[Tap, season, resume or recovery] --> Admission[Shared admission window]
+  Admission --> Inspect[Inspect backend media options]
+  Inspect --> Prep[Plex optimize or Emby Convert]
+  Prep --> Static
   Inspect --> Static[Static original, existing, or prepared file]
   Inspect --> Live[Live-forward remux or transcode]
   Static --> Train[Closed-range segment train and durable partial]
   Live --> Forward[One forward-only transfer]
   Train --> Validate[Completion and local playback validation]
   Forward --> Validate
-  Validate --> Store[Offline index, local file, and side assets]
-  Store --> Offline[Offline library]
-  Offline --> Player[Local playback]
+  Validate --> Store[Published complete or unverified file and index]
+  Store --> Offline[Offline library and Detail]
+  Offline --> Factory[Exact-attempt launch factory after orientation]
+  Factory --> Player[Local player and event sink]
 ```
+
+The admission window is shared by user actions and recovery. Server preparation hands a completed
+render to the static lane; live-forward streams cannot claim static byte resume. Finalization
+captures an attempt-owned body, rewrites HEVC tags and validates before publication. Probe-inconclusive
+and repeated-truncation files remain playable as unverified. Detail and Offline use the same local
+launch factory, with position saving and actual-playing verification as separate events.
 
 ## Core rules
 
@@ -67,7 +77,8 @@ stateDiagram-v2
   [*] --> Planned
   [*] --> Admitted
   Planned --> Admitted: admission granted
-  Admitted --> ServerPrep: Plex optimize or Emby Convert
+  Admitted --> ServerPrep: Emby Convert
+  Admitted --> Admitted: Plex optimize preparation
   ServerPrep --> Admitted: prepared source handed off
   Admitted --> Transferring: transfer starts
   Transferring --> Finalizing: complete body at the working path
@@ -80,10 +91,16 @@ stateDiagram-v2
   Paused --> Transferring: resume blob
   Paused --> ServerPrep: prep reattach or Convert resume
   Failed --> Admitted: retry
-  Unverified --> Complete: local playback or revalidation
+  Unverified --> Complete: eligible actual playing or revalidation
   Complete --> [*]
   Unverified --> [*]
 ```
+
+This diagram shows lifecycle destinations; admission and retry routing still depend on durable
+facts. Plex preparation retains admitted/queued compatibility, while Emby Convert uses serverPrep.
+Finalizing is not paused by cancelling its validator. Only eligible actual-playing evidence or
+successful revalidation can clear an unverified warning; playing the start of a known truncated file
+cannot prove its tail exists.
 
 | Lifecycle | Serialized status |
 | --- | --- |
@@ -118,6 +135,32 @@ Rules that follow from this:
 
 Finalization still rewrites HEVC `hev1` to `hvc1` before validation, and both terminal success
 states keep the local file. The opaque and static-range pipelines share the completion path.
+
+### Truncation and checkpoint authority
+
+A failing truncation verdict permanently condemns that attempt's working body. A best-effort rename
+removes it from the working path before persistence waits; the persisted condemnation fence also
+blocks checkpoint reads, recovery finalization and Retry cloning if rename/removal fails. Replacing
+an attempt inherits only same-source truncation strikes, never condemnation or unrelated failure
+state. A condemned Retry starts at zero even if its backend becomes available later. Replayed body
+outcomes do not count another strike. A second-strike published body remains unverified and playable
+across relaunch; neither position updates nor actual playing erase that warning.
+
+### Bounded background completion
+
+OS completion handlers are timestamped at registry receipt, including before session construction.
+One non-sliding wake budget covers finish-events, identified operations and the captured index plus
+artifact boundary: 25 seconds overall, 20 seconds for operations and a 5-second persistence reserve.
+Normal release requires finish-events, settled required operations and persistence covering their
+resulting boundary. Expiry is an explicit timeout, not successful durability or physical cancellation.
+Exact handler tokens release once; an old timer or operation end cannot release a later generation.
+
+Blocked-before-transport, activation-in-progress and failed-after-transport remain distinct. A
+blocked dormant session can release a late handler; an existing healthy transport retains its owned
+holds. Expiry also fences later activation, refill and probing until foreground or a new authorized
+wake. Dirty index work, artifact intents and worker-owned path leases survive a waiter's timeout.
+No AVPlayer validation probe starts while inactive; foreground revalidation remains recoverable.
+These are app-side bounds, not proof of OS scheduling or background continuation on hardware.
 
 ## Background downloads and sleeping devices
 
@@ -295,12 +338,12 @@ User-facing expectations worth setting (the "downloads disclaimer"):
 | `DownloadKeepaliveCoordinator` | Exact-attempt Jellyfin/Emby keepalive task ownership and credential-generation quarantine. A keepalive runs only while the session tracks a live transfer for that attempt. Emby sends Ping only; Jellyfin currently sends Playing/Progress at a fixed position of 0 instead of the transfer's byte fraction. This is an interim containment: it stops downloads from reporting advancing positions, but it is not proven to leave watch state untouched. The live Ping-only A/B decides the final shape, and the watch-state check stays open until it does. |
 | Backend-specific manager extensions | Plex/Jellyfin/Emby route setup and server-prep polling. |
 | `BackgroundDownloadSession` | URLSession tasks, segment-train enqueue/refill, transfer callbacks, finalization, and wake-release effects. |
-| `BackgroundDownloadWakeCoordinator` | Locked background-completion gate, atomic deferred-revalidation keys, and range-rebuild grace generations. |
+| `BackgroundDownloadWakeCoordinator` and wake budget contract | Exact-token completion gate, receipt-based absolute deadline, identified operations, deferred revalidation and rebuild grace generations. |
 | `DownloadManager+SeasonPlanner` and `SeasonDownloadPlannerSheet` | Immutable season drafts, one atomic Store commit of planned rows plus retry intents, and the refreshed, source-validated first start. |
 | `DownloadAdmissionCoordinator` and `DownloadManager+Admission` | The one admission window: observed lane occupancy, supervised starts, durable waiting requests, backoff and the Pause All row exemption. |
 | `DownloadOptionsModel` | Typed per-item option resolution for the download sheet; it does not own season planning. |
 | `DownloadVolumeFreeSpace` | Purgeable-inclusive free-space measurement used by storage-full parking. |
-| `DownloadStore` | Schema-v5 index state (v4 loads and is upgraded once), exact-attempt mutation admission, work admission (`attemptAdmitsWork`), and transactional artifact state. |
+| `DownloadStore`, async contract and path leases | Schema-v5 index state, exact-attempt work/mutation admission, bounded submit/resolve, off-lock filesystem observations and physical path exclusion. |
 | `DownloadArtifactLifecycleCoordinator` and file-effect seams | Order attempt-scoped resume/checkpoint/promotion/deletion work with its terminal persistence outcome. |
 | `DownloadWorkRegistry` | Attempt-scoped side-cache and encoder-task ownership. |
 | `DownloadCleanupIntentJournal` | Independent durable, credential-free server-cleanup authority for all three backends: Jellyfin/Emby encoders, Emby Convert jobs and Plex optimize queue items. |
@@ -329,7 +372,17 @@ Each intent records why it exists:
 The runner executes nothing while a row's deletion is staged, in flight, or failed. Just before
 each server call it re-checks ownership: another row's PlaySessionId, Convert job, queue title,
 or a job that row's crash-window recovery would adopt keeps the resource. Convert cleanup and
-Convert crash-window recovery are serialized per server.
+Convert crash-window recovery are serialized per server. Claims are scoped to persisted server
+and MediaBrowser user, never the currently visible browse lane. After each awaited inspection,
+claims and eligibility are reread immediately before cancellation. An originating Convert/Plex
+attempt still claims a resource while its persisted reference remains; a failed abandonment write
+cannot take its job. For a nonresumable encoder, the origin claims only while its transfer is active,
+allowing interrupted release to replay safely.
+
+The runner coalesces producer/recovery/session triggers, executes at most two intents at once and
+schedules its own earliest retry. Per-intent backoff ranges from 30 seconds to 30 minutes, with
+a two-minute local eligibility recheck for waiting work. Legacy import/quarantine barriers run
+before every pass; unreadable authority is never an empty queue.
 
 Plex queue responses are classified explicitly:
 
@@ -342,9 +395,13 @@ One race is accepted: a render that completes between the queue read and the DEL
 deleted, because PMS has no conditional cancel. The delete confirmation therefore says
 in-progress preparation is cancelled "where possible".
 
-Two fallbacks remain unrecorded. If a superseded-encoder stop or an Emby stale-create cancel
-cannot be journaled, it falls back to the earlier best-effort call and records a diagnostic.
-Sign-out never journals cleanup: it pauses rows instead.
+Abandonment producers submit journal I/O to a worker and await a bounded durability result.
+A stale Plex title sweep commits its discoveries in one transaction. A failed or expired
+observation does not authorize a superseded-encoder stop or an Emby stale-create cancel;
+late durable intents remain replayable by the cleanup runner. Producers recheck captured
+server identity and exact row authority after suspension before dependent handoffs.
+Sign-out pauses rows rather than deleting them. Active encoders still need a journaled release
+captured before credential revocation; see [Local playback and row presentation](#local-playback-and-row-presentation).
 
 ## Offline metadata
 
@@ -365,6 +422,42 @@ sources. The storage and backup boundary is detailed in [Persistence](PERSISTENC
 
 Side assets such as posters, chapters, and compatible external text subtitles are cached next to the download record when available. They are treated as convenience metadata; the main playable file remains the durable core of the download.
 
+## Local playback and row presentation
+
+Detail's Play Offline and the Offline library admit the exact rendered attempt after orientation.
+One manager-owned factory rechecks ownership, deletion, terminal state and the local file, then
+captures local resume/rewind, metadata-owned backend/assets and an attempt/session-bound event
+sink. The shared player consumes that sink: actual playing can verify eligible unverified rows,
+while repeated-truncation warnings remain. Position updates coalesce behind bounded asynchronous
+P6 persistence, including a terminal close sample; no synchronous close flush or rating-key save
+adapter remains. Positions are local only: watched/progress sync-back and offline Up Next remain
+separate work.
+
+Sign-out parks rows immediately and captures exact encoder-cleanup authority before credentials
+are revoked. Encoder-release journal work uses a P6 worker submission and bounded asynchronous
+resolution. Only a durable journal result permits compare-clearing that exact play-session handle;
+failure or expiry retains its row/transient authority, and an old completion cannot erase a newer
+handle. Recovery must replay retained exact releases after journal failure or timeout.
+
+Offline offers embedded subtitles and downloaded text sidecars together with one Off choice.
+Opening the menu does not parse sidecars. Selecting embedded, sidecar or Off revokes the other
+selection; item/session/selection generations reject late parses. Emby converted downloads retain
+an independent original text-subtitle source. Historically ambiguous origins skip repair safely
+and keep existing cached subtitles and playable media.
+
+Library and current-download sheets share lifecycle-driven rows. Waiting/paused and route/context
+are neutral, verified completion green, caution amber, and failures/destructive controls red.
+Context, status and quality are single-line with full accessibility values; error details expand.
+Server indexing, preparation and verification remain distinct, and preterminal progress never
+claims 100%. Delete captures exact attempt identities and explains supported unfinished server-job
+cancellation while retaining finished server versions.
+
+Availability is a generation-tagged off-MainActor scan, refreshed at publication, foreground and
+recovery boundaries. Body/progress reads do not stat files. Readable blocked recovery permits
+terminal playback with mutations disabled; opaque unsupported/unreadable indices cannot open
+Offline. Restricted Offline consumes Cinema returns and acknowledges their identity before
+Reconnect, preventing normal Root from replaying an old return.
+
 ## Reconcile and resume
 
 On launch, Labstream compares the offline index, files on disk, active transfers, persisted
@@ -375,6 +468,11 @@ background-completion registry. When the Store admits a healthy current index, t
 transport submission crosses one bounded MainActor turn and retains the manager until that
 submission occurs. A retry before that turn cancels the deferred edge and owns the one immediate
 submission, so retry cannot overtake it or submit activation twice.
+
+A readable load that finishes after the startup deadline still publishes rows and Offline
+availability, even if its background wake has expired. Transport, probes and queue refill stay
+dormant until foreground or a new background wake authorizes recovery; older load generations
+cannot overwrite a newer recovery attempt.
 
 - **Unsupported schemas** keep their explicit reset path.
 - **Unreadable indexes and malformed current ownership** remain fail-closed.
@@ -387,8 +485,9 @@ A row being deleted, whether behind a row-deletion barrier or as a capsule, admi
 - transfer start, resume and finalization;
 - retry continuation;
 - season admission;
-- Plex optimize polling and creation. The deferral changes critical-path scheduling only: it does not delete the background
-transport, recovery work, persistence barriers, or background-completion durability.
+- Plex optimize polling and creation.
+
+Recovery also:
 
 - adopts only current task markers whose exact attempt matches the durable row;
 - keeps current malformed/ownerless active rows fail-closed rather than guessing ownership;
@@ -397,7 +496,7 @@ transport, recovery work, persistence barriers, or background-completion durabil
   redrive (rebuilds, backend-ready drains, launch recovery) first re-measures free space —
   counting iOS purgeable space, matching the Settings storage gauge — and, if the volume still
   cannot hold the remaining network bytes, largest append copy, uncached side assets and headroom,
-  parks the row as a pending resume instead of retrying. A user-initiated Retry always dispatches regardless of this gate;
+  parks the row as a pending resume instead of retrying. A user-initiated Retry can reattempt immediately, but still passes admission and storage preflights;
 - migrates legacy Emby tombstones and pre-upgrade quarantined Plex intents into the cleanup
   journal, then runs required server cleanup through the cleanup runner (see
   [Server cleanup](#server-cleanup));
@@ -406,7 +505,8 @@ transport, recovery work, persistence barriers, or background-completion durabil
   off-main, validates image/BIF/text payloads before promotion, and batches metadata publication.
   Retry authority is exact attempt + source + resource kind and is charged only when an eligible
   waiter actually admits transport; coalesced cancellation or a stale waiter hands authority to the
-  next eligible waiter. Playlist repair audits every locally referenced tile. Successful promotion,
+  next eligible waiter. The worker inventories every owned side asset even after finding a missing file, so playlist
+  repair retains later existing tiles when their server requests would fail. Successful promotion,
   including a same-path replacement, advances the side-asset generation so byte accounting and
   storage-cap snapshots cannot retain stale cache values;
 - keeps completed media available without requiring the source server to be reachable;
@@ -502,6 +602,9 @@ Storage uses one rule for every gate (`DownloadStorageAdmissionPolicy`, P5):
   "extras-only" number. The download sheet says the size is unknown and that the download is not
   counted toward the limit; the season sheet asks for confirmation. Jellyfin and Emby items now
   carry their source size, so originals are rarely unknown.
+- **Cap limitation.** Starts that pass checks concurrently before publishing their sizes are not
+  protected by a new atomic reservation transaction. Admission caps bound concurrency, but the
+  limit can temporarily overshoot; later checks and reactive ENOSPC remain backstops.
 - **Free space** follows the file's physical timeline. The transfer still needs the network bytes
   not yet on disk, plus the largest body it will append (that copy briefly exists twice), plus
   the duration/chapter-based side-asset estimate less bytes already cached (floored at zero),
@@ -510,8 +613,9 @@ Storage uses one rule for every gate (`DownloadStorageAdmissionPolicy`, P5):
   purgeable space, as the Settings gauge
   does, and an ENOSPC during a transfer still fails the row with the storage-full affordance.
 
-A queued row that holds no in-flight slot is waiting, not transferring. The download sheet shows
-it as **Queued…**, or **Preparing on server…** for a server-prep row.
+A planned row with no in-flight slot is waiting, not transferring. All current-download surfaces
+use the shared waiting caption; an admitted row may show **Queued…** and a server-prep row
+**Preparing on server…**.
 **Downloading optimized** is the static transfer of an existing or converted version. When it reads
 0% with a spinner, the row is active but URLSession has delivered no body bytes yet. Common reasons
 are the window before the first byte, OS scheduling, and the per-host connection limit, since each

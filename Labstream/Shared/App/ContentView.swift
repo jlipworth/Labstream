@@ -70,7 +70,7 @@ struct ContentView: View {
         // switch; a genuinely signed-out user still gets the splash/login.
         Group {
             switch BrowseUIGate.state(isBrowseReady: appModel.isBrowseReady,
-                                      isRestoring: bootstrap.isRestoring,
+                                      isRestoring: bootstrap.isRestoring || isResolvingOfflineAvailability,
                                       isSwitchingBackend: appModel.isSwitchingBackend,
                                       hasEverBeenBrowseReady: bootstrap.hasEverBeenBrowseReady,
                                       canOpenOffline: canOpenOffline) {
@@ -225,11 +225,13 @@ struct ContentView: View {
     private func runLaunchDownloadRecovery(reason: String) async {
         // P2: backends that only owe journaled server cleanup need a session too, or their
         // cleanup could never run while the user stays on another backend.
+        let cleanupBackends = await downloadManager.pendingCleanupBackends()
+        guard !Task.isCancelled else { return }
         let inactiveDownloadBackends = Set(
             downloadManager.records.lazy
                 .filter { $0.status.isActiveWork }
                 .map { DownloadJobSnapshot(record: $0).backend }
-        ).union(downloadManager.pendingCleanupBackends())
+        ).union(cleanupBackends)
             .subtracting([appModel.activeBackend])
         for backend in inactiveDownloadBackends.sorted(by: { $0.rawValue < $1.rawValue }) {
             _ = await authManager.hydrateSavedSessionForDownloads(backend: backend)
@@ -240,6 +242,15 @@ struct ContentView: View {
         downloadManager.teardownOrphanedEncodersOnLaunch()
     }
     #endif
+
+    private var isResolvingOfflineAvailability: Bool {
+        #if os(tvOS)
+        false
+        #else
+        authManager.sessionRestoreOutcome == .temporarilyUnavailable
+            && downloadManager.offlineAvailabilityIsResolving
+        #endif
+    }
 
     /// #259: only a preserved credential after a transient restore failure, with at least one
     /// completed local media file, opens the restricted Offline surface.

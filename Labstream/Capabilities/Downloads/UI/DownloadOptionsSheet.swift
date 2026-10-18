@@ -25,9 +25,9 @@ struct DownloadOptionsSheet: View {
     private typealias DownloadSelection = DownloadOptionsModel.Selection
 
     @State private var optionsModel = DownloadOptionsModel()
-    @State private var retryingExistingDownload = false
     @State private var isStartingDownload = false
     @State private var confirmingExistingDownloadRemoval = false
+    @State private var pendingExistingRemoval: DownloadOptionsModel.RemovalConfirmation?
     @State private var confirmingCompatibleRemuxFallback = false
 
     private var probeState: DownloadOptionsModel.ProbeState {
@@ -272,32 +272,7 @@ struct DownloadOptionsSheet: View {
     @ViewBuilder
     private func macExistingContent(_ record: DownloadRecord) -> some View {
         macSelectionSection(title: "Current download", footer: nil) {
-            let statusText: String = {
-                if record.isComplete { return record.isUnverified ? "Downloaded; playback not verified" : "Downloaded for offline viewing" }
-                if record.status == .failed { return "Download failed" }
-                if record.status == .paused { return "Download paused" }
-                if record.status == .preparing { return "Preparing on server…" }
-                return "Download already exists"
-            }()
-            Label(statusText, systemImage: record.isComplete ? "checkmark.circle.fill" : "arrow.down.circle")
-                .font(.body.weight(.medium))
-            if record.bytes > 0 {
-                Text(DownloadStorageLimitPolicy.byteString(record.bytes))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            if record.status == .failed || record.status == .paused {
-                Button(record.status == .failed ? "Retry Download" : "Resume Download") {
-                    guard !retryingExistingDownload else { return }
-                    retryingExistingDownload = true
-                    retryDownload()
-                    dismiss()
-                }
-                .disabled(retryingExistingDownload)
-            }
-            Button("Remove Download", role: .destructive) {
-                confirmingExistingDownloadRemoval = true
-            }
+            sharedExistingContent(record)
         }
     }
 
@@ -379,28 +354,8 @@ struct DownloadOptionsSheet: View {
                                  disabled: Bool = false,
                                  action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 12) {
-                Image(systemName: systemImage)
-                    .font(.title3)
-                    .frame(width: 28)
-                    .foregroundStyle(disabled ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.body.weight(.medium))
-                        .foregroundStyle(disabled ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
-                    if let subtitle, !subtitle.isEmpty {
-                        Text(subtitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-                if selected {
-                    Image(systemName: "checkmark")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(.tint)
-                }
-            }
+            DownloadOptionContent(title: title, detail: subtitle, systemImage: systemImage,
+                                  selected: selected, disabled: disabled)
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
             .background(selected ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.08),
@@ -486,21 +441,9 @@ struct DownloadOptionsSheet: View {
             Button {
                 selectedChoice = .original
             } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "checkmark.seal")
-                        .foregroundStyle(.tint)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Download original").foregroundStyle(.primary)
-                        Text(directDetail(sizeBytes: option.sizeBytes, resolution: option.resolution))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if selectedChoice == .original {
-                        Image(systemName: "checkmark").foregroundStyle(.tint)
-                    }
-                }
-                .contentShape(Rectangle())
+                DownloadOptionContent(title: "Download original",
+                    detail: directDetail(sizeBytes: option.sizeBytes, resolution: option.resolution),
+                    systemImage: "checkmark.seal", selected: selectedChoice == .original)
             }
             .buttonStyle(.plain)
         } header: {
@@ -516,21 +459,9 @@ struct DownloadOptionsSheet: View {
             Button {
                 selectedChoice = .optimizeCompatible
             } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "wand.and.stars")
-                        .foregroundStyle(.tint)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Original quality (compatible)").foregroundStyle(.primary)
-                        Text(compatibleRemuxSubtitle(option: option) ?? "")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if selectedChoice == .optimizeCompatible {
-                        Image(systemName: "checkmark").foregroundStyle(.tint)
-                    }
-                }
-                .contentShape(Rectangle())
+                DownloadOptionContent(title: "Original quality (compatible)",
+                    detail: compatibleRemuxSubtitle(option: option), systemImage: "wand.and.stars",
+                    selected: selectedChoice == .optimizeCompatible)
             }
             .buttonStyle(.plain)
         } header: {
@@ -588,21 +519,9 @@ struct DownloadOptionsSheet: View {
             Button {
                 selectedChoice = .plexOriginalQuality(preset)
             } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "wand.and.stars")
-                        .foregroundStyle(.tint)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Original video quality").foregroundStyle(.primary)
-                        Text("Keeps the source quality in a compatible Plex-prepared copy")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if selectedChoice == .plexOriginalQuality(preset) {
-                        Image(systemName: "checkmark").foregroundStyle(.tint)
-                    }
-                }
-                .contentShape(Rectangle())
+                DownloadOptionContent(title: "Original video quality",
+                    detail: "Keeps the source quality in a compatible Plex-prepared copy",
+                    systemImage: "wand.and.stars", selected: selectedChoice == .plexOriginalQuality(preset))
             }
             .buttonStyle(.plain)
         } header: {
@@ -624,21 +543,9 @@ struct DownloadOptionsSheet: View {
                 Button {
                     selectedChoice = .optimize(preset)
                 } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(preset).foregroundStyle(.primary)
-                            if let serverPreparedAudioCaption {
-                                Text(serverPreparedAudioCaption)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        Spacer()
-                        if selectedChoice == .optimize(preset) {
-                            Image(systemName: "checkmark").foregroundStyle(.tint)
-                        }
-                    }
-                    .contentShape(Rectangle())
+                    DownloadOptionContent(title: preset, detail: serverPreparedAudioCaption,
+                        systemImage: "gauge.with.dots.needle.bottom.50percent",
+                        selected: selectedChoice == .optimize(preset))
                 }
                 .buttonStyle(.plain)
             }
@@ -691,29 +598,11 @@ struct DownloadOptionsSheet: View {
                 Button {
                     selectedChoice = selection
                 } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "rectangle.stack.badge.play")
-                            .foregroundStyle(version.playableOffline ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(version.label)
-                                .foregroundStyle(version.playableOffline ? .primary : .secondary)
-                            if let detail = version.detail {
-                                Text(detail)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            if !version.playableOffline {
-                                Text("Won't play offline on this device")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        Spacer()
-                        if version.playableOffline, selectedChoice == selection {
-                            Image(systemName: "checkmark").foregroundStyle(.tint)
-                        }
-                    }
-                    .contentShape(Rectangle())
+                    DownloadOptionContent(title: version.label,
+                        detail: version.playableOffline ? version.detail : "Won't play offline on this device",
+                        systemImage: "rectangle.stack.badge.play",
+                        selected: version.playableOffline && selectedChoice == selection,
+                        disabled: !version.playableOffline)
                 }
                 .buttonStyle(.plain)
                 .disabled(!version.playableOffline)
@@ -820,201 +709,69 @@ struct DownloadOptionsSheet: View {
 
     @ViewBuilder
     private func existingSection(_ record: DownloadRecord) -> some View {
-        let isComplete = record.isComplete
-        let isFailed = record.status == .failed
-        let isPaused = record.status == .paused
-        let isPreparing = record.status == .preparing
-        SwiftUI.Section {
-            if isComplete {
-                if record.isUnverified {
-                    Label("Downloaded; playback not verified", systemImage: "exclamationmark.circle.fill")
-                        .foregroundStyle(.yellow)
-                } else {
-                    Label("Downloaded for offline viewing", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                }
-                Text(DownloadStorageLimitPolicy.byteString(record.bytes))
-                    .font(.caption).foregroundStyle(.secondary)
-            } else if isFailed {
-                Label("Download failed", systemImage: "exclamationmark.circle")
-                    .foregroundStyle(.red)
-                existingDownloadActionButton(title: "Retry Download",
-                                             systemImage: "arrow.clockwise") {
-                    guard !retryingExistingDownload else { return }
-                    retryingExistingDownload = true
-                    retryDownload()
-                    dismiss()
-                }
-                .disabled(retryingExistingDownload)
-            } else if isPaused {
-                Label("Download paused", systemImage: "pause.circle")
-                    .foregroundStyle(.secondary)
-                let displayBytes = existingDownloadDisplayBytes(for: record)
-                if displayBytes > 0 {
-                    Text(DownloadStorageLimitPolicy.byteString(displayBytes))
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                existingDownloadActionButton(title: "Resume Download",
-                                             systemImage: "play.circle") {
-                    guard !retryingExistingDownload else { return }
-                    retryingExistingDownload = true
-                    retryDownload()
-                    dismiss()
-                }
-                .disabled(retryingExistingDownload)
-            } else if isPreparing {
-                // Emby convert-then-download: the server is rendering the file before any byte
-                // download begins. Surface it as an indeterminate "Preparing on server…" with the
-                // live convert percentage when known (same plumbing as the offline-list row).
-                Label("Preparing on server…", systemImage: "gearshape.arrow.triangle.2.circlepath")
-                if let p = downloadManager.optimizeProgress[record.ratingKey] {
-                    ProgressView(value: p)
-                    Text("\(Int(p * 100))%")
-                        .font(.caption)
-                        .stableHotMetric(.percent, alignment: .leading)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ProgressView()
-                }
-            } else if let waitingCaption = existingDownloadWaitingCaption(for: record) {
-                // #362: a queued row with no live slot/task (e.g. a season row waiting for
-                // admission) is waiting, not transferring. Match the offline list's wording and
-                // show no transfer spinner.
-                Label(waitingCaption, systemImage: "clock")
-                    .foregroundStyle(.secondary)
-                existingDownloadActionButton(title: "Pause Download",
-                                             systemImage: "pause.circle") {
-                    downloadManager.pause(ratingKey: DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: sheetBackend))
-                    dismiss()
-                }
+        SwiftUI.Section { sharedExistingContent(record) }
+    }
+
+    /// Both native wrappers render the library's live value, including waiting, server indexing,
+    /// verification, error detail and exact action identity.
+    @ViewBuilder
+    private func sharedExistingContent(_ record: DownloadRecord) -> some View {
+        let presentation = Self.existingPresentation(record, library: downloadManager.offlineLibrarySnapshot)
+        DownloadRowContent(presentation: presentation)
+        ForEach(presentation.actions.filter { $0 != .play }, id: \.rawValue) { action in
+            if action == .delete {
+                Button(role: .destructive) {
+                    pendingExistingRemoval = .init(record: record)
+                    confirmingExistingDownloadRemoval = true
+                } label: { Label("Remove Download", systemImage: "trash") }
+                .accessibilityLabel(presentation.actionLabel(.delete))
+                .accessibilityIdentifier("download.delete")
+                .disabled(downloadManager.startupRecoveryState != .ready)
             } else {
-                Label(existingDownloadPhaseLabel(for: record), systemImage: "arrow.down.circle")
-                if let fraction = downloadManager.displayFraction(for: record) {
-                    ProgressView(value: fraction.value)
-                    Text(existingDownloadProgressText(fraction: fraction,
-                                                      bytes: existingDownloadDisplayBytes(for: record),
-                                                      resolution: record.metadata?.resolutionLabel))
-                        .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    ProgressView()
-                    let displayBytes = existingDownloadDisplayBytes(for: record)
-                    if displayBytes > 0 {
-                        Text(DownloadStorageLimitPolicy.byteString(displayBytes))
-                            .font(.caption).foregroundStyle(.secondary)
+                Button {
+                    switch action {
+                    case .pause: downloadManager.pause(presentation.actionIdentity)
+                    case .resume, .retry: downloadManager.retry(presentation.actionIdentity)
+                    case .play, .delete: break
                     }
-                }
-                existingDownloadActionButton(title: "Pause Download",
-                                             systemImage: "pause.circle") {
-                    downloadManager.pause(ratingKey: DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: sheetBackend))
                     dismiss()
+                } label: {
+                    Label(action == .pause ? "Pause Download" : action == .resume ? "Resume Download" : "Retry Download",
+                          systemImage: action == .pause ? "pause.circle" : action == .resume ? "play.circle" : "arrow.clockwise")
                 }
-            }
-            if let bitrate = DownloadRowDisplayPolicy.downloadQualityText(for: record) {
-                Text(bitrate)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Button(role: .destructive) {
-                confirmingExistingDownloadRemoval = true
-            } label: {
-                Label(isComplete ? "Remove Download" : "Cancel Download", systemImage: "trash")
-            }
-        }
-    }
-
-    private func existingDownloadDisplayBytes(for record: DownloadRecord) -> Int {
-        let fraction = downloadManager.displayFraction(for: record)
-        let expected = record.metadata?.sourcePartSize
-        let fractionBytes = fraction.flatMap { fraction -> Int? in
-            guard let expected, expected > 0 else { return nil }
-            return Int((fraction.value * Double(expected)).rounded(.down))
-        }
-        return max(record.bytes,
-                   record.metadata?.resumeDisplayBytes ?? 0,
-                   fractionBytes ?? 0)
-    }
-
-    private func existingDownloadProgressText(fraction: DownloadProgressDisplay.Fraction,
-                                              bytes: Int,
-                                              resolution: String?) -> String {
-        var pieces = [DownloadRowDisplayPolicy.percentText(fraction)]
-        if bytes > 0 {
-            pieces.append(DownloadStorageLimitPolicy.byteString(bytes))
-        }
-        if let resolution, !resolution.isEmpty {
-            pieces.append(resolution)
-        }
-        return pieces.joined(separator: " • ")
-    }
-
-    // MARK: - Action
-
-
-    /// Existing-download actions live inside a Form section, where default Button styling can
-    /// render accent-colored rows with subtly different glyph/text sizing across states. Keep
-    /// Retry/Resume/Pause visually identical and let the surrounding Form provide the row affordance.
-    private func existingDownloadActionButton(title: String,
-                                              systemImage: String,
-                                              action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .font(.body.weight(.semibold))
-                .imageScale(.medium)
                 .foregroundStyle(.tint)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+                .accessibilityLabel(presentation.actionLabel(action))
+                .accessibilityIdentifier("download.\(action.rawValue)")
+                .disabled(downloadManager.startupRecoveryState != .ready)
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(title)
     }
 
-    private func existingDownloadWaitingCaption(for record: DownloadRecord) -> String? {
-        DownloadRowStatusCaptionPolicy.compactWaitingCaption(
-            status: record.status,
-            isActive: downloadManager.activeJobs.contains(record.ratingKey),
-            resumeMode: record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey))
-    }
-
-    private func existingDownloadPhaseLabel(for record: DownloadRecord) -> String {
-        DownloadRowStatusCaptionPolicy.compactActiveCaption(
-            lane: record.metadata?.resolvedDownloadLane() ?? .original,
-            backend: record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
-                ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey),
-            isServerPreparedVersion: record.metadata?.isServerPreparedVersion == true)
+    static func existingPresentation(_ record: DownloadRecord,
+                                     library: OfflineLibrarySnapshot,
+                                     phase: DownloadJobPhase? = nil) -> DownloadRowPresentation {
+        DownloadRowPresentation(row: DownloadOptionsModel.existingRow(record, library: library), phase: phase)
     }
 
     private var existingDownloadRemovalTitle: String {
-        existingRecord?.isComplete == true ? "Remove downloaded file?" : "Cancel this download?"
+        pendingExistingRemoval?.title ?? "Remove download?"
     }
-
     private var existingDownloadRemovalActionTitle: String {
-        existingRecord?.isComplete == true ? "Remove Download" : "Cancel Download"
+        pendingExistingRemoval?.actionTitle ?? "Remove Download"
     }
-
     private var existingDownloadRemovalMessage: String {
-        if existingRecord?.isComplete == true {
-            return "This removes the offline copy from this device. You can download it again later."
-        }
-        return "This stops the transfer and removes any partial file from this device."
+        pendingExistingRemoval?.message ?? Self.removalMessage(for: nil)
     }
-
+    static func removalMessage(for record: DownloadRecord?) -> String {
+        DownloadRemovalMessage.message(cancelsServerPrep: DownloadDeletePolicy.deletionCancelsServerPrep(record))
+    }
     private func deleteExistingDownload() {
-        downloadManager.delete(ratingKey: DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: sheetBackend))
+        guard let confirmation = pendingExistingRemoval else { return }
+        Self.deleteExistingDownload(identity: confirmation.identity, manager: downloadManager)
+        pendingExistingRemoval = nil
     }
-
-    private func retryDownload() {
-        // Exhaustive over the backend so a new lane is a compile error here, not a silent
-        // fall-through into the Plex retry path (which would mis-key and no-op for Emby).
-        switch sheetBackend {
-        case .plex:
-            downloadManager.retry(ratingKey: item.ratingKey)
-        case .jellyfin:
-            downloadManager.retry(ratingKey: DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: sheetBackend))
-        case .emby:
-            // Re-run the full Emby lane, which re-probes PlaybackInfo and re-decides original vs
-            // transcode (a now-compatible file goes original). `.original` is intent-only here.
-            downloadManager.retry(ratingKey: DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: sheetBackend))
-        }
+    static func deleteExistingDownload(identity: OfflineDownloadRowActionIdentity, manager: DownloadManager) {
+        manager.delete(identity)
     }
 
     private func requestStartDownload() {

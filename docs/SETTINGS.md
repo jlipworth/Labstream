@@ -69,6 +69,12 @@ Apple TV is streaming-only, so this section does not appear there.
 | **Remove completed downloads** | Deletes finished downloads from this device (after confirmation). | — | Vision, iOS, Mac |
 | **Remove all downloads** | Cancels active transfers and deletes every download from this device (after confirmation). | — | Vision, iOS, Mac |
 
+The network preference also applies to new side-asset requests. Active tasks and tasks resumed
+from OS resume data keep their creation policy. D5 treats constrained and expensive networks as
+part of the same opt-in. Unknown media sizes remain visibly unknown and cannot be fully charged
+to the storage limit; a retry replaces its own retained bytes while admitted work reserves known
+remaining bytes. No automatic eviction enforces the cap.
+
 ## Maintenance
 
 | Setting | What it does | Platforms |

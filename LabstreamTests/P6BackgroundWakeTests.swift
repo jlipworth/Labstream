@@ -163,7 +163,7 @@ struct P6BackgroundWakeTests {
         let initial = fixture.store()
         let key = try fixture.seed(initial)
         let working = try fixture.working(initial, key)
-        #expect(initial.resetStaticRangeProgressToDurableCheckpoint(for: key, expectedBytes: 10) == .applied(bytes: 3))
+        #expect(await initial.resolveStaticCheckpoint(initial.submitStaticRangeCheckpointReset(for: key, expectedBytes: 10), deadline: .after(30)) == .applied(bytes: 3))
         let artifactHold = P6Hold()
         let live = DownloadArtifactFilesystem.live
         let store = DownloadStore(baseDirectory: fixture.directory, artifactFilesystem: .init(

@@ -43,6 +43,14 @@ transfer has an exact expected byte total. Unknown or estimated totals suppress 
 The queue toolbar's `Pause All` / `Resume All` action is intentionally distinct from per-item pause
 and retry controls.
 
+The native Mac download sheet shares lifecycle presentation and row content with Offline and the
+iOS/visionOS sheets. Waiting and paused are neutral, verified completion green, cautions amber and
+failures/destructive actions red. Context, status and quality stay on one line with complete
+accessibility values and expandable errors. Zero-progress preparation is indeterminate; indexing
+and verification are distinct. Exact-attempt confirmations explain cancellation of supported
+unfinished server jobs and retention of finished server versions. Mac resizing, keyboard and
+VoiceOver parity still need host acceptance; shared rows do not prove it.
+
 Treat this as pre-release source coverage rather than a released compatibility promise. Real Plex,
 Jellyfin, and Emby authentication, media-key behavior, playback, sandboxing, and background-download
 recovery still need platform-specific TestFlight and release acceptance.

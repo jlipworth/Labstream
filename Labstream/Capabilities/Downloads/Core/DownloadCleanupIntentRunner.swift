@@ -25,16 +25,17 @@ final class DownloadCleanupIntentRunner {
 
     struct Dependencies {
         /// Legacy migration barriers, run before every pass; false while unfinished.
-        var runBarriers: @MainActor () -> Bool = { true }
+        var runBarriers: @MainActor (DownloadStoreDeadline) async -> Bool = { _ in true }
         var load: @Sendable () -> DownloadCleanupIntentJournal.LoadResult
         /// Durably replace the entry with the same id (legacy provenance classification).
         var replace: @Sendable (DurableDownloadCleanupIntent) -> Bool
         var rowState: @MainActor (DurableDownloadCleanupIntent)
             -> CleanupIntentEligibilityPolicy.RowState
         /// Migration receipts: legacy tombstones and quarantine imports not yet retired.
-        var isBlocked: @MainActor (DurableDownloadCleanupIntent) -> Bool
+        var isBlocked: @MainActor (DurableDownloadCleanupIntent) async -> Bool
         var hasMatchingSession: @MainActor (DurableDownloadCleanupIntent) -> Bool
         var execute: @MainActor (DurableDownloadCleanupIntent) async -> ExecutionOutcome
+        var persistenceTimeoutSeconds: Double = 30
         var now: @Sendable () -> Date = { Date() }
         var backoffSeconds: @Sendable (Int) -> Double = CleanupIntentRetryPolicy.backoffSeconds(afterFailures:)
         var diagnostic: @MainActor (String, [String: DiagnosticFieldValue]) -> Void = { _, _ in }
@@ -113,9 +114,10 @@ final class DownloadCleanupIntentRunner {
     }
 
     private func pass() async {
-        let barriersComplete = dependencies.runBarriers()
+        let deadline = DownloadStoreDeadline.after(dependencies.persistenceTimeoutSeconds)
+        let barriersComplete = await dependencies.runBarriers(deadline)
         let load = dependencies.load
-        let result = await Task.detached { load() }.value
+        let result = await DownloadStoreWork { load() }.observe(deadline: deadline)
         let now = dependencies.now()
         // Consumed deadlines never reschedule a wake: only future deadlines survive a pass.
         notBefore = notBefore.filter { $0.value > now }
@@ -134,7 +136,7 @@ final class DownloadCleanupIntentRunner {
         var runnable: [DurableDownloadCleanupIntent] = []
         for candidate in intents {
             guard !inFlight.contains(candidate.id) else { continue }
-            guard !dependencies.isBlocked(candidate) else {
+            guard !(await dependencies.isBlocked(candidate)) else {
                 hasWaiting = true
                 continue
             }
@@ -148,14 +150,14 @@ final class DownloadCleanupIntentRunner {
                     continue
                 }
                 let replace = dependencies.replace
-                guard await Task.detached(operation: { replace(updated) }).value else {
+                guard await DownloadStoreWork({ replace(updated) }).observe(deadline: deadline) == true else {
                     recordFailure(intent.id, now: now)
                     continue
                 }
                 intent = updated
             }
             guard CleanupIntentEligibilityPolicy.decision(
-                provenance: intent.provenance, rowState: rowState) == .run else {
+                provenance: intent.provenance, rowState: dependencies.rowState(intent)) == .run else {
                 hasWaiting = true
                 continue
             }
@@ -180,6 +182,14 @@ final class DownloadCleanupIntentRunner {
     private func drainPending() async {
         while !pending.isEmpty {
             let intent = pending.removeFirst()
+            // Another worker or the legacy-classification await may have changed authority.
+            guard !(await dependencies.isBlocked(intent)),
+                  CleanupIntentEligibilityPolicy.decision(provenance: intent.provenance,
+                    rowState: dependencies.rowState(intent)) == .run,
+                  dependencies.hasMatchingSession(intent) else {
+                notBefore[intent.id] = dependencies.now().addingTimeInterval(Self.waitingRecheckSeconds)
+                continue
+            }
             guard inFlight.insert(intent.id).inserted else { continue }
             let outcome = await dependencies.execute(intent)
             inFlight.remove(intent.id)

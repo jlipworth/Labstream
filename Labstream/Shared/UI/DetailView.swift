@@ -63,7 +63,9 @@ struct DetailView: View {
     /// may satisfy immediate Play without another authoritative metadata request.
     @State private var detailedMetadataSnapshot: MetadataSnapshot?
     @State private var presentingPlayer = false
+    #if !os(tvOS)
     @State private var localPlaybackRequest: LocalPlaybackRequest?
+    #endif
     @State private var remotePlayback: MediaBrowserRemotePlayback?
     #if !os(tvOS)
     @State private var showDownloadOptions = false
@@ -609,11 +611,13 @@ struct DetailView: View {
             dismissMacPlayerPresentation()
         }
         #else
+        #if !os(tvOS)
         .fullScreenCover(item: $localPlaybackRequest) { request in
             // CustomPlayerView owns its iOS safe-area policy (#258); see the modifier.
             localPlayerView(for: request)
                 .customPlayerPresentationSafeArea()
         }
+        #endif
         .fullScreenCover(isPresented: $presentingPlayer) {
             playerCover
         }
@@ -711,26 +715,25 @@ struct DetailView: View {
     }
     #endif
 
+    #if !os(tvOS)
     @ViewBuilder
     private func localPlayerView(for request: LocalPlaybackRequest) -> some View {
-        CustomPlayerView(localFile: request.url,
-                         item: request.item,
-                         trickPlayProvider: localTrickPlayProvider(kind: request.trickPlayKind,
-                                                                   url: request.trickPlayURL,
-                                                                   chapterImageURLs: request.chapterImageURLs,
-                                                                   offlineChapters: request.offlineChapters),
-                         offlineArtworkSource: request.artworkSource,
-                         offlineTextSubtitles: request.offlineTextSubtitles,
-                         offlineChapterImageURLs: request.chapterImageURLs,
-                         onClose: { localPlaybackRequest = nil })
+        Self.makeLocalPlayer(request: request, onClose: { localPlaybackRequest = nil })
         #if os(iOS)
         .withMobileOrientationCoordinator(mobilePlayerOrientationCoordinator)
         #endif
         #if os(visionOS)
-        .withCinemaOrigin(.offline(ratingKey: request.downloadRatingKey))
+        .withCinemaOrigin(.offline(ratingKey: request.launch.attemptKey.ratingKey))
         #endif
     }
 
+    /// Production local player assembly; no SwiftUI environment is needed to exercise callbacks.
+    static func makeLocalPlayer(request: LocalPlaybackRequest,
+                                trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
+                                onClose: @escaping () -> Void) -> CustomPlayerView {
+        CustomPlayerView(offlineLaunch: request.launch, trickPlayProvider: trickPlayProvider, onClose: onClose)
+    }
+    #endif
 
     // MARK: - Backdrop
 
@@ -973,53 +976,15 @@ struct DetailView: View {
     #if !os(tvOS)
     @ViewBuilder
     private var downloadButton: some View {
-        if let local = localURL {
+        if let identity = Self.offlinePlaybackIdentity(ratingKey: downloadRecordKey, manager: downloadManager) {
             Button {
                 musicPlayer.pauseForVideo()
-                let key = downloadRecordKey
-                let record = downloadManager.records.first { $0.ratingKey == key && $0.isComplete }
-                // Prefer the persisted download snapshot as the authoritative source: it describes the
-                // exact downloaded variant (part, chapters, cached subtitles), whereas the live
-                // `detailed` can reflect a different server stream/part than the file on disk. Fall back
-                // to `detailed` only when no snapshot was captured.
-                let offlineItem = record?.metadata?.makeMediaItem() ?? detailed
-                AppDiagnostics.record(.playback, "playback.offline_launch", fields: [
-                    "download_id": .identifier(key),
-                    "has_file": .bool(FileManager.default.fileExists(atPath: local.path)),
-                    "has_metadata": .bool(record?.metadata != nil),
-                    "chapter_count": .int(record?.metadata?.chapters?.count ?? 0),
-                    "subtitle_count": .int(record?.metadata?.offlineTextSubtitles?.count ?? 0),
-                ])
-                let trickPlayURL: URL?
-                let trickPlayKind: LocalTrickPlayKind?
-                let chapterImageURLs = downloadManager.chapterImageURLs(for: key)
-                if key.hasPrefix("jellyfin:") {
-                    trickPlayURL = downloadManager.jellyfinTrickPlayPlaylistURL(for: key)
-                    trickPlayKind = .jellyfinTiles
-                } else if key.hasPrefix("emby:") {
-                    trickPlayURL = downloadManager.embyBIFURL(for: key)
-                    trickPlayKind = .embyBIF
-                } else {
-                    trickPlayURL = downloadManager.plexBIFURL(for: key)
-                    trickPlayKind = .plexBIF
-                }
                 remotePlayback = nil
                 playingItem = nil
                 presentingPlayer = false
-                let request = LocalPlaybackRequest(url: local,
-                                                   item: DetailPlaybackLauncher.itemWithResumeRewind(offlineItem, resumeRewindSeconds: resumeRewindSeconds),
-                                                   trickPlayURL: trickPlayURL,
-                                                   trickPlayKind: trickPlayKind,
-                                                   posterURL: record?.posterURL,
-                                                   artworkSource: OfflineArtworkSource(
-                                                       fileURL: record?.posterURL,
-                                                       metadata: record?.metadata,
-                                                       ratingKey: key),
-                                                   chapterImageURLs: chapterImageURLs,
-                                                   offlineChapters: record?.metadata?.chapters ?? [],
-                                                   offlineTextSubtitles: record?.metadata?.offlineTextSubtitles ?? [],
-                                                   downloadRatingKey: key)
-                Task { await presentLocalPlayer(request) }
+                // Capture rendered authority before orientation; admission runs after it.
+                let request = downloadManager.offlinePlaybackLaunchFactory.beginPresentationRequest()
+                Task { await presentLocalPlayer(identity, request: request) }
             } label: {
                 Label("Play Offline", systemImage: "arrow.down.circle.fill")
                     .font(detailActionFont)
@@ -1540,13 +1505,38 @@ struct DetailView: View {
         presentingPlayer = true
     }
 
+    #if !os(tvOS)
     @MainActor
-    private func presentLocalPlayer(_ request: LocalPlaybackRequest) async {
-        #if os(iOS)
-        await mobilePlayerOrientationCoordinator.enterLandscapeBeforePresentationIfNeeded()
-        #endif
-        localPlaybackRequest = request
+    private func presentLocalPlayer(_ identity: OfflineDownloadRowActionIdentity,
+                                    request: OfflinePlaybackPresentationRequest) async {
+        await Self.presentLocalRequest(identity, manager: downloadManager, request: request,
+            resumeRewindSeconds: resumeRewindSeconds, orientation: {
+            #if os(iOS)
+            await mobilePlayerOrientationCoordinator.enterLandscapeBeforePresentationIfNeeded()
+            #endif
+        }, restoreOrientation: {
+            #if os(iOS)
+            mobilePlayerOrientationCoordinator.restoreIfNeeded()
+            #endif
+        }, present: { localPlaybackRequest = $0 })
     }
+
+    /// Final exact-attempt admission is deliberately after the orientation suspension.
+    @MainActor
+    static func presentLocalRequest(_ identity: OfflineDownloadRowActionIdentity,
+                                    manager: DownloadManager,
+                                    request: OfflinePlaybackPresentationRequest,
+                                    resumeRewindSeconds: Int = 0,
+                                    orientation: () async -> Void,
+                                    restoreOrientation: () -> Void = {},
+                                    present: (LocalPlaybackRequest) -> Void) async {
+        guard case .success(let launch) = await manager.offlinePlaybackLaunchFactory.makeLaunchAfterOrientation(
+            for: identity, request: request, resumeRewindSeconds: resumeRewindSeconds,
+            orientation: orientation, restoreOrientation: restoreOrientation,
+            isCurrent: { manager.offlinePresentationGeneration == request.generation }) else { return }
+        present(LocalPlaybackRequest(launch: launch))
+    }
+    #endif
 
     // MARK: - Derived state
 
@@ -1558,57 +1548,25 @@ struct DetailView: View {
         return appModel.activeStreamingQualityKbps
     }
 
-    private enum LocalTrickPlayKind {
-        case plexBIF
-        case jellyfinTiles
-        case embyBIF
-    }
-
-    private struct LocalPlaybackRequest: Identifiable {
+    #if !os(tvOS)
+    struct LocalPlaybackRequest: Identifiable {
         let id = UUID()
-        let url: URL
-        let item: MediaItem
-        let trickPlayURL: URL?
-        let trickPlayKind: LocalTrickPlayKind?
-        let posterURL: URL?
-        let artworkSource: OfflineArtworkSource?
-        let chapterImageURLs: [Int: URL]
-        let offlineChapters: [OfflineChapter]
-        let offlineTextSubtitles: [OfflineTextSubtitleTrack]
-        /// The persisted offline row id (namespaced for Jellyfin/Emby). This can differ from the
-        /// reconstructed `item.ratingKey`, so Cinema exit must preserve this value to focus the
-        /// correct Offline row across all backends (#87).
-        let downloadRatingKey: String
+        let launch: OfflinePlaybackLaunch
+        init(launch: OfflinePlaybackLaunch) { self.launch = launch }
     }
-
-    private func localTrickPlayProvider(kind: LocalTrickPlayKind?,
-                                        url: URL?,
-                                        chapterImageURLs: [Int: URL],
-                                        offlineChapters: [OfflineChapter]) -> (any TrickPlayThumbnailProviding)? {
-        switch kind {
-        case .plexBIF:
-            return LocalBIFTrickPlayThumbnailProvider(bifURL: url)
-        case .jellyfinTiles:
-            return LocalJellyfinTrickPlayThumbnailProvider(playlistURL: url)
-        case .embyBIF:
-            let providers = ([
-                LocalBIFTrickPlayThumbnailProvider(bifURL: url),
-                LocalEmbyChapterTrickPlayThumbnailProvider(
-                    chapters: offlineChapters, imageURLsByChapterIndex: chapterImageURLs),
-            ] as [(any TrickPlayThumbnailProviding)?]).compactMap { $0 }
-            return providers.isEmpty ? nil : HierarchicalTrickPlayThumbnailProvider(providers)
-        case nil:
-            return nil
-        }
-    }
+    #endif
 
     #if !os(tvOS)
     private var downloadRecordKey: String {
         DownloadRecordIdentity.recordKey(for: detailed.ratingKey, backend: actionBackend)
     }
 
-    private var localURL: URL? {
-        return downloadManager.localURL(for: downloadRecordKey)
+    /// Rendering uses only the published row. File admission belongs to the factory after
+    /// orientation; a missing file must not perform disk I/O during SwiftUI body evaluation.
+    static func offlinePlaybackIdentity(ratingKey: String, manager: DownloadManager) -> OfflineDownloadRowActionIdentity? {
+        guard let row = manager.records.first(where: { $0.ratingKey == ratingKey && $0.isComplete }),
+              let attemptID = row.attemptID else { return nil }
+        return .init(ratingKey: ratingKey, attemptID: attemptID)
     }
 
     private var isDownloading: Bool {

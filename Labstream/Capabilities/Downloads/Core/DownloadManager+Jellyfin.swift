@@ -100,6 +100,8 @@ extension DownloadManager {
             mediaIndex: mediaIndex,
             partIndex: partIndex
         ))
+        guard mediaBrowserSessionIsCurrent(backendSession),
+              startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "seed_committed") else { return }
         let identity = appModel.identity.jellyfin
         var request: URLRequest
         var destination: URL
@@ -153,20 +155,11 @@ extension DownloadManager {
                     mediaSourceId: jellyfinMediaSourceID,
                     maxStaticBitrate: max(profile.videoBitrateBps, 200_000_000),
                     audioStreamIndex: audioStreamIndex)
-                let (data, response) = try await URLSession.shared.data(for: infoReq)
-                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                    recordDownloadDiagnostic("downloads.playback_info_failed", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "backend": .label("Jellyfin"),
-                        "status_code": .int(http.statusCode),
-                        "phase": .label("download_negotiation"),
-                    ])
-                    throw DownloadError.transferFailed("PlaybackInfo HTTP \(http.statusCode)")
-                }
-                let info = try JellyfinPlaybackInfoResponse.decode(from: data)
-                let decision = try JellyfinPlayback.downloadDecision(response: info,
-                                                                     preferredMediaSourceId: jellyfinMediaSourceID,
-                                                                     audioStreamIndex: audioStreamIndex)
+                let decision = try await MediaBrowserDownloadNegotiator.negotiate(
+                    request: { infoReq }, send: { try await URLSession.shared.data(for: $0) },
+                    decode: JellyfinPlaybackInfoResponse.decode,
+                    decide: { try JellyfinPlayback.downloadDecision(response: $0,
+                        preferredMediaSourceId: jellyfinMediaSourceID, audioStreamIndex: audioStreamIndex) })
                 let sourcePlan = JellyfinDownloadSourcePlan.transcode(decision: decision,
                                                                       durationMs: item.duration,
                                                                       profile: profile)
@@ -211,20 +204,11 @@ extension DownloadManager {
                     mediaSourceId: jellyfinMediaSourceID,
                     maxStaticBitrate: 200_000_000,
                     audioStreamIndex: audioStreamIndex)
-                let (data, response) = try await URLSession.shared.data(for: infoReq)
-                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                    recordDownloadDiagnostic("downloads.playback_info_failed", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "backend": .label("Jellyfin"),
-                        "status_code": .int(http.statusCode),
-                        "phase": .label("download_negotiation"),
-                    ])
-                    throw DownloadError.transferFailed("PlaybackInfo HTTP \(http.statusCode)")
-                }
-                let info = try JellyfinPlaybackInfoResponse.decode(from: data)
-                let decision = try JellyfinPlayback.downloadDecision(response: info,
-                                                                     preferredMediaSourceId: jellyfinMediaSourceID,
-                                                                     audioStreamIndex: audioStreamIndex)
+                let decision = try await MediaBrowserDownloadNegotiator.negotiate(
+                    request: { infoReq }, send: { try await URLSession.shared.data(for: $0) },
+                    decode: JellyfinPlaybackInfoResponse.decode,
+                    decide: { try JellyfinPlayback.downloadDecision(response: $0,
+                        preferredMediaSourceId: jellyfinMediaSourceID, audioStreamIndex: audioStreamIndex) })
                 let fallbackProfile = DownloadPresetPolicy.jellyfinTranscodeProfile(named: DownloadPresetPolicy.jellyfinDefaultDownloadPreset)
                 let sourcePlan = JellyfinDownloadSourcePlan.compatible(
                     decision: decision,
@@ -279,19 +263,20 @@ extension DownloadManager {
             // below re-created the row `.queued`, persisted the psid, started keepalives, and
             // started the transfer). Exit WITHOUT touching the store; release only what this
             // chain minted.
-            guard startAttemptStillCurrent(startAttempt, backend: "Jellyfin",
+            guard mediaBrowserSessionIsCurrent(backendSession),
+              startAttemptStillCurrent(startAttempt, backend: "Jellyfin",
                                            phase: "post_negotiation") else {
                 jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
-                stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
+                await stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                                   playSessionID: mintedPlaySessionId,
                                                   backendKind: .jellyfin,
                                                   backendSession: backendSession)
                 return
             }
         } catch {
-            guard store.ownsAttempt(attemptKey) else {
+            guard mediaBrowserSessionIsCurrent(backendSession), store.ownsAttempt(attemptKey) else {
                 jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
-                stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
+                await stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                                   playSessionID: mintedPlaySessionId,
                                                   backendKind: .jellyfin,
                                                   backendSession: backendSession)
@@ -324,6 +309,7 @@ extension DownloadManager {
             return
         }
 
+        metadata.mediaSourceID = resolvedJellyfinMediaSourceID
         let publishResult = await store.createAttemptOwnedRecordAsync(
             DownloadRecord(ratingKey: ratingKey, attemptID: startAttempt.attemptID,
                            title: item.title, localURL: destination,
@@ -331,13 +317,15 @@ extension DownloadManager {
             attemptID: startAttempt.attemptID)
         guard case .committed(let publishedKey) = publishResult,
               publishedKey == attemptKey,
+              mediaBrowserSessionIsCurrent(backendSession),
               startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "publish_committed") else {
             jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
-            stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
+            await stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                               playSessionID: mintedPlaySessionId,
                                               backendKind: .jellyfin,
                                               backendSession: backendSession)
-            if startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "failure_cleanup") {
+            if mediaBrowserSessionIsCurrent(backendSession),
+               startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "failure_cleanup") {
                 let failureFence = managerActionGenerations[attemptKey.ratingKey, default: 0]
                 _ = await applyLifecycleEvent(
                     .transferFailed(.internalError), for: attemptKey, context: "jellyfin_publish")
@@ -352,13 +340,15 @@ extension DownloadManager {
             guard jellyfinMutationAccepted(
                 await store.setPlaySessionIDAsync(for: attemptKey, mintedPlaySessionId),
                 key: attemptKey, phase: "play_session"),
+                  mediaBrowserSessionIsCurrent(backendSession),
                   startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "play_session_committed") else {
                 jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
-                stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
+                await stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                                   playSessionID: mintedPlaySessionId,
                                                   backendKind: .jellyfin,
                                                   backendSession: backendSession)
-                if startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "failure_cleanup") {
+                if mediaBrowserSessionIsCurrent(backendSession),
+                   startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "failure_cleanup") {
                     let failureFence = managerActionGenerations[attemptKey.ratingKey, default: 0]
                     _ = await applyLifecycleEvent(.transferFailed(.internalError),
                                             for: attemptKey, context: "jellyfin_play_session")
@@ -378,23 +368,6 @@ extension DownloadManager {
                     durationMs: item.duration)
             }
         }
-        if let resolvedJellyfinMediaSourceID,
-           resolvedJellyfinMediaSourceID != jellyfinMediaSourceID {
-            guard jellyfinMutationAccepted(
-                await store.updateMetadataAsync(for: attemptKey) {
-                    $0.mediaSourceID = resolvedJellyfinMediaSourceID
-                }, key: attemptKey, phase: "media_source"),
-                  startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "media_source_committed") else {
-                if startAttemptStillCurrent(startAttempt, backend: "Jellyfin", phase: "failure_cleanup") {
-                    let failureFence = managerActionGenerations[attemptKey.ratingKey, default: 0]
-                    _ = await applyLifecycleEvent(.transferFailed(.internalError),
-                                            for: attemptKey, context: "jellyfin_media_source")
-                    guard !Task.isCancelled, managerActionGenerations[attemptKey.ratingKey, default: 0] == failureFence, store.ownsAttempt(attemptKey) else { return }
-                    releaseInFlight(for: attemptKey)
-                }
-                return
-            }
-        }
         refreshRecords()
         // #102: cache the poster locally (best-effort) so artwork shows offline. Unlike the
         // Plex lane this MUST use the authenticated MediaBrowser image request.
@@ -404,8 +377,14 @@ extension DownloadManager {
                                server: server, token: token, identity: identity)
         cacheChapterImages(for: attemptKey, item: item, backend: .jellyfin,
                            server: server, token: token)
-        cacheJellyfinTextSubtitles(for: attemptKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
-                                   part: part, server: server, token: token, identity: identity)
+        if let sourceID = resolvedJellyfinMediaSourceID,
+           let resolved = DownloadMediaSelectionPolicy.selection(item: item, mediaSourceID: sourceID) {
+            cacheJellyfinTextSubtitles(for: attemptKey, itemId: itemId, mediaSourceId: sourceID,
+                                      part: resolved.part, server: server, token: token, identity: identity)
+        } else if let record = store.record(for: attemptKey) {
+            _ = rehydrateMissingOptionalSideAssets(record: record, attemptKey: attemptKey,
+                                                   kinds: [.textSubtitles], reason: "resolved_source")
+        }
 
         beginBackgroundTransfer(DownloadTransferStartPlan(
             attemptKey: attemptKey,
@@ -415,7 +394,7 @@ extension DownloadManager {
             expectedBytes: expectedBytes,
             releaseInFlightOnFailure: true
         )) {
-            guard store.ownsAttempt(attemptKey) else { throw CancellationError() }
+            guard mediaBrowserSessionIsCurrent(backendSession), store.ownsAttempt(attemptKey) else { throw CancellationError() }
             // A Jellyfin `.optimize`/`.optimizeCompatible` download streams the file directly from
             // the transcoder/remuxer — there is no separate "render then static download" phase, so
             // the byte rate is encoder-gated and the stream is forward-only (not range-resumable).
@@ -429,6 +408,7 @@ extension DownloadManager {
                               expectedBytes: expectedBytes,
                               byteRangeCheckpoint: transferRoute.usesByteRangeCheckpoint,
                               resetRangeRestartCounters: !consumeRangeRestartCounterPreservation(ratingKey: ratingKey))
+            refreshRecords()
         }
     }
 
@@ -489,8 +469,10 @@ extension DownloadManager {
                 for (index, tile) in playlist.tiles.enumerated() {
                     let destination = store.jellyfinTrickPlayTileDestinationURL(
                         ratingKey: attemptKey.ratingKey, index: index)
-                    if let relative = store.reusableSideAssetRelativePath(
-                        for: attemptKey, destination: destination) {
+                    let reusable = await self.reusableSideAssetObservations(for: attemptKey, destinations: [destination])
+                    guard !Task.isCancelled, store.sideAssetSourceIdentity(for: attemptKey) == sourceIdentity else { return }
+                    if reusable.contains(destination.lastPathComponent) {
+                        let relative = destination.lastPathComponent
                         tileRelativeByIndex[index] = relative
                         tileFilenamesByURI[tile.uri] = relative
                         continue

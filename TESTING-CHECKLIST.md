@@ -281,6 +281,15 @@ never capture account names, server addresses, provider IDs, item IDs, or activi
 
 ## 5. Downloads and Offline
 
+The downloads overhaul's deterministic pin suites and Mac hosted command are documented in
+[Testing strategy](docs/TESTING-STRATEGY.md#downloads-overhaul-pin-suites). Their results do not
+check off the live-server or physical-device items below.
+
+- [ ] Reject or supersede an offline launch while orientation is suspended: no stale player
+      appears and orientation returns to the surface.
+- [ ] Sign out with an encoder-release journal write held or failed: UI remains responsive,
+      records stay parked, and recovery retains exact cleanup authority without clearing a newer handle.
+
 This section applies only to visionOS, iOS/iPadOS, and macOS. The tvOS app must compile
 without the Downloads capability and expose no Offline tab, download action, storage control,
 background-session registration, or migration/recovery work.
@@ -338,7 +347,7 @@ background-session registration, or migration/recovery work.
       with an episode that already has a converted/optimized version and a directly playable
       original. While the conversion is still preparing, the static episodes are admitted and
       transfer (at most two static, one server-prep, three total). A waiting row reads
-      **Waiting for a download slot…** in the offline list (**Queued…** in the download sheet),
+      **Waiting for a download slot…** in Offline and the current-download sheets,
       never "Downloading optimized…" with a spinner.
 - [ ] Admission (P4): with five paused rows, Resume All starts at most the caps and the rest read
       **Waiting for a download slot…** until a lane frees. A tap while every lane is busy waits and
@@ -417,6 +426,27 @@ claiming background durability.
       independent budgets, and a new process receives fresh counts.
 - [ ] Offline playback works with the server unreachable, persists a local playhead, uses local
       side assets only, and never attempts online timeline reporting.
+- [ ] On Plex, Jellyfin and Emby downloads, play from Detail, close, and reopen from Offline
+      (then reverse). Both use the same local position and one configured rewind; near-end reset
+      agrees. Retry/replacement cannot inherit delayed saves from the old player. Local progress
+      does not sync watched state back to the server.
+- [ ] With embedded text subtitles and a downloaded sidecar, one menu shows both and one Off.
+      Switch sidecar → embedded → Off, including a slow sidecar load; only the selected source
+      renders and a late parse cannot restore an overlay. Repeat from Detail and Offline.
+- [ ] On narrow iPhone, regular iPad, Vision Pro and resizable Mac, compare Offline rows with
+      current-download sheets: waiting/paused and route context are neutral, verified completion
+      green, caution amber, failure/destructive actions red. Waiting has a clock; zero server
+      progress is indeterminate; server indexing and verification have distinct captions.
+      Long context/status/quality stay single-line; VoiceOver reads full values and error details
+      expand. Media/extras and exact/estimated sizes remain distinct; preterminal progress stays
+      below 100%.
+- [ ] Delete paused and in-prep rows: confirmation explains supported unfinished server-job
+      cancellation and retention of finished server versions. Replace the attempt while the
+      confirmation is open; accepting the old confirmation leaves the replacement intact.
+- [ ] Cold-launch restricted Offline, enter Cinema from a local row, exit, then Reconnect.
+      The row receives focus once; the return is acknowledged by identity and does not replay
+      on normal Root. Repeat with a newer pending return and with blocked readable recovery;
+      playable rows remain available while mutations stay disabled.
 - [ ] Relaunch reconciliation demotes missing, truncated, or unplayable files and preserves
       genuinely complete files. Storage totals distinguish indexed content, temporary data,
       and conservative orphan candidates.

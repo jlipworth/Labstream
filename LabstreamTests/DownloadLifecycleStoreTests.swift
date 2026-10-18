@@ -391,8 +391,8 @@ struct DownloadLifecycleStoreTests {
     }
 
     @Test("A condemned body that could not be moved still never seeds a Retry")
-    func condemnationFenceHoldsWithoutTheRename() throws {
-        try withDirectory { directory in
+    func condemnationFenceHoldsWithoutTheRename() async throws {
+        try await withAsyncDirectory { directory in
             let store = DownloadStore(baseDirectory: directory)
             var metadata = profiled("1080p")
             metadata.resumeMode = .staticByteRange
@@ -417,8 +417,8 @@ struct DownloadLifecycleStoreTests {
             #expect(store.attemptWorkingFileLayout(for: key) == nil)
             // A deferred Retry still gets a usable answer: an empty checkpoint, applied to the
             // row, so the restart-from-zero intent survives (never "stale owner").
-            #expect(store.resolveStaticCheckpointSynchronously(
-                store.submitStaticRangeCheckpointReset(for: key)) == .applied(bytes: 0))
+            #expect(await store.resolveStaticCheckpoint(
+                store.submitStaticRangeCheckpointReset(for: key), deadline: .after(30)) == .applied(bytes: 0))
             #expect(store.record(for: key)?.bytes == 0)
             #expect(FileManager.default.fileExists(atPath: body.path), "condemned bytes untouched")
             #expect(store.staticRangeRecoveryEvidence().allSatisfy { $0.ratingKey != key.ratingKey })

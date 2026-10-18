@@ -10,6 +10,8 @@ public enum OfflineLibrarySnapshotBuilder {
     public static func make(records: [DownloadRecord],
                             isQueuePaused: Bool,
                             downloadSpeed: [String: Double],
+                            phase: (DownloadRecord) -> DownloadJobPhase? = { _ in nil },
+                            displayFraction: (DownloadRecord) -> DownloadProgressDisplay.Fraction? = { _ in nil },
                             displayBytes: (DownloadRecord) -> Int? = { _ in nil },
                             trustworthyExpectedBytes: (DownloadRecord) -> Int? = { _ in nil },
                             errorMessage: (DownloadRecord) -> String?,
@@ -55,7 +57,13 @@ public enum OfflineLibrarySnapshotBuilder {
                 errorMessage: errorMessage(record),
                 displayProgress: displayProgress(record),
                 statusCaption: statusCaption(record, backend),
-                isRetrying: isRetrying(record.ratingKey)
+                isRetrying: isRetrying(record.ratingKey),
+                lifecycle: record.lifecycle,
+                isWaitingForAdmission: record.lifecycle == .planned || record.admissionIntent != nil,
+                progressIsEstimated: DownloadDisplayClassifier.isLiveTranscoderSourced(record)
+                    && record.progress <= 0 && record.bytes > 0,
+                phase: phase(record),
+                displayFraction: displayFraction(record)
             )
         }
 

@@ -13,7 +13,7 @@ struct ServerPrepRunnerIntegrationTests {
         let fixture = try await PrepRunnerFixture()
         defer { fixture.close() }
         fixture.wire.withValue { $0.plexOutput = !duplicate; $0.createStatus = 400 }
-        let key = try fixture.seed(.plex)
+        let key = try await fixture.seed(.plex)
         fixture.startPlex(key)
         try #require(await fixture.wait { fixture.store.metadata(for: key.ratingKey)?.serverPreparedVersion == true })
         #expect(fixture.wire.value.creates == (duplicate ? 1 : 0))
@@ -28,7 +28,7 @@ struct ServerPrepRunnerIntegrationTests {
         let fixture = try await PrepRunnerFixture()
         defer { fixture.close() }
         fixture.wire.withValue { $0.queueStatus = 503 }
-        let key = try fixture.seed(.plex, active: false, dispatchedAt: expired ? Date().timeIntervalSince1970 - 181 : nil)
+        let key = try await fixture.seed(.plex, active: false, dispatchedAt: expired ? Date().timeIntervalSince1970 - 181 : nil)
         fixture.manager.resumePendingServerPrepDownloads()
         try #require(await fixture.wait { fixture.wire.value.queueReads >= 3 })
         #expect(fixture.wire.value.creates == 0)
@@ -40,7 +40,7 @@ struct ServerPrepRunnerIntegrationTests {
         let fixture = try await PrepRunnerFixture()
         defer { fixture.close() }
         fixture.wire.withValue { $0.metadataStatus = 503 }
-        let key = try fixture.seed(.plex, active: false,
+        let key = try await fixture.seed(.plex, active: false,
                                    dispatchedAt: expired ? Date().timeIntervalSince1970 - 181 : nil)
         fixture.manager.resumePendingServerPrepDownloads()
         try #require(await fixture.wait { fixture.wire.value.queueReads >= 3 })
@@ -52,7 +52,7 @@ struct ServerPrepRunnerIntegrationTests {
         let fixture = try await PrepRunnerFixture()
         defer { fixture.close() }
         let dispatched = Date().timeIntervalSince1970 - 60
-        let key = try fixture.seed(.plex, active: false, dispatchedAt: dispatched)
+        let key = try await fixture.seed(.plex, active: false, dispatchedAt: dispatched)
         fixture.manager.resumePendingServerPrepDownloads()
         try #require(await fixture.wait { fixture.wire.value.queueReads >= 3 })
         #expect(fixture.wire.value.creates == 0)
@@ -64,7 +64,7 @@ struct ServerPrepRunnerIntegrationTests {
     @Test func plexProvenMissingCreateFailsAfterGrace() async throws {
         let fixture = try await PrepRunnerFixture()
         defer { fixture.close() }
-        let key = try fixture.seed(.plex, active: false, dispatchedAt: Date().timeIntervalSince1970 - 181)
+        let key = try await fixture.seed(.plex, active: false, dispatchedAt: Date().timeIntervalSince1970 - 181)
         fixture.manager.resumePendingServerPrepDownloads()
         try #require(await fixture.wait { fixture.store.record(for: key)?.status == .failed })
         #expect(fixture.wire.value.creates == 0)
@@ -75,7 +75,7 @@ struct ServerPrepRunnerIntegrationTests {
         let fixture = try await PrepRunnerFixture()
         defer { fixture.close() }
         fixture.wire.withValue { $0.createStatus = 500 }
-        let key = try fixture.seed(.plex)
+        let key = try await fixture.seed(.plex)
         fixture.startPlex(key)
         try #require(await fixture.wait { fixture.store.record(for: key)?.status == .failed })
         #expect(fixture.wire.value.creates == 1)
@@ -88,7 +88,7 @@ struct ServerPrepRunnerIntegrationTests {
         let fixture = try await PrepRunnerFixture()
         defer { fixture.close() }
         fixture.wire.withValue { $0.queuePresent = true }
-        let key = try fixture.seed(.plex)
+        let key = try await fixture.seed(.plex)
         fixture.startPlex(key)
         try #require(await fixture.wait { fixture.wire.value.queueReads >= 1 })
         fixture.model.serverToken = "renewed-fixture"
@@ -106,7 +106,7 @@ struct ServerPrepRunnerIntegrationTests {
         let fixture = try await PrepRunnerFixture()
         defer { fixture.close() }
         fixture.wire.withValue { $0.queuePresent = true }
-        let key = try fixture.seed(backend)
+        let key = try await fixture.seed(backend)
         let returned = TestLockedBox(false)
         let start = Task {
             if backend == .plex {
@@ -117,6 +117,7 @@ struct ServerPrepRunnerIntegrationTests {
                     metadata: fixture.store.metadata(for: key.ratingKey)!, session: fixture.embyLane, attemptKey: key)
             }
             returned.withValue { $0 = true }
+            fixture.events.signal()
         }
         defer { start.cancel() }
         #expect(await fixture.wait { returned.value })
@@ -135,7 +136,7 @@ struct ServerPrepRunnerIntegrationTests {
                 : (branch == .refreshedReuse ? 2 : Int.max)
             $0.completeConversion = branch == .completed
         }
-        let key = try fixture.seed(.emby, active: branch != .resumeReuse, jobID: branch == .resumeReuse ? 7 : nil)
+        let key = try await fixture.seed(.emby, active: branch != .resumeReuse, jobID: branch == .resumeReuse ? 7 : nil)
         if branch == .resumeReuse {
             fixture.manager.resumePendingServerPrepDownloads()
         } else {
@@ -152,11 +153,19 @@ struct ServerPrepRunnerIntegrationTests {
     func embyDeleteAndPauseAllDuringFreshPolling(pauseAll: Bool) async throws {
         let fixture = try await PrepRunnerFixture()
         defer { fixture.close() }
-        let key = try fixture.seed(.emby)
+        let key = try await fixture.seed(.emby)
         fixture.startEmby(key)
         try #require(await fixture.wait { fixture.wire.value.jobReads >= 1 })
         if pauseAll {
+            // Exercise the production pause, including persistence, then restore the shared
+            // preference in this MainActor turn. Other managers must not inherit this gate.
+            let defaults = UserDefaults.standard
+            let prior = defaults.object(forKey: "downloads.queuePaused")
             fixture.manager.pauseQueue()
+            #expect(defaults.bool(forKey: "downloads.queuePaused"))
+            if let prior { defaults.set(prior, forKey: "downloads.queuePaused") }
+            else { defaults.removeObject(forKey: "downloads.queuePaused") }
+            #expect(fixture.manager.isQueuePaused)
             let before = fixture.wire.value.jobReads
             try #require(await fixture.wait { fixture.wire.value.jobReads > before })
             #expect(fixture.store.record(for: key)?.status == .preparing)
@@ -170,7 +179,7 @@ struct ServerPrepRunnerIntegrationTests {
             try #require(await fixture.wait { fixture.store.record(for: key) == nil })
             let reads = fixture.wire.value.jobReads
             fixture.wire.withValue { $0.completeConversion = true }
-            try await Task.sleep(for: .milliseconds(100))
+            await poller.value // Join the cancelled producer before asserting no late request.
             #expect(fixture.wire.value.jobReads == reads)
             #expect(fixture.wire.value.negotiations == 0)
         }
@@ -196,8 +205,9 @@ private final class PrepRunnerFixture {
         var negotiations = 0
     }
     let directory: URL
-    let wire = TestLockedBox(Wire())
-    let transfers = TestLockedBox<[URLRequest]>([])
+    let events = TestEvents()
+    let wire: TestLockedBox<Wire>
+    let transfers: TestLockedBox<[URLRequest]>
     let stub: TestURLProtocolStub
     let transport: URLSession
     let model: AppModel
@@ -211,6 +221,9 @@ private final class PrepRunnerFixture {
     let embyLane: BackendSession
 
     init() async throws {
+        let events = self.events
+        wire = TestLockedBox(Wire(), didChange: { events.signal() })
+        transfers = TestLockedBox([], didChange: { events.signal() })
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("prep-runner-\(UUID().uuidString)")
         let base = URL(string: "https://\(UUID().uuidString.lowercased()).prep.test.invalid")!
         plexLane = BackendSession(kind: .plex, baseURL: base, token: "initial-fixture", serverID: nil)
@@ -274,7 +287,10 @@ private final class PrepRunnerFixture {
         model.embyAccessToken = embyLane.token
         model.embyUserID = embyLane.userID
         model.embyServerID = embyLane.serverID
-        store = DownloadStore(baseDirectory: directory)
+        store = DownloadStore(baseDirectory: directory, indexPersistence: .init { data, url in
+            try DownloadIndexFileCommitter().commit(data, to: url)
+            events.signal()
+        })
         let transfers = self.transfers
         PrepRunnerStaticProtocol.routes.withValue { $0[base.host!] = transfers }
         background = BackgroundDownloadSession(store: store, protocolClasses: [PrepRunnerStaticProtocol.self])
@@ -291,7 +307,7 @@ private final class PrepRunnerFixture {
     }
 
     func seed(_ backend: DownloadBackendKind, active: Bool = true,
-              dispatchedAt: Double? = nil, jobID: Int? = nil) throws -> DownloadAttemptKey {
+              dispatchedAt: Double? = nil, jobID: Int? = nil) async throws -> DownloadAttemptKey {
         let lane = backend == .plex ? plexLane : embyLane
         let key = DownloadAttemptKey(ratingKey: backend == .plex ? "item" : "emby:item", attemptID: .init(uuid: UUID()))
         var metadata = DownloadOfflineMetadataBuilder.metadata(from: item, resolutionLabel: "1080p",
@@ -306,7 +322,7 @@ private final class PrepRunnerFixture {
         let row = DownloadRecord(ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Fixture",
             localURL: store.destinationURL(ratingKey: key.ratingKey, ext: "mp4"), bytes: 0,
             status: backend == .plex ? .queued : .preparing, metadata: metadata)
-        try #require(store.createAttemptOwnedRecord(row, attemptID: key.attemptID) == .committed(key))
+        try #require(await store.createAttemptOwnedRecordAsync(row, attemptID: key.attemptID) == .committed(key))
         if active { manager.activeJobs.insert(key.ratingKey); manager.inFlightAttempts.acquire(key) }
         return key
     }
@@ -326,9 +342,10 @@ private final class PrepRunnerFixture {
     }
 
     func wait(_ condition: () -> Bool) async -> Bool {
-        let limit = Date().addingTimeInterval(3)
-        while !condition(), Date() < limit { try? await Task.sleep(for: .milliseconds(5)) }
-        return condition()
+        await events.wait {
+            _ = manager.records // Manager publication also acknowledges post-commit continuations.
+            return condition()
+        }
     }
 
     func close() {
@@ -340,7 +357,6 @@ private final class PrepRunnerFixture {
         model.embyAccessToken = nil
         entryTasks.forEach { $0.cancel() }
         manager.setQueuePausedForTesting(false)
-        UserDefaults.standard.removeObject(forKey: "downloads.queuePaused")
         for row in store.records {
             if let id = row.attemptID { manager.releaseInFlight(for: .init(ratingKey: row.ratingKey, attemptID: id)) }
         }

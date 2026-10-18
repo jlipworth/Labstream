@@ -76,6 +76,11 @@ tvOS target deliberately omits the complete download capability and Offline prod
 - Offline downloads with metadata, poster/side-asset support, integrity checks, and route-specific recovery: static/original and server-prepared static files use checkpoints, while live remux/transcode streams reconcile safely but may need retry/restart after interruption.
 - Direct original downloads only when Labstream expects the file to be locally playable.
 - Server-prepared or server-rendered compatible files when the original is not a safe offline target.
+- One bounded queue across individual and season downloads, with consistent waiting, preparation,
+  verification and pause controls on Vision Pro, iPhone/iPad and Mac.
+- Local resume and rewind from Detail or Offline, embedded plus downloaded text subtitles, and
+  safe exact-copy recovery. Offline progress stays local; watched-state sync and offline Up Next
+  remain separate work.
 
 ### Privacy and diagnostics
 

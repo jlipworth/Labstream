@@ -50,9 +50,22 @@ public enum DownloadMediaSelectionPolicy {
         return nil
     }
 
+    /// An exact source must identify one Part, even when server arrays are reordered. Synthetic
+    /// Media.id and saved positional indexes are never proof of MediaSource identity.
+    public static func selection(item: MediaItem, mediaSourceID: String) -> Selection? {
+        let matches = (item.media ?? []).enumerated().flatMap { mediaIndex, media in
+            media.part.enumerated().compactMap { partIndex, part -> Selection? in
+                guard Self.mediaSourceID(media: nil, part: part) == mediaSourceID else { return nil }
+                return Selection(mediaIndex: mediaIndex, partIndex: partIndex, media: media,
+                                 part: part, mediaSourceID: mediaSourceID)
+            }
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
     public static func containerExtension(selection: Selection, fallback: String = "mp4") -> String {
         let raw = selection.part?.container ?? selection.media?.container ?? fallback
-        return raw.isEmpty ? fallback : raw
+        return MediaBrowserDownloadContainer.token(raw) ?? fallback
     }
 
     /// Container extension for a STATIC original download that may be resuming an existing row.

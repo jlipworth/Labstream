@@ -24,8 +24,9 @@ struct DownloadStoreDeadline: Sendable, Equatable {
 /// P6.2/P6.3 replace the compatibility worker with cheap lock-linearized submissions.
 final class DownloadStoreWork<Result: Sendable>: @unchecked Sendable {
     let epoch = UUID()
-    private let condition = NSCondition()
+    private let lock = NSLock()
     private var result: Result?
+    private var completionWaiters: [CheckedContinuation<Result, Never>] = []
     private let workerQueue = DispatchQueue(label: "org.labstream.download-store-work", qos: .utility)
 
     let timeoutResult: Result?
@@ -33,32 +34,34 @@ final class DownloadStoreWork<Result: Sendable>: @unchecked Sendable {
         self.timeoutResult = timeoutResult
         workerQueue.async { [self] in
             let value = operation()
-            condition.lock()
+            lock.lock()
             result = value
-            condition.broadcast()
-            condition.unlock()
-        }
-    }
-
-    /// Worker-only compatibility for code that has no typed expiry value. Production store
-    /// boundaries use the typed overload below; the frozen P6.1 bridge remains source-compatible.
-    func resolve(deadline: DownloadStoreDeadline) async -> Result {
-        if let timeoutResult { return await observe(deadline: deadline) ?? timeoutResult }
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async { [self] in
-                condition.lock()
-                while result == nil { condition.wait() }
-                let value = result!
-                condition.unlock()
-                continuation.resume(returning: value)
-            }
+            let waiters = completionWaiters
+            completionWaiters.removeAll()
+            lock.unlock()
+            for waiter in waiters { waiter.resume(returning: value) }
         }
     }
 
     /// Expiry releases only this waiter. The worker retains its epoch until physical completion.
     private func observedResult() -> Result? {
-        condition.lock(); defer { condition.unlock() }
+        lock.lock(); defer { lock.unlock() }
         return result
+    }
+
+    /// Observe physical completion after a bounded waiter expires, without polling or cancelling
+    /// the worker. Callers must still fence the result against their current generation.
+    func completion() async -> Result {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if let result {
+                lock.unlock()
+                continuation.resume(returning: result)
+            } else {
+                completionWaiters.append(continuation)
+                lock.unlock()
+            }
+        }
     }
 
     func observe(deadline: DownloadStoreDeadline) async -> Result? {
@@ -84,11 +87,6 @@ extension DownloadStore {
         case observed(StartupIndexAdmission)
         case timedOut(epoch: UUID)
     }
-    enum LifecycleObservationResolution: Sendable, Equatable {
-        case observed(LifecycleEventSubmission)
-        case timedOut(epoch: UUID)
-    }
-    typealias LifecycleObservationSubmission = DownloadStoreWork<LifecycleEventSubmission>
     typealias ReconcileSubmission = DownloadStoreWork<PersistenceFlushResult>
 
     /// Every typed boundary keeps its original monotonic deadline. Expiry returns a typed timeout
@@ -141,12 +139,6 @@ extension DownloadStore {
 
     func resolveArtifact(_ ticket: DownloadArtifactLifecycleCoordinator.Ticket,
                          deadline: DownloadStoreDeadline) async -> DownloadArtifactLifecycleCoordinator.FlushResult {
-        await artifactResolutionAdapter(ticket, deadline: deadline)
-    }
-
-    private func artifactResolutionAdapter(_ ticket: DownloadArtifactLifecycleCoordinator.Ticket,
-                                          deadline: DownloadStoreDeadline) async
-        -> DownloadArtifactLifecycleCoordinator.FlushResult {
         await resolveArtifactDeadline(ticket, deadline: deadline)
     }
 
@@ -207,20 +199,6 @@ extension DownloadStore {
         return .timedOut(epoch: submission.epoch)
     }
 
-    /// Disk-dependent observations run on a worker; Pause/Delete install their immediate fences
-    /// synchronously before using this adapter. P6.3 must compare the captured row generation
-    /// before applying facts; P6.2 must recheck authority after resolving the resulting commit.
-    func submitObservedLifecycleEvent(_ event: DownloadLifecycleEvent, for key: DownloadAttemptKey,
-                                      liveTask: Bool = false) -> LifecycleObservationSubmission {
-        DownloadStoreWork { self.submitLifecycleEvent(event, for: key, liveTask: liveTask) }
-    }
-
-    func resolve(_ submission: LifecycleObservationSubmission,
-                 deadline: DownloadStoreDeadline) async -> LifecycleObservationResolution {
-        if let result = await submission.observe(deadline: deadline) { return .observed(result) }
-        return .timedOut(epoch: submission.epoch)
-    }
-
     func submitReconcile(liveRatingKeys: Set<String>, snapshotRatingKeys: Set<String>) -> ReconcileSubmission {
         DownloadStoreWork {
             self.reconcileOnWorker(liveRatingKeys: liveRatingKeys, snapshotRatingKeys: snapshotRatingKeys)
@@ -253,28 +231,6 @@ extension DownloadStore {
         return await updateMetadataAsync(for: key) { $0.playSessionID = playSessionID }
     }
 
-    func setLocalPlaybackPositionAsync(for key: DownloadAttemptKey, positionMs: Int, durationMs: Int?) async -> AttemptMutationResult {
-        await updateMetadataAsync(for: key) { meta in
-            meta.localPlaybackPositionMs = OfflinePlaybackPositionPolicy.standard.persistedPositionMs(
-                currentMs: positionMs, durationMs: durationMs ?? meta.duration)
-        }
-    }
-
-    func markCompleteIfUnverifiedAsync(for key: DownloadAttemptKey) async -> AttemptUnverifiedPromotionResult {
-        await DownloadStoreWork { self.markCompleteIfUnverifiedOnWorker(for: key) }.resolve(
-            deadline: .after(30), timedOut: { .persistenceFailed(self.timeoutFailure(self.currentPersistenceTicket())) })
-    }
-
-    /// Session callbacks return onto the existing range queue. Callers must check exact attempt,
-    /// train epoch and halt fence THERE before append/refill/publication; acceptance is insufficient.
-    func resolve(_ submission: AttemptMutationSubmission, deadline: DownloadStoreDeadline,
-                 returningOn queue: DispatchQueue,
-                 completion: @escaping @Sendable (AttemptMutationResult) -> Void) {
-        Task {
-            let result = await resolve(submission, deadline: deadline)
-            queue.async { completion(result) }
-        }
-    }
 }
 
 /// Completion adapter shared by every typed resolve family above (resume/artifact/promotion/

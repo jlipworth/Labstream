@@ -322,8 +322,7 @@ public enum EmbyLibrary {
                                                itemId: String,
                                                mediaSourceId: String?,
                                                container: String?) throws -> URLRequest {
-        let cleanContainer = (container ?? "mp4")
-            .split(separator: ",").first.map(String.init) ?? "mp4"
+        let cleanContainer = MediaBrowserDownloadContainer.token(container) ?? "mp4"
         let ext = cleanContainer
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()

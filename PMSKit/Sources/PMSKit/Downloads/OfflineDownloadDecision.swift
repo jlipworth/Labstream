@@ -13,8 +13,7 @@ public enum OfflineDownloadDecision {
         let raw = (part.container?.isEmpty == false
                    ? part.container
                    : (part.file as NSString?)?.pathExtension) ?? ""
-        let normalized = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        return normalized.isEmpty ? "unknown" : normalized
+        return MediaBrowserDownloadContainer.token(raw) ?? "unknown"
     }
 
     /// Whether the raw source Part is a plausible local AVFoundation file on Vision Pro.
@@ -79,8 +78,7 @@ public enum OfflineDownloadDecision {
 
     /// Container token for an explicit container/extension string (no Part needed).
     static func containerLabel(forContainer raw: String?) -> String {
-        let normalized = (raw ?? "").lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        return normalized.isEmpty ? "unknown" : normalized
+        return MediaBrowserDownloadContainer.token(raw) ?? "unknown"
     }
 
     // MARK: - #125 Existing server-version offline gate

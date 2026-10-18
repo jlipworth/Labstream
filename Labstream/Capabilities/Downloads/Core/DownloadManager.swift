@@ -148,7 +148,7 @@ enum DownloadOptimizeStateLabel {
 ///   3. fetch that part over a **background** `URLSession` into Application Support,
 ///   4. record it in `DownloadStore` (ratingKey -> local file, size, progress).
 ///
-/// Offline playback reuses the custom player via `CustomPlayerView(localFile:item:)`.
+/// Offline playback presents one admitted launch through the shared custom player.
 ///
 /// The optimize trigger is the highest-uncertainty area in the whole app — see
 /// `triggerOptimize(...)`. It is isolated behind that single method so the live
@@ -220,16 +220,27 @@ public final class DownloadManager {
     /// Live records (in-progress + completed), backed by `DownloadStore`.
     public private(set) var records: [DownloadRecord] = []
     #if DEBUG
-    @ObservationIgnored private var startupCompletionWaiters: [CheckedContinuation<Bool, Never>] = []
+    @ObservationIgnored private var startupCompletionWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
     /// Observe the actual terminal startup edge. Scheduling delay is not a startup failure;
     /// store operations retain their own bounded deadlines and failure transitions.
     func awaitStartupRecoveryForTesting() async -> Bool {
         if startupRecoveryState == .ready && admission.recoveryComplete { return true }
-        if case .blocked = startupRecoveryState { return false }
-        return await withCheckedContinuation { startupCompletionWaiters.append($0) }
+        // A late load may have resumed activation while the prior deadline banner is still
+        // visible. Join that in-flight recovery rather than returning its superseded failure.
+        if case .blocked = startupRecoveryState, !startupRecoveryInFlight { return false }
+        let id = UUID()
+        return await withCheckedContinuation { continuation in
+            startupCompletionWaiters[id] = continuation
+            // A missing terminal acknowledgement must fail the fixture, including when a red
+            // control restores an implementation that never publishes startup completion.
+            Task { @MainActor [weak self] in
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                self?.startupCompletionWaiters.removeValue(forKey: id)?.resume(returning: false)
+            }
+        }
     }
     private func acknowledgeStartupRecoveryForTesting(_ ready: Bool) {
-        let waiters = startupCompletionWaiters
+        let waiters = startupCompletionWaiters.values
         startupCompletionWaiters.removeAll()
         for waiter in waiters { waiter.resume(returning: ready) }
     }
@@ -238,6 +249,11 @@ public final class DownloadManager {
     /// tokens, persistence error descriptions, or server values are exposed to UI/diagnostics.
     public private(set) var startupRecoveryState: StartupRecoveryState = .preparing
     @ObservationIgnored private var startupRecoveryInFlight = false
+    /// A readable load may outlive its OS wake. Keep publication independent of the next
+    /// authorized transport edge, without automatically retrying unrelated startup failures.
+    @ObservationIgnored private var startupActivationAwaitingAuthorization = false
+    @ObservationIgnored private(set) var startupIndexObservationTask: Task<Void, Never>?
+    @ObservationIgnored private let startupIndexDeadline: @Sendable () -> DownloadStoreDeadline
     @ObservationIgnored private var didRunInitialStartupReattach = false
     @ObservationIgnored private var startupRecoveryErrorKeys: Set<String> = []
     @ObservationIgnored private var startupRecoveryRetryTask: Task<Void, Never>?
@@ -266,13 +282,30 @@ public final class DownloadManager {
     /// errors directly from SwiftUI. Under Observation that makes every progress tick invalidate a
     /// broad part of the list. Keep the hot derived strings/fractions in one snapshot so the view
     /// observes a single value and row bodies stay manager-free.
+    @ObservationIgnored var completedSideAssetInventoryWorker: Task<Void, Never>?
+    @ObservationIgnored var completedSideAssetInventories: [DownloadAttemptKey: CompletedSideAssetInventory] = [:]
+    @ObservationIgnored var resumePresenceEvidence: [DownloadStore.ResumePresenceIdentity: Bool] = [:]
+    @ObservationIgnored var resumePresenceWorkers: [DownloadStore.ResumePresenceIdentity: Task<Void, Never>] = [:]
     var offlineLibrarySnapshot: OfflineLibrarySnapshot = .empty
 
-    /// True only when a terminal row still owns a present local media file. A durable row by
-    /// itself is not enough to bypass the launch login gate.
-    var hasPlayableOfflineContent: Bool {
-        OfflineLaunchAvailability.hasPlayableDownload(records: records)
+    var hasPlayableOfflineContent: Bool { offlineAvailabilityCache.hasPlayableFile }
+    var offlineAvailabilityIsResolving: Bool {
+        startupRecoveryState == .preparing || offlineAvailabilityCache.value.scan == .unresolved
     }
+    let offlineAvailabilityCache = OfflinePlayableAvailabilityCache()
+    @ObservationIgnored var offlinePresentationGeneration: UInt64 = 0
+    @ObservationIgnored var offlinePlaybackSinks: [DownloadAttemptKey: BoundOfflinePlaybackEventSink] = [:]
+    @ObservationIgnored var offlineFileExists: @Sendable (URL) -> Bool = {
+        FileManager.default.fileExists(atPath: $0.path)
+    }
+
+    #if DEBUG
+    @ObservationIgnored var optionalSideAssetSessionForTesting: URLSession?
+    #endif
+    @ObservationIgnored var optionalSideAssetControlWillDeliver:
+        ((OptionalSideAssetControl, SideAssetOwner, Bool) async -> Void)?
+    @ObservationIgnored var optionalSideAssetControlDidDeliver:
+        ((OptionalSideAssetControl, SideAssetOwner, Bool) -> Void)?
 
     /// ratingKeys with an active (optimize or transfer) job in flight.
     public internal(set) var activeJobs: Set<String> = []
@@ -285,6 +318,7 @@ public final class DownloadManager {
     private var retryState = DownloadRetryStateTracker()
     @ObservationIgnored private var refreshRecordsTask: Task<Void, Never>?
     private var serverPrepResumeRetryTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingEncoderCleanupReleases: [DownloadAttemptKey: Set<String>] = [:]
     @ObservationIgnored private var serverPrepPollerTasks: [DownloadAttemptKey: Task<Void, Never>] = [:]
     /// Server-prep attempt identities for Plex optimize and Emby convert. Keeps protected Plex
     /// queue titles, Plex poller ownership, and Emby convert attempt UUIDs in one IO-free model.
@@ -475,9 +509,14 @@ public final class DownloadManager {
     }
 
     #if DEBUG
+    var scheduledRefreshTaskForTesting: Task<Void, Never>? { refreshRecordsTask }
+    @ObservationIgnored var foregroundRecoveryDidResolveForTesting: ((Bool) -> Void)?
+
     func drainManagerOperationsForTesting() async {
         let tasks = managerOperations.values.map { $0.1 }
         for task in tasks { await task.value }
+        for sink in offlinePlaybackSinks.values { await sink.worker?.value }
+        await offlineAvailabilityCache.worker?.value
     }
     #endif
 
@@ -505,22 +544,26 @@ public final class DownloadManager {
 
     init(appModel: AppModel,
          store injectedStore: DownloadStore? = nil,
+         storeConstruction: () -> DownloadStore = { DownloadStore(startupOnWorker: true) },
          session injectedSession: BackgroundDownloadSession? = nil,
+         sessionConstruction: (DownloadStore) -> BackgroundDownloadSession = { BackgroundDownloadSession(store: $0) },
          cleanupIntentJournal injectedCleanupIntentJournal: DownloadCleanupIntentJournal? = nil,
          sideAssetFetchCoordinator injectedSideAssetFetchCoordinator: SideAssetFetchCoordinator? = nil,
          backgroundCompletionRegistry: BackgroundDownloadCompletionRegistry = .shared,
-         registerForBackgroundEvents: Bool = true) {
+         registerForBackgroundEvents: Bool = true,
+         startupIndexDeadline: @escaping @Sendable () -> DownloadStoreDeadline = { .after(30) }) {
         #if DEBUG && os(tvOS)
         Self.debugConstructionCount += 1
         #endif
         self.appModel = appModel
+        self.startupIndexDeadline = startupIndexDeadline
         #if PERFORMANCE_AUDIT
         let downloadStoreSpan = PerformanceInstrumentation.begin(.runtimeDownloadStore,
                                                                   backend: "App")
         #endif
-        let store = injectedStore ?? DownloadStore(startupOnWorker: true)
-        // The production store runs its admissible load/repair tail on a worker. Install the
-        // dormant session and its callbacks now; activation awaits that tail's durability proof.
+        let store = injectedStore ?? storeConstruction()
+        // The production store starts unresolved and runs classification, inventory and load on
+        // its worker. Install the dormant session/callbacks now; activation awaits load durability.
         let startupAdmission = store.startupIndexAdmission()
         #if PERFORMANCE_AUDIT
         downloadStoreSpan.end(fields: ["default_store": injectedStore == nil ? 1 : 0])
@@ -528,7 +571,7 @@ public final class DownloadManager {
         self.store = store
         self.upgradeNotice = DownloadUpgradeNotice.load(
             from: store.durableCleanupAuthorityDirectory)
-        self.session = injectedSession ?? BackgroundDownloadSession(store: store)
+        self.session = injectedSession ?? sessionConstruction(store)
         self.backgroundCompletionRegistry = backgroundCompletionRegistry
         let keepaliveSession = self.session
         self.keepaliveCoordinator = DownloadKeepaliveCoordinator(
@@ -544,6 +587,7 @@ public final class DownloadManager {
         self.cleanupIntentJournal = injectedCleanupIntentJournal
             ?? DownloadCleanupIntentJournal(directory: store.durableCleanupAuthorityDirectory)
         self.records = store.records
+        refreshOfflineAvailability()
         self.offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: self.records)
         // Reattach to any transfers that survived a relaunch + receive progress.
         self.session.onChange = { [weak self] in
@@ -740,41 +784,59 @@ public final class DownloadManager {
         // session's completion gate before activation constructs URLSession and events can arrive.
         self.session.onBackgroundWakeAuthorized = { [weak self] in
             Task { @MainActor in
-                guard let self, self.startupRecoveryState == .preparing,
-                      !self.startupRecoveryInFlight else { return }
-                self.continueStartupRecovery(with: self.store.startupIndexAdmission(), deferCurrentActivation: true)
+                self?.resumeStartupRecoveryAfterAuthorization()
             }
         }
         if registerForBackgroundEvents {
             backgroundCompletionRegistry.register(self.session)
         }
         if let submission = store.initialStartupSubmission {
-            startupRecoveryInFlight = true
-            Task { @MainActor [weak self, store] in
-                let deadline = DownloadStoreDeadline.after(30)
-                let result = await store.resolve(submission, deadline: deadline)
-                guard let self else { return }
-                startupRecoveryInFlight = false
-                switch result {
-                case .observed(let admission):
-                    guard await proveStartupPersistence(admission, deadline: deadline) else { return }
-                    continueStartupRecovery(with: admission)
-                case .timedOut:
-                    blockDownloadStartup(affectedRatingKeys: store.allRatingKeys,
-                        message: "Downloads recovery timed out. Try recovery again.", reason: "initial_load_timed_out")
-                }
-            }
+            observeStartupIndex(submission, generation: startupReprobeGeneration,
+                deadline: startupIndexDeadline(), timeoutReason: "initial_load_timed_out")
         } else {
             continueStartupRecovery(with: startupAdmission, deferCurrentActivation: true)
         }
     }
 
+    /// A deadline ends the launch wait, not the physical load. Keep observing that exact worker;
+    /// Retry owns a newer generation and must never be overwritten by an older completion.
+    private func observeStartupIndex(_ submission: DownloadStore.RecoverySubmission,
+                                     generation: UUID, deadline: DownloadStoreDeadline,
+                                     timeoutReason: String) {
+        startupRecoveryInFlight = true
+        startupIndexObservationTask = Task { @MainActor [weak self, store] in
+            let result = await store.resolve(submission, deadline: deadline)
+            guard self?.startupReprobeGeneration == generation else { return }
+            let admission: DownloadStore.StartupIndexAdmission
+            let persistenceDeadline: DownloadStoreDeadline
+            switch result {
+            case .observed(let observed):
+                admission = observed
+                persistenceDeadline = deadline
+            case .timedOut:
+                self?.blockDownloadStartup(affectedRatingKeys: store.allRatingKeys,
+                    message: "Downloads recovery timed out. Try recovery again.", reason: timeoutReason)
+                admission = await submission.completion()
+                // A late successful load gets its own bounded durability check. The expired
+                // launch deadline cannot prove (or disprove) the worker's eventual commit.
+                persistenceDeadline = .after(30)
+            }
+            guard let self, startupReprobeGeneration == generation else { return }
+            guard await proveStartupPersistence(admission, deadline: persistenceDeadline,
+                                                 generation: generation),
+                  startupReprobeGeneration == generation else { return }
+            startupRecoveryInFlight = false
+            continueStartupRecovery(with: admission)
+        }
+    }
+
     /// The worker's observation alone cannot authorize transport after a failed repair commit.
     private func proveStartupPersistence(_ admission: DownloadStore.StartupIndexAdmission,
-                                         deadline: DownloadStoreDeadline) async -> Bool {
+                                         deadline: DownloadStoreDeadline, generation: UUID) async -> Bool {
         guard admission == .current else { return true }
         startupRecoveryInFlight = true
         let proof = await store.flushPersistence(through: store.currentPersistenceTicket(), deadline: deadline)
+        guard startupReprobeGeneration == generation else { return false }
         startupRecoveryInFlight = false
         guard case .committed = proof else {
             blockDownloadStartup(affectedRatingKeys: store.allRatingKeys,
@@ -791,6 +853,7 @@ public final class DownloadManager {
     @ObservationIgnored private var startupReprobeGeneration = UUID()
     public func retryDownloadStartupRecovery() {
         guard startupRecoveryState != .ready, !startupRecoveryInFlight else { return }
+        startupActivationAwaitingAuthorization = false
         startupRecoveryDeferredActivationTask?.cancel()
         startupRecoveryDeferredActivationTask = nil
         startupRecoveryRetryTask?.cancel()
@@ -799,21 +862,9 @@ public final class DownloadManager {
         // B16/B21: re-examine the store instead of replaying the admission cached at launch.
         let generation = UUID()
         startupReprobeGeneration = generation
-        startupRecoveryInFlight = true
         let submission = store.submitReprobeBlockedIndex()
-        Task { @MainActor [weak self, store] in
-            let deadline = DownloadStoreDeadline.after(30)
-            let result = await store.resolve(submission, deadline: deadline)
-            guard let self, startupReprobeGeneration == generation else { return }
-            startupRecoveryInFlight = false
-            switch result {
-            case .observed(let admission):
-                guard await proveStartupPersistence(admission, deadline: deadline) else { return }
-                continueStartupRecovery(with: admission)
-            case .timedOut:
-                blockDownloadStartup(affectedRatingKeys: store.allRatingKeys, message: "Downloads recovery timed out. Try recovery again.", reason: "reprobe_timed_out")
-            }
-        }
+        observeStartupIndex(submission, generation: generation, deadline: .after(30),
+                            timeoutReason: "reprobe_timed_out")
     }
 
     private func scheduleTransientStartupRecoveryRetry() {
@@ -835,7 +886,7 @@ public final class DownloadManager {
         with admission: DownloadStore.StartupIndexAdmission,
         deferCurrentActivation: Bool = false
     ) {
-        guard !startupRecoveryInFlight else { return }
+        guard !startupRecoveryInFlight, store.startupIndexProbe != nil else { return }
         switch admission {
         case .requiresDestructiveReset:
             activateDownloadsAfterUnsupportedSchemaReset()
@@ -864,6 +915,13 @@ public final class DownloadManager {
                 reason: "malformed_current_ownership"
             )
         }
+    }
+
+    private func resumeStartupRecoveryAfterAuthorization() {
+        guard startupRecoveryState == .preparing || startupActivationAwaitingAuthorization,
+              !startupRecoveryInFlight else { return }
+        startupRecoveryState = .preparing
+        continueStartupRecovery(with: store.startupIndexAdmission(), deferCurrentActivation: true)
     }
 
     /// Keep deterministic store admission and callback/registry installation synchronous, but move
@@ -896,6 +954,7 @@ public final class DownloadManager {
                     self.startupRecoveryState = .ready
                     self.records = self.store.records
                     self.offlineLibrarySnapshot = self.makeOfflineLibrarySnapshot(from: self.records)
+                    self.refreshOfflineAvailability()
                     self.performInitialStartupReattachIfNeeded()
                 case .alreadyPurging:
                     self.recordDownloadDiagnostic("downloads.startup_reset_coalesced")
@@ -918,7 +977,20 @@ public final class DownloadManager {
         #if DEBUG
         startupActivationDecisionForTesting?()
         #endif
-        guard !session.startupAuthorizationExpired else { return }
+        guard !session.startupAuthorizationExpired else {
+            // The load and its persistence proof remain valid after wake expiry. Publish the
+            // readable library now, but leave admission, reattach, probes and refill dormant.
+            startupActivationAwaitingAuthorization = true
+            startupRecoveryState = .blocked(message: "Downloads are waiting to resume recovery.")
+            records = store.records
+            offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: records)
+            refreshOfflineAvailability()
+            #if DEBUG
+            acknowledgeStartupRecoveryForTesting(false)
+            #endif
+            return
+        }
+        startupActivationAwaitingAuthorization = false
         startupRecoveryDeferredActivationTask?.cancel()
         startupRecoveryDeferredActivationTask = nil
         startupRecoveryInFlight = true
@@ -997,7 +1069,9 @@ public final class DownloadManager {
     /// The `.ready` publication that ends a current-store activation.
     private func publishCurrentStoreReady() {
         startupRecoveryInFlight = false
+        records = store.records
         startupRecoveryState = .ready
+        refreshOfflineAvailability()
         startupRecoveryRetryTask?.cancel()
         startupRecoveryRetryTask = nil
         startupRecoveryRetryCount = 0
@@ -1061,7 +1135,10 @@ public final class DownloadManager {
         // is then guaranteed, so release a stored OS wake after the failure has been observed.
         session.releaseBackgroundCompletionAfterStartupFailure()
         startupRecoveryInFlight = false
+        startupActivationAwaitingAuthorization = false
         startupRecoveryState = .blocked(message: message)
+        records = store.records
+        refreshOfflineAvailability()
         #if DEBUG
         acknowledgeStartupRecoveryForTesting(false)
         #endif
@@ -1253,10 +1330,13 @@ public final class DownloadManager {
             guard let metadata = record.metadata else { continue }
             let terminal = record.status == .failed || record.status == .complete
                 || record.status == .unverified
-            guard terminal else { continue }
+            let pausedEncoder = record.status == .paused
+                && metadata.resolvedResumeMode(ratingKey: record.ratingKey) == .liveForwardOnly
+            guard terminal || pausedEncoder else { continue }
 
             let backend = metadata.resolvedBackendKind(ratingKey: record.ratingKey)
             if backend == .plex {
+                guard terminal else { continue }
                 // Plex has no ActiveEncoding cleanup. Preserve the prior stale-handle repair, but
                 // use exact attempt/value authority so this sweep cannot clear a replacement row.
                 if let playSessionID = metadata.playSessionID, !playSessionID.isEmpty {
@@ -1272,9 +1352,12 @@ public final class DownloadManager {
             if let playSessionID = metadata.playSessionID, !playSessionID.isEmpty,
                let intent = Self.makeActiveEncodingCleanupIntent(
                 attemptKey: key, metadata: metadata, playSessionID: playSessionID,
-                provenance: .terminalRelease) {
+                provenance: pausedEncoder ? .abandonment(originAttempt: key) : .terminalRelease) {
                 terminalReleases.append(intent)
             }
+            // A paused row still owns its resumable server-prep job (D2). Only its discarded
+            // forward-only encoder is an abandonment; Convert/Plex jobs remain row-owned.
+            guard terminal else { continue }
             // B44/B49: a failed row whose Retry resumes its Convert job (poll-health or 401/403
             // failure) or crash-window recovery keeps that authority. Cleaning it up here would
             // DELETE the live job, or race recovery for it. Same inputs as the retry gate.
@@ -1300,11 +1383,14 @@ public final class DownloadManager {
         let pendingReleases = terminalReleases
         launchSweepJournaling = Task { [weak self] in
             if !pendingReleases.isEmpty {
-                await Task.detached {
+                let submission = DownloadStoreWork {
                     for intent in pendingReleases { _ = journal.ensure(intent) }
-                }.value
+                    return true
+                }
+                guard await submission.observe(deadline: .after(30)) == true else { return }
             }
-            self?.cleanupRunner?.resetBackoff(reason: "recovery_pass")
+            guard let self, !Task.isCancelled, startupRecoveryState == .ready else { return }
+            cleanupRunner?.resetBackoff(reason: "recovery_pass")
         }
     }
 
@@ -1334,22 +1420,65 @@ public final class DownloadManager {
         }
     }
 
-    /// Return the existing exact operation when already durable; otherwise append one new intent.
-    /// The server identity comes from persisted row authority, never from whichever lane happens
-    /// to be selected when cleanup runs.
-    private func persistActiveEncodingCleanupIntent(
-        attemptKey: DownloadAttemptKey,
-        metadata: OfflineMetadata,
-        playSessionID: String,
-        provenance: DurableDownloadCleanupIntent.Provenance
-    ) -> DurableDownloadCleanupIntent? {
-        guard let candidate = Self.makeActiveEncodingCleanupIntent(
-            attemptKey: attemptKey, metadata: metadata, playSessionID: playSessionID,
-            provenance: provenance
-        ) else { return nil }
-        switch cleanupIntentJournal.ensure(candidate) {
-        case .committed(let durable): return durable
-        case .conflictingID, .failed: return nil
+    #if DEBUG
+    @ObservationIgnored var encoderCleanupDidResolveForTesting:
+        ((DownloadAttemptKey, String, Bool) -> Void)?
+    #endif
+
+    /// Capture cleanup authority before sign-out clears credentials. Journal I/O runs on a P6
+    /// submission worker; only its durable result permits clearing the row's encoder reference.
+    private func releaseEncoderAfterDurableCleanup(
+        attemptKey: DownloadAttemptKey, metadata: OfflineMetadata?,
+        playSessionID: String, backend: DownloadBackendKind
+    ) {
+        guard let metadata,
+              let candidate = Self.makeActiveEncodingCleanupIntent(
+                attemptKey: attemptKey, metadata: metadata, playSessionID: playSessionID,
+                provenance: .abandonment(originAttempt: attemptKey)),
+              pendingEncoderCleanupReleases[attemptKey, default: []].insert(playSessionID).inserted else { return }
+        let deadline = DownloadStoreDeadline.after(30)
+        let submission = DownloadStoreWork { [cleanupIntentJournal] in cleanupIntentJournal.ensure(candidate) }
+        enqueueManagerOperation(ratingKey: attemptKey.ratingKey) { [self, store] in
+            #if DEBUG
+            var committed = false
+            #endif
+            defer {
+                #if DEBUG
+                encoderCleanupDidResolveForTesting?(attemptKey, playSessionID, committed)
+                #endif
+                pendingEncoderCleanupReleases[attemptKey]?.remove(playSessionID)
+                if pendingEncoderCleanupReleases[attemptKey]?.isEmpty == true {
+                    pendingEncoderCleanupReleases.removeValue(forKey: attemptKey)
+                }
+            }
+            let result = await submission.resolve(deadline: deadline, timedOut: {
+                .failed(.init(stage: .commit, errorType: "timeout"))
+            })
+            guard case .committed = result else {
+                recordDownloadDiagnostic("downloads.encoder_teardown_skip", fields: [
+                    "download_id": .identifier(attemptKey.ratingKey),
+                    "backend": .label(backend.rawValue),
+                    "reason": .label("cleanup_intent_not_durable"),
+                ])
+                return
+            }
+            #if DEBUG
+            committed = true
+            #endif
+            switch backend {
+            case .emby:
+                if embyPlaySessionByAttempt[attemptKey] == playSessionID {
+                    embyPlaySessionByAttempt.removeValue(forKey: attemptKey)
+                }
+            case .jellyfin:
+                if jellyfinPlaySessionByAttempt[attemptKey] == playSessionID {
+                    jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
+                }
+            case .plex: break
+            }
+            _ = await store.resolve(store.submitClearPlaySessionID(
+                for: attemptKey, expectedPlaySessionID: playSessionID), deadline: deadline)
+            cleanupRunner?.kick(reason: "encoder_released")
         }
     }
 
@@ -1797,6 +1926,8 @@ public final class DownloadManager {
                 "backend": .label(backend),
                 "reason": .label("committed_owner_mismatch"),
             ])
+        case .rejectedOwnership(_, _, .storageRefused):
+            lastError[handle.ratingKey] = .storageFull
         case .rejectedOwnership(_, _, let reason):
             lastError[handle.ratingKey] = .transferFailed(
                 "Download ownership changed before the transfer could start."
@@ -1828,29 +1959,18 @@ public final class DownloadManager {
                                            ratingKey: String,
                                            playSessionID: String?,
                                            backendKind: DownloadBackendKind,
-                                           backendSession: BackendSession) {
+                                           backendSession: BackendSession) async {
         guard let playSessionID, !playSessionID.isEmpty else { return }
         recordDownloadDiagnostic("downloads.superseded_encoder_teardown", fields: [
             "download_id": .identifier(ratingKey),
             "backend": .label(backendKind.rawValue),
         ])
-        // P2.4: journal the stop from the session the negotiation captured; the runner executes
-        // it. If that fails, keep today's unrecorded best-effort stop (a documented residual
-        // window).
-        guard backendKind != .plex,
-              !journalCleanupAbandonment(
-                .activeEncoding(playSessionID: playSessionID), originAttempt: attemptKey,
-                session: backendSession, reason: "superseded_encoder") else { return }
-        switch backendKind {
-        case .jellyfin:
-            let service = JellyfinBrowseService(appModel: appModel)
-            Task { _ = await service.stopActiveEncoding(playSessionId: playSessionID, session: backendSession) }
-        case .emby:
-            let service = EmbyBrowseService(appModel: appModel)
-            Task { _ = await service.stopActiveEncoding(playSessionId: playSessionID, session: backendSession) }
-        case .plex:
-            break
-        }
+        guard backendKind != .plex else { return }
+        // The durable runner owns teardown and rechecks exact resource claims and captured
+        // server/account identity. Failed/expired observations leave cleanup for recovery.
+        _ = await journalCleanupAbandonment(
+            .activeEncoding(playSessionID: playSessionID), originAttempt: attemptKey,
+            session: backendSession, reason: "superseded_encoder")
     }
 
     /// Pause one visible download row. Active URLSession transfers are cancelled with resume data
@@ -2045,10 +2165,9 @@ public final class DownloadManager {
         let isActive = reason == .aggregateSceneBecameActive
         isAppSceneActive = isActive
         if isActive {
+            refreshOfflineAvailability(force: true)
             session.noteForegroundAuthorization()
-            if startupRecoveryState == .preparing && !startupRecoveryInFlight {
-                continueStartupRecovery(with: store.startupIndexAdmission(), deferCurrentActivation: true)
-            }
+            resumeStartupRecoveryAfterAuthorization()
             beginDownloadRateForegroundRebaseline()
             // #187: headset reattach can deliver a burst of background-session progress and scene
             // activation events while the Offline window is being reconstructed. Coalesce the first
@@ -2112,6 +2231,12 @@ public final class DownloadManager {
                 let proof = await store.resolve(submission, deadline: .after(30))
                 guard let self else { return }
                 self.foregroundStaticRangeRecoveryInFlight = false
+                #if DEBUG
+                let succeeded: Bool
+                if case .committed = proof { succeeded = self.startupRecoveryState == .ready }
+                else { succeeded = false }
+                defer { self.foregroundRecoveryDidResolveForTesting?(succeeded) }
+                #endif
                 guard case .committed = proof, self.startupRecoveryState == .ready else { return }
                 self.refreshRecords()
                 guard !self.isQueuePaused else { return }
@@ -3445,22 +3570,25 @@ public final class DownloadManager {
                 guard let expired = Self.makeEmbyConvertCleanupIntent(
                         attemptKey: key, metadata: metadata,
                         provenance: .abandonment(originAttempt: key)),
-                      case .committed = cleanupIntentJournal.ensure(expired) else {
+                      await journalCleanupAbandonments([expired], reason: "convert_recovery_expired") else {
                     recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
                         "download_id": .identifier(record.ratingKey),
                         "reason": .label("expiry_intent_not_durable"),
                     ])
                     continue
                 }
-                cleanupRunner?.kick(reason: "convert_recovery_expired")
+                guard mediaBrowserSessionIsCurrent(session),
+                      currentEmbyRecoveryCandidate(record, fence: fence) != nil else { continue }
                 guard await clearEmbyConvertRecoveryIfExact(
                     for: key, expected: metadata),
-                      managerContinuationIsCurrent(key, fence: fence) else { continue }
+                      managerContinuationIsCurrent(key, fence: fence),
+                      mediaBrowserSessionIsCurrent(session) else { continue }
                 lastError[record.ratingKey] = .transferFailed(
                     "Server conversion could not be recovered; retry to create a new conversion.")
                 let failureFence = managerActionGenerations[key.ratingKey, default: 0]
                 _ = await applyServerPrepFailure(.server, for: key, context: "emby_convert_expired")
-                guard !Task.isCancelled, managerActionGenerations[key.ratingKey, default: 0] == failureFence, store.ownsAttempt(key) else { continue }
+                guard !Task.isCancelled, managerActionGenerations[key.ratingKey, default: 0] == failureFence,
+                      store.ownsAttempt(key), mediaBrowserSessionIsCurrent(session) else { continue }
                 clearOptimizeProgress(ratingKey: record.ratingKey)
                 releaseInFlight(for: key)
             }
@@ -4353,37 +4481,6 @@ public final class DownloadManager {
     }
 
 
-    func updateLocalPlaybackPosition(ratingKey: String, positionMs: Int, durationMs: Int?) {
-        enqueueManagerOperation(ratingKey: ratingKey) { [weak self] in
-            await self?.updateLocalPlaybackPositionAsync(ratingKey: ratingKey, positionMs: positionMs, durationMs: durationMs)
-        }
-    }
-
-    private func updateLocalPlaybackPositionAsync(ratingKey: String, positionMs: Int, durationMs: Int?) async {
-        guard let record = store.record(for: ratingKey) else { return }
-        guard let attemptID = record.attemptID else { return }
-        let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
-        var promoted = false
-        if positionMs > 0, case .promoted = await store.markCompleteIfUnverifiedAsync(for: key) {
-            promoted = true
-        }
-        switch await store.setLocalPlaybackPositionAsync(
-            for: key, positionMs: positionMs, durationMs: durationMs) {
-        case .applied, .noChange:
-            break
-        case .staleOrMissing, .persistenceFailed:
-            return
-        }
-        if promoted {
-            recordDownloadDiagnostic("downloads.unverified_playback_confirmed", fields: [
-                "download_id": .identifier(ratingKey),
-                "position_ms": .int(positionMs),
-                "duration_ms": .int(durationMs ?? -1),
-            ])
-        }
-        refreshRecords()
-    }
-
     /// Heal rows that historical bugs finalized past the byte-completeness guard: a static
     /// byte-for-byte row whose durable file is smaller than the source's EXACT size can never be a
     /// playable whole (headset evidence: an HTTP 416 finalized a truncated legacy bounded body
@@ -4798,6 +4895,7 @@ public final class DownloadManager {
 
         records = fresh
         offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: fresh)
+        refreshOfflineAvailability()
         keepaliveCoordinator.reconcile(records: recoveryEligibleFresh)
         for restart in forwardOnlyRestarts {
             Task { @MainActor [weak self] in
@@ -5018,30 +5116,12 @@ public final class DownloadManager {
             rowRemoved: rowRemoved
         ) {
         case .none:
-            embyPlaySessionByAttempt.removeValue(forKey: attemptKey)
+            // Missing/mismatched credentials grant no cleanup handoff. A refresh after sign-out
+            // must retain the exact handle while its independent journal commit is unresolved.
             break
         case .stop(let playSessionId):
-            guard let metadata = releaseMetadata,
-                  persistActiveEncodingCleanupIntent(
-                    attemptKey: attemptKey,
-                    metadata: metadata,
-                    playSessionID: playSessionId,
-                    provenance: .abandonment(originAttempt: attemptKey)
-                  ) != nil else {
-                recordDownloadDiagnostic("downloads.emby_encoder_teardown_skip", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "reason": .label("cleanup_intent_not_durable"),
-                ])
-                break
-            }
-            embyPlaySessionByAttempt.removeValue(forKey: attemptKey)
-            // The journal now holds the stop; hand authority over by clearing the row's own
-            // reference. If this clear fails or is interrupted, the runner completes it after the
-            // stop once the row is no longer actively transferring.
-            enqueueManagerOperation(ratingKey: attemptKey.ratingKey) { [weak self, store] in
-                _ = await store.clearPlaySessionIDAsync(for: attemptKey, expectedPlaySessionID: playSessionId)
-                self?.cleanupRunner?.kick(reason: "encoder_released")
-            }
+            releaseEncoderAfterDurableCleanup(attemptKey: attemptKey, metadata: releaseMetadata,
+                playSessionID: playSessionId, backend: .emby)
         case .skip(let reason):
             recordDownloadDiagnostic("downloads.emby_encoder_teardown_skip", fields: [
                 "download_id": .identifier(ratingKey),
@@ -5063,30 +5143,10 @@ public final class DownloadManager {
             rowRemoved: rowRemoved
         ) {
         case .none:
-            jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
             break
         case .stop(let playSessionId):
-            guard let metadata = releaseMetadata,
-                  persistActiveEncodingCleanupIntent(
-                    attemptKey: attemptKey,
-                    metadata: metadata,
-                    playSessionID: playSessionId,
-                    provenance: .abandonment(originAttempt: attemptKey)
-                  ) != nil else {
-                recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown_skip", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "reason": .label("cleanup_intent_not_durable"),
-                ])
-                break
-            }
-            jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
-            // The journal now holds the stop; hand authority over by clearing the row's own
-            // reference. If this clear fails or is interrupted, the runner completes it after the
-            // stop once the row is no longer actively transferring.
-            enqueueManagerOperation(ratingKey: attemptKey.ratingKey) { [weak self, store] in
-                _ = await store.clearPlaySessionIDAsync(for: attemptKey, expectedPlaySessionID: playSessionId)
-                self?.cleanupRunner?.kick(reason: "encoder_released")
-            }
+            releaseEncoderAfterDurableCleanup(attemptKey: attemptKey, metadata: releaseMetadata,
+                playSessionID: playSessionId, backend: .jellyfin)
         case .skip(let reason):
             recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown_skip", fields: [
                 "download_id": .identifier(ratingKey),
@@ -5133,7 +5193,7 @@ public final class DownloadManager {
         let live = liveDisplayBytes(for: record)
         let resumeBytes = record.metadata?.resumeDisplayBytes
         let hasExactResumeData = attemptKey(for: record).map {
-            store.hasResumeData(for: $0)
+            cachedResumePresence(for: $0)
         } ?? false
         let resumableStatus = record.status == .paused
             || record.status == .downloading
@@ -5153,11 +5213,14 @@ public final class DownloadManager {
         DownloadExpectedBytesPolicy.staticRangeExpectedBytes(for: record)
     }
 
-    private func makeOfflineLibrarySnapshot(from records: [DownloadRecord]) -> OfflineLibrarySnapshot {
-        OfflineLibrarySnapshotBuilder.make(
+    func makeOfflineLibrarySnapshot(from records: [DownloadRecord]) -> OfflineLibrarySnapshot {
+        refreshResumePresenceEvidence(records: records)
+        return OfflineLibrarySnapshotBuilder.make(
             records: records,
             isQueuePaused: isQueuePaused,
             downloadSpeed: downloadSpeed,
+            phase: { record in publishedRowPhase(for: record) },
+            displayFraction: { record in displayFraction(for: record) },
             displayBytes: { record in displayBytes(for: record) },
             trustworthyExpectedBytes: { record in
                 liveRangeProgress[record.ratingKey]?.expectedBytes
@@ -5185,6 +5248,19 @@ public final class DownloadManager {
         )
     }
 
+
+    func publishedRowPhase(for record: DownloadRecord) -> DownloadJobPhase? {
+        DownloadRowStatusCaptionPolicy.phase(.init(record: record,
+            displayFraction: displayFraction(for: record),
+            isActive: activeJobs.contains(record.ratingKey) || record.status == .downloading,
+            isBackendConfigured: isBackendConfigured(for: record),
+            isTranscodeLimited: DownloadDisplayClassifier.isLiveTranscoderSourced(record),
+            serverPrepState: optimizeState[record.ratingKey],
+            serverPrepProgress: optimizeProgress[record.ratingKey], serverPrepETA: optimizeETA[record.ratingKey],
+            downloadETA: downloadETA[record.ratingKey], downloadSpeedBytesPerSecond: downloadSpeed[record.ratingKey],
+            isRetrying: retryState.isPresentingRetry(record.ratingKey),
+            failureCaption: nil))
+    }
 
     private func rowDisplayProgress(for record: DownloadRecord) -> Double? {
         DownloadRowDisplayPolicy.displayProgress(for: record,

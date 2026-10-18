@@ -31,10 +31,18 @@ struct P6SessionCheckpointTests {
                           expectedBytes: 100, byteRangeCheckpoint: true)
         try #require(await p6Signal(P6CheckpointURLProtocol.started))
         hold.arm()
-        let heartbeat = DispatchSemaphore(value: 0)
-        await session.deliverSystemCancellationForP6Testing { heartbeat.signal() }
+        let heartbeat = P6HeldProgress()
+        let inspect = DispatchSemaphore(value: 0)
+        defer { inspect.signal() }
+        await session.deliverSystemCancellationForP6Testing {
+            // The delegate can return before the worker enters its stat. Inspect only after
+            // entry, so this pin proves overlap rather than which queue happens to run first.
+            _ = inspect.wait(timeout: .now() + 10)
+            heartbeat.acknowledge(hold)
+        }
         try #require(await p6Signal(hold.entered))
-        #expect(await p6Signal(heartbeat))
+        inspect.signal()
+        #expect(await heartbeat.wait())
         if action == "halt" { session.haltForPendingDeletion(attemptKey: key) }
         if action == "deadline" {
             #expect(await p6Signal(settled)) // physical worker is still held
@@ -66,14 +74,14 @@ struct P6SessionCheckpointTests {
         defer { hold.release.signal(); session.invalidateInjectedSessionForTesting() }
         let settled = DispatchSemaphore(value: 0)
         session.checkpointDidResolveForTesting = { settled.signal() }
-        let heartbeat = DispatchSemaphore(value: 0)
+        let heartbeat = P6HeldProgress()
         hold.arm()
         Task { @MainActor in
             _ = session.revalidateCompletedDownload(ratingKey: row.ratingKey, validationLabel: "p6-checkpoint")
-            heartbeat.signal()
         }
         try #require(await p6Signal(hold.entered))
-        #expect(await p6Signal(heartbeat))
+        Task { @MainActor in heartbeat.acknowledge(hold) }
+        #expect(await heartbeat.wait())
         hold.release.signal()
         try #require(await p6Signal(settled))
         _ = await store.flushLifecycleAndPersistence(through: store.currentPersistenceTicket(),

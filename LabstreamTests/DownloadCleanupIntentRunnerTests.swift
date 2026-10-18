@@ -170,6 +170,57 @@ struct DownloadCleanupIntentRunnerTests {
         #expect(runner.nextWakeForTesting != nil)
     }
 
+    @Test("Journal load and legacy replacement waits expire without dropping worker authority", arguments: [false, true])
+    func boundedJournalObservations(classifies: Bool) async throws {
+        let candidate = try intent(classifies ? nil : .rowDeletion)
+        let hold = P6Hold()
+        let completed = TestLockedBox(false)
+        let finished = P6Acknowledgement<Bool>()
+        var executions = 0
+        var dependencies = DownloadCleanupIntentRunner.Dependencies(
+            load: {
+                if !classifies { hold.hit(); completed.withValue { $0 = true }; finished.signal(true) }
+                return .loaded([candidate])
+            }, replace: { _ in
+                hold.hit(); completed.withValue { $0 = true }; finished.signal(true)
+                return true
+            }, rowState: { _ in .committedAbsent }, isBlocked: { _ in false },
+            hasMatchingSession: { _ in true }, execute: { _ in executions += 1; return .retired })
+        dependencies.persistenceTimeoutSeconds = 0.1
+        let runner = DownloadCleanupIntentRunner(dependencies: dependencies)
+        hold.arm()
+        defer { hold.release.signal() }
+        runner.enable()
+        try #require(await p6Signal(hold.entered))
+        await runner.waitUntilIdle()
+        #expect(!completed.value)
+        #expect(executions == 0)
+        #expect(runner.nextWakeForTesting != nil)
+        hold.release.signal()
+        _ = await finished.wait()
+    }
+
+    @Test("A legacy classification commit never authorizes a row that became retiring during the await")
+    func legacyClassificationRechecksAuthority() async throws {
+        let candidate = try intent(nil)
+        let hold = P6Hold()
+        var state: CleanupIntentEligibilityPolicy.RowState = .committedAbsent
+        var executions = 0
+        let runner = DownloadCleanupIntentRunner(dependencies: .init(
+            load: { .loaded([candidate]) }, replace: { _ in hold.hit(); return true },
+            rowState: { _ in state }, isBlocked: { _ in false }, hasMatchingSession: { _ in true },
+            execute: { _ in executions += 1; return .retired }))
+        hold.arm()
+        defer { hold.release.signal() }
+        runner.enable()
+        try #require(await p6Signal(hold.entered))
+        state = .retiring
+        hold.release.signal()
+        await runner.waitUntilIdle()
+        #expect(executions == 0)
+        #expect(runner.nextWakeForTesting != nil)
+    }
+
     private func intent(
         _ provenance: DurableDownloadCleanupIntent.Provenance?
     ) throws -> DurableDownloadCleanupIntent {
@@ -217,7 +268,7 @@ private final class FakeCleanupWorld {
 
     func makeRunner(backoff: Double? = nil) -> DownloadCleanupIntentRunner {
         var dependencies = DownloadCleanupIntentRunner.Dependencies(
-            runBarriers: { [unowned self] in
+            runBarriers: { [unowned self] _ in
                 self.barrierRuns += 1
                 return self.barriersComplete
             },

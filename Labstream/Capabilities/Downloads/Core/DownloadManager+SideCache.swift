@@ -25,66 +25,48 @@ extension DownloadManager {
     /// resource) whose asset the server can never produce; the source-metadata refresh shares one
     /// budget per (attempt, source) across discovery kinds.
     func rehydrateMissingOptionalSideAssetsForCompletedRows(reason: String) {
-        guard !isQueuePaused else { return }
-        for record in store.records where record.isComplete {
-            guard let attemptID = record.attemptID else { continue }
-            let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
-            guard let source = store.sideAssetSourceIdentity(for: key) else { continue }
-            let missing = missingKnownOptionalSideAssetKinds(record: record, attemptKey: key)
-            let offerable = missing.filter { kind in
-                repairResources(for: kind, record: record, attemptKey: key).contains { resource in
-                    completedRowSideAssetRetryBudget.canDispatch(.init(
-                        attemptKey: key, source: source, kind: kind, resource: resource))
+        guard !isQueuePaused, completedSideAssetInventoryWorker == nil else { return }
+        let candidates = records.filter(\.isComplete)
+        let work = DownloadStoreWork { [store] in
+            candidates.compactMap { CompletedSideAssetInventory.observe(record: $0, store: store) }
+        }
+        completedSideAssetInventoryWorker = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.completedSideAssetInventoryWorker = nil }
+            guard let inventories = await work.observe(deadline: .after(30)),
+                  !Task.isCancelled, !self.isQueuePaused else { return }
+            self.completedSideAssetInventories = [:]
+            for inventory in inventories {
+                let key = inventory.key
+                // This result is observational. Only the live exact attempt/source can dispatch;
+                // promotion and metadata publication retain their independent store fences.
+                guard inventory.matches(self.store),
+                      let lifecycle = self.store.lifecycleState(for: key)?.lifecycle,
+                      lifecycle == .complete || lifecycle == .unverified else { continue }
+                self.completedSideAssetInventories[key] = inventory
+                let offerable = inventory.missing.filter { kind in
+                    inventory.resources[kind, default: []].contains { resource in
+                        self.completedRowSideAssetRetryBudget.canDispatch(.init(
+                            attemptKey: key, source: inventory.source, kind: kind, resource: resource))
+                    }
                 }
+                guard !offerable.isEmpty else { continue }
+                _ = self.rehydrateMissingOptionalSideAssets(
+                    record: inventory.record, attemptKey: key, kinds: offerable, reason: reason)
             }
-            guard !offerable.isEmpty else { continue }
-            _ = rehydrateMissingOptionalSideAssets(
-                record: record, attemptKey: key, kinds: offerable, reason: reason)
         }
     }
 
-    private func missingKnownOptionalSideAssetKinds(record: DownloadRecord,
-                                                    attemptKey: DownloadAttemptKey)
-        -> Set<DownloadSideAssetKind> {
-        let sideAssetRoot = store.posterDestinationURL(ratingKey: record.ratingKey)
-            .deletingLastPathComponent()
-        return DownloadSideAssetRepairInventory.missingKinds(
-            record: record,
-            fileExists: { relative in
-                store.reusableSideAssetRelativePath(
-                    for: attemptKey,
-                    destination: sideAssetRoot.appendingPathComponent(relative)) != nil
-            },
-            jellyfinPlaylistTiles: { playlistRelative in
-                let url = sideAssetRoot.appendingPathComponent(playlistRelative)
-                guard let data = try? Data(contentsOf: url),
-                      let text = String(data: data, encoding: .utf8),
-                      let playlist = try? JellyfinTrickPlayPlaylistParser.parse(text) else {
-                    return nil
-                }
-                return playlist.tiles.map { tile in
-                    URL(fileURLWithPath: tile.uri).lastPathComponent
-                }
-            })
-    }
-
-    private func repairResources(for kind: DownloadSideAssetKind,
-                                 record: DownloadRecord,
-                                 attemptKey: DownloadAttemptKey) -> [String?] {
-        let root = store.posterDestinationURL(ratingKey: record.ratingKey)
-            .deletingLastPathComponent()
-        return DownloadSideAssetRepairInventory.retryResources(
-            for: kind,
-            record: record,
-            fileExists: { relative in
-                store.reusableSideAssetRelativePath(
-                    for: attemptKey,
-                    destination: root.appendingPathComponent(relative)) != nil
-            },
-            chapterResource: { index in
-                store.chapterImageDestinationURL(
-                    ratingKey: record.ratingKey, index: index).lastPathComponent
-            })
+    /// Reuse the pass inventory when still current. Other cache entry points perform their
+    /// observation on a worker too; no caller blocks MainActor on attributes or file existence.
+    func reusableSideAssetObservations(for key: DownloadAttemptKey, destinations: [URL]) async -> Set<String> {
+        if let inventory = completedSideAssetInventories[key], inventory.matches(store) {
+            return inventory.reusable
+        }
+        let work = DownloadStoreWork { [store] in
+            Set(destinations.compactMap { store.reusableSideAssetRelativePath(for: key, destination: $0) })
+        }
+        return await work.observe(deadline: .after(30)) ?? []
     }
 
     /// The only retry charge point: immediately before transport dispatch. This also means a
@@ -219,11 +201,10 @@ extension DownloadManager {
                           let currentRecord = self.store.record(for: attemptKey),
                           currentRecord.metadata?.sideAssetSourceIdentity
                             == metadata.sideAssetSourceIdentity,
-                          let part = currentItem.media?[safe: metadata.mediaIndex ?? 0]?
-                            .part[safe: metadata.partIndex ?? 0] else { return }
+                          let part = Self.subtitleRepairPart(item: currentItem, metadata: metadata) else { return }
                     self.cacheJellyfinTextSubtitles(
                         for: attemptKey, itemId: itemID,
-                        mediaSourceId: metadata.mediaSourceID, part: part,
+                        mediaSourceId: Self.subtitleSourceID(metadata), part: part,
                         server: server, token: token, identity: identity)
                 }
             }
@@ -267,16 +248,28 @@ extension DownloadManager {
                           let currentRecord = self.store.record(for: attemptKey),
                           currentRecord.metadata?.sideAssetSourceIdentity
                             == metadata.sideAssetSourceIdentity,
-                          let part = currentItem.media?[safe: metadata.mediaIndex ?? 0]?
-                            .part[safe: metadata.partIndex ?? 0] else { return }
+                          let part = Self.subtitleRepairPart(item: currentItem, metadata: metadata) else { return }
                     self.cacheEmbyTextSubtitles(
                         for: attemptKey, itemId: metadata.ratingKey,
-                        mediaSourceId: metadata.mediaSourceID, part: part,
+                        mediaSourceId: Self.subtitleSourceID(metadata), part: part,
                         server: server, token: token, identity: identity, userId: userID)
                 }
             }
         }
         return true
+    }
+
+    /// Production subtitle-repair selection shared by the MediaBrowser repair branches.
+    nonisolated static func subtitleRepairPart(item: MediaItem, metadata: OfflineMetadata) -> Part? {
+        guard let sourceID = subtitleSourceID(metadata) else { return nil }
+        return DownloadMediaSelectionPolicy.selection(item: item, mediaSourceID: sourceID)?.part
+    }
+
+    nonisolated static func subtitleSourceID(_ metadata: OfflineMetadata) -> String? {
+        if let original = metadata.textSubtitleSourceMediaSourceID, !original.isEmpty { return original }
+        // A historical converted output does not prove which original supplied subtitles.
+        guard !metadata.isServerPreparedVersion else { return nil }
+        return metadata.mediaSourceID
     }
 
     /// Lens 4 F2: side assets (posters, text subtitles, chapter images, Plex/Emby BIF, JF trickplay)
@@ -312,11 +305,12 @@ extension DownloadManager {
         guard let request else { return }
         guard let sourceIdentity = store.sideAssetSourceIdentity(for: attemptKey) else { return }
         let posterURL = store.posterDestinationURL(ratingKey: attemptKey.ratingKey)
-        if store.reusableSideAssetRelativePath(for: attemptKey, destination: posterURL) != nil { return }
         guard let stagingURL = store.attemptStagingURL(for: attemptKey, stableURL: posterURL) else { return }
         let store = self.store
         downloadWorkRegistry.startIfAbsent(for: attemptKey, kind: .sideCache(.poster)) { [weak self] in
-            guard let self, !Task.isCancelled else { return }
+            guard let self, !Task.isCancelled,
+                  !(await self.reusableSideAssetObservations(for: attemptKey, destinations: [posterURL])).contains(posterURL.lastPathComponent),
+                  store.sideAssetSourceIdentity(for: attemptKey) == sourceIdentity else { return }
             defer { Self.discardSideAssetStaging(store: store, key: attemptKey, url: stagingURL) }
             guard let data = try? await self.fetchOptionalSideAsset(
                     request, for: attemptKey, source: sourceIdentity, kind: .poster),
@@ -477,8 +471,9 @@ extension DownloadManager {
             var tracks: [OfflineTextSubtitleTrack] = []
             for item in pending {
                 guard !Task.isCancelled else { return }
-                if store.reusableSideAssetRelativePath(for: attemptKey,
-                                                       destination: item.destination) != nil {
+                let reusable = await self.reusableSideAssetObservations(for: attemptKey, destinations: [item.destination])
+                guard !Task.isCancelled, store.sideAssetSourceIdentity(for: attemptKey) == sourceIdentity else { return }
+                if reusable.contains(item.destination.lastPathComponent) {
                     if let track = item.track { tracks.append(track) }
                     continue
                 }
@@ -527,7 +522,6 @@ extension DownloadManager {
         guard let part = DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: mediaIndex) else { return }
         guard let sourceIdentity = store.sideAssetSourceIdentity(for: attemptKey) else { return }
         let destination = store.plexBIFDestinationURL(ratingKey: attemptKey.ratingKey)
-        if store.reusableSideAssetRelativePath(for: attemptKey, destination: destination) != nil { return }
         guard let staging = store.attemptStagingURL(for: attemptKey, stableURL: destination) else { return }
         let request = TrickPlayRequest.plexBIFIndex(server: server,
                                                     token: token,
@@ -539,7 +533,9 @@ extension DownloadManager {
         let bifRequest = Self.sideAssetRequest(applyingCellularPolicy: request.urlRequest())
         let store = self.store
         downloadWorkRegistry.startIfAbsent(for: attemptKey, kind: .sideCache(.plexBIF)) { [weak self] in
-            guard let self, !Task.isCancelled else { return }
+            guard let self, !Task.isCancelled,
+                  !(await self.reusableSideAssetObservations(for: attemptKey, destinations: [destination])).contains(destination.lastPathComponent),
+                  store.sideAssetSourceIdentity(for: attemptKey) == sourceIdentity else { return }
             defer { Self.discardSideAssetStaging(store: store, key: attemptKey, url: staging) }
             do {
                 let data = try await self.fetchOptionalSideAsset(
@@ -576,7 +572,6 @@ extension DownloadManager {
         guard let mediaSourceId, !mediaSourceId.isEmpty else { return }
         guard let sourceIdentity = store.sideAssetSourceIdentity(for: attemptKey) else { return }
         let destination = store.embyBIFDestinationURL(ratingKey: attemptKey.ratingKey)
-        if store.reusableSideAssetRelativePath(for: attemptKey, destination: destination) != nil { return }
         guard let staging = store.attemptStagingURL(for: attemptKey, stableURL: destination),
               let request = try? EmbyTrickPlayRequest.bifIndex(
                 server: server, token: token, identity: identity, userId: userId,
@@ -586,7 +581,9 @@ extension DownloadManager {
         downloadWorkRegistry.startIfAbsent(
             for: attemptKey, kind: .sideCache(.embyBIF)
         ) { [weak self] in
-            guard let self, !Task.isCancelled else { return }
+            guard let self, !Task.isCancelled,
+                  !(await self.reusableSideAssetObservations(for: attemptKey, destinations: [destination])).contains(destination.lastPathComponent),
+                  store.sideAssetSourceIdentity(for: attemptKey) == sourceIdentity else { return }
             defer { Self.discardSideAssetStaging(store: store, key: attemptKey, url: staging) }
             do {
                 let data = try await self.fetchOptionalSideAsset(
@@ -661,19 +658,21 @@ extension DownloadManager {
             }
         }
         guard !requests.isEmpty else { return }
-        var reusableRelatives: [Int: String] = [:]
-        let pendingRequests = requests.filter { entry in
-            if let relative = store.reusableSideAssetRelativePath(
-                for: attemptKey, destination: entry.destination) {
-                reusableRelatives[entry.index] = relative
-                return false
-            }
-            return true
-        }
-        guard !pendingRequests.isEmpty || !reusableRelatives.isEmpty else { return }
         let store = self.store
         downloadWorkRegistry.startIfAbsent(for: attemptKey, kind: .sideCache(.chapterImages)) { [weak self] in
             guard let self else { return }
+            let reusable = await self.reusableSideAssetObservations(
+                for: attemptKey, destinations: requests.map(\.destination))
+            guard !Task.isCancelled, store.sideAssetSourceIdentity(for: attemptKey) == sourceIdentity else { return }
+            var reusableRelatives: [Int: String] = [:]
+            let pendingRequests = requests.filter { entry in
+                if reusable.contains(entry.destination.lastPathComponent) {
+                    reusableRelatives[entry.index] = entry.destination.lastPathComponent
+                    return false
+                }
+                return true
+            }
+            guard !pendingRequests.isEmpty || !reusableRelatives.isEmpty else { return }
             let policy = SideAssetRequestPolicy.conservativeDefault
             if pendingRequests.count > policy.maximumConcurrentRequests {
                 await MainActor.run {
@@ -774,4 +773,11 @@ extension DownloadManager {
                 stagingURL: stagingURL, to: stableURL) == .promoted
         }.resolve(deadline: .after(30), timedOut: { false })
     }
+}
+
+
+extension DownloadManager {
+    /// Compatibility for action/test adapters. Rendering consumes the snapshot directly.
+    func rowPhase(for row: OfflineDownloadRowSnapshot) -> DownloadJobPhase? { row.phase }
+
 }

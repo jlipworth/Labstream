@@ -512,12 +512,6 @@ public enum EmbyConvertRecoveryPolicy {
             && MediaBrowserUserIdentity.sameUser(values[1], values[2])
     }
 
-    /// Durable cleanup entries are attempt-scoped by UUID, not rating key. Re-downloading and
-    /// deleting the same item while an older cleanup is pending must preserve both attempts.
-    public static func appendingCleanupTombstoneID(_ newID: UUID,
-                                                   to existingIDs: [UUID]) -> [UUID] {
-        existingIDs + [newID]
-    }
 }
 
 /// Pure request builders + response models for the Emby "Convert Media" Sync job lane (the

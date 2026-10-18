@@ -808,6 +808,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     func holdRangeIOForTesting() { rangeIOQueue.suspend() }
     func releaseRangeIOForTesting() { rangeIOQueue.resume() }
+    /// Join callbacks already enqueued on the serialized range queue without a settling poll.
+    func drainRangeIOForTesting() async {
+        await withCheckedContinuation { continuation in
+            rangeIOQueue.async { continuation.resume() }
+        }
+    }
 
     func claimedRangeBodiesForTesting() -> Set<URL> { lock.withLock { Set(claimedRangeBodyURLs.keys) } }
     func transportRetryCountForTesting(_ key: DownloadAttemptKey) -> Int {
@@ -2467,7 +2473,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let required = requiredAdditionalFreeBytes(for: attemptKey, expectedBytes: expectedBytes,
                                                    durableCheckpointBytes: durableCheckpointBytes,
                                                    plansRanges: byteRangeCheckpoint)
-        if let measured = availableStorageMeasurement(), measured.bytes < required {
+        if let measured = availableStorageMeasurement(), !DownloadStorageAdmissionPolicy.hasPhysicalSpace(
+            requiredBytes: required, availableBytes: measured.bytes) {
             AppDiagnostics.record(.downloads, "downloads.transfer_start_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "reason": .label("storage_full"),
@@ -2605,7 +2612,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // ENOSPC-failed row otherwise re-plans, purges and refetches held bodies, and loops.
         let requiredFreeBytes = requiredAdditionalFreeBytes(
             for: attemptKey, expectedBytes: expectedBytes, durableCheckpointBytes: offset)
-        if let measured = availableStorageMeasurement(), measured.bytes < requiredFreeBytes {
+        if let measured = availableStorageMeasurement(), !DownloadStorageAdmissionPolicy.hasPhysicalSpace(
+            requiredBytes: requiredFreeBytes, availableBytes: measured.bytes) {
             AppDiagnostics.record(.downloads, "downloads.range_start_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "reason": .label("storage_full"),
@@ -7539,7 +7547,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let required = requiredAdditionalFreeBytes(for: attemptKey, expectedBytes: expectedBytes,
                                                    durableCheckpointBytes: durableBytes,
                                                    additionalAppendPeak: max(0, (expectedBytes ?? 0) - durableBytes))
-        if let measured = availableStorageMeasurement(), measured.bytes < required {
+        if let measured = availableStorageMeasurement(), !DownloadStorageAdmissionPolicy.hasPhysicalSpace(
+            requiredBytes: required, availableBytes: measured.bytes) {
             // Refusal is not evidence that CFNetwork's blob is unusable. Publish it before failing,
             // so both a manual Resume and a transient-error handoff retain the exact authority.
             guard store.ownsAttempt(attemptKey), isDelayedRetryCurrent(currency) else { return .staleOrCancelled }

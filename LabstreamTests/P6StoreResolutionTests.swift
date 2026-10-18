@@ -88,16 +88,16 @@ struct P6StoreResolutionTests {
             }, syncParentDirectory: live.syncParentDirectory))
         let a = store.submitValidatedPromotion(for: key, terminalStatus: .complete)
         guard case .accepted(let ticketA) = a else { Issue.record("A rejected"); return }
-        guard case .failed(.artifact) = store.resolveArtifactSynchronously(ticketA) else { Issue.record("A did not fail"); return }
+        guard case .failed(.artifact) = await store.resolveArtifact(ticketA, deadline: .after(30)) else { Issue.record("A did not fail"); return }
         fail.withLock { $0 = false }
         let b = store.submitValidatedPromotion(for: key, terminalStatus: .complete)
         guard case .accepted(let ticketB) = b else { Issue.record("B rejected"); return }
         #expect(ticketA.sequence != ticketB.sequence)
         #expect(ticketA.intentID == ticketB.intentID)
-        #expect(store.resolveArtifactSynchronously(ticketB) == .completed)
-        let resultA = await store.resolveValidatedPromotion(a)
+        #expect(await store.resolveArtifact(ticketB, deadline: .after(30)) == .completed)
+        let resultA = await store.resolveValidatedPromotion(a, deadline: .after(30))
         if case .renameFailed = resultA {} else { Issue.record("A inherited B's outcome: \(resultA)") }
-        #expect(await store.resolveValidatedPromotion(b) == .promoted(key, bytes: 3, status: .complete))
+        #expect(await store.resolveValidatedPromotion(b, deadline: .after(30)) == .promoted(key, bytes: 3, status: .complete))
 
     }
 
@@ -114,16 +114,16 @@ struct P6StoreResolutionTests {
         })
         let a = store.submitStaticRangeCheckpointReset(for: key)
         guard case .accepted(let ticketA) = a else { Issue.record("A rejected"); return }
-        guard case .failed(.persistence) = store.resolveArtifactSynchronously(ticketA) else { Issue.record("A did not fail"); return }
+        guard case .failed(.persistence) = await store.resolveArtifact(ticketA, deadline: .after(30)) else { Issue.record("A did not fail"); return }
         fail.withLock { $0 = false }
         let ticketB = try #require(store.recoverArtifactTicketsForP6Testing().first { $0.intentID == ticketA.intentID })
         let b = DownloadStore.AttemptStaticCheckpointSubmission.accepted(ticket: ticketB)
         #expect(ticketA.intentID == ticketB.intentID)
         #expect(ticketA.sequence != ticketB.sequence)
-        #expect(store.resolveArtifactSynchronously(ticketB) == .completed)
-        let resultA = await store.resolveStaticCheckpoint(a)
+        #expect(await store.resolveArtifact(ticketB, deadline: .after(30)) == .completed)
+        let resultA = await store.resolveStaticCheckpoint(a, deadline: .after(30))
         if case .persistenceFailed = resultA {} else { Issue.record("A inherited B's outcome: \(resultA)") }
-        #expect(await store.resolveStaticCheckpoint(b) == .unchanged(bytes: 3))
+        #expect(await store.resolveStaticCheckpoint(b, deadline: .after(30)) == .unchanged(bytes: 3))
 
     }
 }

@@ -89,7 +89,7 @@ public struct JellyfinMediaSourceInfo: Decodable, Sendable, Equatable {
             mediaStreams.first { $0.type == "Audio" && $0.index == index }
         } ?? mediaStreams.first { $0.type == "Audio" }
         return MediaBrowserPlaybackSourceMetadata(
-            container: container?.split(separator: ",").first.map(String.init),
+            container: MediaBrowserDownloadContainer.token(container),
             width: width ?? video?.width,
             height: height ?? video?.height,
             bitrate: bitrate.map { $0 / 1_000 },
@@ -262,7 +262,7 @@ public enum JellyfinPlayback {
             supportsDirectStream: source.supportsDirectStream,
             transcodingURL: source.transcodingURL.flatMap { $0.isEmpty ? nil : $0 },
             size: source.size,
-            container: source.container?.split(separator: ",").first.map(String.init),
+            container: MediaBrowserDownloadContainer.token(source.container),
             bitrate: source.bitrate,
             videoCodec: source.videoCodec ?? videoStream?.codec,
             audioCodec: audioCodec,
@@ -332,7 +332,7 @@ public enum JellyfinPlayback {
         guard source.supportsDirectPlay || source.supportsDirectStream else {
             throw JellyfinPlaybackError.unsupportedMediaSource
         }
-        let container = (source.container?.split(separator: ",").first).map(String.init) ?? "mp4"
+        let container = MediaBrowserDownloadContainer.token(source.container) ?? "mp4"
         let url = try jellyfinURL(server: server, path: "/Videos/\(itemId)/stream.\(container)")
         guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             throw JellyfinPlaybackError.invalidURL

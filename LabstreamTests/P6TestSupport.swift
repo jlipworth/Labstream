@@ -10,18 +10,41 @@ final class P6Acknowledgement<Value: Sendable>: @unchecked Sendable {
     private struct State {
         var value: Value?
         var waiters: [CheckedContinuation<Value, Never>] = []
+        var boundedWaiters: [UUID: CheckedContinuation<Value?, Never>] = [:]
     }
     private let state = Mutex(State())
     func signal(_ value: Value) {
-        let waiters = state.withLock { state -> [CheckedContinuation<Value, Never>] in
-            guard state.value == nil else { return [] }
+        let waiters = state.withLock { state in
+            guard state.value == nil else {
+                return ([CheckedContinuation<Value, Never>](), [CheckedContinuation<Value?, Never>]())
+            }
             state.value = value
-            let waiters = state.waiters
+            let waiters = (state.waiters, Array(state.boundedWaiters.values))
             state.waiters.removeAll()
+            state.boundedWaiters.removeAll()
             return waiters
         }
-        for waiter in waiters { waiter.resume(returning: value) }
+        for waiter in waiters.0 { waiter.resume(returning: value) }
+        for waiter in waiters.1 { waiter.resume(returning: value) }
     }
+    /// A missing acknowledgement fails its caller without leaving a structured-task race
+    /// waiting forever for an uncancellable continuation. Timeout and signal claim one waiter.
+    func wait(seconds: TimeInterval) async -> Value? {
+        let id = UUID()
+        return await withCheckedContinuation { continuation in
+            let value = state.withLock { state -> Value? in
+                if let value = state.value { return value }
+                state.boundedWaiters[id] = continuation
+                return nil
+            }
+            if let value { continuation.resume(returning: value); return }
+            DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { [self] in
+                let waiter = state.withLock { $0.boundedWaiters.removeValue(forKey: id) }
+                waiter?.resume(returning: nil)
+            }
+        }
+    }
+
     func wait() async -> Value {
         await withCheckedContinuation { continuation in
             let value = state.withLock { state -> Value? in
@@ -34,18 +57,52 @@ final class P6Acknowledgement<Value: Sendable>: @unchecked Sendable {
     }
 }
 
+func p6TaskResult<Value: Sendable>(_ task: Task<Value, Never>, seconds: TimeInterval = 10) async -> Value? {
+    let done = P6Acknowledgement<Value>()
+    Task { done.signal(await task.value) }
+    return await done.wait(seconds: seconds)
+}
+
+/// Test-only joining: expiry fails fast even if the underlying task is waiting on a seam.
+/// The gate's own deferred release/watchdog still owns physical cleanup.
+func p6AwaitTask(_ task: Task<Void, Never>?, seconds: TimeInterval = 10) async -> Bool {
+    guard let task else { return true }
+    let done = P6Acknowledgement<Bool>()
+    Task { await task.value; done.signal(true) }
+    return await done.wait(seconds: seconds) == true
+}
+
 /// Dedicated semaphore gates are released independently of MainActor, even after assertion failure.
 final class P6Hold: @unchecked Sendable {
     let entered = DispatchSemaphore(value: 0)
     let acknowledgement = P6Acknowledgement<Bool>()
     let release = DispatchSemaphore(value: 0)
     private let armed = Mutex(false)
+    private let held = Mutex(false)
+    var isHeld: Bool { held.withLock { $0 } }
     func arm() { armed.withLock { $0 = true } }
     func hit() {
         guard armed.withLock({ value in let old = value; value = false; return old }) else { return }
+        held.withLock { $0 = true }
+        defer { held.withLock { $0 = false } }
         entered.signal()
         acknowledgement.signal(true)
         _ = release.wait(timeout: .now() + 10)
+    }
+}
+
+/// Captures progress before the physical gate releases. An old synchronous implementation
+/// cannot pass merely because the hold's independent cleanup watchdog eventually releases it.
+final class P6HeldProgress: @unchecked Sendable {
+    private let value = Mutex<Bool?>(nil)
+    private let events = TestEvents()
+    func acknowledge(_ hold: P6Hold) {
+        value.withLock { $0 = hold.isHeld }
+        events.signal()
+    }
+    func wait() async -> Bool {
+        let arrived = await events.wait { self.value.withLock { $0 != nil } }
+        return arrived && value.withLock { $0 == true }
     }
 }
 

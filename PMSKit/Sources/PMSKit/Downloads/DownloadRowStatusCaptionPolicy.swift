@@ -8,6 +8,7 @@ import Foundation
 /// UI snapshot builder to duplicate phase-specific wording.
 public enum DownloadRowStatusCaptionPolicy {
     public struct Context: Sendable, Equatable {
+        public let lifecycle: DownloadLifecycle?
         public let status: DownloadStatus
         public let progress: Double
         public let bytes: Int
@@ -52,7 +53,9 @@ public enum DownloadRowStatusCaptionPolicy {
                     downloadSpeedBytesPerSecond: Double?,
                     hasServerPrepQueueTitle: Bool,
                     isRetrying: Bool,
-                    failureCaption: String?) {
+                    failureCaption: String?,
+                    lifecycle: DownloadLifecycle? = nil) {
+            self.lifecycle = lifecycle
             self.status = status
             self.progress = progress
             self.bytes = bytes
@@ -114,7 +117,8 @@ public enum DownloadRowStatusCaptionPolicy {
                       downloadSpeedBytesPerSecond: downloadSpeedBytesPerSecond,
                       hasServerPrepQueueTitle: record.metadata?.optimizeQueueTitle?.isEmpty == false,
                       isRetrying: isRetrying,
-                      failureCaption: failureCaption)
+                      failureCaption: failureCaption,
+                      lifecycle: record.lifecycle)
         }
     }
 
@@ -136,6 +140,7 @@ public enum DownloadRowStatusCaptionPolicy {
             break
         }
 
+        if context.lifecycle == .finalizing { return .transferFinalizing }
         if DownloadProgressDisplay.isTransferFinalizing(status: context.status,
                                                         progress: context.progress) {
             return .transferFinalizing
@@ -164,37 +169,6 @@ public enum DownloadRowStatusCaptionPolicy {
         }
 
         return context.isActive ? .activeTransfer : .inactiveTransfer
-    }
-
-    /// Compact in-sheet label for an already-started/in-flight download row. The full offline list
-    /// caption includes percentages, bytes, ETA, and speed; the modal sheet already renders progress
-    /// separately, so it only needs the phase verb.
-    public static func compactActiveCaption(lane: DownloadLane,
-                                            backend: DownloadBackendKind,
-                                            isServerPreparedVersion: Bool) -> String {
-        switch lane {
-        case .original where isServerPreparedVersion:
-            // Static byte-range prepared version — see `DownloadRowDisplayPolicy.activeHead`.
-            return "Downloading optimized…"
-        case .original:
-            return "Downloading…"
-        case .compatibleRemux:
-            return "Remuxing + downloading…"
-        case .optimize:
-            return backend == .plex ? "Downloading transcode…" : "Transcoding + downloading…"
-        }
-    }
-
-    /// Compact in-sheet label for an existing row that is durably `.queued` but owns no live slot or
-    /// transfer, such as a season row waiting for admission behind another download (#362). Such a
-    /// row must read as waiting, matching the offline list, never as an active transfer phase
-    /// ("Downloading optimized…") with a spinner. Returns `nil` when the row is genuinely active, so
-    /// the caller keeps `compactActiveCaption` and its progress UI.
-    public static func compactWaitingCaption(status: DownloadStatus,
-                                             isActive: Bool,
-                                             resumeMode: DownloadResumeMode?) -> String? {
-        guard status == .queued, !isActive else { return nil }
-        return resumeMode == .serverPrepThenStatic ? "Preparing on server…" : "Queued…"
     }
 
     /// pu-33 (P4): a row waiting for an admission lane (planned, or parked with a retry request)
@@ -267,8 +241,8 @@ public enum DownloadRowStatusCaptionPolicy {
     private static func serverPrepProgressCaption(_ context: Context) -> String {
         let isServerPrep = context.resumeMode == .serverPrepThenStatic
         let prepHead = (isServerPrep || context.status == .preparing) ? "Preparing on server…" : "Transcoding"
-        guard let progress = context.serverPrepProgress else { return prepHead }
-        var caption = "\(prepHead) \(Int(progress * 100))%"
+        guard let progress = context.serverPrepProgress, progress.isFinite else { return prepHead }
+        var caption = "\(prepHead) \(Int(max(0, min(0.99, progress)) * 100))%"
         if let eta = context.serverPrepETA, eta > 0,
            let left = DownloadRowDisplayPolicy.timeLeftString(eta) {
             caption += " • ~\(left) left"

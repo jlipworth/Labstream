@@ -159,6 +159,16 @@ final class DownloadWorkRegistry {
         return start(for: key, kind: kind, operation: operation)
     }
 
+    #if DEBUG
+    func waitForSideCacheForTesting(for key: DownloadAttemptKey) async {
+        let tasks = entriesByAttempt[key]?.values.compactMap { entry -> Task<Void, Never>? in
+            if case .sideCache = entry.kind { return entry.task }
+            return nil
+        } ?? []
+        for task in tasks { await task.value }
+    }
+    #endif
+
     /// Compare-remove exactly one task. A delayed completion from an old token is a no-op.
     @discardableResult
     func complete(key: DownloadAttemptKey, token: Token) -> Bool {

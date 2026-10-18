@@ -213,7 +213,7 @@ extension DownloadManager {
             // (the slot was released mid-chain and nothing newer owns the row), remove it —
             // otherwise the server-prep refresh kick sees an unattached queued prep row and
             // reanimates the deleted download.
-            removeAbandonedServerPrepSeedIfAttemptDead(attemptKey: attemptKey,
+            await removeAbandonedServerPrepSeedIfAttemptDead(attemptKey: attemptKey,
                                                        queueTitle: queueTitle,
                                                        targetName: targetName)
         } catch DownloadLifecycleCancellation.plexSessionUnavailable {
@@ -359,7 +359,7 @@ extension DownloadManager {
     /// a newer attempt owns carries a different queue title — both are left alone.
     private func removeAbandonedServerPrepSeedIfAttemptDead(attemptKey: DownloadAttemptKey,
                                                             queueTitle: String,
-                                                            targetName: String) {
+                                                            targetName: String) async {
         let ratingKey = attemptKey.ratingKey
         guard !activeJobs.contains(ratingKey),
               let row = store.record(for: ratingKey),
@@ -376,13 +376,17 @@ extension DownloadManager {
                 attemptKey: attemptKey, metadata: metadata,
                 create: metadata.plexOptimizeCreateConfirmed == true ? .confirmed : .unresolved,
                 provenance: .abandonment(originAttempt: attemptKey)),
-              case .committed = cleanupIntentJournal.ensure(intent) else {
+              await journalCleanupAbandonments([intent], reason: "server_prep_seed_abandoned") else {
             recordDownloadDiagnostic("downloads.server_prep_seed_kept", fields: [
                 "download_id": .identifier(ratingKey),
                 "reason": .label("cleanup_not_durable"),
             ])
             return
         }
+        guard !Task.isCancelled, !activeJobs.contains(ratingKey),
+              let current = store.record(for: attemptKey), current.status == .queued,
+              current.bytes == 0, current.progress == 0, current.metadata == metadata,
+              let live = appModel.backendSession(for: .plex), intent.matches(session: live) else { return }
         recordDownloadDiagnostic("downloads.server_prep_seed_removed", fields: [
             "download_id": .identifier(ratingKey),
             "target": .label(targetName),
@@ -394,6 +398,8 @@ extension DownloadManager {
         Task { [weak self] in
             guard let self,
                   case .removed = await store.resolveRowDeletion(submission) else { return }
+            guard !Task.isCancelled, !store.contains(ratingKey: ratingKey),
+                  let live = appModel.backendSession(for: .plex), intent.matches(session: live) else { return }
             // The runner skips the intent while the removal is still retiring; wake it now.
             cleanupRunner?.kick(reason: "server_prep_seed_removed")
             lastError[ratingKey] = nil
@@ -640,6 +646,7 @@ extension DownloadManager {
     /// completed state are removed — never another client's jobs or completed server renders.
     private func cleanStaleOptimizeJobs(backgroundProcessingKey: String, server: URL,
                                         token: String, identity: ClientIdentity) async {
+        let session = cleanupSession(kind: .plex, server: server, token: token, userID: nil)
         let trimmed = backgroundProcessingKey.hasPrefix("/")
             ? String(backgroundProcessingKey.dropFirst()) : backgroundProcessingKey
         let listReq = PlexRequest(url: server.appendingPathComponent(trimmed), method: "GET",
@@ -652,6 +659,9 @@ extension DownloadManager {
             ])
             return
         }
+        guard !Task.isCancelled, let live = appModel.backendSession(for: .plex),
+              DurableDownloadCleanupIntent.ServerIdentity(baseURL: session.baseURL,
+                serverID: session.serverID, userID: nil)?.matches(live) == true else { return }
         let marker = "[Labstream "
         let persistedProtectedTitles = Set(records.compactMap { record -> String? in
             guard record.status != .complete else { return nil }
@@ -667,20 +677,11 @@ extension DownloadManager {
         // P2.4: discoveries become durable abandonment intents (the item was seen, so its create
         // is confirmed) and the cleanup runner removes them with the same ownership recheck and
         // completed-render protection as every other cleanup.
-        var removed = 0
-        let session = cleanupSession(kind: .plex, server: server, token: token, userID: nil)
         let staleTitles = Set(queue.items.compactMap { item -> String? in
             guard let id = item.id, stale.contains(id) else { return nil }
             return item.title
         })
-        for title in staleTitles {
-            if journalCleanupAbandonment(
-                .plexOptimize(queueTitle: title),
-                originAttempt: Self.staleSweepAttemptKey(queueTitle: title),
-                session: session, plexCreate: .confirmed, reason: "stale_optimize_job") {
-                removed += 1
-            }
-        }
+        let removed = await journalStaleOptimizeTitles(staleTitles, session: session)
         // Always record — including the zero-match case — so we can tell "server didn't keep our
         // marker" (marked_count 0 while pending_count high) from "matched but all protected".
         recordDownloadDiagnostic("downloads.optimize_queue_cleaned", fields: [
@@ -691,6 +692,17 @@ extension DownloadManager {
             "stale_found": .int(stale.count),
             "journaled": .int(removed),
         ])
+    }
+
+    func journalStaleOptimizeTitles(_ titles: Set<String>, session: BackendSession) async -> Int {
+        let intents = titles.compactMap { title in
+            Self.cleanupAbandonmentIntent(.plexOptimize(queueTitle: title),
+                originAttempt: Self.staleSweepAttemptKey(queueTitle: title),
+                session: session, plexCreate: .confirmed)
+        }
+        guard intents.count == titles.count,
+              await journalCleanupAbandonments(intents, reason: "stale_optimize_job") else { return 0 }
+        return intents.count
     }
 
     /// Exact-attempt confirmation that the optimize create PUT landed (P2.2 create evidence).

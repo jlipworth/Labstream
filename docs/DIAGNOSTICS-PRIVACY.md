@@ -76,6 +76,19 @@ The Mac target uses the same typed/redacted report pipeline and may add safe pla
 effective bundle-identity, sandbox-storage, download, and playback facts. Per-worktree bundle IDs
 and container paths must not be emitted as raw identifiers or filesystem paths.
 
+## Download recovery evidence
+
+Download diagnostics distinguish a drained background wake, timeout and startup-blocked release;
+`downloads.background_wake_terminal` records the bounded outcome and handler count. Timeout is
+not a durability success. Exact-attempt persistence failures, refused finalization, condemnation,
+cleanup deferral and hidden/pending artifact audit counts explain recovery without exposing raw
+paths or handles. Storage audits are report-only and count hidden working, held and temporary
+files as well as published bytes. Keep IDs redacted and byte/count fields typed.
+
+The build-1506 field report motivates bounded recovery and asynchronous persistence, but an app
+ring buffer without a termination signature cannot identify watchdog, jetsam or crash cause. The
+matching `.ips`/JetsamEvent remains required; unit/hosted evidence does not replace it.
+
 ## Public issue reminder
 
 GitHub issues are public. The app and docs ask users to review diagnostic reports, personal labels,

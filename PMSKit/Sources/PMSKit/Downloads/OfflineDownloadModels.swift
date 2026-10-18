@@ -504,6 +504,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// Jellyfin/Emby media source id chosen for this download (needed to re-issue the
     /// transcode/original request on retry without re-deriving from a re-fetched item).
     public var mediaSourceID: String?
+    /// Original text-subtitle source, independent of a converted media/BIF output. Additive v5.
+    public var textSubtitleSourceMediaSourceID: String?
     /// User-selected Jellyfin/Emby audio stream. Persisted so retry, relaunch recovery, and an
     /// Emby convert→static handoff keep selecting/reusing the same language track.
     public var audioStreamIndex: Int?
@@ -670,6 +672,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 backendServerID: String? = nil,
                 backendUserID: String? = nil,
                 mediaSourceID: String? = nil,
+                textSubtitleSourceMediaSourceID: String? = nil,
                 audioStreamIndex: Int? = nil,
                 playSessionID: String? = nil,
                 downloadLane: DownloadLane? = nil,
@@ -742,6 +745,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.backendServerID = backendServerID
         self.backendUserID = backendUserID
         self.mediaSourceID = mediaSourceID
+        self.textSubtitleSourceMediaSourceID = textSubtitleSourceMediaSourceID
         self.audioStreamIndex = audioStreamIndex
         self.playSessionID = playSessionID
         self.downloadLane = downloadLane
@@ -822,6 +826,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         backendServerID = try c.decodeIfPresent(String.self, forKey: .backendServerID)
         backendUserID = try c.decodeIfPresent(String.self, forKey: .backendUserID)
         mediaSourceID = try c.decodeIfPresent(String.self, forKey: .mediaSourceID)
+        textSubtitleSourceMediaSourceID = try c.decodeIfPresent(String.self, forKey: .textSubtitleSourceMediaSourceID)
         audioStreamIndex = try c.decodeIfPresent(Int.self, forKey: .audioStreamIndex)
         playSessionID = try c.decodeIfPresent(String.self, forKey: .playSessionID)
         downloadLane = try c.decodeIfPresent(DownloadLane.self, forKey: .downloadLane)
@@ -855,6 +860,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         from previous: OfflineMetadata,
         attemptID explicitAttemptID: String? = nil
     ) {
+        if textSubtitleSourceMediaSourceID == nil {
+            textSubtitleSourceMediaSourceID = previous.textSubtitleSourceMediaSourceID
+        }
         let attemptID = explicitAttemptID ?? downloadAttemptID
         let expectedOwner = attemptID.map {
             OfflineSideAssetBundleOwner(attemptID: $0, source: sideAssetSourceIdentity)

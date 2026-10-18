@@ -174,7 +174,12 @@ final class PlaybackController {
     private var offlineSubtitleCuesByTrackID: [Int: [OfflineTextSubtitleCue]] = [:]
     private var selectedOfflineSubtitleTrackID: Int?
     private var offlineSubtitleSelectionAuthority = OfflineSubtitleSelectionAuthority()
-    private let offlineSubtitleCueLoader: OfflineSubtitleCueLoader
+    private var offlineSubtitleCueLoader: OfflineSubtitleCueLoader
+    #if DEBUG
+    func setOfflineSubtitleCueLoaderForP7Testing(_ loader: @escaping OfflineSubtitleCueLoader) {
+        offlineSubtitleCueLoader = loader
+    }
+    #endif
     /// Most recent structured Plex decision. Replaced on every stream rebuild so subtitle rows
     /// and Stats for Nerds describe the same active lane (#248).
     private var lastPlexDecision: DecisionResponse?
@@ -359,6 +364,8 @@ final class PlaybackController {
     private var playbackTask: Task<Void, Never>?
     private var upNextTask: Task<Void, Never>?
     private var playbackGeneration = 0
+    private var offlineObservedItemGeneration: Int?
+    private var offlinePlaybackClosed = false
     private lazy var lifecycleCallbacks = PlaybackLifecycleCallbackSink<Int> { [weak self] generation in
         self?.isCurrentPlaybackLifecycle(generation) == true
     }
@@ -997,6 +1004,9 @@ final class PlaybackController {
     /// How often (seconds) the periodic time observer fires.
     private let timelineIntervalSeconds: Double = 10
 
+    /// Track selections read and persist within the controller's preference domain.
+    @ObservationIgnored var trackPreferenceDefaults: UserDefaults
+
     // MARK: - Init
 
     /// Construct one controller from exactly one typed playback authority.
@@ -1010,7 +1020,9 @@ final class PlaybackController {
          initialAudioStreamIndex: Int? = nil,
          initialSubtitleStreamIndex: Int? = nil,
          offlineSubtitleCueLoader: @escaping OfflineSubtitleCueLoader = OfflineSubtitleCueLoading.live,
-         plexAudioStreamSelector: PlexAudioStreamSelector? = nil) {
+         plexAudioStreamSelector: PlexAudioStreamSelector? = nil,
+         trackPreferenceDefaults: UserDefaults = .standard) {
+        self.trackPreferenceDefaults = trackPreferenceDefaults
         self.item = item
         self.sessionSource = sessionSource
         self.identity = identity
@@ -1090,6 +1102,7 @@ final class PlaybackController {
     /// Tear down observers and report a final `stopped` timeline. Call from the
     /// view's `dismantle`.
     func stop() {
+        offlinePlaybackClosed = true
         failureRetryTask?.cancel()
         failureRetryTask = nil
         // Revoke both queued and in-flight audio mutations before any await can
@@ -1142,7 +1155,11 @@ final class PlaybackController {
             remoteHLSProxyGeneration = nil
         }
         timeline.report(state: .stopped, force: true, positionMs: terminalProgressMs)
-        recordLocalPlaybackPosition(terminalProgressMs)
+        if let close = offlineSession?.onPlaybackClose {
+            close(terminalProgressMs, item.duration)
+        } else {
+            localPlaybackProgress?(terminalProgressMs, item.duration)
+        }
         player.pause()
         removeObservers()
         player.replaceCurrentItem(with: nil)
@@ -1170,8 +1187,8 @@ final class PlaybackController {
         audioSession.deactivate()
     }
 
-    private func recordLocalPlaybackPosition(_ positionMs: Int? = nil) {
-        guard let localPlaybackProgress else { return }
+    func recordLocalPlaybackPosition(_ positionMs: Int? = nil) {
+        guard !offlinePlaybackClosed, let localPlaybackProgress else { return }
         localPlaybackProgress(positionMs ?? currentResumeMs, item.duration)
     }
 
@@ -1278,7 +1295,7 @@ final class PlaybackController {
     /// accessor (the synchronous `mediaSelectionGroup(forMediaCharacteristic:)` is
     /// deprecated on visionOS).
     func loadSubtitleTracks() async throws -> PlaybackTrackSnapshot<PlaybackSubtitleTrack>? {
-        if sessionSource.kind == .offline, !offlineTextSubtitles.isEmpty {
+        if sessionSource.kind == .offline {
             return await loadOfflineSubtitleTracks()
         }
         if supportsMetadataSubtitleSelection {
@@ -1357,22 +1374,43 @@ final class PlaybackController {
     }
 
     private func loadOfflineSubtitleTracks() async -> PlaybackTrackSnapshot<PlaybackSubtitleTrack>? {
-        var tracks: [PlaybackSubtitleTrack] = [makeSubtitleTrack(
-            displayName: "Off", mechanism: .offlineOff,
-            route: .offlineTextSidecar,
-            isCurrentSelection: selectedOfflineSubtitleTrackID == nil)]
-        for track in offlineTextSubtitles {
-            tracks.append(makeSubtitleTrack(
-                displayName: track.displayName,
-                mechanism: .offlineSidecar(track),
-                route: .offlineTextSidecar,
-                isCurrentSelection: selectedOfflineSubtitleTrackID == track.id))
+        let playerItem = player.currentItem
+        let generation = playbackGeneration
+        let itemGeneration = currentPlayerItemGeneration
+        let selectionGeneration = offlineSubtitleSelectionAuthority.generation
+        let group: AVMediaSelectionGroup?
+        if let playerItem { group = try? await playerItem.asset.loadMediaSelectionGroup(for: .legible) }
+        else { group = nil }
+        func current() -> Bool {
+            !Task.isCancelled && !offlinePlaybackClosed && player.currentItem === playerItem
+                && playbackGeneration == generation && currentPlayerItemGeneration == itemGeneration
+                && offlineSubtitleSelectionAuthority.generation == selectionGeneration
         }
-        guard tracks.count > 1 else { return nil }
-        let candidateID = selectedOfflineSubtitleTrackID.map(PlaybackSubtitleTrack.ID.offlineSidecar)
-            ?? .offlineOff
-        let selectedID = tracks.contains(where: { $0.id == candidateID }) ? candidateID : .offlineOff
-        return PlaybackTrackSnapshot(tracks: tracks, selectedID: selectedID)
+        guard current() else { return nil }
+        let embedded = group.flatMap { playerItem?.currentMediaSelection.selectedMediaOption(in: $0) }
+        let selectedID: PlaybackSubtitleTrack.ID = selectedOfflineSubtitleTrackID.map { .offlineSidecar($0) }
+            ?? embedded.flatMap { group?.options.firstIndex(of: $0).map { .avFoundation($0) } } ?? .offlineOff
+        var tracks = [makeSubtitleTrack(displayName: "Off", mechanism: .offlineOff,
+            route: .offlineTextSidecar, isCurrentSelection: selectedID == .offlineOff)]
+        var counts: [String: Int] = [:]
+        func unique(_ label: String) -> String {
+            let count = counts[label, default: 0] + 1
+            counts[label] = count
+            return count == 1 ? label : "\(label) \(count)"
+        }
+        for (index, option) in (group?.options ?? []).enumerated() {
+            let label = await Self.subtitleLabel(for: option)
+            guard current() else { return nil }
+            tracks.append(makeSubtitleTrack(displayName: unique(label),
+                mechanism: .avFoundation(index: index, option: option), route: .avFoundationSoft,
+                isCurrentSelection: selectedID == .avFoundation(index)))
+        }
+        for track in offlineTextSubtitles {
+            tracks.append(makeSubtitleTrack(displayName: unique(track.displayName),
+                mechanism: .offlineSidecar(track), route: .offlineTextSidecar,
+                isCurrentSelection: selectedID == .offlineSidecar(track.id)))
+        }
+        return tracks.count > 1 ? PlaybackTrackSnapshot(tracks: tracks, selectedID: selectedID) : nil
     }
 
     /// Parse one offline sidecar only when the viewer selects it. Opening the subtitle menu is now
@@ -1383,7 +1421,13 @@ final class PlaybackController {
             throw SubtitleTrackLoadError.selectionDidNotApply
         }
         let url = base.appendingPathComponent(track.relativePath)
+        let playerItem = player.currentItem
+        let generation = playbackGeneration
+        let selectionGeneration = offlineSubtitleSelectionAuthority.generation
         let cues = try await offlineSubtitleCueLoader(url)
+        guard generation == playbackGeneration, player.currentItem === playerItem,
+              selectionGeneration == offlineSubtitleSelectionAuthority.generation,
+              !Task.isCancelled, !offlinePlaybackClosed else { return }
         guard !cues.isEmpty else { throw SubtitleTrackLoadError.selectionDidNotApply }
         offlineSubtitleCuesByTrackID[track.id] = cues
     }
@@ -1419,7 +1463,7 @@ final class PlaybackController {
     }
 
     private func persistOfflineSubtitlePreference(for track: OfflineTextSubtitleTrack?) {
-        let defaults = UserDefaults.standard
+        let defaults = trackPreferenceDefaults
         guard let track else {
             defaults.set(true, forKey: SubtitlePrefKey.off)
             defaults.removeObject(forKey: SubtitlePrefKey.language)
@@ -1448,7 +1492,7 @@ final class PlaybackController {
             ?? BackendSubtitleSelection.mediaBrowserWireValue(
                 MediaBrowserPlaybackPreferencePolicy.preferredSubtitleStreamIndex(
                     for: item,
-                    mediaIndex: mediaIndex))
+                    mediaIndex: mediaIndex, defaults: trackPreferenceDefaults))
             ?? .off
         let route: SubtitleDeliveryRoute = mediaBrowserSession?.backend == .emby
             ? .embyEncodedSelection : .jellyfinMetadata
@@ -1634,7 +1678,7 @@ final class PlaybackController {
     /// chosen track's language code (or the "Off" flag) — NOT the option itself, which is
     /// non-`Sendable` and item-specific. Called from the Subtitles tab via `selectSubtitle`.
     private func persistSubtitlePreference(for option: AVMediaSelectionOption?) {
-        let defaults = UserDefaults.standard
+        let defaults = trackPreferenceDefaults
         guard let option else {
             // User picked "Off": remember that and clear any language preference.
             defaults.set(true, forKey: SubtitlePrefKey.off)
@@ -1666,7 +1710,7 @@ final class PlaybackController {
                                                        itemGeneration: Int,
                                                        observedPlaybackGeneration: Int) async {
         guard !didApplySavedSubtitle else { return }
-        let defaults = UserDefaults.standard
+        let defaults = trackPreferenceDefaults
         let wantsOff = defaults.bool(forKey: SubtitlePrefKey.off)
         let savedLang = defaults.string(forKey: SubtitlePrefKey.language)
         let mode = SubtitleAutoSelectMode(rawValue: defaults.string(forKey: PlaybackPreferences.Keys.subtitleAutoSelectMode) ?? "")
@@ -1674,7 +1718,9 @@ final class PlaybackController {
 
         // Load the legible group once. If the HLS carries no legible renditions, there's
         // nothing to apply on this item — mark applied so we don't re-probe each readyToPlay.
+        let selectionGeneration = offlineSubtitleSelectionAuthority.generation
         let loadedGroup = try? await playerItem.asset.loadMediaSelectionGroup(for: .legible)
+        guard sessionSource.kind != .offline || selectionGeneration == offlineSubtitleSelectionAuthority.generation else { return }
         guard isCurrentObservedItem(playerItem,
                                     itemGeneration: itemGeneration,
                                     observedPlaybackGeneration: observedPlaybackGeneration) else { return }
@@ -1710,27 +1756,42 @@ final class PlaybackController {
     /// switch on the live `AVPlayerItem` — no reload, no playhead snapshot needed.
     func selectSubtitle(_ track: PlaybackSubtitleTrack) async throws {
         switch track.mechanism {
-        case .offlineOff:
-            _ = offlineSubtitleSelectionAuthority.begin(trackID: nil)
+        case .offlineOff, .offlineSidecar:
+            guard sessionSource.kind == .offline else { return }
+            let playerItem = player.currentItem
+            let offlineTrack: OfflineTextSubtitleTrack?
+            if case .offlineSidecar(let descriptor) = track.mechanism { offlineTrack = descriptor }
+            else { offlineTrack = nil }
+            let token = offlineSubtitleSelectionAuthority.begin(trackID: offlineTrack?.id)
+            let generation = playbackGeneration
+            let itemGeneration = currentPlayerItemGeneration
             selectedOfflineSubtitleTrackID = nil
-            persistOfflineSubtitlePreference(for: nil)
-            updateOfflineSubtitleOverlay(at: player.currentTime().seconds)
-
-        case .offlineSidecar(let offlineTrack):
-            let token = offlineSubtitleSelectionAuthority.begin(trackID: offlineTrack.id)
-            do {
-                try await loadOfflineSubtitleCues(for: offlineTrack)
-            } catch {
-                guard offlineSubtitleSelectionAuthority.accepts(
-                    token,
-                    isCancelled: Task.isCancelled) else { return }
-                throw error
+            offlineSubtitleOverlay.set(nil)
+            didApplySavedSubtitle = true
+            func current() -> Bool {
+                !offlinePlaybackClosed && player.currentItem === playerItem
+                    && playbackGeneration == generation && currentPlayerItemGeneration == itemGeneration
+                    && offlineSubtitleSelectionAuthority.accepts(token, isCancelled: Task.isCancelled)
             }
-            guard offlineSubtitleSelectionAuthority.accepts(token,
-                                                             isCancelled: Task.isCancelled) else {
-                return
+            let group: AVMediaSelectionGroup?
+            if let playerItem {
+                do { group = try await playerItem.asset.loadMediaSelectionGroup(for: .legible) }
+                catch {
+                    guard current() else { return }
+                    throw SubtitleTrackLoadError.groupLoadFailed(error)
+                }
+            } else { group = nil }
+            guard current() else { return }
+            if let group { playerItem?.select(nil, in: group) }
+            if let offlineTrack {
+                do { try await loadOfflineSubtitleCues(for: offlineTrack) }
+                catch {
+                    guard current() else { return }
+                    throw error
+                }
+                guard current() else { return }
+                selectedOfflineSubtitleTrackID = offlineTrack.id
             }
-            selectedOfflineSubtitleTrackID = offlineTrack.id
             persistOfflineSubtitlePreference(for: offlineTrack)
             updateOfflineSubtitleOverlay(at: player.currentTime().seconds)
 
@@ -1785,17 +1846,28 @@ final class PlaybackController {
                                      intent: .subtitleTrackChange)
 
         case .avFoundationOff, .avFoundation:
-            guard let playerItem = player.currentItem else {
-                throw SubtitleTrackLoadError.playerNotReady
+            guard let playerItem = player.currentItem else { throw SubtitleTrackLoadError.playerNotReady }
+            let generation = playbackGeneration
+            let itemGeneration = currentPlayerItemGeneration
+            let token = offlineSubtitleSelectionAuthority.begin(trackID: nil)
+            if sessionSource.kind == .offline {
+                selectedOfflineSubtitleTrackID = nil
+                offlineSubtitleOverlay.set(nil)
+                didApplySavedSubtitle = true
             }
             guard let group = try? await playerItem.asset.loadMediaSelectionGroup(for: .legible),
-                  !group.options.isEmpty else {
-                throw SubtitleTrackLoadError.playerNotReady
-            }
+                  !group.options.isEmpty else { throw SubtitleTrackLoadError.playerNotReady }
+            guard !Task.isCancelled, player.currentItem === playerItem,
+                  playbackGeneration == generation, currentPlayerItemGeneration == itemGeneration,
+                  offlineSubtitleSelectionAuthority.accepts(token, isCancelled: Task.isCancelled),
+                  !offlinePlaybackClosed else { return }
             let requestedOption: AVMediaSelectionOption? = switch track.mechanism {
             case .avFoundationOff: nil
             case .avFoundation(_, let option): option
             default: nil
+            }
+            guard requestedOption.map({ group.options.contains($0) }) ?? true else {
+                throw SubtitleTrackLoadError.selectionDidNotApply
             }
             playerItem.select(requestedOption, in: group)
             let applied = playerItem.currentMediaSelection.selectedMediaOption(in: group)
@@ -1810,7 +1882,7 @@ final class PlaybackController {
 
     /// Persist a metadata-driven selection without exposing backend off sentinels to the picker.
     private func persistMetadataSubtitlePreference(_ selection: BackendSubtitleSelection) {
-        let defaults = UserDefaults.standard
+        let defaults = trackPreferenceDefaults
         guard case .stream(let streamIndex) = selection,
               let stream = streamingPart?.subtitleStreams.first(where: { $0.id == streamIndex }) else {
             defaults.set(true, forKey: SubtitlePrefKey.off)
@@ -1929,7 +2001,7 @@ final class PlaybackController {
         let code = MediaBrowserPlaybackPreferencePolicy.persistableLanguageCode(
             languageTag: option.extendedLanguageTag,
             languageCode: option.locale?.language.languageCode?.identifier)
-        let defaults = UserDefaults.standard
+        let defaults = trackPreferenceDefaults
         if let code {
             defaults.set(code, forKey: AudioPrefKey.language)
         } else {
@@ -1958,7 +2030,7 @@ final class PlaybackController {
             return
         }
         #endif
-        let savedLang = UserDefaults.standard.string(forKey: AudioPrefKey.language)
+        let savedLang = trackPreferenceDefaults.string(forKey: AudioPrefKey.language)
         // No preference saved: leave the HLS default and don't burn the one-shot gate yet, so a
         // future pick starts fresh.
         guard let savedLang, !savedLang.isEmpty else { return }
@@ -1976,7 +2048,7 @@ final class PlaybackController {
 
         // Select the first audible option whose language matches the saved code. No match →
         // leave the HLS default selection in place.
-        let desiredRole = UserDefaults.standard.string(forKey: AudioPrefKey.role)
+        let desiredRole = trackPreferenceDefaults.string(forKey: AudioPrefKey.role)
             .flatMap(AudioStreamRole.init(rawValue:)) ?? .main
         let match = group.options.first { option in
             Self.languageMatches(languageTag: option.extendedLanguageTag,
@@ -2000,11 +2072,11 @@ final class PlaybackController {
         BackendSubtitleSelection.mediaBrowserWireValue(
             MediaBrowserPlaybackPreferencePolicy.preferredSubtitleStreamIndex(
                 for: item,
-                mediaIndex: mediaIndex)) == .off
+                mediaIndex: mediaIndex, defaults: trackPreferenceDefaults)) == .off
     }
 
     private func selectedBurnSubtitleStreamIDForCurrentPreferences() -> Int? {
-        let defaults = UserDefaults.standard
+        let defaults = trackPreferenceDefaults
         let burnMode = SubtitleBurnMode(rawValue: defaults.string(forKey: PlaybackPreferences.Keys.subtitleBurnMode) ?? "")
             ?? .automatic
         guard burnMode != .automatic else { return nil }
@@ -2046,13 +2118,13 @@ final class PlaybackController {
     private func effectiveRemoteAudioStreamIndex() -> Int? {
         audioStreamIDOverride
             ?? MediaBrowserPlaybackPreferencePolicy.initialAudioStreamIndex(for: item,
-                                                                           mediaIndex: mediaIndex)
+                                                                           mediaIndex: mediaIndex, defaults: trackPreferenceDefaults)
     }
 
     private func effectiveRemoteSubtitleStreamIndex() -> Int? {
         subtitleSelectionOverride?.mediaBrowserWireValue
             ?? MediaBrowserPlaybackPreferencePolicy.preferredSubtitleStreamIndex(for: item,
-                                                                                 mediaIndex: mediaIndex)
+                                                                                 mediaIndex: mediaIndex, defaults: trackPreferenceDefaults)
     }
 
     private func sourcePartForCurrentMedia() -> Part? {
@@ -2141,7 +2213,7 @@ final class PlaybackController {
         // this shared prevents the checkmark from describing a different stream than PlaybackInfo.
         let candidateSelectedID = audioStreamIDOverride
             ?? MediaBrowserPlaybackPreferencePolicy.initialAudioStreamIndex(for: item,
-                                                                            mediaIndex: mediaIndex)
+                                                                            mediaIndex: mediaIndex, defaults: trackPreferenceDefaults)
         guard let selectedID = PlaybackTrackSelectionPolicy.resolvedMetadataAudioStreamID(
             candidate: candidateSelectedID,
             streams: streams) else { return nil }
@@ -2255,10 +2327,10 @@ final class PlaybackController {
         if let stream = part.audioStreams.first(where: { $0.id == streamID }),
            let lang = MediaBrowserPlaybackPreferencePolicy.persistableLanguageCode(
                languageTag: stream.languageTag, languageCode: stream.languageCode) {
-            UserDefaults.standard.set(lang, forKey: AudioPrefKey.language)
+            trackPreferenceDefaults.set(lang, forKey: AudioPrefKey.language)
         }
         if let stream = part.audioStreams.first(where: { $0.id == streamID }) {
-            UserDefaults.standard.set(stream.audioRole.rawValue, forKey: AudioPrefKey.role)
+            trackPreferenceDefaults.set(stream.audioRole.rawValue, forKey: AudioPrefKey.role)
         }
 
         // Restart/reopen where the viewer is — same UX as Quality reload. Plex persists the
@@ -2770,7 +2842,7 @@ final class PlaybackController {
         if audioStreamIDOverride == nil,
            let part = sourcePartForCurrentMedia(),
            let preferredAudioID = MediaBrowserPlaybackPreferencePolicy.preferredAudioStreamIndex(for: item,
-                                                                                                 mediaIndex: mediaIndex),
+                                                                                                 mediaIndex: mediaIndex, defaults: trackPreferenceDefaults),
            part.audioStreams.first(where: { $0.selected == true })?.id != preferredAudioID {
             do {
                 try await client.send(StreamSelectionRequest.selectAudioStream(server: server,
@@ -4210,8 +4282,7 @@ final class PlaybackController {
                       self.isCurrentObservedItem(playerItem,
                                                  itemGeneration: itemGeneration,
                                                  observedPlaybackGeneration: observedPlaybackGeneration) else { return }
-                self.handleTimeControlTransport(status: status)
-                self.handleTimeControlBuffering(status: status)
+                self.observeTimeControlStatus(status)
             }
         })
 
@@ -4257,6 +4328,18 @@ final class PlaybackController {
                 }
             }
         })
+    }
+
+    /// Current-item status delivery after the observer's generation fences. Callable by
+    /// deterministic local-player pins without depending on AVFoundation's scheduling.
+    func observeTimeControlStatus(_ status: AVPlayer.TimeControlStatus) {
+        if status == .playing, !offlinePlaybackClosed,
+           offlineObservedItemGeneration != currentPlayerItemGeneration {
+            offlineObservedItemGeneration = currentPlayerItemGeneration
+            offlineSession?.onPlaybackObserved?()
+        }
+        handleTimeControlTransport(status: status)
+        handleTimeControlBuffering(status: status)
     }
 
     /// Transport/diagnostics half of the merged `\.timeControlStatus` observation. Runs

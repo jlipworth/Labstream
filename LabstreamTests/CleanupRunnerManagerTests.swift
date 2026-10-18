@@ -14,18 +14,19 @@ struct CleanupRunnerManagerTests {
         let directory = try makeDirectory("migrate")
         defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
         let store = DownloadStore(baseDirectory: directory)
-        guard case .committed(let convertible) = store.addEmbyConvertCleanupTombstone(
-                ratingKey: "emby:item", metadata: crashWindowMetadata(ratingKey: "emby:item")),
-              case .committed(let unconvertible) = store.addEmbyConvertCleanupTombstone(
-                ratingKey: "emby:legacy", metadata: OfflineMetadata(
-                    ratingKey: "emby:legacy", title: "Legacy", type: "movie", backendKind: .emby))
-        else { Issue.record("Expected tombstones"); return }
+        let convertible = LegacyEmbyTombstoneFixture.make(
+            ratingKey: "emby:item", metadata: crashWindowMetadata(ratingKey: "emby:item"))
+        let unconvertible = LegacyEmbyTombstoneFixture.make(
+            ratingKey: "emby:legacy", metadata: OfflineMetadata(
+                ratingKey: "emby:legacy", title: "Legacy", type: "movie", backendKind: .emby))
+        try LegacyEmbyTombstoneFixture.write([convertible, unconvertible], to: store)
         let (manager, journal, session) = makeManager(store: store, directory: directory)
         defer { session.invalidateInjectedSessionForTesting() }
         #expect(await waitUntil { manager.startupRecoveryState == .ready })
 
         manager.teardownOrphanedEncodersOnLaunch()
         await manager.launchSweepJournaling?.value
+        await manager.cleanupRunner?.waitUntilIdle()
 
         guard case .loaded(let intents) = journal.load() else {
             Issue.record("Expected a readable journal"); return
@@ -48,23 +49,24 @@ struct CleanupRunnerManagerTests {
         let directory = try makeDirectory("receipt")
         defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
         let store = DownloadStore(baseDirectory: directory)
-        guard case .committed(let tombstone) = store.addEmbyConvertCleanupTombstone(
+        let tombstone = LegacyEmbyTombstoneFixture.make(
             ratingKey: "emby:item", metadata: crashWindowMetadata(ratingKey: "emby:item"))
-        else { Issue.record("Expected a tombstone"); return }
+        try LegacyEmbyTombstoneFixture.write([tombstone], to: store)
         let (manager, journal, session) = makeManager(store: store, directory: directory)
         defer { session.invalidateInjectedSessionForTesting() }
         #expect(await waitUntil { manager.startupRecoveryState == .ready })
         manager.teardownOrphanedEncodersOnLaunch()
         await manager.launchSweepJournaling?.value
+        await manager.cleanupRunner?.waitUntilIdle()
         guard case .loaded(let intents) = journal.load(),
               let migrated = intents.first(where: { $0.id == tombstone.id }) else {
             Issue.record("Expected the migrated intent"); return
         }
-        #expect(!manager.cleanupIntentIsBlocked(migrated))
+        #expect(!(await manager.cleanupIntentIsBlocked(migrated)))
 
         // Simulate a removal that did not become durable: the tombstone is still on disk.
-        #expect(store.addEmbyConvertCleanupTombstone(tombstone) == .committed(tombstone))
-        #expect(manager.cleanupIntentIsBlocked(migrated))
+        try LegacyEmbyTombstoneFixture.write([tombstone], to: store)
+        #expect(await manager.cleanupIntentIsBlocked(migrated))
     }
 
     @Test("Expiry journals its abandonment before clearing the recovery identity")
@@ -168,7 +170,7 @@ struct CleanupRunnerManagerTests {
             kind: .jellyfin, baseURL: URL(string: "https://jellyfin.example")!, token: "token",
             userID: "user-1", serverID: "server-1")
 
-        manager.stopSupersededMediaBrowserEncoder(
+        await manager.stopSupersededMediaBrowserEncoder(
             attemptKey: key, ratingKey: key.ratingKey, playSessionID: "minted-1",
             backendKind: .jellyfin, backendSession: captured)
 
@@ -205,6 +207,7 @@ struct CleanupRunnerManagerTests {
         // Launch sweep: no Jellyfin session, so the intent is journaled and stays.
         manager.teardownOrphanedEncodersOnLaunch()
         await manager.launchSweepJournaling?.value
+        await manager.cleanupRunner?.waitUntilIdle()
         guard case .loaded(let swept) = journal.load(), let release = swept.first else {
             Issue.record("Expected the terminal-release intent"); return
         }

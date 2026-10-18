@@ -93,10 +93,13 @@ final class DownloadStore: @unchecked Sendable {
     struct IndexPersistence: Sendable {
         let read: @Sendable (URL) throws -> Data
         let atomicWrite: @Sendable (Data, URL) throws -> Void
+        let didDecode: @Sendable () -> Void
 
         init(read: @escaping @Sendable (URL) throws -> Data = { try Data(contentsOf: $0) },
+             didDecode: @escaping @Sendable () -> Void = {},
              atomicWrite: @escaping @Sendable (Data, URL) throws -> Void) {
             self.read = read
+            self.didDecode = didDecode
             self.atomicWrite = atomicWrite
         }
 
@@ -160,6 +163,7 @@ final class DownloadStore: @unchecked Sendable {
         case heldBodyDeletionPending
         case artifactLifecyclePending
         case checkpointHandoffFailed
+        case storageRefused
     }
 
     enum AttemptMutationResult: Sendable, Equatable {
@@ -260,43 +264,6 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
-    /// Compatibility bridge for orchestration code that selects blocking versus bounded lifecycle
-    /// behavior from its execution context. Never call this from a pending background-session
-    /// delivery; that path must carry the ticket to `flushPersistence` instead.
-    func resolveSynchronously(
-        _ submission: AttemptMutationSubmission
-    ) -> AttemptMutationResult {
-        awaitAttemptMutationSubmission(submission)
-    }
-
-    func resolveSynchronously(
-        _ submission: AttemptResumeDataSubmission
-    ) -> AttemptResumeDataWriteResult {
-        switch submission {
-        case .staleOrMissing:
-            return .staleOrMissing
-        case .artifactWriteFailed(let errorType):
-            return .artifactWriteFailed(errorType: errorType)
-        case .accepted(let ticket):
-            switch artifactLifecycle.waitSynchronously(for: ticket) {
-            case .completed:
-                return .applied
-            case .failed(.persistence(let failure)):
-                return .persistenceFailed(failure)
-            case .failed(.artifact(let errorType)):
-                return .artifactWriteFailed(errorType: errorType)
-            case .timedOut:
-                preconditionFailure("an unbounded artifact lifecycle wait cannot time out")
-            }
-        }
-    }
-
-    func resolveArtifactSynchronously(
-        _ ticket: DownloadArtifactLifecycleCoordinator.Ticket
-    ) -> DownloadArtifactLifecycleCoordinator.FlushResult {
-        artifactLifecycle.waitSynchronously(for: ticket)
-    }
-
     func resolveArtifactSynchronouslyForTests(
         through watermark: DownloadArtifactLifecycleCoordinator.Watermark
     ) -> DownloadArtifactLifecycleCoordinator.FlushResult {
@@ -308,7 +275,6 @@ final class DownloadStore: @unchecked Sendable {
     typealias EmbyConvertCleanupTombstone = EmbyConvertCleanupJournal.Tombstone
     typealias EmbyCleanupPersistence = EmbyConvertCleanupJournal.Persistence
     typealias EmbyCleanupLoadResult = EmbyConvertCleanupJournal.LoadResult
-    typealias EmbyCleanupAddResult = EmbyConvertCleanupJournal.AddResult
     typealias EmbyCleanupRemoveResult = EmbyConvertCleanupJournal.RemoveResult
 
     struct StaticRangeRecoveryEvidence: Sendable, Equatable {
@@ -337,16 +303,6 @@ final class DownloadStore: @unchecked Sendable {
 
     enum AttemptArtifactMutationSubmission: Sendable, Equatable {
         case accepted(change: AttemptMutationChange, ticket: DownloadArtifactLifecycleCoordinator.Ticket)
-        case staleOrMissing
-    }
-
-    enum AttemptHeldRangeSegmentPersistResult: Sendable, Equatable {
-        case accepted(
-            previous: OfflineHeldRangeSegment?,
-            ticket: PersistenceTicket,
-            persistence: PersistenceFlushResult
-        )
-        case invalidSegment
         case staleOrMissing
     }
 
@@ -401,33 +357,11 @@ final class DownloadStore: @unchecked Sendable {
         case immediate(AttemptValidatedPromotionResult)
     }
 
-    struct HeldRangeSegmentRemovalResult: Sendable, Equatable {
-        let removed: OfflineHeldRangeSegment?
-        let ticket: PersistenceTicket
-        let persistence: PersistenceFlushResult
-
-        var committed: Bool {
-            guard case .committed(let revision) = persistence else { return false }
-            return revision >= ticket.revision
-        }
-    }
-
     struct HeldRangeSegmentsRemovalResult: Sendable, Equatable {
         let removed: [OfflineHeldRangeSegment]
         /// Every exact-attempt held body whose deletion is part of the same durable snapshot as
         /// the manifest removal. These paths remain in the row until filesystem deletion succeeds.
         let deferredRelativePaths: [String]
-        let ticket: PersistenceTicket
-        let persistence: PersistenceFlushResult
-
-        var committed: Bool {
-            guard case .committed(let revision) = persistence else { return false }
-            return revision >= ticket.revision
-        }
-    }
-
-    struct HeldRangeSegmentsTakeResult: Sendable, Equatable {
-        let removed: [OfflineHeldRangeSegment]
         let ticket: PersistenceTicket
         let persistence: PersistenceFlushResult
 
@@ -788,7 +722,7 @@ final class DownloadStore: @unchecked Sendable {
     /// corresponding metadata mutation. Only files inventoried at Store initialization can be
     /// startup orphans; a later launch can collect newly-born files if no row ever adopts them.
     private var startupStagingIdentities: [String: CondemnedFileIdentity] = [:]
-    private var startupStagingInventory: Set<String>
+    private var startupStagingInventory: Set<String> = []
     private let indexURL: URL                        // baseDirectory/index.json
     private let cleanupAuthorityDirectory: URL       // survives destructive Downloads-root reset
     private let fileManager: FileManager
@@ -809,13 +743,33 @@ final class DownloadStore: @unchecked Sendable {
     private let rootIndexPersistence: IndexPersistence
     private let artifactFilesystem: DownloadArtifactFilesystem
     private let storeFilesystem: DownloadStoreFilesystem
+    // Measurement and reservation are one critical section, outside the row lock. A second
+    // worker must not admit against a sample taken before another copy completed and released.
+    private let checkpointCapacityLock = NSLock()
+    private var reservedCheckpointCopyBytes: Int64 = 0 // guarded by checkpointCapacityLock
+    struct CheckpointStorageDiagnostics: Sendable, Equatable {
+        var copyBeginCount = 0
+        var copyBeginBytes = 0
+        var copyEndCount = 0
+        var copyEndBytes = 0
+        var sweepReclaimedCount = 0
+        var sweepReclaimedBytes = 0
+        var spaceRefusalCount = 0
+    }
+    private var checkpointStorageCounters = CheckpointStorageDiagnostics() // guarded by lock
+    var checkpointStorageDiagnostics: CheckpointStorageDiagnostics {
+        lock.withLock { checkpointStorageCounters }
+    }
+    private let availableStorageBytes: @Sendable (URL) -> Int64?
     private let checkpointFilesystem: DownloadStaticCheckpointFilesystem
     private let promotionFilesystem: DownloadPromotionFilesystem
     private let artifactLifecycle = DownloadArtifactLifecycleCoordinator()
     private let artifactWorkerQueue = DispatchQueue(
         label: "com.visionplay.download-artifact-lifecycle", qos: .utility)
     private var nextPersistenceRevision: UInt64 = 0 // guarded by `lock`
-    private var startupSchemaProbe: DownloadIndexCoding.StartupProbe // guarded by `lock`
+    /// Nil until the worker publishes classification AND the loaded row map. An unloaded map
+    /// is never a missing/current index; admission, cleanup and persistence remain closed.
+    private var startupSchemaProbe: DownloadIndexCoding.StartupProbe? // guarded by `lock`
     private let startupReprobeWorkerLock = NSLock()
     private var startupReprobeEpoch = UUID() // guarded by `lock`
     private var seasonCommitIndeterminate = false // guarded by `lock`
@@ -863,8 +817,12 @@ final class DownloadStore: @unchecked Sendable {
          checkpointFilesystem: DownloadStaticCheckpointFilesystem = .live,
          promotionFilesystem: DownloadPromotionFilesystem = .live,
          storeFilesystem: DownloadStoreFilesystem = .live,
+         availableStorageBytes: @escaping @Sendable (URL) -> Int64? = {
+             DownloadVolumeFreeSpace.measure(directory: $0)?.bytes
+         },
          startupOnWorker: Bool = false,
          startupRepairWillBegin: @escaping @Sendable () -> Void = {}) {
+        self.availableStorageBytes = availableStorageBytes
         self.storeFilesystem = storeFilesystem
         self.fileManager = fileManager
         self.artifactFilesystem = artifactFilesystem
@@ -881,14 +839,6 @@ final class DownloadStore: @unchecked Sendable {
             .appendingPathComponent("Downloads", isDirectory: true)
         self.baseDirectory = dir
         let indexURL = dir.appendingPathComponent("index.json")
-        let pendingQuarantine = dir.deletingLastPathComponent().appendingPathComponent(
-            ".\(dir.lastPathComponent)-unsupported-reset-pending", isDirectory: true)
-        let (startupProbe, startupIndexData) = Self.classifyIndex(
-            at: indexURL, pendingQuarantine: pendingQuarantine,
-            read: indexPersistence.read, fileManager: fileManager)
-        self.startupSchemaProbe = startupProbe
-        self.startupStagingInventory = Self.stagingInventory(
-            in: dir, probe: startupProbe, fileManager: fileManager)
         self.indexURL = indexURL
         let authority = dir.deletingLastPathComponent().appendingPathComponent(
             ".\(dir.lastPathComponent)-download-authority", isDirectory: true)
@@ -908,27 +858,40 @@ final class DownloadStore: @unchecked Sendable {
                       failure.errorType)
             }
         )
-        // Probe above is deliberately the first filesystem interaction that can affect admission.
-        // Unsupported/unreadable roots remain byte-for-byte untouched until the session drain.
-        guard startupProbe == .missing || startupProbe == .current else { return }
         if startupOnWorker {
             initialStartupSubmission = RecoverySubmission { [self] in
-                startupReprobeWorkerLock.lock()
-                defer { startupReprobeWorkerLock.unlock() }
-                startupRepairWillBegin()
-                captureStartupStagingIdentities()
-                completeAdmissibleStartup(probe: startupProbe, indexData: startupIndexData)
-                return startupIndexAdmission()
+                performInitialStartup(startupRepairWillBegin: startupRepairWillBegin)
             }
         } else {
-            captureStartupStagingIdentities()
-            completeAdmissibleStartup(probe: startupProbe, indexData: startupIndexData)
+            _ = performInitialStartup(startupRepairWillBegin: startupRepairWillBegin)
         }
+    }
+
+    private func performInitialStartup(startupRepairWillBegin: @Sendable () -> Void) -> StartupIndexAdmission {
+        startupReprobeWorkerLock.lock()
+        defer { startupReprobeWorkerLock.unlock() }
+        startupRepairWillBegin()
+        let pendingQuarantine = baseDirectory.deletingLastPathComponent().appendingPathComponent(
+            ".\(baseDirectory.lastPathComponent)-unsupported-reset-pending", isDirectory: true)
+        let (probe, decoded) = Self.classifyIndex(
+            at: indexURL, pendingQuarantine: pendingQuarantine,
+            read: rootIndexPersistence.read, didDecode: rootIndexPersistence.didDecode, fileManager: fileManager)
+        // Inventory and file identities precede directory creation, authority migration, repair,
+        // or any other work that could create files. B86's checkpoint-copy grammar is unchanged.
+        let inventory = Self.stagingInventory(in: baseDirectory, probe: probe, fileManager: fileManager)
+        lock.withLock { startupStagingInventory = inventory }
+        captureStartupStagingIdentities()
+        if probe == .missing || probe == .current {
+            completeAdmissibleStartup(probe: probe, decoded: decoded)
+        } else {
+            lock.withLock { startupSchemaProbe = probe }
+        }
+        return startupIndexAdmission()
     }
 
     private func captureStartupStagingIdentities() {
         var identities: [String: CondemnedFileIdentity] = [:]
-        for path in startupStagingInventory {
+        for path in lock.withLock({ startupStagingInventory }) {
             identities[path] = condemnedFileIdentity(at: baseDirectory.appendingPathComponent(path))
         }
         lock.withLock { startupStagingIdentities = identities }
@@ -939,8 +902,9 @@ final class DownloadStore: @unchecked Sendable {
         at indexURL: URL,
         pendingQuarantine: URL,
         read: (URL) throws -> Data?,
+        didDecode: () -> Void,
         fileManager: FileManager
-    ) -> (DownloadIndexCoding.StartupProbe, Data?) {
+    ) -> (DownloadIndexCoding.StartupProbe, DownloadIndexCoding.DecodeResult<Row>?) {
         var probe: DownloadIndexCoding.StartupProbe
         var indexData: Data?
         if fileManager.fileExists(atPath: indexURL.path) {
@@ -959,14 +923,18 @@ final class DownloadStore: @unchecked Sendable {
         } else {
             probe = .missing
         }
+        var decodedRows: DownloadIndexCoding.DecodeResult<Row>?
         if probe == .current, let indexData {
+            didDecode()
             let decoded = DownloadIndexCoding.decode(Row.self, from: indexData)
             let keys = decoded.rows.map(\.ratingKey)
             if decoded.skippedRowCount > 0 || Set(keys).count != keys.count {
                 probe = .unreadable
+            } else {
+                decodedRows = decoded
             }
         }
-        return (probe, indexData)
+        return (probe, decodedRows)
     }
 
     private static func stagingInventory(
@@ -974,14 +942,17 @@ final class DownloadStore: @unchecked Sendable {
     ) -> Set<String> {
         Set(((probe == .missing || probe == .current)
              ? ((try? fileManager.contentsOfDirectory(atPath: dir.path)) ?? []) : [])
-            .filter(Self.isAttemptStagingRelativePath))
+            .filter { Self.isAttemptStagingRelativePath($0)
+                // Reuse the audit's strict digest/UUID grammar for hard-killed copy residue.
+                || ($0.hasPrefix("..attempt-stage-v1-")
+                    && OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename($0)) })
     }
 
     /// The admissible-startup tail: directories, authority migration, protection, temp sweeps,
     /// load, and artifact recovery. Runs on the startup worker in production, or from `reprobeBlockedIndex` once an index
     /// that was unreadable at launch reads cleanly (B16).
     private func completeAdmissibleStartup(
-        probe startupProbe: DownloadIndexCoding.StartupProbe, indexData startupIndexData: Data?
+        probe startupProbe: DownloadIndexCoding.StartupProbe, decoded: DownloadIndexCoding.DecodeResult<Row>?
     ) {
         let dir = baseDirectory
         let authority = cleanupAuthorityDirectory
@@ -1018,9 +989,9 @@ final class DownloadStore: @unchecked Sendable {
         try? DownloadArtifactFileCommitter.cleanupAbandonedResumeTemps(
             in: dir,
             fileManager: fileManager)
-        // B15: decode the exact bytes the probe classified. A second read could fail transiently
-        // and admit an empty `.current` store whose next snapshot overwrites the real index.
-        load(indexData: startupProbe == .current ? startupIndexData : nil)
+        // B15: reuse the exact classified rows. Neither a second read nor a second decode can
+        // substitute an empty library for the real index. Publication happens with the row map.
+        load(decoded: decoded, probe: startupProbe)
         lock.withLock {
             startupArtifactCleanupIntentIDs = Set(
                 rows.values.flatMap { $0.pendingArtifactIntents.map(\.id) })
@@ -1033,7 +1004,7 @@ final class DownloadStore: @unchecked Sendable {
             fileManager: fileManager)
     }
 
-    var startupIndexProbe: DownloadIndexCoding.StartupProbe {
+    var startupIndexProbe: DownloadIndexCoding.StartupProbe? {
         lock.withLock { startupSchemaProbe }
     }
 
@@ -1190,22 +1161,6 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     @discardableResult
-    func addEmbyConvertCleanupTombstone(ratingKey: String, metadata: OfflineMetadata)
-        -> EmbyCleanupAddResult {
-        addEmbyConvertCleanupTombstone(EmbyConvertCleanupTombstone(
-            id: UUID(), ratingKey: ratingKey, metadata: metadata
-        ))
-    }
-
-    /// Persist an EXISTING tombstone value (same id). Used to retry the durable write for
-    /// tombstones that were deferred in memory after a delete()-time persist failure.
-    @discardableResult
-    func addEmbyConvertCleanupTombstone(_ tombstone: EmbyConvertCleanupTombstone)
-        -> EmbyCleanupAddResult {
-        embyCleanupJournal.add(tombstone)
-    }
-
-    @discardableResult
     func removeEmbyConvertCleanupTombstone(id: UUID) -> EmbyCleanupRemoveResult {
         embyCleanupJournal.remove(id: id)
     }
@@ -1247,17 +1202,6 @@ final class DownloadStore: @unchecked Sendable {
 
     func attemptWorkingFileURL(for key: DownloadAttemptKey) -> URL? {
         attemptWorkingFileLayout(for: key)?.workingURL
-    }
-
-    /// Publish a caller-validated body through the durable artifact queue. Validation remains the
-    /// caller's authority; this operation only publishes the already-validated exact-attempt file.
-    @discardableResult
-    func promoteValidatedAttempt(
-        for key: DownloadAttemptKey,
-        terminalStatus: DownloadStatus
-    ) -> AttemptValidatedPromotionResult {
-        resolveValidatedPromotionSynchronously(submitValidatedPromotion(
-            for: key, terminalStatus: terminalStatus))
     }
 
     func submitValidatedPromotion(
@@ -1325,34 +1269,6 @@ final class DownloadStore: @unchecked Sendable {
         lock.unlock()
         scheduleArtifactLifecycle(ticket: ticket, intent: intent)
         return .accepted(ticket: ticket)
-    }
-
-    func resolveValidatedPromotionSynchronously(
-        _ submission: AttemptValidatedPromotionSubmission
-    ) -> AttemptValidatedPromotionResult {
-        switch submission {
-        case .immediate(let result): return result
-        case .accepted(let ticket):
-            let lifecycle = artifactLifecycle.waitSynchronously(for: ticket)
-            if let result = lock.withLock({ () -> AttemptValidatedPromotionResult? in
-                promotionAwaitingResultIDs.remove(ticket)
-                return promotionOutcomes.removeValue(forKey: ticket)
-            }) {
-                return result
-            }
-            switch lifecycle {
-            case .completed: return .staleOrMissingOwner
-            case .failed(.persistence(let failure)): return .persistenceFailed(ticket.key, failure)
-            case .failed(.artifact(let errorType)): return .renameFailed(errorType: errorType)
-            case .timedOut: return .staleOrMissingOwner
-            }
-        }
-    }
-
-    func resolveValidatedPromotion(
-        _ submission: AttemptValidatedPromotionSubmission
-    ) async -> AttemptValidatedPromotionResult {
-        await resolveValidatedPromotionDeadline(submission, deadline: .after(30))
     }
 
     private func recordPromotionOutcomeLocked(
@@ -1729,7 +1645,8 @@ final class DownloadStore: @unchecked Sendable {
     func unreferencedAttemptStagingURLs(
         additionalReferencedRelativePaths: Set<String> = []
     ) -> [URL] {
-        let inventory = lock.withLock { startupStagingInventory }
+        let inventory = lock.withLock { startupSchemaProbe == nil ? [] : startupStagingInventory }
+        guard !inventory.isEmpty else { return [] }
         storeFilesystem.before(.enumerate, baseDirectory)
         let urls = (try? fileManager.contentsOfDirectory(at: baseDirectory,
             includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsSubdirectoryDescendants])) ?? []
@@ -1750,6 +1667,7 @@ final class DownloadStore: @unchecked Sendable {
         let candidates = unreferencedAttemptStagingURLs(additionalReferencedRelativePaths: additionalReferencedRelativePaths)
         var removed: [String] = []
         var failed: [String] = []
+        var reclaimedBytes = 0
         for url in candidates {
             let name = url.lastPathComponent
             guard let identity = condemnedFileIdentity(at: url) else { continue }
@@ -1767,7 +1685,12 @@ final class DownloadStore: @unchecked Sendable {
                 guard condemnedFileIdentity(at: url) == identity else { continue }
                 try storeFilesystem.removeItem(at: url, using: fileManager)
                 removed.append(name)
+                reclaimedBytes += Int(clamping: identity.size)
             } catch { failed.append(name) }
+        }
+        recordCheckpointStorageDiagnostic("downloads.checkpoint_sweep") {
+            $0.sweepReclaimedCount += removed.count
+            $0.sweepReclaimedBytes += reclaimedBytes
         }
         return .init(removedRelativePaths: removed.sorted(), failedRelativePaths: failed.sorted())
     }
@@ -1869,12 +1792,6 @@ final class DownloadStore: @unchecked Sendable {
         baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).sub-\(streamID).\(Self.safeSubtitleExtension(ext))")
     }
 
-    /// #95: on-disk destination for a ratingKey's persisted URLSession resume blob, kept as a
-    /// sibling of the media file so the relative-path convention and `remove` cleanup apply.
-    func resumeDataDestinationURL(ratingKey: String) -> URL {
-        baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).resume")
-    }
-
     /// Durable home for an out-of-order static Range body. A UUID prevents a replacement body
     /// from aliasing the manifest/file still visible to a concurrent drain.
     func heldRangeSegmentDestinationURL(ratingKey: String, offset: Int) -> URL {
@@ -1886,87 +1803,6 @@ final class DownloadStore: @unchecked Sendable {
     func heldRangeSegmentURL(relativePath: String) -> URL? {
         guard Self.isSafeOneLevelRelativePath(relativePath) else { return nil }
         return baseDirectory.appendingPathComponent(relativePath)
-    }
-
-    /// Replace the manifest entry at an offset. `persisted` means the in-memory row accepted the
-    /// replacement; only `committed` permits the caller to delete the previous body. A failed
-    /// attempt remains dirty and may commit on a later mutation/flush.
-    @discardableResult
-    func persistHeldRangeSegment(ratingKey: String,
-                                 segment: OfflineHeldRangeSegment)
-        -> (persisted: Bool, committed: Bool, previous: OfflineHeldRangeSegment?) {
-        guard Self.isSafeOneLevelRelativePath(segment.relativePath),
-              segment.offset >= 0, segment.length > 0 else { return (false, false, nil) }
-        lock.lock()
-        guard var row = rows[ratingKey], !Self.hasPendingRowDeletion(row),
-              var metadata = row.metadata else {
-            lock.unlock()
-            return (false, false, nil)
-        }
-        guard reservedHeldBodyDeletionPaths[segment.relativePath] == nil else {
-            lock.unlock()
-            return (false, false, nil)
-        }
-        guard reservedArtifactDeletionPaths[segment.relativePath] == nil else {
-            lock.unlock(); return (false, false, nil)
-        }
-        var segments = metadata.heldRangeSegments ?? []
-        let previous = segments.first { $0.offset == segment.offset }
-        segments.removeAll { $0.offset == segment.offset }
-        segments.append(segment)
-        metadata.heldRangeSegments = segments.sorted { $0.offset < $1.offset }
-        row.metadata = metadata
-        setRowLocked(row, for: ratingKey)
-        lock.unlock()
-        let attempt = persist()
-        let committed: Bool
-        if case .committed(let revision) = attempt.result {
-            committed = revision >= attempt.ticket.revision
-        } else {
-            committed = false
-        }
-        return (true, committed, previous)
-    }
-
-    /// Attempt-owned counterpart. Ownership and manifest replacement share the store lock so a
-    /// delayed body from A cannot attach itself to replacement attempt B.
-    @discardableResult
-    func persistHeldRangeSegment(
-        for key: DownloadAttemptKey,
-        segment: OfflineHeldRangeSegment
-    ) -> AttemptHeldRangeSegmentPersistResult {
-        lock.lock()
-        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.deletionPending,
-              !Self.hasPendingRowDeletion(row),
-              row.pendingValidatedPromotionStatus == nil,
-              reservedHeldBodyDeletionPaths[segment.relativePath] == nil,
-              reservedArtifactDeletionPaths[segment.relativePath] == nil,
-              var metadata = row.metadata else {
-            lock.unlock()
-            return .staleOrMissing
-        }
-        guard Self.isSafeOneLevelRelativePath(segment.relativePath),
-              segment.offset >= 0, segment.length > 0 else {
-            lock.unlock()
-            return .invalidSegment
-        }
-        var segments = metadata.heldRangeSegments ?? []
-        let previous = segments.first { $0.offset == segment.offset }
-        segments.removeAll { $0.offset == segment.offset }
-        segments.append(segment)
-        metadata.heldRangeSegments = segments.sorted { $0.offset < $1.offset }
-        metadata.downloadAttemptID = key.attemptID.rawValue
-        row.metadata = metadata
-        setRowLocked(row, for: key.ratingKey)
-        let ticket = enqueueAttemptPersistenceLocked()
-        lock.unlock()
-        let persistence = waitForPersistence(through: ticket)
-        return .accepted(
-            previous: previous,
-            ticket: persistence.ticket,
-            persistence: persistence.result
-        )
     }
 
     func submitHeldRangeSegment(
@@ -2255,51 +2091,6 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     @discardableResult
-    func removeHeldRangeSegment(ratingKey: String, offset: Int) -> HeldRangeSegmentRemovalResult {
-        let batch = removeHeldRangeSegments(ratingKey: ratingKey, offsets: [offset])
-        return HeldRangeSegmentRemovalResult(
-            removed: batch.removed.first,
-            ticket: batch.ticket,
-            persistence: batch.persistence
-        )
-    }
-
-    /// Batch variant: remove several manifest entries with one index persist while returning the
-    /// exact durability outcome. A no-op still proves/retries a dirty prior removal.
-    @discardableResult
-    func removeHeldRangeSegments(
-        ratingKey: String,
-        offsets: [Int]
-    ) -> HeldRangeSegmentsRemovalResult {
-        let offsetSet = Set(offsets)
-        lock.lock()
-        var removed: [OfflineHeldRangeSegment] = []
-        if !offsetSet.isEmpty,
-           var row = rows[ratingKey],
-           !Self.hasPendingRowDeletion(row),
-           var metadata = row.metadata,
-           let segments = metadata.heldRangeSegments {
-            removed = segments.filter { offsetSet.contains($0.offset) }
-            if !removed.isEmpty {
-                let remaining = segments.filter { !offsetSet.contains($0.offset) }
-                metadata.heldRangeSegments = remaining.isEmpty ? nil : remaining
-                row.metadata = metadata
-                setRowLocked(row, for: ratingKey)
-            }
-        }
-        lock.unlock()
-        // Even a no-op must prove the current full snapshot: a prior failed removal already
-        // changed memory, so absence alone is not proof that the durable manifest was cleared.
-        let attempt = removed.isEmpty ? proveCleanupNoOpDurable() : persist()
-        return HeldRangeSegmentsRemovalResult(
-            removed: removed,
-            deferredRelativePaths: [],
-            ticket: attempt.ticket,
-            persistence: attempt.result
-        )
-    }
-
-    @discardableResult
     func removeHeldRangeSegment(
         for key: DownloadAttemptKey,
         offset: Int
@@ -2352,29 +2143,6 @@ final class DownloadStore: @unchecked Sendable {
             ticket: persistence.ticket,
             persistence: persistence.result
         ))
-    }
-
-    @discardableResult
-    func takeHeldRangeSegments(ratingKey: String) -> HeldRangeSegmentsTakeResult {
-        lock.lock()
-        var removed: [OfflineHeldRangeSegment] = []
-        if var row = rows[ratingKey], !Self.hasPendingRowDeletion(row),
-           var metadata = row.metadata {
-            removed = metadata.heldRangeSegments ?? []
-            if !removed.isEmpty {
-                metadata.heldRangeSegments = nil
-                row.metadata = metadata
-                setRowLocked(row, for: ratingKey)
-            }
-        }
-        lock.unlock()
-        // As above, retry a dirty prior take even when this call sees no in-memory manifests.
-        let attempt = removed.isEmpty ? proveCleanupNoOpDurable() : persist()
-        return HeldRangeSegmentsTakeResult(
-            removed: removed,
-            ticket: attempt.ticket,
-            persistence: attempt.result
-        )
     }
 
     @discardableResult
@@ -2564,6 +2332,8 @@ final class DownloadStore: @unchecked Sendable {
     /// SwiftUI is creating the scene. Keep hydration cheap and avoid stat'ing every poster, BIF,
     /// trickplay tile, chapter image, and subtitle on each read; large headset libraries can carry
     /// enough sidecars to trip the scene-create watchdog.
+    /// While startupIndexProbe is nil this is an unpublished snapshot, NOT an empty library.
+    /// UI and Offline gating retain `.preparing` / `.unresolved` until the worker publishes it.
     var records: [DownloadRecord] {
         lock.lock()
         let snapshot = Array(rows.values)
@@ -2608,6 +2378,7 @@ final class DownloadStore: @unchecked Sendable {
     func startChainAdmits(ratingKey: String, attemptID: DownloadAttemptID,
                           expectedPreviousOwner: DownloadAttemptID?) -> Bool {
         lock.lock(); defer { lock.unlock() }
+        guard startupSchemaProbe != nil else { return false }
         guard let row = rows[ratingKey] else { return true }
         guard let owner = row.attemptID else {
             // A legacy terminal row without an owner is replaced by an unowned compare-and-swap.
@@ -2848,6 +2619,15 @@ final class DownloadStore: @unchecked Sendable {
         let row = rows[key.ratingKey]?.attemptID == key.attemptID ? rows[key.ratingKey] : nil
         lock.unlock()
         return row.map(hydratedRecord)
+    }
+
+    /// Cheap identity for observational repair inventories; it grants no publication authority.
+    func sideAssetObservationGeneration(for key: DownloadAttemptKey) -> UInt64? {
+        lock.withLock {
+            guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
+                  !row.deletionPending else { return nil }
+            return rowMutationGenerations[key.ratingKey, default: 0]
+        }
     }
 
     /// Reuse only a non-empty regular side-asset file that the exact live attempt already owns in
@@ -3231,6 +3011,7 @@ final class DownloadStore: @unchecked Sendable {
     /// to wipe the metadata/poster captured earlier.
     func upsert(_ record: DownloadRecord) {
         lock.lock()
+        guard startupSchemaProbe != nil else { lock.unlock(); return }
         let rel = record.localURL.lastPathComponent
         let existing = rows[record.ratingKey]
         let incomingAttemptID = record.attemptID ?? existing?.attemptID
@@ -3324,6 +3105,7 @@ final class DownloadStore: @unchecked Sendable {
         guard !records.isEmpty || !retryAttempts.isEmpty else {
             return .applied(inserted: 0, retried: 0)
         }
+        guard lock.withLock({ startupSchemaProbe != nil }) else { return .staleInput }
         // Pre-plan authority is captured before the lock: it only classifies a failed rollback,
         // and that classification tolerates a stale copy (a mismatch degrades to indeterminate).
         let oldIndexData = try? Data(contentsOf: indexURL)
@@ -3487,9 +3269,21 @@ final class DownloadStore: @unchecked Sendable {
     ) -> AttemptRecordCreateResult {
         let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
         var handoffLease: DownloadPathLease?
-        defer { if let handoffLease { releasePathLease(handoffLease) } }
+        var capacityReservation: Int64 = 0
+        defer {
+            if capacityReservation > 0 {
+                checkpointCapacityLock.withLock { reservedCheckpointCopyBytes -= capacityReservation }
+            }
+            if let handoffLease { releasePathLease(handoffLease) }
+        }
         lock.lock()
         let existing = rows[record.ratingKey]
+        guard startupSchemaProbe != nil else {
+            lock.unlock()
+            return .rejectedOwnership(expectedPreviousOwner: expectedPreviousOwner.map {
+                DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: $0)
+            }, actualOwner: nil, reason: .artifactLifecyclePending)
+        }
         if let expectedGeneration, rowMutationGenerations[record.ratingKey, default: 0] != expectedGeneration {
             lock.unlock()
             return .rejectedOwnership(expectedPreviousOwner: expectedPreviousOwner.map {
@@ -3632,6 +3426,56 @@ final class DownloadStore: @unchecked Sendable {
             var copied = false
             do {
                 if let identity, identity.size > 0 {
+                    let copyBytes = Int(clamping: identity.size)
+                    // No network bytes here: the whole checkpoint is the duplication peak.
+                    let required = DownloadStorageAdmissionPolicy.requiredAdditionalFreeBytes(
+                        expectedBytes: nil, durableCheckpointBytes: nil,
+                        largestPendingAppendBytes: copyBytes)
+                    let admitted = checkpointCapacityLock.withLock {
+                        guard DownloadStorageAdmissionPolicy.hasPhysicalSpace(
+                            requiredBytes: required, availableBytes: availableStorageBytes(baseDirectory),
+                            reservedBytes: reservedCheckpointCopyBytes) else { return false }
+                        capacityReservation = Int64(copyBytes)
+                        reservedCheckpointCopyBytes += capacityReservation
+                        return true
+                    }
+                    guard admitted else {
+                        recordCheckpointStorageDiagnostic("downloads.checkpoint_handoff_space_refused") {
+                            $0.spaceRefusalCount += 1
+                        }
+                        // Preserve exact predecessor ownership, bytes and recovery authority. The
+                        // existing storage failure parks it; a stale worker cannot park a new row.
+                        lock.lock()
+                        guard rowMutationGenerations[record.ratingKey, default: 0] == capturedGeneration else {
+                            let actual = rows[record.ratingKey]?.attemptID.map {
+                                DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: $0)
+                            }
+                            lock.unlock()
+                            return .rejectedOwnership(expectedPreviousOwner: expectedKey,
+                                actualOwner: actual, reason: .ownerMismatch)
+                        }
+                        let facts = observeLifecycleFacts(row: previous, key: oldKey,
+                            liveTask: false, observeFiles: false)
+                        let parked = submitLifecycleEventLocked(.transferFailed(.storage), for: oldKey, facts: facts)
+                        if case .accepted(_, let ticket?) = parked {
+                            let outcome = waitForPersistence(through: ticket)
+                            guard outcome.result.committed(through: ticket) else {
+                                return .failed(oldKey, outcome.result)
+                            }
+                        }
+                        return .rejectedOwnership(expectedPreviousOwner: expectedKey,
+                            actualOwner: existingKey, reason: .storageRefused)
+                    }
+                    recordCheckpointStorageDiagnostic("downloads.checkpoint_copy_begin") {
+                        $0.copyBeginCount += 1
+                        $0.copyBeginBytes += copyBytes
+                    }
+                    defer {
+                        recordCheckpointStorageDiagnostic("downloads.checkpoint_copy_end") {
+                            $0.copyEndCount += 1
+                            if copied { $0.copyEndBytes += copyBytes }
+                        }
+                    }
                     storeFilesystem.before(.copy, oldWorkingURL)
                     guard condemnedFileIdentity(at: oldWorkingURL) == identity else { throw CocoaError(.fileReadUnknown) }
                     try checkpointFilesystem.durableCopy(oldWorkingURL, newWorkingURL,
@@ -3694,6 +3538,25 @@ final class DownloadStore: @unchecked Sendable {
         }
         retireUnreferencedSideAssets(retiredSideAssetPaths, confirmingCurrentOwner: key)
         return .committed(key)
+    }
+
+    /// Process-local aggregates only: no paths, row identities or file identifiers enter logs.
+    private func recordCheckpointStorageDiagnostic(
+        _ event: String, update: (inout CheckpointStorageDiagnostics) -> Void
+    ) {
+        let totals = lock.withLock {
+            update(&checkpointStorageCounters)
+            return checkpointStorageCounters
+        }
+        AppDiagnostics.record(.downloads, event, fields: [
+            "copy_begin_count": .int(totals.copyBeginCount),
+            "copy_begin_bytes": .int(totals.copyBeginBytes),
+            "copy_end_count": .int(totals.copyEndCount),
+            "copy_end_bytes": .int(totals.copyEndBytes),
+            "sweep_reclaimed_count": .int(totals.sweepReclaimedCount),
+            "sweep_reclaimed_bytes": .int(totals.sweepReclaimedBytes),
+            "space_refusal_count": .int(totals.spaceRefusalCount),
+        ])
     }
 
     /// Record the locally-cached poster path (relative to the base dir) on a row's
@@ -3832,61 +3695,6 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
-    /// #95: persist a URLSession resume blob for a recoverably-interrupted download and record
-    /// its relative path on the row's metadata, so a manual Resume (even after relaunch) can
-    /// continue from the byte offset via `downloadTask(withResumeData:)`. The blob is written as
-    /// a sibling `.resume` file (it can be large). No-op if the row/metadata is gone.
-    func setResumeData(ratingKey: String, _ data: Data, displayBytes: Int? = nil) {
-        // H9: `updateMetadata` is a no-op when a row carries no metadata snapshot (a
-        // legacy pre-D5 row). Writing the blob first and only then discovering the path
-        // can't be recorded would orphan a potentially large `.resume` file on disk. Bail
-        // BEFORE writing when there's nothing to record it on — resume was already
-        // unavailable for such a row, so this only avoids the leak, it changes no behavior.
-        lock.lock()
-        let canRecordPath = rows[ratingKey].map {
-            $0.metadata != nil && !Self.hasPendingRowDeletion($0)
-        } ?? false
-        lock.unlock()
-        guard canRecordPath else {
-            NSLog("DownloadStore: skipping resume-data persist for %@ — row has no metadata to record its path on",
-                  ratingKey)
-            return
-        }
-        let url = resumeDataDestinationURL(ratingKey: ratingKey)
-        do {
-            try CredentialArtifactStorage.writeAuthArtifact(data, to: url, fileManager: fileManager)
-        } catch {
-            NSLog("DownloadStore: failed to persist resume data for %@ (%@)",
-                  ratingKey, DiagnosticRedactor.safeErrorSummary(error))
-            return
-        }
-        updateMetadata(ratingKey: ratingKey) {
-            $0.resumeDataRelativePath = url.lastPathComponent
-            if let displayBytes, displayBytes > 0 {
-                $0.resumeDisplayBytes = max(displayBytes, $0.resumeDisplayBytes ?? 0)
-            }
-        }
-    }
-
-    /// Write the artifact before recording its manifest, matching the legacy orphan-avoidance
-    /// ordering. The ownership check, artifact replacement, and in-memory manifest mutation are
-    /// serialized under the store lock so stale attempt A cannot overwrite B's resume blob.
-    @discardableResult
-    func setResumeData(
-        for key: DownloadAttemptKey,
-        _ data: Data,
-        displayBytes: Int? = nil
-    ) -> AttemptResumeDataWriteResult {
-        switch submitResumeData(for: key, data, displayBytes: displayBytes) {
-        case .staleOrMissing:
-            return .staleOrMissing
-        case .artifactWriteFailed(let errorType):
-            return .artifactWriteFailed(errorType: errorType)
-        case .accepted(let ticket):
-            return resolveSynchronously(.accepted(ticket: ticket))
-        }
-    }
-
     @discardableResult
     func submitResumeData(
         for key: DownloadAttemptKey,
@@ -3962,6 +3770,32 @@ final class DownloadStore: @unchecked Sendable {
                   current.metadata?.sideAssetSourceIdentity == row.metadata?.sideAssetSourceIdentity else { return nil }
             return data
         }
+    }
+
+    /// Ephemeral observation key: replacing or clearing a blob advances the artifact generation
+    /// before the file effect. No cached presence from an earlier generation can serve that row.
+    struct ResumePresenceIdentity: Hashable, Sendable {
+        let key: DownloadAttemptKey
+        let artifactGeneration: UInt64
+        let relativePath: String
+    }
+
+    func resumePresenceIdentity(for key: DownloadAttemptKey) -> ResumePresenceIdentity? {
+        lock.withLock {
+            guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
+                  !row.deletionPending, let path = row.metadata?.resumeDataRelativePath,
+                  Self.isSafeOneLevelRelativePath(path) else { return nil }
+            return ResumePresenceIdentity(key: key, artifactGeneration: row.artifactGeneration,
+                                          relativePath: path)
+        }
+    }
+
+    /// Observational only. Call on a worker; resume admission still reads the exact blob itself.
+    func observeResumePresence(_ identity: ResumePresenceIdentity) -> Bool? {
+        guard resumePresenceIdentity(for: identity.key) == identity else { return nil }
+        let exists = storeFilesystem.exists(
+            atPath: baseDirectory.appendingPathComponent(identity.relativePath).path, using: fileManager)
+        return resumePresenceIdentity(for: identity.key) == identity ? exists : nil
     }
 
     /// #95: whether a row has a persisted resume blob ON DISK (used by launch reconciliation to
@@ -4652,6 +4486,9 @@ final class DownloadStore: @unchecked Sendable {
     func startupIndexAdmission() -> StartupIndexAdmission {
         lock.lock(); defer { lock.unlock() }
         if seasonCommitIndeterminate { return .seasonCommitIndeterminate }
+        // An unresolved probe uses the existing closed admission answer. Callers distinguish
+        // loading from failure via startupIndexProbe == nil and keep recovery `.preparing`.
+        guard let startupSchemaProbe else { return .unreadableIndex }
         switch startupSchemaProbe {
         case .unsupported(let schemaVersion):
             return .requiresDestructiveReset(schemaVersion: schemaVersion)
@@ -4710,83 +4547,26 @@ final class DownloadStore: @unchecked Sendable {
         } else if unreadableAtLaunch {
             let pendingQuarantine = baseDirectory.deletingLastPathComponent().appendingPathComponent(
                 ".\(baseDirectory.lastPathComponent)-unsupported-reset-pending", isDirectory: true)
-            let (probe, data) = Self.classifyIndex(
+            let (probe, decoded) = Self.classifyIndex(
                 at: indexURL, pendingQuarantine: pendingQuarantine,
-                read: rootIndexPersistence.read, fileManager: fileManager)
+                read: rootIndexPersistence.read, didDecode: rootIndexPersistence.didDecode, fileManager: fileManager)
             let inventory = Self.stagingInventory(in: baseDirectory, probe: probe, fileManager: fileManager)
             var identities: [String: CondemnedFileIdentity] = [:]
             for path in inventory { identities[path] = condemnedFileIdentity(at: baseDirectory.appendingPathComponent(path)) }
             let current = lock.withLock { () -> Bool in
                 guard startupReprobeEpoch == epoch, rows.isEmpty, startupSchemaProbe == .unreadable else { return false }
-                startupSchemaProbe = probe
+                // Do not publish an admissible probe over an unloaded row map.
+                startupSchemaProbe = (probe == .current || probe == .missing) ? nil : probe
                 startupStagingInventory = inventory
                 startupStagingIdentities = identities
                 return true
             }
             guard current else { return startupIndexAdmission() }
             if probe == .current || probe == .missing {
-                completeAdmissibleStartup(probe: probe, indexData: data)
+                completeAdmissibleStartup(probe: probe, decoded: decoded)
             }
         }
         return startupIndexAdmission()
-    }
-
-    /// #169: reset persisted static byte-range progress to the bytes that are actually durable in
-    /// the partial file. The current in-flight static Range task body lives in an OS temp
-    /// until `didFinishDownloadingTo`; progress callbacks may have published those optimistic bytes
-    /// for UI smoothness, but pause/error/reconcile paths must checkpoint from this file size only.
-    @discardableResult
-    func resetStaticRangeProgressToDurableCheckpoint(ratingKey: String,
-                                                     expectedBytes explicitExpectedBytes: Int? = nil) -> Int {
-        lock.lock()
-        guard var row = rows[ratingKey] else { lock.unlock(); return 0 }
-        let backend = row.metadata?.resolvedBackendKind(ratingKey: row.ratingKey)
-            ?? DownloadBackendKind(ratingKeyPrefix: row.ratingKey)
-        let mode = row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey)
-            ?? DownloadResumeMode.resolved(
-                backend: backend,
-                lane: row.metadata?.resolvedDownloadLane() ?? .original)
-        guard mode == .staticByteRange else {
-            let bytes = row.bytes
-            lock.unlock()
-            return bytes
-        }
-        let durableBytes = fileSize(relativePath: row.relativePath) ?? 0
-        let expectedBytes = explicitExpectedBytes ?? Self.expectedBytesEstimate(row: row)
-        let progress = Self.progressForDurableBytes(durableBytes, expectedBytes: expectedBytes)
-        var changed = false
-        // The resume display watermark represents temp bytes owned by a URLSession resume blob.
-        // Once no blob remains (durable fallback discarded it, adoption rejected it as stale, or a
-        // restart never produced one), those temp bytes are gone — keeping the watermark would
-        // over-report progress until live bytes caught back up. The pause path persists the blob
-        // BEFORE resetting, so legitimate watermarks survive this.
-        if row.metadata?.resumeDisplayBytes != nil,
-           (row.metadata?.resumeDataRelativePath ?? "").isEmpty {
-            row.metadata?.resumeDisplayBytes = nil
-            changed = true
-        }
-        if row.bytes != durableBytes || abs(row.progress - progress) > 0.000_001 {
-            row.bytes = durableBytes
-            row.progress = progress
-            changed = true
-        }
-        guard changed else {
-            lock.unlock()
-            return durableBytes
-        }
-        setRowLocked(row, for: ratingKey)
-        lock.unlock()
-        persist()
-        return durableBytes
-    }
-
-    @discardableResult
-    func resetStaticRangeProgressToDurableCheckpoint(
-        for key: DownloadAttemptKey,
-        expectedBytes explicitExpectedBytes: Int? = nil
-    ) -> AttemptStaticRangeCheckpointResetResult {
-        resolveStaticCheckpointSynchronously(submitStaticRangeCheckpointReset(
-            for: key, expectedBytes: explicitExpectedBytes))
     }
 
     func submitStaticRangeCheckpointReset(
@@ -6216,24 +5996,19 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
-    private func load(indexData: Data?) {
-        lock.lock(); defer { lock.unlock() }
-        guard let data = indexData else { return }
-        // #135 H8: decode the index row-by-row so a single corrupt/forward-incompatible
-        // row can't drop the user's whole offline library (the old all-or-nothing
-        // `decode([Row].self)` did exactly that). A non-zero skip is logged rather than
-        // swallowed — silent truncation is the failure mode this guards against.
-        let result = DownloadIndexCoding.decode(Row.self, from: data)
-        indexSchemaVersion = result.schemaVersion
-        loadedSchemaVersion = result.schemaVersion
+    private func load(decoded result: DownloadIndexCoding.DecodeResult<Row>?,
+                      probe: DownloadIndexCoding.StartupProbe) {
+        guard let result else {
+            lock.withLock { startupSchemaProbe = probe }
+            return
+        }
         if result.skippedRowCount > 0 {
             NSLog("DownloadStore: skipped %d corrupt offline-index row(s) on load (schemaVersion %d); %d row(s) preserved",
                   result.skippedRowCount, result.schemaVersion, result.rows.count)
         }
         var seen: Set<String> = []
         guard result.rows.allSatisfy({ seen.insert($0.ratingKey).inserted }) else {
-            startupSchemaProbe = .unreadable
-            rows = [:]
+            lock.withLock { startupSchemaProbe = .unreadable }
             return
         }
         var normalizedPreparedStaticRows = 0
@@ -6279,7 +6054,11 @@ final class DownloadStore: @unchecked Sendable {
             }
             loaded[repaired.ratingKey] = repaired
         }
+        lock.lock(); defer { lock.unlock() }
+        indexSchemaVersion = result.schemaVersion
+        loadedSchemaVersion = result.schemaVersion
         rows = loaded
+        startupSchemaProbe = probe
         if !retiredSideAssetPaths.isEmpty {
             var stillReferenced: Set<String> = []
             for row in rows.values {
@@ -6332,6 +6111,9 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     private func enqueuePersistenceLocked() -> PersistenceTicket {
+        // Defense in depth for legacy/global write entry points (including schema stamping):
+        // no snapshot can overwrite the real index before the startup worker has loaded it.
+        guard startupSchemaProbe != nil else { return PersistenceTicket(revision: nextPersistenceRevision) }
         nextPersistenceRevision += 1
         let ticket = PersistenceTicket(revision: nextPersistenceRevision)
         indexWriter.submit(revision: ticket.revision, snapshot: IndexSnapshot(
@@ -6354,21 +6136,6 @@ final class DownloadStore: @unchecked Sendable {
             recoverPendingArtifactIntents(explicit: false)
         }
         return attempt
-    }
-
-    /// A cleanup repeated after its failed write sees no manifest in memory, but the absence is
-    /// durable only once that dirty full snapshot commits. Avoid a redundant write for an already
-    /// committed no-op; otherwise submit a new full snapshot so the call returns real proof.
-    private func proveCleanupNoOpDurable() -> PersistenceAttempt {
-        let ticket = currentPersistenceTicket()
-        let state = indexWriter.state
-        if state.dirtyRevision == nil, state.committedRevision >= ticket.revision {
-            return PersistenceAttempt(
-                ticket: ticket,
-                result: .committed(revision: state.committedRevision)
-            )
-        }
-        return persist()
     }
 
     func flushPersistence(

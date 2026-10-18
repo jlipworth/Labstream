@@ -242,15 +242,16 @@ struct BackgroundDownloadStartupAdmissionTests {
             let working = try #require(store.attemptWorkingFileURL(for: key))
             let workingBytes = Data(repeating: 0xA5, count: 15)
             try workingBytes.write(to: working)
-            #expect(store.setResumeData(
-                for: key, Data("original-resume".utf8), displayBytes: 15) == .applied)
+            #expect(await store.resolve(store.submitResumeData(
+                for: key, Data("original-resume".utf8), displayBytes: 15), deadline: .after(30)) == .applied)
             let held = OfflineHeldRangeSegment(
                 offset: 30, length: 4, relativePath: "pending-held.body")
             let heldURL = directory.appendingPathComponent(held.relativePath)
             try Data([1, 2, 3, 4]).write(to: heldURL)
-            guard case .accepted = store.persistHeldRangeSegment(for: key, segment: held) else {
+            guard case .accepted(let heldSeed1) = store.submitHeldRangeSegment(for: key, segment: held) else {
                 Issue.record("Expected held manifest persistence"); return
             }
+            #expect(await store.resolveArtifact(heldSeed1.ticket, deadline: .after(30)) == .completed)
 
             try session.start(
                 ratingKey: key.ratingKey,
@@ -434,9 +435,10 @@ struct BackgroundDownloadStartupAdmissionTests {
                 offset: 64, length: 4, relativePath: "invalid-held-commit.body")
             let body = directory.appendingPathComponent(manifest.relativePath)
             try Data([1, 2, 3]).write(to: body) // length mismatch makes launch restoration discard
-            guard case .accepted = initial.persistHeldRangeSegment(for: key, segment: manifest) else {
+            guard case .accepted(let heldSeed2) = initial.submitHeldRangeSegment(for: key, segment: manifest) else {
                 Issue.record("Expected manifest"); return
             }
+            #expect(await initial.resolveArtifact(heldSeed2.ticket, deadline: .after(30)) == .completed)
 
             let writes = StartupFailFirstIndexWrite()
             let store = DownloadStore(
@@ -477,9 +479,10 @@ struct BackgroundDownloadStartupAdmissionTests {
                 offset: 64, length: 4, relativePath: "invalid-held-delete.body")
             let body = directory.appendingPathComponent(manifest.relativePath)
             try Data([9, 8, 7]).write(to: body)
-            guard case .accepted = initial.persistHeldRangeSegment(for: key, segment: manifest) else {
+            guard case .accepted(let heldSeed3) = initial.submitHeldRangeSegment(for: key, segment: manifest) else {
                 Issue.record("Expected manifest"); return
             }
+            #expect(await initial.resolveArtifact(heldSeed3.ticket, deadline: .after(30)) == .completed)
 
             let failingFiles = StartupSelectiveRemovalFailureFileManager(blockedPath: body.path)
             let store = DownloadStore(baseDirectory: directory, fileManager: failingFiles)
@@ -582,6 +585,17 @@ struct BackgroundDownloadStartupAdmissionTests {
             #expect(try Data(contentsOf: partialURL) == legacyBytes)
             #expect(try Data(contentsOf: directory.appendingPathComponent("index.json")) == originalIndex)
 
+            // Observe directory mutations before activation so even a fast reclamation is retained.
+            let cleanupEvents = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            let parentFD = open(directory.deletingLastPathComponent().path, O_EVTONLY)
+            try #require(parentFD >= 0)
+            let cleanupSource = DispatchSource.makeFileSystemObjectSource(fileDescriptor: parentFD,
+                eventMask: .write, queue: DispatchQueue(label: "test.unsupported-root-cleanup"))
+            cleanupSource.setEventHandler { cleanupEvents.continuation.yield(()) }
+            cleanupSource.setCancelHandler { close(parentFD); cleanupEvents.continuation.finish() }
+            cleanupSource.activate()
+            defer { cleanupSource.cancel() }
+
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
             let activation = await UnsupportedResetActivationWaiter().wait(session: session)
@@ -598,12 +612,11 @@ struct BackgroundDownloadStartupAdmissionTests {
 
             let quarantinedRoot = directory.deletingLastPathComponent().appendingPathComponent(
                 ".\(directory.lastPathComponent)-unsupported-reset-pending")
-            // The complete hosted matrix schedules hundreds of Swift Testing cases concurrently.
-            // Keep cleanup verification bounded without treating scheduler contention as failure.
-            let cleanupDeadline = ContinuousClock.now.advanced(by: .seconds(10))
-            while FileManager.default.fileExists(atPath: quarantinedRoot.path),
-                  ContinuousClock.now < cleanupDeadline {
-                try await Task.sleep(for: .milliseconds(10))
+            // Utility-queue reclamation can wait behind unrelated resets under parallel tests.
+            // Await its filesystem acknowledgement instead of assigning the scheduler a deadline.
+            var cleanupIterator = cleanupEvents.stream.makeAsyncIterator()
+            while FileManager.default.fileExists(atPath: quarantinedRoot.path) {
+                _ = await cleanupIterator.next()
             }
             #expect(!FileManager.default.fileExists(atPath: quarantinedRoot.path))
 
@@ -1431,7 +1444,7 @@ private final class LockedFinalizerRequestBox: @unchecked Sendable {
 /// reopened #212 off-head stall.
 @Suite("Held-range body completion gate")
 struct HeldRangeBodyCompletionGateTests {
-    @Test @MainActor
+    @Test
     func heldBodyLifecycleHoldsCompletionGateUntilTrainSlotIsReplanned() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("held-body-gate-\(UUID().uuidString)", isDirectory: true)
@@ -1451,12 +1464,18 @@ struct HeldRangeBodyCompletionGateTests {
             metadata: OfflineMetadata(
                 ratingKey: key.ratingKey, title: "Held Gate", type: "movie",
                 resumeMode: .staticByteRange))
-        #expect(store.createAttemptOwnedRecord(record, attemptID: attemptID) == .committed(key))
+        #expect(await store.createAttemptOwnedRecordAsync(record, attemptID: attemptID) == .committed(key))
         let working = try #require(store.attemptWorkingFileURL(for: key))
         try Data(repeating: 0x5A, count: 8).write(to: working)
 
-        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
-        defer { session.invalidateInjectedSessionForTesting() }
+        // This pin proves operation overlap, not wake expiry. Keep its clock fixed while
+        // the writer is deliberately held; P6's manual-clock pins separately exercise expiry.
+        let clock = DownloadWakeClockHooks(now: { 0 }, register: { _, _ in },
+                                           terminalAcknowledged: { _ in })
+        let registry = await MainActor.run { BackgroundDownloadCompletionRegistry(clockHooks: clock) }
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [],
+            wakeClockHooks: clock, releaseBackgroundCompletion: { registry.fireCompletions(in: $0) })
+        defer { writes.release.signal(); session.invalidateInjectedSessionForTesting() }
         let rebuildNeeded = DispatchSemaphore(value: 0)
         session.onRangeRequestNeeded = { _, _, _ in rebuildNeeded.signal() }
 
@@ -1464,13 +1483,13 @@ struct HeldRangeBodyCompletionGateTests {
         // what keeps it — and the app — alive until the next task/hold exists.
         let identifier = "held-gate-\(UUID().uuidString)"
         let fired = DispatchSemaphore(value: 0)
-        let completionToken = BackgroundDownloadCompletionRegistry.shared.store(
-            identifier: identifier, completion: { fired.signal() })
+        let completionToken = await MainActor.run {
+            registry.store(identifier: identifier, completion: { fired.signal() })
+        }
         defer {
-            BackgroundDownloadCompletionRegistry.shared.fireCompletions(in: .init(
-                identifier: identifier,
-                tokens: [completionToken]
-            ))
+            Task { @MainActor in
+                registry.fireCompletions(in: .init(identifier: identifier, tokens: [completionToken]))
+            }
         }
         session.noteBackgroundCompletionHandlerStored(
             identifier: identifier,
@@ -1494,23 +1513,22 @@ struct HeldRangeBodyCompletionGateTests {
         #expect(await waitForSignal(writes.entered, timeout: 5))
         #expect(await waitForSignal(applied, timeout: 5))
         #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false).pendingBackgroundCompletionOperationCount == 1)
-        #expect(await waitForSignal(fired, timeout: 0) == false)
+        #expect(!hasFired(fired))
 
         // Releasing the writer lets the lifecycle complete; its completion replans the train
         // (request rebuild grace) BEFORE ending the nested operation, so the gate never drains.
         writes.release.signal()
         #expect(await waitForSignal(rebuildNeeded, timeout: 5))
-        var settled = false
-        for _ in 0..<200 {
-            if session.diagnosticSnapshot(includePendingTempCleanupBytes: false).pendingBackgroundCompletionOperationCount == 1 {
-                settled = true
-                break
-            }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(settled, "rebuild-grace hold must overlap the held-lifecycle completion")
-        #expect(await waitForSignal(fired, timeout: 0) == false)
+        await session.drainRangeIOForTesting()
+        #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false).pendingBackgroundCompletionOperationCount == 1,
+                "rebuild-grace hold must overlap the held-lifecycle completion")
+        #expect(!hasFired(fired))
         #expect(store.metadata(for: key.ratingKey)?.heldRangeSegments?.map(\.offset) == [30])
+    }
+
+    /// A synchronous, nonblocking peek; queuing this check can cross the wake deadline.
+    private func hasFired(_ semaphore: DispatchSemaphore) -> Bool {
+        semaphore.wait(timeout: .now()) == .success
     }
 
     private func waitForSignal(
@@ -1518,7 +1536,7 @@ struct HeldRangeBodyCompletionGateTests {
         timeout: TimeInterval
     ) async -> Bool {
         await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
+            Thread.detachNewThread {
                 continuation.resume(returning: semaphore.wait(timeout: .now() + timeout) == .success)
             }
         }

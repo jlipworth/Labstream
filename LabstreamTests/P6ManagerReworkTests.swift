@@ -38,16 +38,16 @@ struct P6ManagerReworkTests {
             return (manager, session)
         }
         try #require(await hold.acknowledgement.wait())
-        let heartbeat = DispatchSemaphore(value: 0)
+        let heartbeat = P6HeldProgress()
         let inspection = Task { @MainActor in
             let (manager, session) = await construction.value
             #expect(manager.startupRecoveryState == .preparing)
             #expect(!manager.admission.recoveryComplete)
             #expect(!session.startupAdmissionIsActiveForTesting)
             #expect(manager.startupActivationSubmissionCountForTesting == 0)
-            heartbeat.signal()
+            heartbeat.acknowledge(hold)
         }
-        #expect(await p6Signal(heartbeat))
+        #expect(await heartbeat.wait())
         hold.release.signal()
         let (manager, session) = await construction.value
         defer { session.invalidateInjectedSessionForTesting() }
@@ -83,11 +83,7 @@ struct P6ManagerReworkTests {
             return (manager, session)
         }
         defer { hold.release.signal(); session.invalidateInjectedSessionForTesting() }
-        let ready = DownloadStoreDeadline.after(5)
-        while !(await MainActor.run { manager.admission.recoveryComplete }), ready.remaining > 0 {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        try #require(await MainActor.run { manager.admission.recoveryComplete })
+        try #require(await manager.awaitStartupRecoveryForTesting())
         var keys: [DownloadAttemptKey] = []
         for suffix in ["a", "b"] {
             var record = fixture.record(suffix, status: suffix == "a" ? .failed : .preparing,
