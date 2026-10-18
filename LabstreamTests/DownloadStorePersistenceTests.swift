@@ -218,7 +218,7 @@ struct DownloadStorePersistenceTests {
         #expect(await waitForSignal(mutationReturned, timeout: 1))
     }
 
-    @Test func freshStoreRestoresWriterBackedIndexAtSchemaV4() throws {
+    @Test func freshStoreRestoresWriterBackedIndexAtCurrentSchema() throws {
         try withTemporaryDirectory { directory in
             let record = makeRecord(
                 ratingKey: "plex:item-1",
@@ -234,7 +234,7 @@ struct DownloadStorePersistenceTests {
             let index = try #require(
                 JSONSerialization.jsonObject(with: indexData) as? [String: Any]
             )
-            #expect(index["schemaVersion"] as? Int == 4)
+            #expect(index["schemaVersion"] as? Int == DownloadIndexCoding.currentSchemaVersion)
 
             let restored = DownloadStore(baseDirectory: directory)
             let restoredRecord = try #require(

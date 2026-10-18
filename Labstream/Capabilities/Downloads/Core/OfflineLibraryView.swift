@@ -79,6 +79,18 @@ public struct OfflineLibraryView: View {
                 .padding()
                 .accessibilityElement(children: .combine)
             }
+            if let notice = manager.upgradeNotice {
+                HStack(spacing: 12) {
+                    Image(systemName: "info.circle")
+                    Text(notice.message)
+                        .font(.callout)
+                    Spacer()
+                    Button("Dismiss") { manager.dismissUpgradeNotice() }
+                        .buttonStyle(.bordered)
+                }
+                .padding()
+                .accessibilityElement(children: .combine)
+            }
             offlineRowsOrEmpty(snapshot: snapshot)
         }
             .navigationTitle("Offline")

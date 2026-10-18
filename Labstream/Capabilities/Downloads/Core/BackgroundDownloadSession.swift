@@ -815,9 +815,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 let key = mappedKey.flatMap { ratingKey in attemptID.map {
                     DownloadAttemptKey(ratingKey: ratingKey, attemptID: $0)
                 } }
+                // A row being deleted (barrier or capsule) keeps no OS task (P3b).
                 return !BackgroundDownloadTaskIdentity.markerVersion(
                     taskDescription: task.taskDescription).isCurrent
-                    || key.map(self.store.ownsAttempt) != true
+                    || key.map(self.store.attemptAdmitsWork) != true
             }
             if !purgeTasks.isEmpty {
                 let ids = Set(purgeTasks.map(\.taskIdentifier))
@@ -974,7 +975,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             hasCurrentMarker: BackgroundDownloadTaskIdentity.markerVersion(
                 taskDescription: task.taskDescription).isCurrent,
             taskKey: key,
-            ownsAttempt: key.map(store.ownsAttempt) ?? false,
+            // A row being deleted (barrier or capsule) admits no transfer callback (P3b).
+            ownsAttempt: key.map(store.attemptAdmitsWork) ?? false,
             isDormantAfterFailedActivation: state == .dormant && failedAfterConstruction
         )
     }
@@ -2124,7 +2126,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             throw CancellationError()
         }
         let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
-        guard store.ownsAttempt(attemptKey),
+        guard store.attemptAdmitsWork(attemptKey),
               let workingLayout = store.attemptWorkingFileLayout(for: attemptKey) else {
             throw CancellationError()
         }
@@ -2215,7 +2217,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             throw CancellationError()
         }
         let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
-        guard store.ownsAttempt(attemptKey),
+        guard store.attemptAdmitsWork(attemptKey),
               let workingLayout = store.attemptWorkingFileLayout(for: attemptKey) else {
             throw CancellationError()
         }
@@ -2646,7 +2648,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         guard !resumeData.isEmpty else { return false }
         guard let attemptID = currentAttemptIdentity(ratingKey: ratingKey) else { return false }
         let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
-        guard store.ownsAttempt(attemptKey),
+        guard store.attemptAdmitsWork(attemptKey),
               let workingDestination = store.attemptWorkingFileURL(for: attemptKey) else { return false }
         let task = urlSession.downloadTask(withResumeData: resumeData)
         task.taskDescription = DownloadAttemptMarker.taskDescription(
@@ -2935,22 +2937,40 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Stop attempt A after destructive deletion was durably deferred. The row and every local
     /// artifact remain recovery authority until its cleanup operations reach the journal, so this
     /// halt differs from ordinary Cancel only by retaining persisted held manifests and bodies.
-    func haltForPendingDeletion(ratingKey: String) {
-        halt(ratingKey: ratingKey, preserveHeldRangeSegments: true)
+    func haltForPendingDeletion(attemptKey: DownloadAttemptKey) {
+        // Exact key, and marked OS tasks too: before reattach a capsule's surviving daemon tasks
+        // are untracked (P3b). Held manifests and bodies stay with the capsule.
+        halt(attemptKey: attemptKey, preserveHeldRangeSegments: true, cancelMarkedTasks: true)
     }
 
     private func halt(ratingKey: String, preserveHeldRangeSegments: Bool) {
         guard let attemptID = currentAttemptIdentity(ratingKey: ratingKey) else { return }
         let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
         guard store.ownsAttempt(attemptKey) else { return }
+        halt(attemptKey: attemptKey, preserveHeldRangeSegments: preserveHeldRangeSegments,
+             cancelMarkedTasks: false)
+    }
+
+    /// Stop exactly attempt A after Delete installed its row-deletion barrier (P3b, rev 8).
+    /// Unlike Cancel this cannot consult `ownsAttempt` (the barrier makes it false), so the
+    /// caller's exact key is the authority. It cancels tracked tasks of A and every OS task whose
+    /// marker carries A's attempt ID, including untracked daemon tasks, without touching a
+    /// replacement attempt B of the same rating key.
+    func haltForDeletion(attemptKey: DownloadAttemptKey) {
+        halt(attemptKey: attemptKey, preserveHeldRangeSegments: false, cancelMarkedTasks: true)
+    }
+
+    private func halt(attemptKey: DownloadAttemptKey, preserveHeldRangeSegments: Bool,
+                      cancelMarkedTasks: Bool) {
+        let ratingKey = attemptKey.ratingKey
         AppDiagnostics.record(.downloads, "downloads.cancel_requested", fields: [
             "download_id": .identifier(ratingKey),
         ])
         lock.lock()
-        let ids = Set(inflight.filter { $0.value.ratingKey == ratingKey }.map(\.key))
-        let rangeIds = Set(rangeInflight.filter { $0.value.ratingKey == ratingKey }.map(\.key))
-        inflight = inflight.filter { $0.value.ratingKey != ratingKey }
-        rangeInflight = rangeInflight.filter { $0.value.ratingKey != ratingKey }
+        let ids = Set(inflight.filter { $0.value.attemptKey == attemptKey }.map(\.key))
+        let rangeIds = Set(rangeInflight.filter { $0.value.attemptKey == attemptKey }.map(\.key))
+        inflight = inflight.filter { $0.value.attemptKey != attemptKey }
+        rangeInflight = rangeInflight.filter { $0.value.attemptKey != attemptKey }
         // Halt the static Range lane so a delegate callback racing after this snapshot cannot
         // append/resurrect the file the caller is about to delete or start replacement work.
         rangeHaltKinds[attemptKey] = .cancel
@@ -2991,10 +3011,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // #169: opaque and range tasks both live on `urlSession` now — cancel by id on one session.
         let all = ids.union(rangeIds)
         urlSession.getAllTasks { tasks in
-            for task in tasks where all.contains(task.taskIdentifier) {
+            for task in tasks where all.contains(task.taskIdentifier)
+                || (cancelMarkedTasks && Self.taskCarries(attemptKey, task)) {
                 task.cancel()
             }
         }
+    }
+
+    /// Whether an OS task's marker names exactly this attempt: both the attempt ID and the rating
+    /// key (legacy attempt IDs are arbitrary strings and need not be unique across keys).
+    static func taskCarries(_ key: DownloadAttemptKey, _ task: URLSessionTask) -> Bool {
+        BackgroundDownloadTaskIdentity.attemptIdentity(taskDescription: task.taskDescription)
+            == key.attemptID
+            && ratingKey(for: task, knownKeys: [key.ratingKey]) == key.ratingKey
     }
 
     // MARK: URLSessionDownloadDelegate
@@ -5208,7 +5237,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             return false
         }
         let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
-        guard store.ownsAttempt(attemptKey) else { return false }
+        guard store.attemptAdmitsWork(attemptKey) else { return false }
         guard let destination = store.attemptWorkingFileURL(for: attemptKey) else { return false }
         let bytes = fileSize(at: destination) ?? record.bytes
         guard bytes > 0 else { return false }
@@ -5239,7 +5268,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         guard let record = store.record(for: ratingKey),
               let attemptID = record.attemptID else { return .unavailable }
         let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
-        guard store.ownsAttempt(key),
+        guard store.attemptAdmitsWork(key),
               fileManager.fileExists(atPath: record.localURL.path) else { return .unavailable }
         if deferPlaybackProbeIfBackgroundWakePending(revalidationKey: key) {
             return .deferredForBackgroundWake
@@ -5311,7 +5340,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "bytes": .bytes(bytes),
             "validation": .label(validationLabel),
         ])
-        guard store.ownsAttempt(key) else {
+        guard store.attemptAdmitsWork(key) else {
             AppDiagnostics.record(.downloads, "downloads.finalize_owner_missing", fields: [
                 "download_id": .identifier(ratingKey),
                 "validation": .label(validationLabel),
@@ -6788,7 +6817,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                            attempt: Int?) -> Bool {
         guard let attemptID = currentAttemptIdentity(ratingKey: ratingKey) else { return false }
         let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
-        guard store.ownsAttempt(attemptKey),
+        guard store.attemptAdmitsWork(attemptKey),
               let destination = store.attemptWorkingFileURL(for: attemptKey) else { return false }
         let task = urlSession.downloadTask(withResumeData: resumeData)
         task.taskDescription = DownloadAttemptMarker.taskDescription(ratingKey: ratingKey,
@@ -6893,7 +6922,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         guard !resumeData.isEmpty else { return false }
         guard let attemptID = currentAttemptIdentity(ratingKey: ratingKey) else { return false }
         let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
-        guard store.ownsAttempt(attemptKey) else { return false }
+        guard store.attemptAdmitsWork(attemptKey) else { return false }
         lock.lock()
         rangeHaltKinds.removeValue(forKey: attemptKey)
         rangeHaltPauseCauses.removeValue(forKey: attemptKey)
