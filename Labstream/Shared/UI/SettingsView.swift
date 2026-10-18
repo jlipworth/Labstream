@@ -64,6 +64,7 @@ struct SettingsView: View {
     #if !os(tvOS)
     @AppStorage(PlaybackPreferences.Keys.defaultDownloadQuality) private var defaultDownloadQuality = PlaybackPreferences.defaultDownloadQuality
     @AppStorage(PlaybackPreferences.Keys.downloadStorageLimitBytes) private var downloadStorageLimitBytes = DownloadStorageLimit.unlimited
+    @AppStorage(PlaybackPreferences.Keys.simultaneousDownloads) private var simultaneousDownloads = PlaybackPreferences.defaultSimultaneousDownloads
     @AppStorage(PlaybackPreferences.Keys.allowCellularDownloads) private var allowCellularDownloads = PlaybackPreferences.defaultAllowCellularDownloads
     @AppStorage(PlaybackPreferences.Keys.prioritizeQuickDownloads) private var prioritizeQuickDownloads = PlaybackPreferences.defaultPrioritizeQuickDownloads
     #endif
@@ -612,6 +613,14 @@ struct SettingsView: View {
                 Label("Use cellular data for downloads", systemImage: "antenna.radiowaves.left.and.right")
             }
 
+            Picker(selection: $simultaneousDownloads) {
+                ForEach(DownloadAdmissionLimits.supportedTotals, id: \.self) { total in
+                    Text("\(total)").tag(total)
+                }
+            } label: {
+                Label("Simultaneous downloads", systemImage: "arrow.down.circle")
+            }
+
             Picker(selection: $prioritizeQuickDownloads) {
                 Text("Respect server queue order").tag(false)
                 Text("Prioritize quick downloads").tag(true)
@@ -648,7 +657,7 @@ struct SettingsView: View {
         } header: {
             Text("Downloads")
         } footer: {
-            Text("Download quality is the default for new downloads; Original still appears only when feasible. Cellular downloads are off by default where cellular data is available; while off, downloads also avoid Low Data Mode and expensive networks such as a personal hotspot. The setting applies to new transfers only. The storage limit is checked before enqueue/start and won’t delete existing downloads automatically. Prioritizing quick downloads only affects Plex server-side optimize jobs: when permitted, Labstream moves the new conversion behind the currently active one. Jellyfin and Emby keep their normal order.")
+            Text("Download quality is the default for new downloads; Original still appears only when feasible. Cellular downloads are off by default where cellular data is available; while off, downloads also avoid Low Data Mode and expensive networks such as a personal hotspot. The network setting applies to new transfers only. Simultaneous downloads limits active downloads; lowering it lets running transfers finish, and raising it starts waiting downloads when slots are available. The storage limit is checked before enqueue/start and won’t delete existing downloads automatically. Prioritizing quick downloads only affects Plex server-side optimize jobs: when permitted, Labstream moves the new conversion behind the currently active one. Jellyfin and Emby keep their normal order.")
         }
         .confirmationDialog("Remove completed downloads?", isPresented: $confirmingRemoveCompletedDownloads, titleVisibility: .visible) {
             Button("Remove Completed", role: .destructive) {

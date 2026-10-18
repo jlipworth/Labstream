@@ -244,7 +244,7 @@ struct SeasonPlannerIntegrationTests {
         }
     }
 
-    private func makeHarness(_ label: String) async throws -> Harness {
+    private func makeHarness(_ label: String, defaults: UserDefaults = .standard) async throws -> Harness {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("admission-\(label)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -266,7 +266,7 @@ struct SeasonPlannerIntegrationTests {
         })
         let session = BackgroundDownloadSession(store: store, protocolClasses: [SeasonMetadataProtocol.self])
         let manager = DownloadManager(appModel: model, store: store, session: session,
-                                      registerForBackgroundEvents: false)
+                                      registerForBackgroundEvents: false, preferencesDefaults: defaults)
         manager.setQueuePausedForTesting(false)
         try #require(await manager.awaitStartupRecoveryForTesting())
         return Harness(directory: directory, host: host, gate: gate, transport: transport,
@@ -296,6 +296,99 @@ struct SeasonPlannerIntegrationTests {
             metadata: metadata)
         #expect(await store.createAttemptOwnedRecordAsync(record, attemptID: attemptID)
             == .committed(DownloadAttemptKey(ratingKey: id, attemptID: attemptID)))
+    }
+
+    @Test func loweringConcurrencyPreservesTransfersAndWaitsForOccupancyToDrop() async throws {
+        let suiteName = "LowerDownloadConcurrency-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let h = try await makeHarness("lower-concurrency", defaults: defaults)
+        let result = await h.manager.commitSeasonPlan(.init(
+            newPlans: try (1...3).map { try plan("episode-\($0)") }, retryAttempts: []))
+        #expect(result.succeeded)
+        try #require(await waitUntil { h.gate.heldIDs.count == 2 })
+        let running = h.gate.heldIDs
+        for id in running { h.gate.releaseMetadata(id: id, failing: false) }
+        try #require(await waitUntil { h.gate.transferPaths.count == 2 })
+
+        let before = try running.map { try #require(h.store.record(for: $0)) }
+        defaults.set(1, forKey: PlaybackPreferences.Keys.simultaneousDownloads)
+        h.manager.pumpAdmission()
+        for record in before {
+            #expect(h.session.isTrackingTransfer(ratingKey: record.ratingKey))
+            let after = try #require(h.store.record(for: record.ratingKey))
+            #expect(after.attemptID == record.attemptID)
+            #expect(after.lifecycle == record.lifecycle)
+            #expect(after.status == record.status)
+        }
+        #expect(h.gate.metadataIDs.count == 2)
+        h.manager.delete(ratingKey: running[0])
+        await h.manager.drainManagerOperationsForTesting()
+        h.manager.pumpAdmission()
+        #expect(h.session.isTrackingTransfer(ratingKey: running[1]))
+        #expect(h.gate.metadataIDs.count == 2, "occupancy equal to the lowered cap still blocks admission")
+        h.manager.delete(ratingKey: running[1])
+        try #require(await waitUntil { h.gate.metadataIDs.count == 3 })
+        await h.teardown()
+    }
+
+    @Test func raisingConcurrencyWakesAdmissionWithoutAnotherQueueAction() async throws {
+        let suiteName = "RaiseDownloadConcurrency-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(1, forKey: PlaybackPreferences.Keys.simultaneousDownloads)
+        let h = try await makeHarness("raise-concurrency", defaults: defaults)
+        let result = await h.manager.commitSeasonPlan(.init(
+            newPlans: try (1...5).map { try plan("episode-\($0)") }, retryAttempts: []))
+        #expect(result.succeeded)
+        try #require(await waitUntil { h.gate.heldIDs.count == 1 })
+        #expect(h.gate.metadataIDs.count == 1)
+
+        // The same UserDefaults write as Settings' AppStorage must wake the manager itself.
+        defaults.set(5, forKey: PlaybackPreferences.Keys.simultaneousDownloads)
+        try #require(await waitUntil { h.gate.heldIDs.count == 4 })
+        #expect(h.manager.admission.supervised.count == 4)
+        #expect(h.store.records.filter { $0.lifecycle == .planned }.count == 1)
+        await h.teardown()
+    }
+
+    @Test(arguments: [1, 3, 5])
+    func relaunchAdmissionUsesTheStoredConcurrency(total: Int) async throws {
+        let suiteName = "RelaunchDownloadConcurrency-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(total, forKey: PlaybackPreferences.Keys.simultaneousDownloads)
+        let h = try await makeHarness("relaunch-concurrency", defaults: defaults)
+        h.manager.admission.recoveryComplete = false
+        let result = await h.manager.commitSeasonPlan(.init(
+            newPlans: try (1...5).map { try plan("episode-\($0)") }, retryAttempts: []))
+        #expect(result.succeeded)
+        let flush = await h.store.flushPersistence(through: h.store.currentPersistenceTicket(), timeout: 10)
+        guard case .committed = flush else {
+            Issue.record("Waiting downloads did not persist")
+            await h.teardown()
+            return
+        }
+        let reopenedDefaults = try #require(UserDefaults(suiteName: suiteName))
+        let reopenedStore = DownloadStore(baseDirectory: h.directory)
+        let reopenedSession = BackgroundDownloadSession(store: reopenedStore,
+                                                        protocolClasses: [SeasonMetadataProtocol.self])
+        let relaunched = DownloadManager(appModel: h.manager.appModel, store: reopenedStore,
+                                         session: reopenedSession, registerForBackgroundEvents: false,
+                                         preferencesDefaults: reopenedDefaults)
+        relaunched.setQueuePausedForTesting(false)
+        try #require(await relaunched.awaitStartupRecoveryForTesting())
+        try #require(await waitUntil { h.gate.heldIDs.count == max(1, total - 1) })
+        #expect(relaunched.admission.limits.maximumTotal == total)
+        #expect(reopenedStore.records.filter { $0.lifecycle == .planned }.count == 5 - max(1, total - 1))
+        // Fence further starts while both test runtimes release their held work.
+        relaunched.admission.recoveryComplete = false
+        for row in reopenedStore.records { relaunched.delete(ratingKey: row.ratingKey) }
+        await relaunched.drainManagerOperationsForTesting()
+        relaunched.admissionPumpTask?.cancel()
+        relaunched.admissionWakeTask?.cancel()
+        reopenedSession.invalidateInjectedSessionForTesting()
+        await h.teardown()
     }
 
     // MARK: - P5 storage pins
