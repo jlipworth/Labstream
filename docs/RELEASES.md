@@ -31,7 +31,12 @@ nothing was submitted for review. On 2026-10-18 a second `ship` run built clean 
 - the single-line finished-row summary.
 
 All four processed to **VALID** and are in beta testing in the internal TestFlight group, again
-with nothing selected or submitted. Device acceptance and landing on `main` are tracked in
+with nothing selected or submitted. Later on 2026-10-18 a third `ship` run built **1.8.0 (build
+1541)** for all four targets from `25bc6917`. It adds one change: every queued Plex optimize or Emby
+Convert job is submitted to the server at once, so a batch renders while the app is suspended,
+and finished renders wait for a transfer slot
+([#414](https://github.com/jlipworth/Labstream/issues/414)). It shipped the same way: **VALID**,
+internal group only, nothing selected or submitted. Device acceptance and landing on `main` are tracked in
 [#403](https://github.com/jlipworth/Labstream/issues/403). PMSKit has no app-version constant; the
 runtime client identity reads the bundle version and falls back to `0.0.0`.
 
