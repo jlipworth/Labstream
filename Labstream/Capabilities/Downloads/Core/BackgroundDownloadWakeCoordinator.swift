@@ -21,6 +21,7 @@ final class BackgroundDownloadWakeCoordinator: @unchecked Sendable {
         static let none = Drain(completionBatches: [], deferredRevalidationKeys: [])
     }
     struct Snapshot: Sendable, Equatable {
+        let expiredOperationCount: Int
         let pendingOperationCount: Int
         let deferredIdentifierCount: Int
         let pendingHandlerCount: Int
@@ -71,7 +72,7 @@ final class BackgroundDownloadWakeCoordinator: @unchecked Sendable {
     var hasPendingHandler: Bool { lock.withLock { wake != nil } }
     var snapshot: Snapshot {
         lock.withLock {
-            Snapshot(pendingOperationCount: operations.count,
+            Snapshot(expiredOperationCount: expiredOperations.count, pendingOperationCount: operations.count,
                      deferredIdentifierCount: Set(wake?.finished.map(\.identifier) ?? []).count,
                      pendingHandlerCount: (wake?.awaiting.values.reduce(0) { $0 + $1.count } ?? 0)
                         + (wake?.finished.reduce(0) { $0 + $1.tokens.count } ?? 0))

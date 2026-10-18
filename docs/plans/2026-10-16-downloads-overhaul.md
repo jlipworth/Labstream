@@ -66,6 +66,17 @@ The retained architecture has these boundaries:
 8. Shared row presentation/content carries waiting, preparation, verification, pause, error,
    progress, quality and accessibility semantics across Offline and all download sheets.
 
+## Issue #409 foreground experiment
+
+#409 is shared pre-overhaul static transport behaviour; persistent OS scheduling treatment remains
+an unproven cause. The amended implementation uses process-local provenance and a one-shot budget,
+a 10 s settle plus one 60 s active counter window, below 128 KiB/s, over ten minutes remaining,
+and an inclusive 256 MiB fresh discard cap. A narrow selected-task reissue reuses the same train
+refill and actual persistence resume fence; held bodies, siblings, validators, leases, admission,
+512 MiB segments and depth two remain. No schema or metadata merge changes are required. Paired
+candidate/result diagnostics measure the same-session result. Hardware acceptance remains pending;
+see the #409 device steps in `TESTING-CHECKLIST.md`.
+
 ## What stays as it is (load-bearing, proven)
 
 - Known static totals use 512 MiB closed segments, depth two per row, exact segment markers,

@@ -361,6 +361,21 @@ background-session registration, or migration/recovery work.
       transfers: nothing is cancelled and waiting rows stay waiting until occupancy drops below
       the caps. Raise it: waiting rows start without another Resume action. Relaunch with waiting
       rows and verify the stored value still bounds admission after existing work is reattached.
+- [ ] #409 device reproduction (shared pre-overhaul transport behaviour): enable diagnostics,
+      run two finished static-source downloads actively for 60 seconds, leave the headset off-head
+      for ten minutes, then keep Labstream continuously active for at least two minutes. Export
+      after `downloads.range_health_result`. Confirm `background_wake` provenance, the 10 s settle
+      plus 60 s counter window, selected old/new task IDs, discarded bytes (at most 256 MiB), and
+      paired pre/post rates on the same session. Repeat with one row and no fast peer. A failed
+      improvement must not trigger another recovery of that attempt in the same process.
+- [ ] #409 negative controls: uniformly slow networking, network loss, near-complete tasks,
+      bodies over 256 MiB, unknown relaunch provenance, queue pause, inactivity during persistence,
+      and admission settings 1/3/5. Healthy siblings and held tails survive; recovery holds its
+      admission slot. Relaunch may adopt old tasks with unknown provenance and loses the process
+      budget; it must not infer background creation. If still crawling, export before/after manual
+      pause/resume. Complete each download and verify offline playback and storage cleanup across
+      available static backend routes. OS scheduling remains a hypothesis and hardware acceptance
+      stays open until paired results show repeatable improvement.
 - [ ] Server-side encoders/optimizer/Convert jobs are stopped or reconciled when their row
       completes, fails, is canceled, or is recovered after relaunch.
 - [ ] Fail an Emby Convert row while its server job is still converting (for example, stay

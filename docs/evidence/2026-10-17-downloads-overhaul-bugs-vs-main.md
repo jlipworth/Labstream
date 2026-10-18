@@ -219,6 +219,18 @@ needed.
 | Structural consolidation | Full store split/actor conversion, universal filesystem/result systems, restart-state packaging, unified owned-work snapshots and DEBUG extraction have no required defect beyond the targeted fixes. Legacy metadata-poor opaque resume remains compatible. Dead facade deletion is a separate lane. |
 | P7 review follow-ups | Cleanup-journal async paths, sign-out recovery replay and orientation restoration on rejection are in the parallel code lane, outside this frozen comparison. |
 
+## Issue #409 follow-up
+
+The sustained static-task crawl is shared pre-overhaul transport behaviour, rather than an
+overhaul-specific regression. Background-created tasks retaining slow OS scheduling is a
+hypothesis. The bounded implementation records process-local provenance, samples after 10 s of
+settling for 60 active seconds, and permits one selected-task same-session reissue per exact
+attempt/process below 128 KiB/s, over ten minutes remaining and at most 256 MiB discarded (fresh
+counter checked). Held bodies, healthy siblings and 512 MiB/depth-two trains are preserved.
+The process budget/provenance do not survive a kill; unknown adopted tasks are diagnosed only.
+Paired pre/post device results, negative controls and hardware acceptance remain pending. This
+follow-up does not change the audit counts above or B85's deferred disposition and B86/B87 fixes.
+
 ## Open acceptance gates
 
 - Live Plex, Jellyfin and Emby acceptance for shared behaviour, including negotiated exact sources,

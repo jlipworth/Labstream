@@ -175,6 +175,30 @@ inside their observed overlap, never extrapolated or silently omitted. Observed 
 contribute zero; a silent attempt makes the total unavailable once the common window expires.
 All measurement state is memory-only.
 
+For the shared pre-overhaul transport crawl reported in #409, static closed ranges have a
+bounded foreground experiment. After authoritative reconciliation and ten seconds of settling,
+one 60-second continuously active counter window can select a known `background_wake` task
+below 128 KiB/s with more than ten minutes remaining at that rate. Zero progress uses the same
+window. A task with at most 256 MiB of nondurable body may be plain-cancelled and reissued on the
+same session; a fresh counter must still meet the cap immediately before cancellation. Exactly
+256 MiB is allowed. One exact attempt gets at most one recovery per process, with one operation
+in flight globally. Unknown relaunch provenance is observed and diagnosed without reissue.
+
+The selected task alone loses its nondurable body. The attempt, durable checkpoint, held tail,
+healthy sibling, resource validator, train epoch and 512 MiB/depth-two sizing survive. Checkpoint
+failure leaves the original task running. Inactivity or P6 winding-down at the real persistence-to-
+resume edge parks the replacement with existing continuation intent; expired physical workers
+retain their leases and defer recovery. No health state or revocation history is persisted, so a
+kill loses provenance and the experimental budget; normal reattachment may adopt the old task.
+
+Diagnostics extend `downloads.range_start` with creation context, session kind and registration
+phase, and distinguish actual `downloads.range_resume`. One `downloads.range_health_reissue`
+candidate event is paired with `downloads.range_health_result` after about 30 active seconds
+(or a deferred/aborted outcome); results repeat provenance, exact pre/post counters and rates,
+old/new task IDs and discarded bytes. `downloads.range_health_foreground` records aggregate
+activity edges. There are no periodic healthy verdicts. Persistent OS scheduling treatment is a
+hypothesis; paired device evidence and hardware acceptance remain pending.
+
 Downloading while the app is backgrounded, suspended, or the device is locked/asleep is
 fundamentally constrained by the platform, not by the server or the app:
 

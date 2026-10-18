@@ -976,6 +976,7 @@ public final class DownloadManager {
                     self.offlineLibrarySnapshot = self.makeOfflineLibrarySnapshot(from: self.records)
                     self.refreshOfflineAvailability()
                     self.performInitialStartupReattachIfNeeded()
+                    if self.isAppSceneActive { self.recoverStaticRangeTransfersAfterForeground() }
                 case .alreadyPurging:
                     self.recordDownloadDiagnostic("downloads.startup_reset_coalesced")
                 case .failed:
@@ -1098,6 +1099,7 @@ public final class DownloadManager {
         for key in startupRecoveryErrorKeys { lastError[key] = nil }
         startupRecoveryErrorKeys.removeAll()
         performInitialStartupReattachIfNeeded()
+        if isAppSceneActive { recoverStaticRangeTransfersAfterForeground() }
     }
 
     /// P3b upgrade pass (plan revisions 7–10). Runs after activation and before `.ready`, so no
@@ -2184,6 +2186,7 @@ public final class DownloadManager {
     func noteAppSceneRecovery(_ reason: DownloadRecoveryReason) {
         let isActive = reason == .aggregateSceneBecameActive
         isAppSceneActive = isActive
+        session.noteStaticRangeHealthActivity(isActive)
         if isActive {
             refreshOfflineAvailability(force: true)
             session.noteForegroundAuthorization()
@@ -2260,7 +2263,8 @@ public final class DownloadManager {
                 #endif
                 guard case .committed = proof, self.startupRecoveryState == .ready else { return }
                 self.refreshRecords()
-                guard !self.isQueuePaused else { return }
+                guard self.isAppSceneActive, !self.isQueuePaused else { return }
+                self.session.observeStaticRangeHealthAfterReconciliation()
                 self.resumeInterruptedStaticByteRangeDownloads(candidateKeys: interruptedStaticKeys,
                                                                 liveKeys: liveKeys)
             }

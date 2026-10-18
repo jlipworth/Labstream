@@ -211,14 +211,16 @@ private final class OwnershipObservations: @unchecked Sendable {
     }
 }
 
-private final class HeldRangeRequest: @unchecked Sendable {
+final class HeldRangeRequest: @unchecked Sendable {
     let id = UUID()
     let url: URL?
+    let range: String?
     private weak var owner: URLProtocol?
 
     init(owner: URLProtocol) {
         self.owner = owner
         self.url = owner.request.url
+        self.range = owner.request.value(forHTTPHeaderField: "Range")
     }
 
     func finish(status: Int, body: Data, headers: [String: String]) {
@@ -237,7 +239,7 @@ private final class HeldRangeRequest: @unchecked Sendable {
     }
 }
 
-private final class HeldRangeRequests: @unchecked Sendable {
+final class HeldRangeRequests: @unchecked Sendable {
     private let lock = NSLock()
     private var started: [HeldRangeRequest] = []
     private var stopped: Set<UUID> = []

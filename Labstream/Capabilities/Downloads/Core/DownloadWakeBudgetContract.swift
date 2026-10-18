@@ -56,7 +56,7 @@ struct DownloadWakeTerminalAcknowledgement: Sendable, Equatable {
 /// cancellation or proof that MainActor has delivered callbacks. Expired workers retain leases.
 struct DownloadWakeClockHooks: Sendable {
     struct Timer: Sendable, Equatable {
-        enum Kind: Sendable { case operation, persistenceReserve, absoluteDeadline, grace }
+        enum Kind: Sendable { case operation, persistenceReserve, absoluteDeadline, grace, foregroundHealth }
         let id: UUID
         let deadline: UInt64
         let kind: Kind
