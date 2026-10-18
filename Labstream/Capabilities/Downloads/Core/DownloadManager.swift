@@ -5412,17 +5412,6 @@ public final class DownloadManager {
             throw CancellationError()
         }
         while !Task.isCancelled {
-            if PlexOptimizeDeadlinePolicy.isExpired(
-                startedAtEpochSeconds: startedAtEpochSeconds,
-                nowEpochSeconds: Date().timeIntervalSince1970
-            ) {
-                recordDownloadDiagnostic("downloads.optimize_poll_timed_out", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "target": .label(targetName),
-                    "deadline_hours": .int(24),
-                ])
-                throw DownloadError.optimizeTimedOut
-            }
             // Orphan guard (audit B.9): Task cancellation alone is not enough — a delete can
             // race this loop before/without a registered Task handle, and a concurrent reap can
             // remove the queue row entirely. Re-check LIVE app state every iteration and stop
@@ -5500,6 +5489,20 @@ public final class DownloadManager {
                     ])
                     return OptimizedPartObservation(part: newPart, session: liveSession)
                 }
+            }
+            // The render deadline applies only while nothing is rendered: a finished render found
+            // above is adopted even past it, e.g. one that waited for a transfer slot (#414) and
+            // is rediscovered after a relaunch.
+            if PlexOptimizeDeadlinePolicy.isExpired(
+                startedAtEpochSeconds: startedAtEpochSeconds,
+                nowEpochSeconds: Date().timeIntervalSince1970
+            ) {
+                recordDownloadDiagnostic("downloads.optimize_poll_timed_out", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "target": .label(targetName),
+                    "deadline_hours": .int(24),
+                ])
+                throw DownloadError.optimizeTimedOut
             }
             // Surface server-side optimize/transcode progress for the "Preparing on
             // server…" caption. Best-effort: failures or no-match leave the existing

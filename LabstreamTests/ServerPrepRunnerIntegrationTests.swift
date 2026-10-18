@@ -124,6 +124,54 @@ struct ServerPrepRunnerIntegrationTests {
         #expect(fixture.manager.activeJobs.contains(key.ratingKey))
     }
 
+    // #414: a finished render past the 24-hour render deadline (it waited for a transfer slot,
+    // then the app relaunched) is adopted, not failed as timed out.
+    @Test func plexRelaunchAdoptsAFinishedRenderPastTheDeadline() async throws {
+        let fixture = try await PrepRunnerFixture()
+        defer { fixture.close() }
+        fixture.wire.withValue { $0.plexOutput = true }
+        let key = try await fixture.seed(.plex, active: false,
+                                         startedAt: Date().timeIntervalSince1970 - 48 * 3_600)
+        fixture.manager.resumePendingServerPrepDownloads()
+        try #require(await fixture.wait { !fixture.transfers.value.isEmpty })
+        #expect(fixture.store.record(for: key)?.status != .failed)
+        #expect(fixture.store.metadata(for: key.ratingKey)?.serverPreparedVersion == true)
+    }
+
+    // #414: with every static slot busy, a finished render keeps its prep slot and reads ready;
+    // its transfer starts only once a slot frees, and a delete during the wait starts nothing.
+    @Test(arguments: [DownloadBackendKind.plex, .emby], [false, true])
+    func finishedRenderWaitsForATransferSlot(backend: DownloadBackendKind, deleteWhileWaiting: Bool) async throws {
+        let fixture = try await PrepRunnerFixture()
+        defer { fixture.close() }
+        let staticCap = try #require(fixture.manager.admission.limits.maximumByLane[.staticFile])
+        let generations = (0..<staticCap).map {
+            ("static-\($0)", fixture.manager.admission.beginSupervision("static-\($0)", lane: .staticFile, origin: .user))
+        }
+        fixture.wire.withValue { $0.plexOutput = true; $0.completeConversion = true }
+        let key = try await fixture.seed(backend)
+        backend == .plex ? fixture.startPlex(key) : fixture.startEmby(key)
+        try #require(await fixture.wait { fixture.manager.staticHandoffWaiters[key.ratingKey] != nil })
+        #expect(fixture.manager.optimizeState[key.ratingKey] == DownloadRowStatusCaptionPolicy.serverPrepReadyState)
+        try? await Task.sleep(for: .milliseconds(300))
+        #expect(fixture.transfers.value.isEmpty)
+        if deleteWhileWaiting {
+            fixture.manager.delete(ratingKey: key.ratingKey)
+            try #require(await fixture.wait { fixture.store.record(for: key) == nil })
+            try #require(await fixture.wait { fixture.manager.staticHandoffWaiters.isEmpty })
+            for (id, generation) in generations { _ = fixture.manager.admission.endSupervision(id, generation: generation) }
+            try? await Task.sleep(for: .milliseconds(1_500))
+            #expect(fixture.transfers.value.isEmpty)
+        } else {
+            _ = fixture.manager.admission.endSupervision(generations[0].0, generation: generations[0].1)
+            try #require(await fixture.wait { !fixture.transfers.value.isEmpty })
+            #expect(fixture.manager.staticHandoffWaiters.isEmpty)
+            try #require(await fixture.wait { fixture.manager.staticHandoffReservations.isEmpty })
+            #expect(fixture.store.metadata(for: key.ratingKey)?.resolvedResumeMode(ratingKey: key.ratingKey) == .staticByteRange)
+        }
+        #expect(fixture.manager.optimizeState[key.ratingKey] != DownloadRowStatusCaptionPolicy.serverPrepReadyState)
+    }
+
     enum Handoff: CaseIterable { case freshReuse, refreshedReuse, resumeReuse, completed }
 
     // Pin 23: each branch reaches an actual static background request from its registered task.
@@ -304,7 +352,8 @@ private final class PrepRunnerFixture {
     }
 
     func seed(_ backend: DownloadBackendKind, active: Bool = true,
-              dispatchedAt: Double? = nil, jobID: Int? = nil) async throws -> DownloadAttemptKey {
+              dispatchedAt: Double? = nil, jobID: Int? = nil,
+              startedAt: Double? = nil) async throws -> DownloadAttemptKey {
         let lane = backend == .plex ? plexLane : embyLane
         let key = DownloadAttemptKey(ratingKey: backend == .plex ? "item" : "emby:item", attemptID: .init(uuid: UUID()))
         var metadata = DownloadOfflineMetadataBuilder.metadata(from: item, resolutionLabel: "1080p",
@@ -314,6 +363,7 @@ private final class PrepRunnerFixture {
         metadata.resumeMode = .serverPrepThenStatic
         metadata.optimizeBaselinePartIDs = [1]
         metadata.plexOptimizeCreateDispatchedAtEpochSeconds = dispatchedAt
+        if let startedAt { metadata.plexOptimizeStartedAtEpochSeconds = startedAt }
         metadata.embyConvertJobID = jobID
         metadata.embyConvertSnapshotIDs = ["source"]
         let row = DownloadRecord(ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Fixture",

@@ -520,12 +520,13 @@ extension DownloadManager {
         let startedAt = admission.now()
         var waiting = false
         defer {
+            // Only this wait's own entry and caption are cleared; a newer wait for the row keeps its.
             if staticHandoffWaiters[id]?.token == token {
                 staticHandoffWaiters[id] = nil
+                if optimizeState[id] == DownloadRowStatusCaptionPolicy.serverPrepReadyState {
+                    optimizeState[id] = nil
+                }
                 scheduleAdmissionPump()
-            }
-            if waiting, optimizeState[id] == DownloadRowStatusCaptionPolicy.serverPrepReadyState {
-                optimizeState[id] = nil
             }
         }
         while true {
