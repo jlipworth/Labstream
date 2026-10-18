@@ -211,6 +211,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Claimed BEFORE renames; retained through queued append and held manifest publication.
     /// Both orphan sweeps check this under `lock` while deleting.
     private var claimedRangeBodyURLs: [URL: (key: DownloadAttemptKey, bytes: Int, offset: Int?, trainEpoch: Int)] = [:]
+    /// Last aggregate-rate sample per live Range attempt and the train epoch it belongs to (#416).
+    private var rangeRateSamples: [DownloadAttemptKey: (bytes: Int, trainEpoch: Int)] = [:]
     /// RatingKeys whose static Range lane must not create replacement work — inserted by
     /// `cancel`/`pause`, checked before each continuation/retry, and cleared on fresh user start/resume.
     /// Without it, a delegate callback racing after `cancel`/`pause` could resurrect a deleted file.
@@ -4116,7 +4118,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 .filter { $0.ratingKey == rangeEntry.ratingKey }
                 .map(\.bodyBytesWritten)
             let heldSegmentBodyBytes = heldRangeSegments[rangeEntry.attemptKey]?.values.map(\.length) ?? []
+            let rateTrainEpoch = rangeTrainEpochs[rangeEntry.attemptKey] ?? 0
+            // Finished current-train bodies not yet in the durable file or the held sum above.
+            let heldURLs = Set(heldRangeSegments[rangeEntry.attemptKey]?.values.map(\.url.standardizedFileURL) ?? [])
+            let unaccountedClaimBytes = claimedRangeBodyURLs
+                .filter { $0.value.key == rangeEntry.attemptKey && $0.value.trainEpoch == rateTrainEpoch
+                    && !heldURLs.contains($0.key) }
+                .reduce(0) { $0 + $1.value.bytes }
+            let previousRateSample = rangeRateSamples[rangeEntry.attemptKey]
+                .flatMap { $0.trainEpoch == rateTrainEpoch ? $0.bytes : nil }
             lock.unlock()
+            // An append that finished after `durableBytes` was read released its claim before the
+            // snapshot above; the file already holds those bytes, so re-reading accounts for them.
+            let appendedDuringCallback = max(0, (fileSize(at: rangeEntry.workingURL) ?? 0) - durableBytes)
             let aggregatedLiveBytes = DownloadLiveRangeProgressPolicy.aggregatedLiveBytes(
                 durableBytes: durableBytes,
                 liveSegmentBodyBytes: liveSegmentBodyBytes + heldSegmentBodyBytes)
@@ -4174,7 +4188,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             _ = resolveLifecycleSubmission(store.submitProgress(for: rangeEntry.attemptKey,
                                      bytes: checkpointBytes, progress: progress))
             onRangeLiveProgress?(rangeEntry.ratingKey, displayTotal, effectiveExpectedBytes)
-            onTransferRateSample?(rangeEntry.attemptKey, displayTotal, Date())
+            let rateBytes = DownloadLiveRangeProgressPolicy.rateSampleBytes(
+                reportedBytes: displayTotal,
+                previous: previousRateSample,
+                bytesAwaitingAppend: unaccountedClaimBytes + appendedDuringCallback)
+            lock.withLock {
+                let retained = DownloadLiveRangeProgressPolicy.retainedRateSampleKeys(
+                    inflight: Set(rangeInflight.values.map(\.attemptKey)),
+                    claims: claimedRangeBodyURLs.values.map { ($0.key, $0.trainEpoch) },
+                    trainEpochs: rangeTrainEpochs)
+                rangeRateSamples = rangeRateSamples.filter { retained.contains($0.key) }
+                rangeRateSamples[rangeEntry.attemptKey] = (rateBytes, rateTrainEpoch)
+            }
+            onTransferRateSample?(rangeEntry.attemptKey, rateBytes, Date())
             recordRangeProgressIfNeeded(taskIdentifier: downloadTask.taskIdentifier,
                                         entry: rangeEntry,
                                         bodyBytes: Int(totalBytesWritten),

@@ -205,4 +205,60 @@ struct DownloadLiveRangeProgressPolicyTests {
         #expect(DownloadLiveRangeProgressPolicy.activeDisplayBytes(
             optimisticBytes: 3_500, expectedBytes: nil, durableBytes: 1_000) == 3_500)
     }
+    /// Replays one Range attempt through the aggregate estimator. `awaiting` maps a callback index
+    /// to the megabytes of finished, not-yet-counted bodies waiting to be appended at that moment.
+    private func boundaryRates(_ megabytes: [Int], awaiting: [Int: Int]) -> [Double?] {
+        let key = DownloadAttemptKey(ratingKey: "a", attemptID: .init(rawValue: "attempt-a")!)
+        var estimator = DownloadAggregateRateEstimator()
+        estimator.setActiveTransfers([key])
+        var previous: Int?
+        return megabytes.enumerated().map { second, mb in
+            let now = Date(timeIntervalSinceReferenceDate: Double(second))
+            let sampled = DownloadLiveRangeProgressPolicy.rateSampleBytes(
+                reportedBytes: mb * 1_000_000, previous: previous,
+                bytesAwaitingAppend: (awaiting[second] ?? 0) * 1_000_000)
+            previous = sampled
+            estimator.sample(key, bytes: sampled, at: now)
+            return estimator.rate(at: now)
+        }
+    }
+
+    @Test("a segment boundary dip keeps the aggregate speed through the append (#416)")
+    func segmentBoundaryKeepsAggregateSpeed() {
+        // Device pattern: a 512 MiB segment finishes and leaves the in-flight sum about a second
+        // before its body is appended, so the train total drops by hundreds of MB.
+        let trace = [0, 36, 72, 108, 144, 180, 216, 252, 288, 324, 24, 60, 396, 432, 468]
+        let held = boundaryRates(trace, awaiting: [10: 536, 11: 536])
+        // Once settled, the speed stays visible at every callback across the boundary.
+        for rate in held[6...] { #expect((rate ?? 0) > 0) }
+
+        // Without the hold, the dip rebaselines the batch: "Updating speed…" for the settling window.
+        for rate in boundaryRates(trace, awaiting: [:])[10...13] { #expect(rate == nil) }
+    }
+
+    @Test("a regression the awaiting bodies cannot explain still rebaselines the speed")
+    func genuineResetStillRebaselines() {
+        typealias Policy = DownloadLiveRangeProgressPolicy
+        #expect(Policy.rateSampleBytes(reportedBytes: 5, previous: 900, bytesAwaitingAppend: 0) == 5)
+        #expect(Policy.rateSampleBytes(reportedBytes: 5, previous: nil, bytesAwaitingAppend: 900) == 5)
+        #expect(Policy.rateSampleBytes(reportedBytes: 950, previous: 900, bytesAwaitingAppend: 500) == 950)
+        #expect(Policy.rateSampleBytes(reportedBytes: 500, previous: 900, bytesAwaitingAppend: 400) == 900)
+        // A sibling loses 300 MB while only a 100 MB body is awaiting append: a real loss.
+        #expect(Policy.rateSampleBytes(reportedBytes: 500, previous: 900, bytesAwaitingAppend: 100) == 500)
+        // Temp bytes discarded back to the checkpoint: the estimator must start over.
+        let reset = boundaryRates([0, 36, 72, 108, 144, 180, 216, 24, 60], awaiting: [7: 100])
+        #expect(reset[6] != nil)
+        #expect(reset[7] == nil)
+    }
+
+    @Test("an attempt with only bodies awaiting append keeps its rate sample")
+    func pendingBodiesRetainTheRateSample() {
+        let retained = DownloadLiveRangeProgressPolicy.retainedRateSampleKeys(
+            inflight: ["b"],
+            claims: [(key: "a", trainEpoch: 2), (key: "c", trainEpoch: 0)],
+            trainEpochs: ["a": 2, "c": 1])
+        // b is transferring; a's segments both finished and are appending; c's claim is retiring
+        // from an older train and must not keep a pre-reset sample alive.
+        #expect(retained == ["a", "b"])
+    }
 }

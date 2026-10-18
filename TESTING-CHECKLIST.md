@@ -433,6 +433,10 @@ background-session registration, or migration/recovery work.
       with one transfer stalled: quiet observations contribute zero, and missing observations
       hide the total rather than silently omitting that transfer. A background-session wake
       and a long callback gap must receive the same protection.
+- [ ] Segment boundaries (#416): keep a large (multi-GB) static download running with the app
+      in the foreground for a minute or more. After the first settle, the header speed stays
+      visible across every 512 MiB segment boundary; **Updating speed…** does not reappear
+      every 10–20 seconds.
 
 Both visionOS and non-visionOS currently use the closed-segment train. Each segment is
 512 MiB, with at most two live or newly planned segments per download (the durable head plus
