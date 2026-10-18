@@ -798,8 +798,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     var healthWillClaimForTesting: (@Sendable () -> Void)?
     var healthResultForTesting: (@Sendable (String) -> Void)?
     var healthDidClaimForTesting: (@Sendable () -> Void)?
-    var healthBookkeepingForTesting: (used: Int, waiting: Int) {
-        lock.withLock { (healthUsed.count, healthWaiting.count) }
+    var healthBookkeepingForTesting: (used: Int, waiting: Int, refills: Int) {
+        lock.withLock { (healthUsed.count, healthWaiting.count, healthRefills.count) }
     }
     func healthTasksForTesting() async -> [URLSessionTask] { await urlSession.allTasks }
     func forgetHealthProvenanceForTesting() {
@@ -1696,7 +1696,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     private func refillHealthCandidate(_ candidate: HealthCandidate, currency: DelayedRangeRetryCurrency) {
         let key = candidate.entry.attemptKey
-        guard store.attemptAdmitsWork(key), !isRangeHalted(for: key), isDelayedRetryCurrent(currency) else {
+        guard isNonterminalAttempt(key), store.attemptAdmitsWork(key), !isRangeHalted(for: key),
+              isDelayedRetryCurrent(currency) else {
             lock.withLock { healthRefills.removeValue(forKey: key) }
             finishHealthResult("refill_deferred", generation: candidate.generation); return
         }
@@ -1816,14 +1817,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         #endif
     }
 
+    private func isNonterminalAttempt(_ key: DownloadAttemptKey) -> Bool {
+        store.lifecycleState(for: key).map { !$0.lifecycle.isTerminal } ?? false
+    }
+
     /// Pause retains the budget; terminal/deleted attempts have no future experimental work.
     private func retireHealthAttemptsLocked() {
         healthWaiting.formIntersection(rangeInflight.keys)
         healthInvalidSamples.formIntersection(rangeInflight.keys)
-        healthUsed = healthUsed.filter { key in
-            store.lifecycleState(for: key).map { !$0.lifecycle.isTerminal } ?? false
+        healthUsed = healthUsed.filter { isNonterminalAttempt($0) }
+        // A sibling's ordinary continuation can complete the row during refill backoff.
+        healthRefills = healthRefills.filter {
+            isNonterminalAttempt($0.key) && store.attemptAdmitsWork($0.key) && rangeHaltKinds[$0.key] == nil
         }
-        healthRefills = healthRefills.filter { store.attemptAdmitsWork($0.key) && rangeHaltKinds[$0.key] == nil }
     }
 
     private func recordHealth(_ event: String, _ candidate: HealthCandidate, outcome: String, postBytes: Int = 0, postSeconds: Double = 0) {

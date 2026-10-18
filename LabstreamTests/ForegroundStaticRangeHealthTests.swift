@@ -566,6 +566,47 @@ struct ForegroundStaticRangeHealthTests {
         }
     }
 
+    @Test("A retained refill intent retires when the attempt turns terminal during backoff")
+    func terminalAttemptRetiresRetainedRefill() async throws {
+        let hold = P6Hold()
+        let failWrite = Mutex(false)
+        defer { hold.release.signal() }
+        try await withSession(index: .init { data, url in
+            hold.hit()
+            if failWrite.withLock({ $0 }) { throw CocoaError(.fileWriteUnknown) }
+            try DownloadIndexFileCommitter().commit(data, to: url)
+        }) { session, store, requests, clock, counters, key in
+            let tail = try #require(await session.healthTasksForTesting().max { $0.taskIdentifier < $1.taskIdentifier })
+            let result = P6Acknowledgement<String>()
+            session.healthResultForTesting = { result.signal($0) }
+            session.healthDidClaimForTesting = { hold.arm() }
+            try await baseline(session, clock)
+            counters.withLock { $0[tail.taskIdentifier] = 60 * 1_024 * 1_024 }
+            clock.advance(to: 70)
+            try #require(await hold.acknowledgement.wait(seconds: 3) == true)
+            await session.drainRangeIOForTesting()
+            failWrite.withLock { $0 = true }
+            hold.release.signal()
+            #expect(await result.wait(seconds: 3) == "resume_deferred")
+            try #require(await wait { hasTimer(clock, at: 71) })
+            #expect(session.healthBookkeepingForTesting.refills == 1)
+
+            // Ordinary continuation publishes the attempt before the next health retry. Unlike a
+            // failure, publication neither halts the range nor revokes attempt admission.
+            failWrite.withLock { $0 = false }
+            #expect(store.setStatus(for: key, .unverified) == .applied)
+            try #require(await wait { store.lifecycleState(for: key)?.lifecycle.isTerminal == true })
+            #expect(store.attemptAdmitsWork(key))
+
+            // The pending timer fires once, retires the intent and does not re-arm.
+            clock.advance(to: 71)
+            try #require(await wait { session.healthBookkeepingForTesting.refills == 0 })
+            await session.drainRangeIOForTesting()
+            #expect(!hasTimer(clock, at: 73))
+            #expect(await requests.count == 2)
+        }
+    }
+
     @Test("Terminal attempts retire the process-local budget and obsolete connectivity entries")
     func terminalBookkeeping() async throws {
         try await withSession(bytes: segment) { session, store, requests, clock, _, key in
