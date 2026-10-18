@@ -294,8 +294,11 @@ helper-level coverage for end-to-end proof. The following limits remain explicit
 
 ## Deferred work
 
-Each deferral states why it remains separate and what behaviour is retained. There are no invented
-issue numbers; attach successor issue links when the maintainer creates or chooses them.
+Each deferral states why it remains separate and what behaviour is retained. Successor issues:
+B83 #390, B85 #391, B27 #392, B30 #393, side-asset payload queueing #394, P6 wait polling #395,
+D4 sync-back #396, offline Up Next #397, season grouping #398, Emby entitlement #399, D3/B55 #400,
+remaining safety limits and unpinned paths #401, smaller product deferrals #402. Acceptance and
+landing on `main` are tracked in #403; the post-sleep speed counter (#379) was not in scope.
 
 ### Open defects and safety limits
 
