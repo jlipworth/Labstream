@@ -40,7 +40,11 @@ internal group only, nothing selected or submitted. A fourth `ship` run built **
 for all four targets from `4dc82ede`. It moves the restricted Offline status into navigation chrome
 (a "Server unreachable" subtitle or visionOS toolbar label plus a Reconnect toolbar action) so it no
 longer covers the title or toolbar ([#415](https://github.com/jlipworth/Labstream/issues/415)). It
-shipped the same way: **VALID**, internal group only, nothing selected or submitted. Device acceptance and landing on `main` are tracked in
+shipped the same way: **VALID**, internal group only, nothing selected or submitted. A fifth `ship`
+run built **1.8.0 (build 1545)** for all four targets from `6c14515d`. It keeps the aggregate
+download speed visible across static Range segment boundaries instead of showing "Updating speed…"
+every segment ([#416](https://github.com/jlipworth/Labstream/issues/416)). It shipped the same way:
+**VALID**, internal group only, nothing selected or submitted. Device acceptance and landing on `main` are tracked in
 [#403](https://github.com/jlipworth/Labstream/issues/403). PMSKit has no app-version constant; the
 runtime client identity reads the bundle version and falls back to `0.0.0`.
 
