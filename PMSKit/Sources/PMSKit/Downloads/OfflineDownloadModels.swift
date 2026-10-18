@@ -456,6 +456,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// Set once the optimize create PUT returned success. Without it a deleted row's queue item
     /// may still appear later, so its cleanup intent records the create as unresolved (P2).
     public var plexOptimizeCreateConfirmed: Bool?
+    /// Persisted immediately before dispatch; relaunch must not repeat an ambiguous create.
+    public var plexOptimizeCreateDispatchedAtEpochSeconds: Double?
     /// Locally-cached poster path, relative to the Downloads base directory.
     public var posterRelativePath: String?
     /// Persisted content revision for the locally-cached poster. This advances whenever the
@@ -593,6 +595,10 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// Durable one-time season-planner admission marker. It belongs to the ordinary episode row,
     /// not a batch entity, and is cleared before that row enters its normal backend lane.
     public var seasonPlannerPendingAdmission: Bool?
+    /// B69 (P4): a planned Original-quality row whose probe failed. Its route is resolved again at
+    /// admission (original, Plex original preset or compatible remux) instead of trusting the
+    /// placeholder `.original` it was saved with.
+    public var admissionRouteUnresolved: Bool?
     /// #169: HTTP validator (`ETag`, else `Last-Modified`) captured from the first static byte-range
     /// range body. Sent as `If-Range` on later static Range requests so that if the server-side
     /// resource changes mid-download the server returns the whole NEW resource (200) — which the
@@ -649,6 +655,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 optimizeBaselinePartIDs: [Int]? = nil,
                 plexOptimizeStartedAtEpochSeconds: Double? = nil,
                 plexOptimizeCreateConfirmed: Bool? = nil,
+                plexOptimizeCreateDispatchedAtEpochSeconds: Double? = nil,
                 posterRelativePath: String? = nil,
                 posterGeneration: UInt64 = 0,
                 plexBIFRelativePath: String? = nil,
@@ -677,6 +684,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 embyConvertSnapshotIDs: [String]? = nil,
                 serverPreparedVersion: Bool? = nil,
                 seasonPlannerPendingAdmission: Bool? = nil,
+                admissionRouteUnresolved: Bool? = nil,
                 rangeValidator: String? = nil,
                 downloadAttemptID: String? = nil,
                 heldRangeSegments: [OfflineHeldRangeSegment]? = nil) {
@@ -719,6 +727,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.optimizeBaselinePartIDs = optimizeBaselinePartIDs
         self.plexOptimizeStartedAtEpochSeconds = plexOptimizeStartedAtEpochSeconds
         self.plexOptimizeCreateConfirmed = plexOptimizeCreateConfirmed
+        self.plexOptimizeCreateDispatchedAtEpochSeconds = plexOptimizeCreateDispatchedAtEpochSeconds
         self.posterRelativePath = posterRelativePath
         self.posterGeneration = posterGeneration
         self.plexBIFRelativePath = plexBIFRelativePath
@@ -747,6 +756,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.embyConvertSnapshotIDs = embyConvertSnapshotIDs
         self.serverPreparedVersion = serverPreparedVersion
         self.seasonPlannerPendingAdmission = seasonPlannerPendingAdmission
+        self.admissionRouteUnresolved = admissionRouteUnresolved
         self.rangeValidator = rangeValidator
         self.downloadAttemptID = downloadAttemptID
         self.heldRangeSegments = heldRangeSegments
@@ -793,6 +803,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         optimizeBaselinePartIDs = try c.decodeIfPresent([Int].self, forKey: .optimizeBaselinePartIDs)
         plexOptimizeStartedAtEpochSeconds = try c.decodeIfPresent(
             Double.self, forKey: .plexOptimizeStartedAtEpochSeconds)
+        plexOptimizeCreateDispatchedAtEpochSeconds = try c.decodeIfPresent(
+            Double.self, forKey: .plexOptimizeCreateDispatchedAtEpochSeconds)
         plexOptimizeCreateConfirmed = try c.decodeIfPresent(
             Bool.self, forKey: .plexOptimizeCreateConfirmed)
         posterRelativePath = try c.decodeIfPresent(String.self, forKey: .posterRelativePath)
@@ -828,6 +840,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         serverPreparedVersion = try c.decodeIfPresent(Bool.self, forKey: .serverPreparedVersion)
         seasonPlannerPendingAdmission = try c.decodeIfPresent(
             Bool.self, forKey: .seasonPlannerPendingAdmission)
+        admissionRouteUnresolved = try c.decodeIfPresent(Bool.self, forKey: .admissionRouteUnresolved)
         rangeValidator = try c.decodeIfPresent(String.self, forKey: .rangeValidator)
         downloadAttemptID = try c.decodeIfPresent(String.self, forKey: .downloadAttemptID)
         heldRangeSegments = try c.decodeIfPresent([OfflineHeldRangeSegment].self, forKey: .heldRangeSegments)
@@ -918,6 +931,10 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         }
         // A re-snapshot of the same optimize attempt keeps its create confirmation; a new queue
         // title is a new create and starts unconfirmed.
+        if plexOptimizeCreateDispatchedAtEpochSeconds == nil,
+           optimizeQueueTitle != nil, optimizeQueueTitle == previous.optimizeQueueTitle {
+            plexOptimizeCreateDispatchedAtEpochSeconds = previous.plexOptimizeCreateDispatchedAtEpochSeconds
+        }
         if plexOptimizeCreateConfirmed == nil,
            optimizeQueueTitle != nil, optimizeQueueTitle == previous.optimizeQueueTitle {
             plexOptimizeCreateConfirmed = previous.plexOptimizeCreateConfirmed
@@ -1083,6 +1100,12 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
     public var progress: Double
     public var status: DownloadStatus
     public var metadata: OfflineMetadata?
+    /// P4: the attempt's lifecycle (`status` is derived from it). Filled by the app store; nil for
+    /// records built outside it.
+    public var lifecycle: DownloadLifecycle?
+    /// P4: why a waiting row waits for an admission lane (a planned first start, or a parked row
+    /// queued for its retry). Nil once the row has started.
+    public var admissionIntent: DownloadAdmissionIntent?
     public var posterURL: URL?
     public var plexBIFURL: URL?
     public var embyBIFURL: URL?
@@ -1113,6 +1136,8 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
                 progress: Double = 0,
                 status: DownloadStatus = .queued,
                 metadata: OfflineMetadata? = nil,
+                lifecycle: DownloadLifecycle? = nil,
+                admissionIntent: DownloadAdmissionIntent? = nil,
                 posterURL: URL? = nil,
                 plexBIFURL: URL? = nil,
                 embyBIFURL: URL? = nil,
@@ -1127,6 +1152,8 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
         self.progress = progress
         self.status = status
         self.metadata = metadata
+        self.lifecycle = lifecycle
+        self.admissionIntent = admissionIntent
         self.posterURL = posterURL
         self.plexBIFURL = plexBIFURL
         self.embyBIFURL = embyBIFURL

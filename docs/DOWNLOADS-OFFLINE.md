@@ -87,7 +87,7 @@ stateDiagram-v2
 
 | Lifecycle | Serialized status |
 | --- | --- |
-| `planned`, `admitted` | `queued` (a season row awaiting admission still projects `failed` with the admission flag) |
+| `planned`, `admitted` | `queued` (a `planned` row is waiting for an admission lane) |
 | `serverPrep` | `preparing` for Emby Convert; Plex optimizer rows stay `admitted`/`queued` until the handoff |
 | `transferring`, `finalizing` | `downloading` |
 | `complete`, `unverified`, `paused`, `failed` | the same name |
@@ -243,11 +243,24 @@ User-facing expectations worth setting (the "downloads disclaimer"):
   handoff cannot run while the app is suspended; Emby Convert job identity is persisted so polling
   can resume after relaunch. Once either route hands off to a static file, the byte transfer can use
   the static recovery path.
-- A Plex optimize reuses an existing render only when it is a server-optimized part (under
+- Fresh and resumed Plex optimize jobs inspect metadata before creating work. They reuse an
+  existing render only when it is a server-optimized part (under
   Plex's "Plex Versions" path) that matches the requested tier: resolution as a bounding box
   within ±16 px and container bitrate within ×1.10 of the video cap plus 768 kbps, and
   original-quality requests must land at the source height. `OptimizedVersionMatch` owns this
   rule, so a 1080p/8 Mbps retry never silently reuses an older 720p render.
+- Plex queue inspection distinguishes a present item, proven absence, and unavailable inspection.
+  Only proven absence plus a successful metadata inspection can create a job. Immediately before
+  dispatch, the row durably records a 3-minute visibility grace. Relaunch preserves that timestamp:
+  absence during the grace keeps inspecting without another create; proven absence after it fails
+  server preparation if no matching version is visible. An HTTP 400 duplicate rechecks adoption;
+  other create errors fail promptly. The separate 120-second completion/indexing grace, 24-hour
+  prep deadline and authentication failure budget remain in force. Static handoff uses the live
+  server lane on which the rendered Part was observed.
+- Fresh Plex and Emby preparation starts return after registering their poller tasks. Delete
+  cancels those tasks. Emby reuse and completed conversions share one handoff that detaches its
+  own poller before releasing prep bookkeeping, then starts the existing-version static lane.
+  Pause All leaves Emby Convert polling active and parks the static handoff.
 - Jellyfin optimized/compatible-remux downloads, and Emby compatible-remux
   downloads, can be live-forward encoder streams. They may continue as
   system-owned transfers while the OS allows it, but they are not durable
@@ -269,7 +282,8 @@ User-facing expectations worth setting (the "downloads disclaimer"):
 | Backend-specific manager extensions | Plex/Jellyfin/Emby route setup and server-prep polling. |
 | `BackgroundDownloadSession` | URLSession tasks, segment-train enqueue/refill, transfer callbacks, finalization, and wake-release effects. |
 | `BackgroundDownloadWakeCoordinator` | Locked background-completion gate, atomic deferred-revalidation keys, and range-rebuild grace generations. |
-| `DownloadManager+SeasonPlanner` and `SeasonDownloadPlannerSheet` | Immutable season drafts, one atomic Store commit of new rows plus retry markers, and lane-capped concurrent admission. |
+| `DownloadManager+SeasonPlanner` and `SeasonDownloadPlannerSheet` | Immutable season drafts, one atomic Store commit of planned rows plus retry intents, and the refreshed, source-validated first start. |
+| `DownloadAdmissionCoordinator` and `DownloadManager+Admission` | The one admission window: observed lane occupancy, supervised starts, durable waiting requests, backoff and the Pause All row exemption. |
 | `DownloadOptionsModel` | Typed per-item option resolution for the download sheet; it does not own season planning. |
 | `DownloadVolumeFreeSpace` | Purgeable-inclusive free-space measurement used by storage-full parking. |
 | `DownloadStore` | Schema-v5 index state (v4 loads and is upgraded once), exact-attempt mutation admission, work admission (`attemptAdmitsWork`), and transactional artifact state. |
@@ -417,27 +431,54 @@ restore in place; a successful restore flips `isBrowseReady` and `BrowseUIGate` 
 root.
 
 Season confirmation captures one immutable draft containing new rows and exact retry attempts. The
-Store validates every owner and commits insertions plus retry admission markers in one schema-v4
+Store validates every owner and commits insertions plus retry admission intents in one
 snapshot before any lane starts; stale ownership, a normal persistence failure, and an indeterminate
 atomic-write outcome remain distinct, with the last case pausing download admission. Offline list
 snapshots contain scalar presentation/action identity only; full records resolve at exact-attempt
 action or playback edges. Storage presentation separates known, unknown, and not-applicable bytes
 instead of turning unknown side assets or reservations into false zeroes.
 
-Committed season rows wait in `.queued` with a pending-admission marker. A single worker admits
-them through `SeasonDownloadAdmissionPolicy`'s caps: at most three rows in total, with up to two
-static file transfers, one server preparation (Plex optimize or Emby Convert) and one live-forward
-stream. Each admitted row starts in its own task. A row counts against its lane from admission
-until its start returns, and then while it holds its in-flight slot. A server-prep start does not
-return until the server job finishes and hands off to the static lane, so it occupies only the
-`serverPreparation` lane. Originals and existing or converted versions in the same batch keep
-transferring alongside it. Emby itself processes Convert jobs from its *Convert Media*
-scheduled task, which Emby staff have described as one conversion at a time. A second Labstream
-Convert can therefore wait as server-side `Queued` even outside Labstream's own lane cap. Static
-downloads need no conversion and are not tied to that server queue.
+Every download start goes through one admission window (`DownloadAdmissionPolicy`, driven by
+`DownloadAdmissionCoordinator`): single taps, season rows, Resume All, a row's Resume or Retry,
+automatic static range resumes and stalled-stream restarts. The caps are at most three rows in
+total, with up to two static file transfers, one server preparation (Plex optimize or Emby
+Convert) and one live-forward stream. Explicit row actions are served before automatic ones;
+the origin orders requests and never lifts a cap.
 
-A queued row that holds no in-flight slot is waiting, not transferring. Both the offline list and
-the download sheet show it as **Queued…**, or **Preparing on server…** for a server-prep row.
+- **Occupancy is observed.** A row uses its lane while its persisted lifecycle is `admitted`,
+  `serverPrep` or `transferring`, it is not being deleted, and live work backs it (a start slot,
+  a registered prep poller or a session-owned transfer). Pause, failure, finalizing and delete
+  free the lane without any release call. A Plex row that hands its render off to the static
+  transfer moves from the server-prep lane to the static lane; static occupancy can then be three
+  for that transfer, and nothing new enters the static lane meanwhile.
+- **Starts are supervised.** A granted start is fenced by a generation until its async work
+  finishes. A start that ends without work (no session, a refresh outage) waits again with
+  backoff of 1, 5, 15, 30 and then 60 seconds instead of failing; a definitive refusal (signed
+  out, source gone, storage) stays a visible failure. Pause and delete end the supervision, so a
+  granted continuation never starts a paused or deleted row.
+- **Waiting is durable.** A season episode, or a tap that finds every lane full, waits as a
+  `planned` row carrying its exact source binding, route, preset and audio choice, and starts
+  through the refreshed, source-validated first-start path. Resume All and a capacity-delayed row
+  Resume or Retry keep the row paused or failed with a `retryRequested` intent, so its retry
+  routes from its own facts (checkpoint, resume blob, Emby job, Plex queue item). Waiting rows read
+  **Waiting for a download slot…**, or **Waiting — downloads paused** during Pause All.
+- **Pause All** grants nothing. A row's own Resume or Retry during Pause All is exempt for that
+  row only; the next Pause All revokes the exemption. Emby Convert polling continues during Pause
+  All and its static handoff parks unless the row is exempt.
+- **Barriers.** Nothing is granted before startup recovery has reattached tasks and pollers (work
+  the OS still owned counts first, even over a cap), or while a season commit is proving
+  durability.
+- **Lane changes.** A start that turns into server-prep work (a Plex original that failed its
+  preflight, an Emby negotiation rerouted to Convert) needs room in that lane first; otherwise it
+  ends without work and waits.
+
+Emby itself processes Convert jobs from its *Convert Media* scheduled task, which Emby staff have
+described as one conversion at a time. A second Labstream Convert can therefore wait as
+server-side `Queued` even outside Labstream's own lane cap. Static downloads need no conversion
+and are not tied to that server queue.
+
+A queued row that holds no in-flight slot is waiting, not transferring. The download sheet shows
+it as **Queued…**, or **Preparing on server…** for a server-prep row.
 **Downloading optimized** is the static transfer of an existing or converted version. When it reads
 0% with a spinner, the row is active but URLSession has delivered no body bytes yet. Common reasons
 are the window before the first byte, OS scheduling, and the per-host connection limit, since each

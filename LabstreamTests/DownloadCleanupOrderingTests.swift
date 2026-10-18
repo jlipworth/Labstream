@@ -443,7 +443,8 @@ struct DownloadCleanupOrderingTests {
 
         manager.retry(ratingKey: key.ratingKey)
 
-        #expect(store.record(for: key)?.status == .preparing)
+        // P4: the row action goes through admission, which opens after startup reattach.
+        #expect(await waitUntil { store.record(for: key)?.status == .preparing })
         #expect(store.metadata(for: key.ratingKey)?.embyConvertJobID == metadata.embyConvertJobID)
     }
 

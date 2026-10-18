@@ -32,7 +32,7 @@ struct SeasonPlannerIntegrationTests {
         let manager = DownloadManager(appModel: model, store: store, session: session,
                                       registerForBackgroundEvents: false)
         defer {
-            manager.seasonPlannerAdmissionTask?.cancel()
+            manager.admissionPumpTask?.cancel()
             session.invalidateInjectedSessionForTesting()
         }
         try #require(await waitUntil { manager.startupRecoveryState == .ready })
@@ -85,9 +85,7 @@ struct SeasonPlannerIntegrationTests {
             // The deleted row's refresh was already in flight; its late response must be revoked.
             gate.releaseMetadata(id: deleted, failing: false)
         }
-        try #require(await waitUntil {
-            manager.seasonPlannerAdmissionTask == nil && manager.seasonPlannerAdmittingKeys.isEmpty
-        })
+        try #require(await waitUntil { manager.admission.supervised.isEmpty })
         if change == .unchanged || change == .deleteLater {
             try #require(await waitUntil { gate.transferPaths.count == 1 })
             #expect(store.record(for: first)?.attemptID != original)
@@ -138,7 +136,7 @@ struct SeasonPlannerIntegrationTests {
         let manager = DownloadManager(appModel: model, store: store, session: session,
                                       registerForBackgroundEvents: false)
         defer {
-            manager.seasonPlannerAdmissionTask?.cancel()
+            manager.admissionPumpTask?.cancel()
             session.invalidateInjectedSessionForTesting()
         }
         try #require(await waitUntil { manager.startupRecoveryState == .ready })
@@ -158,8 +156,8 @@ struct SeasonPlannerIntegrationTests {
         let held = gate.heldIDs
         let stuck = held[0]
         let moving = held[1]
-        // Outlast at least one more 2-second admission pass: in-flight starts occupy the lane, so
-        // the third row is not admitted while both starts are still running.
+        // P4: supervised starts occupy the lane, so later admission passes do not admit the
+        // third row while both starts are still running (B72).
         try await Task.sleep(for: .milliseconds(2_500))
         #expect(gate.metadataIDs.count == 2)
 
@@ -168,18 +166,209 @@ struct SeasonPlannerIntegrationTests {
         gate.releaseMetadata(id: moving, failing: false)
         try #require(await waitUntil { gate.transferPaths == ["/library/parts/\(moving)/file.mp4"] })
         #expect(gate.heldIDs == [stuck])
-        #expect(manager.seasonPlannerAdmittingKeys == [stuck])
+        #expect(Set(manager.admission.supervised.keys) == [stuck])
         // Both static slots remain occupied (one transferring, one still starting).
         #expect(gate.metadataIDs.count == 2)
 
         gate.releaseMetadata(id: stuck, failing: false)
         try #require(await waitUntil { gate.transferPaths.count == 2 })
-        try #require(await waitUntil { manager.seasonPlannerAdmittingKeys.isEmpty })
+        try #require(await waitUntil { manager.admission.supervised.isEmpty })
         #expect(gate.unexpectedPaths.isEmpty)
         for row in store.records { manager.delete(ratingKey: row.ratingKey) }
         try #require(await waitUntil { store.records.isEmpty })
         // Release any metadata request admitted during teardown so no URLProtocol stays pending.
         while gate.heldID != nil { gate.releaseMetadata(failing: true) }
+    }
+
+    // MARK: - P4 admission pins
+
+    private struct Harness {
+        let directory: URL
+        let host: String
+        let gate: SeasonMetadataGate
+        let transport: URLSession
+        let store: DownloadStore
+        let session: BackgroundDownloadSession
+        let manager: DownloadManager
+
+        @MainActor func teardown() async {
+            for row in store.records { manager.delete(ratingKey: row.ratingKey) }
+            while gate.heldID != nil { gate.releaseMetadata(failing: true) }
+            manager.admissionPumpTask?.cancel()
+            session.invalidateInjectedSessionForTesting()
+            transport.invalidateAndCancel()
+            SeasonMetadataProtocol.unregister(host: host)
+            try? FileManager.default.removeItem(at: directory)
+        }
+    }
+
+    private func makeHarness(_ label: String) async throws -> Harness {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("admission-\(label)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let host = "\(UUID().uuidString.lowercased()).season.test.invalid"
+        let gate = SeasonMetadataGate()
+        SeasonMetadataProtocol.register(host: host, gate: gate)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [SeasonMetadataProtocol.self]
+        let transport = URLSession(configuration: configuration)
+        let identity = PlatformClientIdentity.make(clientIdentifier: "admission-\(label)")
+        let model = AppModel(identity: identity, token: "fixture-token",
+                             client: PlexClient(session: transport, identity: identity))
+        model.serverToken = "fixture-token"
+        model.serverBaseURL = URL(string: "https://\(host)")
+        let store = DownloadStore(baseDirectory: directory)
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [SeasonMetadataProtocol.self])
+        let manager = DownloadManager(appModel: model, store: store, session: session,
+                                      registerForBackgroundEvents: false)
+        manager.setQueuePausedForTesting(false)
+        try #require(await waitUntil { manager.startupRecoveryState == .ready })
+        try #require(await waitUntil { manager.admission.recoveryComplete })
+        return Harness(directory: directory, host: host, gate: gate, transport: transport,
+                       store: store, session: session, manager: manager)
+    }
+
+    private func plan(_ id: String, choice: DownloadIntentChoice = .existingVersion) throws
+        -> SeasonEpisodeDownloadPlan {
+        SeasonEpisodeDownloadPlan(
+            item: try JSONDecoder().decode(MediaItem.self, from: SeasonMetadataGate.itemData(id)),
+            backend: .plex, choice: choice, mediaIndex: 0, partIndex: 0,
+            audioStreamIndex: nil, mediaSourceIDOverride: nil, estimatedBytes: 100, shouldStart: true)
+    }
+
+    /// A paused static Plex row bound to the fixture's exact Part, so its retry refreshes metadata
+    /// and then starts the static transfer.
+    private func seedPausedStaticRow(_ id: String, host: String, in store: DownloadStore) throws {
+        let attemptID = DownloadAttemptID.generated()
+        let metadata = OfflineMetadata(
+            ratingKey: id, title: "Episode fixture", type: "episode", mediaIndex: 0, partIndex: 0,
+            sourcePartID: 11, backendKind: .plex, backendBaseURLString: "https://\(host)",
+            downloadLane: .original, resumeMode: .staticByteRange, serverPreparedVersion: true)
+        let record = DownloadRecord(
+            ratingKey: id, attemptID: attemptID, title: "Episode fixture",
+            localURL: store.destinationURL(ratingKey: id, ext: "mp4"), status: .paused,
+            metadata: metadata)
+        #expect(store.createAttemptOwnedRecord(record, attemptID: attemptID)
+            == .committed(DownloadAttemptKey(ratingKey: id, attemptID: attemptID)))
+    }
+
+    /// B63 + B72: Resume All queues every parked row and admits only the static cap; the rest
+    /// wait with a retry request until a lane frees.
+    @Test func resumeAllAdmitsParkedRowsWithinTheStaticLane() async throws {
+        let h = try await makeHarness("resume-all")
+        let ids = (1...5).map { "episode-\($0)" }
+        for id in ids { try seedPausedStaticRow(id, host: h.host, in: h.store) }
+        h.manager.refreshRecords()
+
+        h.manager.resumeQueue()
+
+        try #require(await waitUntil { h.gate.heldIDs.count == 2 })
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(h.gate.metadataIDs.count == 2, "only the static cap starts")
+        #expect(h.manager.admission.supervised.count == 2)
+        let waiting = h.store.records.filter { $0.admissionIntent == .retryRequested }
+        #expect(waiting.count == 3)
+        #expect(waiting.allSatisfy { $0.status == .paused })
+
+        // A started row keeps its lane while its transfer is pending; deleting it frees the lane
+        // and the next waiting row is admitted.
+        let first = try #require(h.gate.heldID)
+        h.gate.releaseMetadata(id: first, failing: false)
+        try #require(await waitUntil { h.gate.transferPaths.count == 1 })
+        #expect(h.gate.metadataIDs.count == 2)
+        h.manager.delete(ratingKey: first)
+        try #require(await waitUntil { h.gate.metadataIDs.count == 3 })
+        await h.teardown()
+    }
+
+    /// B67: a season row whose metadata refresh fails (an unreachable server) waits again as
+    /// planned and is retried after backoff; it never becomes a failed row.
+    @Test func aRefreshOutageDefersAPlannedRowInsteadOfFailingIt() async throws {
+        let h = try await makeHarness("refresh-outage")
+        let result = await h.manager.commitSeasonPlan(.init(newPlans: [try plan("episode-1")],
+                                                            retryAttempts: []))
+        #expect(result.succeeded)
+        try #require(await waitUntil { h.gate.heldIDs == ["episode-1"] })
+        h.gate.releaseMetadata(id: "episode-1", failing: true)
+        try #require(await waitUntil { h.manager.admission.supervised.isEmpty })
+        let deferred = try #require(h.store.record(for: "episode-1"))
+        #expect(deferred.lifecycle == .planned)
+        #expect(deferred.admissionIntent == .seasonPlanned)
+        #expect(deferred.status == .queued)
+        // Backoff (1 s) then a second refresh.
+        try #require(await waitUntil { h.gate.metadataIDs.count == 2 })
+        await h.teardown()
+    }
+
+    /// P4.3: a tap while the static lane is full waits as a durable planned row (the season seed
+    /// shape) and starts when a lane frees.
+    @Test func aTapOverCapacityWaitsThenStarts() async throws {
+        let h = try await makeHarness("tap-waits")
+        let result = await h.manager.commitSeasonPlan(.init(
+            newPlans: [try plan("episode-1"), try plan("episode-2")], retryAttempts: []))
+        #expect(result.succeeded)
+        try #require(await waitUntil { h.gate.heldIDs.count == 2 })
+
+        let item = try JSONDecoder().decode(MediaItem.self, from: SeasonMetadataGate.itemData("episode-3"))
+        await h.manager.requestDownload(item, backend: .plex, choice: .existingVersion,
+                                        mediaIndex: 0, partIndex: 0, audioStreamIndex: nil)
+        let waiting = try #require(h.store.record(for: "episode-3"))
+        #expect(waiting.lifecycle == .planned)
+        #expect(waiting.admissionIntent == .seasonPlanned)
+        #expect(waiting.metadata?.sourcePartID == nil || waiting.metadata?.sourcePartID == 11)
+        #expect(DownloadStore(baseDirectory: h.directory).record(for: "episode-3")?.lifecycle
+            == .planned, "the waiting tap is durable")
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!h.gate.metadataIDs.contains("episode-3"))
+
+        h.manager.delete(ratingKey: "episode-1")
+        try #require(await waitUntil { h.gate.metadataIDs.contains("episode-3") })
+        await h.teardown()
+    }
+
+    /// B62: the Plex prep scanner never attaches a poller to a planned (waiting) row.
+    @Test func thePrepScannerSkipsPlannedRows() async throws {
+        let h = try await makeHarness("scanner")
+        h.manager.admission.recoveryComplete = false // hold admission closed
+        let result = await h.manager.commitSeasonPlan(.init(
+            newPlans: [try plan("episode-1", choice: .optimize(targetName: "1080p"))],
+            retryAttempts: []))
+        #expect(result.succeeded)
+        let row = try #require(h.store.record(for: "episode-1"))
+        #expect(row.lifecycle == .planned)
+        #expect(row.status == .queued)
+
+        h.manager.resumePendingServerPrepDownloads()
+        try await Task.sleep(for: .milliseconds(200))
+
+        #expect(!h.manager.activeJobs.contains("episode-1"))
+        #expect(!h.manager.hasRegisteredServerPrepPoller(ratingKey: "episode-1"))
+        #expect(h.gate.metadataIDs.isEmpty)
+        await h.teardown()
+    }
+
+    /// B64/B65: pausing a waiting row parks it at once and keeps its first-start intent; Resume
+    /// returns it to planned and it starts through the first-start path.
+    @Test func aRowPausedWhileWaitingResumesToPlanned() async throws {
+        let h = try await makeHarness("pause-waiting")
+        h.manager.admission.recoveryComplete = false
+        let result = await h.manager.commitSeasonPlan(.init(newPlans: [try plan("episode-1")],
+                                                            retryAttempts: []))
+        #expect(result.succeeded)
+        let planned = try #require(h.store.record(for: "episode-1"))
+        let identity = try #require(planned.attemptID.map {
+            OfflineDownloadRowActionIdentity(ratingKey: "episode-1", attemptID: $0)
+        })
+        #expect(h.manager.pause(identity))
+        let paused = try #require(h.store.record(for: "episode-1"))
+        #expect(paused.status == .paused)
+        #expect(paused.admissionIntent == .seasonPlanned)
+
+        h.manager.admission.recoveryComplete = true
+        #expect(h.manager.retry(identity))
+        #expect(h.store.record(for: "episode-1")?.lifecycle == .planned)
+        try #require(await waitUntil { h.gate.metadataIDs == ["episode-1"] })
+        await h.teardown()
     }
 
     private func waitUntil(_ condition: () -> Bool) async -> Bool {

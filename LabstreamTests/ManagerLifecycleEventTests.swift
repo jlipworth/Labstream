@@ -99,11 +99,10 @@ struct ManagerLifecycleEventTests {
         #expect(manager.lastError[key.ratingKey] == .notAuthenticated)
     }
 
-    /// Admission does not submit `admissionGranted` yet (see the P3a-TODO in
-    /// `admitSeasonPlannerRowsOnce`): `admitted` would show the row `.queued` and task-less while
-    /// Retry preflights, after the admitting key is released. The planned row therefore leaves
-    /// `planned` through the Retry chain itself; with the lane signed out that is a refusal.
-    @Test("Admitting a planned season row runs Retry from planned; a refusal fails it as auth")
+    /// P4: a failed season row the planner queued waits as a failed row with a retry request.
+    /// Admission runs its Retry; with the lane signed out that is a definitive refusal, which
+    /// fails it as auth and ends the request (no re-admission loop).
+    @Test("Admitting a waiting retry row runs Retry; a refusal fails it as auth and stops waiting")
     func plannedSeasonRowAdmissionRunsRetry() async throws {
         let directory = try makeDirectory("season-planned")
         defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
@@ -113,15 +112,17 @@ struct ManagerLifecycleEventTests {
         #expect(await waitUntil { manager.startupRecoveryState == .ready })
         manager.setQueuePausedForTesting(false)
         let key = try seedJellyfinForwardOnlyRow(in: store, seasonPlanned: true)
-        try #require(store.lifecycleState(for: key)?.lifecycle == .planned)
-        #expect(store.record(for: key)?.status == .failed, "planned is shown as failed (R2-3)")
+        try #require(store.lifecycleState(for: key)?.lifecycle == .failed)
+        #expect(store.record(for: key)?.admissionIntent == .retryRequested)
         manager.refreshRecords()
 
         manager.scheduleSeasonPlannerAdmission()
 
         #expect(await waitUntil { store.lifecycleState(for: key)?.history.lastFailure == .auth })
+        #expect(await waitUntil { manager.admission.supervised.isEmpty })
         #expect(store.lifecycleState(for: key)?.lifecycle == .failed)
         #expect(store.record(for: key)?.status == .failed)
+        #expect(store.record(for: key)?.admissionIntent == nil)
         #expect(store.metadata(for: key.ratingKey)?.seasonPlannerPendingAdmission == nil)
     }
 

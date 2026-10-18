@@ -22,6 +22,8 @@ extension DownloadManager {
     func embyConvertAttemptIsCurrent(ratingKey: String, attemptID: UUID,
                                      targetName: String? = nil, jobId: Int? = nil) -> Bool {
         guard let key = inFlightAttempts.owner(forRatingKey: ratingKey),
+              !Task.isCancelled,
+              store.attemptAdmitsWork(key),
               activeJobs.contains(ratingKey),
               serverPrepAttempts.isCurrentEmbyConvertAttempt(for: key, id: attemptID),
               !store.isDeletionPending(for: key),
@@ -64,6 +66,23 @@ extension DownloadManager {
                                            session: BackendSession,
                                            attemptKey storeAttemptKey: DownloadAttemptKey,
                                            audioStreamIndex: Int? = nil) async {
+        guard let attemptID = beginEmbyConvertPoller(for: storeAttemptKey) else { return }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer { self.endEmbyConvertPoller(for: storeAttemptKey, id: attemptID) }
+            await self.runConvertAndDownload(item: item, targetName: targetName, metadata: metadata,
+                                             session: session, attemptKey: storeAttemptKey,
+                                             audioStreamIndex: audioStreamIndex, attemptID: attemptID)
+        }
+        registerServerPrepPollerTask(task, for: storeAttemptKey)
+    }
+
+    private func runConvertAndDownload(item: MediaItem, targetName: String,
+                                       metadata: OfflineMetadata, session: BackendSession,
+                                       attemptKey storeAttemptKey: DownloadAttemptKey,
+                                       audioStreamIndex: Int?, attemptID: UUID) async {
+        guard !Task.isCancelled, inFlightAttempts.owns(storeAttemptKey),
+              store.attemptAdmitsWork(storeAttemptKey) else { return }
         let itemId = item.ratingKey
         let ratingKey = storeAttemptKey.ratingKey
         let server = session.baseURL
@@ -73,7 +92,6 @@ extension DownloadManager {
             failEmbyConvert(for: storeAttemptKey, .notAuthenticated)
             return
         }
-        let attemptID = beginEmbyConvertAttempt(for: storeAttemptKey)
 
         // Carry the convert preset + a `.preparing`-grade metadata snapshot. `optimizeTargetName`
         // doubles as the server-prep marker the UI/resume paths key off (parity with Plex).
@@ -154,13 +172,9 @@ extension DownloadManager {
             // handoff re-acquires cleanly (mirrors `finishEmbyConvert`'s post-convert handoff). The
             // Keep the `.preparing` row until the static lane replaces it. Removing first left a
             // process-kill window with no durable row and no way to resume this accepted download.
-            clearOptimizeProgress(ratingKey: ratingKey)
-            releaseInFlight(for: storeAttemptKey)
-            await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
-                               mediaSourceIDOverride: reuseId,
-                               deferStaticStartWhenQueuePaused: true,
-                               requestedProfileLabelOverride: targetName,
-                               allowReplacingExistingActiveRow: true)
+            await handoffEmbyConvertedSource(item: item, sourceID: reuseId, targetName: targetName,
+                                              audioStreamIndex: audioStreamIndex,
+                                              attemptKey: storeAttemptKey, pollerID: attemptID)
             return
         }
 
@@ -187,13 +201,9 @@ extension DownloadManager {
                 recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "post_refresh_reuse")
                 return
             }
-            clearOptimizeProgress(ratingKey: ratingKey)
-            releaseInFlight(for: storeAttemptKey)
-            await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
-                               mediaSourceIDOverride: reuseId,
-                               deferStaticStartWhenQueuePaused: true,
-                               requestedProfileLabelOverride: targetName,
-                               allowReplacingExistingActiveRow: true)
+            await handoffEmbyConvertedSource(item: item, sourceID: reuseId, targetName: targetName,
+                                              audioStreamIndex: audioStreamIndex,
+                                              attemptKey: storeAttemptKey, pollerID: attemptID)
             return
         }
 
@@ -226,7 +236,7 @@ extension DownloadManager {
         do {
             let req = try EmbyConvertRequest.jobListRequest(
                 server: server, token: token, identity: identity)
-            let (data, response) = try await URLSession.shared.data(for: req)
+            let (data, response) = try await embyConvertSession.data(for: req)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 throw DownloadError.transferFailed("Convert baseline HTTP \(http.statusCode)")
             }
@@ -307,7 +317,7 @@ extension DownloadManager {
             }
             refreshRecords()
             postWasDispatched = true
-            let (data, response) = try await URLSession.shared.data(for: req)
+            let (data, response) = try await embyConvertSession.data(for: req)
             if let http = response as? HTTPURLResponse {
                 createHTTPStatus = http.statusCode
                 if !(200..<300).contains(http.statusCode) {
@@ -433,7 +443,7 @@ extension DownloadManager {
         do {
             let req = try EmbyConvertRequest.jobListRequest(
                 server: server, token: token, identity: identity)
-            let (data, response) = try await URLSession.shared.data(for: req)
+            let (data, response) = try await embyConvertSession.data(for: req)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 throw DownloadError.transferFailed("Convert recovery HTTP \(http.statusCode)")
             }
@@ -554,13 +564,9 @@ extension DownloadManager {
                 "target": .label(targetName),
                 "phase": .label("resume_pre_poll"),
             ])
-            clearOptimizeProgress(ratingKey: ratingKey)
-            releaseInFlight(for: storeAttemptKey)
-            await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
-                               mediaSourceIDOverride: reuseId,
-                               deferStaticStartWhenQueuePaused: true,
-                               requestedProfileLabelOverride: targetName,
-                               allowReplacingExistingActiveRow: true)
+            await handoffEmbyConvertedSource(item: item, sourceID: reuseId, targetName: targetName,
+                                              audioStreamIndex: audioStreamIndex,
+                                              attemptKey: storeAttemptKey, pollerID: attemptID)
             return
         }
 
@@ -581,7 +587,7 @@ extension DownloadManager {
             do {
                 let req = try EmbyConvertRequest.jobStatusRequest(server: server, token: token,
                                                                   identity: identity, jobId: jobId)
-                let (data, response) = try await URLSession.shared.data(for: req)
+                let (data, response) = try await embyConvertSession.data(for: req)
                 if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                     if Self.isTerminalEmbyConvertPollStatus(http.statusCode) {
                         // Lens 6 F4: the status GET above is an await — the row can have been
@@ -641,7 +647,7 @@ extension DownloadManager {
                                     .transferFailed("Server conversion status stayed unreachable. Retry to continue."))
                     return
                 }
-                try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
+                do { try await Task.sleep(for: .seconds(embyConvertPollInterval)) } catch { return }
                 continue
             }
             EmbyConvertPollHealthPolicy.registerSuccess(state: &pollHealth)
@@ -719,7 +725,7 @@ extension DownloadManager {
                 return
             }
 
-            try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
+            do { try await Task.sleep(for: .seconds(embyConvertPollInterval)) } catch { return }
         }
     }
 
@@ -847,7 +853,7 @@ extension DownloadManager {
         Task {
             if let req = try? EmbyConvertRequest.deleteJobRequest(
                 server: server, token: token, identity: identity, jobId: jobId) {
-                _ = try? await URLSession.shared.data(for: req)
+                _ = try? await embyConvertSession.data(for: req)
             }
         }
     }
@@ -917,7 +923,7 @@ extension DownloadManager {
                 break
             }
             if attempt < maxAttempts - 1 {
-                try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
+                do { try await Task.sleep(for: .seconds(embyConvertPollInterval)) } catch { return }
             }
         }
         // Final fallback for an empty/ambiguous snapshot (the strict NEW-h264/mp4 match never landed):
@@ -964,19 +970,27 @@ extension DownloadManager {
             "job_id": .int(jobId),
             "target": .label(targetName),
         ])
-        // Clear the prep progress + release THIS lane's bookkeeping so the handoff `downloadEmby`
-        // re-acquires the `activeJobs` slot cleanly and drives the row from 0% on the static lane.
-        clearOptimizeProgress(ratingKey: ratingKey)
-        releaseInFlight(for: storeAttemptKey)
-        // Keep the seeded `.preparing` row until the static handoff atomically replaces it. A crash
-        // here can then resume the completed job/source lookup instead of losing the download.
-        // Hand off to the existing resumable `.original` static lane. `.existingVersion` addresses a
-        // specific converted MediaSource id (the #126 byte-for-byte reuse path) — it negotiates the
-        // mp4/h264 converted source to `.original` and never re-enters the convert lane (only
-        // `.optimize` reroutes). The KEPT converted file is what reuse serves next time.
+        await handoffEmbyConvertedSource(item: item, sourceID: newSourceId, targetName: targetName,
+                                          audioStreamIndex: audioStreamIndex,
+                                          attemptKey: storeAttemptKey, pollerID: attemptID)
+    }
+
+    /// All four reuse/completion branches leave prep through this operation. The admission
+    /// coordinator can exempt a row from Pause All by passing allowWhileQueuePaused here.
+    func handoffEmbyConvertedSource(item: MediaItem, sourceID: String, targetName: String,
+                                     audioStreamIndex: Int?, attemptKey: DownloadAttemptKey,
+                                     pollerID: UUID, allowWhileQueuePaused: Bool = false) async {
+        guard embyConvertAttemptIsCurrent(ratingKey: attemptKey.ratingKey, attemptID: pollerID,
+                                          targetName: targetName),
+              inFlightAttempts.owns(attemptKey),
+              endEmbyConvertPoller(for: attemptKey, id: pollerID) else { return }
+        clearOptimizeProgress(ratingKey: attemptKey.ratingKey)
+        releaseInFlight(for: attemptKey)
+        // Keep the preparing row until downloadEmby commits its exact static source. The existing
+        // static gate parks this handoff during Pause All; Convert polling itself remains active.
         await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
-                           mediaSourceIDOverride: newSourceId,
-                           deferStaticStartWhenQueuePaused: true,
+                           mediaSourceIDOverride: sourceID,
+                           deferStaticStartWhenQueuePaused: !allowWhileQueuePaused,
                            requestedProfileLabelOverride: targetName,
                            allowReplacingExistingActiveRow: true)
     }
@@ -1000,7 +1014,7 @@ extension DownloadManager {
             let req = try EmbyPlayback.downloadPlaybackInfoRequest(
                 server: server, token: token, identity: identity, userId: userId, itemId: itemId,
                 mediaSourceId: nil, maxStaticBitrate: 200_000_000)
-            let (data, response) = try await URLSession.shared.data(for: req)
+            let (data, response) = try await embyConvertSession.data(for: req)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 return nil
             }
@@ -1021,7 +1035,7 @@ extension DownloadManager {
             let req = try EmbyConvertRequest.itemRefreshRequest(server: server, token: token,
                                                                 identity: identity, userId: userId,
                                                                 itemId: itemId)
-            let (_, response) = try await URLSession.shared.data(for: req)
+            let (_, response) = try await embyConvertSession.data(for: req)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 recordDownloadDiagnostic("downloads.convert_refresh_failed", fields: [
                     "download_id": .identifier(ratingKey),
@@ -1064,9 +1078,7 @@ extension DownloadManager {
         let maxAttempts = 6 // ~30 seconds at the shared 5s poll cadence; bounded before new convert.
         var lastSourceCount = 0
         for attempt in 0..<maxAttempts {
-            guard let key = inFlightAttempts.owner(forRatingKey: ratingKey),
-                  serverPrepAttempts.isCurrentEmbyConvertAttempt(for: key, id: attemptID),
-                  activeJobs.contains(ratingKey) else { return nil }
+            guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID) else { return nil }
             let sources = await embyFileSources(server: server, token: token, identity: identity,
                                                 userId: userId, itemId: itemId)
             lastSourceCount = sources.count
@@ -1088,7 +1100,7 @@ extension DownloadManager {
                 return reuse
             }
             if attempt < maxAttempts - 1 {
-                try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
+                do { try await Task.sleep(for: .seconds(embyConvertPollInterval)) } catch { return nil }
             }
         }
         recordDownloadDiagnostic("downloads.convert_reuse_refresh_miss", fields: [

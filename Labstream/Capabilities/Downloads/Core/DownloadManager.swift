@@ -235,10 +235,11 @@ public final class DownloadManager {
     #if DEBUG
     @ObservationIgnored private(set) var startupActivationSubmissionCountForTesting = 0
     #endif
-    /// Short-lived worker for ordinary episode rows carrying the durable one-time planner marker.
-    /// No season/batch entity is retained; relaunch simply rediscovers marked rows.
-    @ObservationIgnored var seasonPlannerAdmissionTask: Task<Void, Never>?
-    @ObservationIgnored var seasonPlannerAdmittingKeys: Set<String> = []
+    /// P4: the one admission window every download start goes through.
+    @ObservationIgnored let admission = DownloadAdmissionCoordinator()
+    @ObservationIgnored var admissionPumpTask: Task<Void, Never>?
+    @ObservationIgnored var admissionWakeTask: Task<Void, Never>?
+    @ObservationIgnored var lastAdmissionOccupancySignature = ""
     /// Season-plan commits publish their rows atomically but await durability off the main actor.
     /// While one is in flight, the admission worker must not admit rows whose plan has not yet
     /// proven durable (a failed commit withdraws them again).
@@ -443,10 +444,11 @@ public final class DownloadManager {
     /// Attempt-scoped server cleanup survives row/file removal in a separate durability domain.
     let cleanupIntentJournal: DownloadCleanupIntentJournal
 
-    /// Poll cadence for Plex server-side optimize jobs. Deliberately no wall-clock timeout:
-    /// long 4K/HDR software transcodes can legitimately run for hours, and the app must base
-    /// failure only on server truth (metadata/background queue status), not elapsed time.
-    let optimizePollInterval: TimeInterval = 5
+    /// Injectable prep cadences and Emby control-plane transport. Long renders retain the
+    /// separate persisted deadline and server-truth grace policies.
+    var optimizePollInterval: TimeInterval = 5
+    var embyConvertPollInterval: TimeInterval = 5
+    var embyConvertSession: URLSession = .shared
 
     init(appModel: AppModel,
          store injectedStore: DownloadStore? = nil,
@@ -1027,6 +1029,10 @@ public final class DownloadManager {
                         liveKeys: liveKeys
                     )
                 }
+                // P4: admission opens only after tasks and pollers were reattached, so surviving
+                // work is counted before anything new is granted.
+                self.admission.recoveryComplete = true
+                self.scheduleAdmissionPump()
             }
         }
     }
@@ -1723,6 +1729,19 @@ public final class DownloadManager {
     private func pause(record: DownloadRecord) {
         let ratingKey = record.ratingKey
         guard let releaseKey = attemptKey(for: record) else { return }
+        // P4.6: a pause ends the row's supervised start and forgets its request, so no granted
+        // continuation can start it afterwards (B64).
+        withdrawAdmission(ratingKey: ratingKey)
+        if isWaitingForAdmission(record) {
+            // A planned row parks synchronously and keeps its first-start intent (B65); a parked
+            // row waiting for its retry just withdraws the request.
+            let event: DownloadLifecycleEvent = record.lifecycle == .planned
+                ? .pause(.user) : .admissionWithdrawn
+            _ = applyLifecycleEvent(event, for: releaseKey, context: "user_pause_waiting")
+            lastError[ratingKey] = .interruptedResumable
+            refreshRecords()
+            return
+        }
         let pauseAction = DownloadPausePolicy.rowAction(
             status: record.status,
             isStaticRangeRecord: StaticRangeRecoveryPolicy.isStaticRangeRecord(record),
@@ -1761,6 +1780,13 @@ public final class DownloadManager {
                   applyLifecycleEvent(.pause(.user), for: key, context: "user_pause") else { return }
             session.pause(ratingKey: ratingKey)
         case .cancelTaskOnly:
+            // B64: a task-less admitted row (a granted start still negotiating) parks
+            // synchronously; the session's no-task path would otherwise land later and a start
+            // chain past its last check could begin the transfer first.
+            if !session.isTrackingTransfer(ratingKey: ratingKey),
+               store.lifecycleState(for: releaseKey)?.lifecycle == .admitted {
+                _ = applyLifecycleEvent(.pause(.user), for: releaseKey, context: "user_pause")
+            }
             session.pause(ratingKey: ratingKey)
         case .parkPreparing:
             guard let key = attemptKey(for: record),
@@ -1808,6 +1834,8 @@ public final class DownloadManager {
     /// Pause all non-terminal work and persist the queue gate across relaunch.
     public func pauseQueue() {
         isQueuePaused = true
+        // P4.6: another Pause All revokes every row's manual-resume exemption.
+        admission.revokeAllExemptions()
         staticRangeRecovery.removeAllManualQueueResumes()
         UserDefaults.standard.set(true, forKey: Self.queuePausedDefaultsKey)
         for record in records where DownloadPausePolicy.shouldPauseDuringQueuePause(record) {
@@ -1827,10 +1855,13 @@ public final class DownloadManager {
         isQueuePaused = false
         staticRangeRecovery.removeAllManualQueueResumes()
         UserDefaults.standard.set(false, forKey: Self.queuePausedDefaultsKey)
-        let retryKeys = records
-            .filter { DownloadQueueToolbarPolicy.shouldRetryWhenResumingQueue($0.status) }
-            .map(\.ratingKey)
-        for key in retryKeys { retry(ratingKey: key) }
+        admission.revokeAllExemptions()
+        // B63: Resume All queues every parked row for a lane instead of starting them all at once.
+        for record in store.records
+        where DownloadQueueToolbarPolicy.shouldRetryWhenResumingQueue(record.status)
+            && record.lifecycle != .planned {
+            requestAdmission(for: record, origin: .automatic)
+        }
         rehydrateMissingOptionalSideAssetsForCompletedRows(reason: "queue_resumed")
         resumePendingServerPrepDownloads()
         resumePendingStaticRangeDownloads()
@@ -1945,7 +1976,7 @@ public final class DownloadManager {
         return session
     }
 
-    private func attemptKey(for record: DownloadRecord) -> DownloadAttemptKey? {
+    func attemptKey(for record: DownloadRecord) -> DownloadAttemptKey? {
         guard let attemptID = record.attemptID else { return nil }
         return DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
     }
@@ -1956,7 +1987,7 @@ public final class DownloadManager {
         attemptKey(for: record).flatMap { store.attemptWorkingFileURL(for: $0) }
     }
 
-    private func isDeletionPending(_ record: DownloadRecord) -> Bool {
+    func isDeletionPending(_ record: DownloadRecord) -> Bool {
         guard let key = attemptKey(for: record) else { return false }
         return store.isDeletionPending(for: key)
     }
@@ -2254,6 +2285,7 @@ public final class DownloadManager {
         if StaticRangeRecoveryPolicy.shouldWaitForManualResume(
             isQueuePaused: isQueuePaused,
             wasManuallyResumedWhileQueuePaused: staticRangeRecovery.wasManuallyResumedWhileQueuePaused(ratingKey)
+                || admission.isExempt(ratingKey)
         ) {
             guard let record = store.record(for: ratingKey) else {
                 staticRangeRecovery.removePendingResume(ratingKey)
@@ -2357,9 +2389,59 @@ public final class DownloadManager {
         if StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: reason) {
             staticRangeRecovery.preserveRestartCountersForNextStart(ratingKey)
         }
+        // P4: a row waiting for admission belongs to the coordinator, never to this drain.
+        if isWaitingForAdmission(record) {
+            staticRangeRecovery.removePendingResume(ratingKey)
+            return
+        }
+        // A deferred start honours its backoff here too (the pump wakes at `eligibleAt`).
+        if let eligibleAt = admission.requestStates[ratingKey]?.eligibleAt,
+           eligibleAt > admission.now() {
+            return
+        }
+        // P4: an automatic static resume takes a lane like any other start. Without room it keeps
+        // its pending-resume marker; the admission pump drains pending resumes when the static
+        // lane frees.
+        guard admissionHasRoom(
+            for: ratingKey, lane: .staticFile,
+            exemptFromQueuePause: admission.isExempt(ratingKey)
+                || staticRangeRecovery.wasManuallyResumedWhileQueuePaused(ratingKey)) else {
+            recordDownloadDiagnostic("downloads.range_resume_waiting_for_lane", fields: [
+                "download_id": .identifier(ratingKey),
+                "reason": .label(reason),
+            ])
+            return
+        }
         refreshRecords()
-        retry(ratingKey: ratingKey,
-              allowReplacingExistingActiveRow: StaticRangeRecoveryPolicy.shouldMarkSystemResumeInactiveBeforeRetry(record))
+        let generation = admission.beginSupervision(ratingKey, lane: .staticFile, origin: .automatic)
+        let work = retry(
+            record: store.record(for: ratingKey) ?? record,
+            allowReplacingExistingActiveRow: StaticRangeRecoveryPolicy.shouldMarkSystemResumeInactiveBeforeRetry(record))
+        Task { @MainActor [weak self] in
+            await work?.value
+            self?.finishAdmittedStart(ratingKey, generation: generation, intent: .retryRequested)
+        }
+    }
+
+    /// True while a static range resume waits for a lane (or its backend).
+    var hasPendingStaticRangeResumes: Bool {
+        !staticRangeRecovery.resumablePendingKeys(isQueuePaused: isQueuePaused).isEmpty
+    }
+
+    /// Drain pending static resumes once the static lane has room (P4 pump).
+    func drainPendingStaticRangeResumes() {
+        resumePendingStaticRangeDownloads()
+    }
+
+    /// P4.6: a row's own Resume or Retry during Pause All exempts it from the queue gate, for
+    /// admission and for static range recovery alike, until the next Pause All.
+    func markRowResumedDuringQueuePause(_ ratingKey: String) {
+        admission.exempt(ratingKey)
+        staticRangeRecovery.markManualQueueResume(ratingKey)
+    }
+
+    func hasRegisteredServerPrepPoller(ratingKey: String) -> Bool {
+        serverPrepPollerTasks.keys.contains { $0.ratingKey == ratingKey }
     }
 
     func consumeRangeRestartCounterPreservation(ratingKey: String) -> Bool {
@@ -2407,9 +2489,11 @@ public final class DownloadManager {
     /// from the persisted `OfflineMetadata` snapshot (real type + media/part index) and
     /// re-run the probe-driven download path — re-probing so a now-compatible file goes
     /// direct. Rows persisted before D5 lack a snapshot, so we fall back to a minimal movie.
+    /// A user Retry or Resume on a row. P4: it goes through admission (granted at once when a lane
+    /// has room, exempt from Pause All for this row only; otherwise it waits as a request).
     public func retry(ratingKey: String, allowReplacingExistingActiveRow: Bool = false) {
-        guard let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
-        retry(record: record, allowReplacingExistingActiveRow: allowReplacingExistingActiveRow)
+        guard let record = store.record(for: ratingKey) else { return }
+        admitRowAction(record)
     }
 
     /// Execute a rendered row's retry/resume only while its exact persisted attempt still owns
@@ -2420,23 +2504,27 @@ public final class DownloadManager {
         allowReplacingExistingActiveRow: Bool = false
     ) -> Bool {
         guard let record = currentRecord(for: identity) else { return false }
-        retry(record: record, allowReplacingExistingActiveRow: allowReplacingExistingActiveRow)
+        admitRowAction(record)
         return true
     }
 
-    private func retry(record: DownloadRecord, allowReplacingExistingActiveRow: Bool) {
+    /// Returns the spawned retry work, when there is any, so P4 admission can supervise a granted
+    /// start until its nested async work has finished (`nil` once the retry completed or refused
+    /// synchronously).
+    @discardableResult
+    func retry(record: DownloadRecord, allowReplacingExistingActiveRow: Bool) -> Task<Void, Never>? {
         let ratingKey = record.ratingKey
         guard startupRecoveryState == .ready else {
             lastError[ratingKey] = .transferFailed(
                 "Downloads are paused while recovery is completed. Retry recovery first."
             )
-            return
+            return nil
         }
-        guard !retryState.isRetrying(ratingKey) else { return }
+        guard !retryState.isRetrying(ratingKey) else { return nil }
         guard let currentKey = attemptKey(for: record),
-              !store.isDeletionPending(for: currentKey) else { return }
+              !store.isDeletionPending(for: currentKey) else { return nil }
         setOptionalSideAssetHydrationParked(false, for: currentKey)
-        guard record.status != .complete, record.status != .unverified else { return }
+        guard record.status != .complete, record.status != .unverified else { return nil }
         let shouldPromotePausedStatic = StaticRangeRecoveryPolicy.shouldMarkPausedRowInactiveBeforeBackendRetry(record)
         let shouldReplacePersistedActiveStatic = allowReplacingExistingActiveRow
             || StaticRangeRecoveryPolicy.shouldMarkSystemResumeInactiveBeforeRetry(record)
@@ -2460,10 +2548,10 @@ public final class DownloadManager {
             ])
         }
         if finalizeCompletedStaticRangeIfNeeded(record: record, reason: "manual_retry") {
-            return
+            return nil
         }
         if deferStaticRangeRetryIfBackendUnavailable(record: record, reason: "retry_backend_not_ready") {
-            return
+            return nil
         }
         // Lens 6 F5: retry continuations are attempt-scoped. Each begin mints a token the async
         // bodies below verify, so a pause→resume (which re-begins) cannot revive THIS chain after
@@ -2471,7 +2559,7 @@ public final class DownloadManager {
         let retryToken = retryState.begin(ratingKey)
         guard let retryAttemptKey = attemptKey(for: record) else {
             retryState.removeRetrying(ratingKey)
-            return
+            return nil
         }
         recordDownloadDiagnostic("downloads.retry", fields: [
             "download_id": .identifier(ratingKey),
@@ -2493,11 +2581,11 @@ public final class DownloadManager {
             guard applyLifecycleEvent(
                 .retry(.convertResume), for: retryAttemptKey, context: "retry_emby_convert") else {
                 retryState.removeRetrying(ratingKey)
-                return
+                return nil
             }
             resumePendingEmbyConvertDownloads()
             refreshRecords()
-            return
+            return nil
         }
         // A condemned attempt (P3a) is never continued in place: its Retry takes the replacement
         // path and starts from zero, even if a resume blob survives.
@@ -2519,19 +2607,19 @@ public final class DownloadManager {
                 break
             case .staleOrMissing:
                 retryState.removeRetrying(ratingKey)
-                return
+                return nil
             case .persistenceFailed(let failure):
                 recordDownloadDiagnostic("downloads.resume_manifest_clear_failed", fields: [
                     "download_id": .identifier(ratingKey),
                     "failure": .label(Self.startupPersistenceFailureLabel(failure)),
                 ])
                 retryState.removeRetrying(ratingKey)
-                return
+                return nil
             }
             guard applyLifecycleEvent(
                 .retry(.resumeBlob), for: retryAttemptKey, context: "resume_blob") else {
                 retryState.removeRetrying(ratingKey)
-                return
+                return nil
             }
             // #227: static range rows with persisted resume data MUST resume on the
             // range lane; the opaque lane would treat the blob task's partial-body temp as a
@@ -2561,7 +2649,7 @@ public final class DownloadManager {
                                                     attemptKey: retryAttemptKey,
                                                     reason: "transfer_resume")
                 refreshRecords()
-                return
+                return nil
             }
             // The blob was refused/stale — fall through to a clean restart below (for range rows
             // the durable partial remains the checkpoint; only the blob's temp is lost).
@@ -2569,7 +2657,7 @@ public final class DownloadManager {
                 .transferFailed(.validation), for: retryAttemptKey,
                 context: "resume_blob_refused") else {
                 retryState.removeRetrying(ratingKey)
-                return
+                return nil
             }
         }
         if DownloadRetryPreparationPolicy.shouldResumePausedPlexServerPrep(
@@ -2582,7 +2670,7 @@ public final class DownloadManager {
                 record, durablePartialURL: durableStaticPartialURL(for: record))
         ), let targetName = record.metadata?.optimizeTargetName {
             resumePausedPlexServerPrep(record: record, targetName: targetName)
-            return
+            return nil
         }
         // #131/#146/#168/#169 live checks: paused static-byte-range rows may have only the durable
         // partial file as their checkpoint (no URLSession resume blob), or may have no durable bytes
@@ -2600,18 +2688,25 @@ public final class DownloadManager {
             guard applyLifecycleEvent(
                 .retry(staticMode), for: retryAttemptKey, context: "retry_static") else {
                 retryState.removeRetrying(ratingKey)
-                return
+                return nil
+            }
+        } else if store.lifecycleState(for: retryAttemptKey)?.lifecycle == .paused {
+            // P4: a paused forward-only stream restarts fresh. Left `.paused`, the backend chain's
+            // continuation guard reads the Resume as cancelled and silently no-ops (prep, Convert
+            // and resume-blob rows returned above with their own transitions).
+            guard applyLifecycleEvent(
+                .retry(.freshAttempt), for: retryAttemptKey, context: "retry_paused_fresh") else {
+                retryState.removeRetrying(ratingKey)
+                return nil
             }
         }
         if DownloadRecordIdentity.isJellyfinRecordKey(ratingKey) {
-            retryJellyfin(record: record, allowReplacingExistingActiveRow: allowActiveRowReplacement,
-                          attemptToken: retryToken)
-            return
+            return retryJellyfin(record: record, allowReplacingExistingActiveRow: allowActiveRowReplacement,
+                                 attemptToken: retryToken)
         }
         if DownloadRecordIdentity.isEmbyRecordKey(ratingKey) {
-            retryEmby(record: record, allowReplacingExistingActiveRow: allowActiveRowReplacement,
-                      attemptToken: retryToken)
-            return
+            return retryEmby(record: record, allowReplacingExistingActiveRow: allowActiveRowReplacement,
+                             attemptToken: retryToken)
         }
         let metadata = record.metadata
         let item = metadata?.makeMediaItem()
@@ -2623,7 +2718,7 @@ public final class DownloadManager {
         // the optimizer using the user's explicit default preset. Keep the
         // failed row visible until after auth/server preflight succeeds; otherwise tapping retry
         // while disconnected/not-ready removes the only visible retry affordance.
-        Task { [weak self] in
+        return Task { [weak self] in
             guard let self else { return }
             // #84: resolve the Plex session from its own lane (not `activeBackend`); a row whose
             // lane is unconfigured stays `.failed`/retryable with the accurate not-signed-in reason.
@@ -2782,9 +2877,7 @@ public final class DownloadManager {
 
     /// Resume a paused Plex server-prep row by reattaching to its existing optimize queue item.
     ///
-    /// Do not call `retryPausedPlexOptimize` here: that path creates a fresh optimize request after
-    /// fetching current metadata. A server-prep row already has the queue title/baseline needed by
-    /// `resumePendingServerPrepDownloads`, so recreating risks a duplicate Plex transcode.
+    /// The persisted queue identity and dispatch evidence are reconciled before any create.
     private func resumePausedPlexServerPrep(record: DownloadRecord, targetName: String) {
         guard let key = attemptKey(for: record) else { return }
         guard let backendSession = appModel.backendSession(for: .plex) else {
@@ -2826,64 +2919,16 @@ public final class DownloadManager {
         resumePendingServerPrepDownloads(allowWhileQueuePaused: true)
     }
 
-    private func retryPausedPlexOptimize(record: DownloadRecord, targetName: String) {
-        guard let key = attemptKey(for: record) else { return }
-        let metadata = record.metadata
-        let item = metadata?.makeMediaItem()
-            ?? MediaItem(ratingKey: record.ratingKey, title: record.title, type: "movie")
-        let mediaIndex = metadata?.mediaIndex ?? 0
-        let partIndex = metadata?.partIndex ?? 0
-        Task { [weak self] in
-            guard let self else { return }
-            guard let backendSession = self.appModel.backendSession(for: .plex) else {
-                self.lastError[record.ratingKey] = .notAuthenticated
-                _ = self.applyLifecycleEvent(
-                    .backendUnavailable(.awaitingSession), for: key, context: "plex_optimize_auth")
-                self.refreshRecords()
-                return
-            }
-            if let metadata, !backendSession.matchesPersistedServer(metadata) {
-                self.recordDownloadDiagnostic("downloads.paused_optimize_resume_skip", fields: [
-                    "download_id": .identifier(record.ratingKey),
-                    "target": .label(targetName),
-                    "reason": .label("plex_session_mismatch"),
-                ])
-                self.lastError[record.ratingKey] = .transferFailed(
-                    "Waiting for the original Plex server session.")
-                _ = self.applyLifecycleEvent(
-                    .backendUnavailable(.awaitingSession), for: key, context: "plex_optimize_server")
-                self.refreshRecords()
-                return
-            }
-            let currentItem = await self.fetchCurrentMediaItem(ratingKey: record.ratingKey,
-                                                               server: backendSession.baseURL,
-                                                               token: backendSession.token,
-                                                               identity: self.appModel.identity) ?? item
-            guard self.retryAttemptCanContinue(for: key) else { return }
-            self.recordDownloadDiagnostic("downloads.paused_optimize_resume", fields: [
-                "download_id": .identifier(record.ratingKey),
-                "target": .label(targetName),
-            ])
-            self.releaseInFlight(for: key)
-            if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record, durablePartialURL: self.durableStaticPartialURL(for: record)) {
-                guard await self.removeAttempt(key, context: "plex_optimize_replace") else { return }
-            }
-            await self.download(currentItem, choice: .optimize(targetName: targetName),
-                                mediaIndex: mediaIndex, partIndex: partIndex,
-                                audioStreamIndex: record.metadata?.audioStreamIndex)
-            self.refreshRecords()
-        }
-    }
-
+    @discardableResult
     private func retryJellyfin(record: DownloadRecord, allowReplacingExistingActiveRow: Bool = false,
-                               attemptToken: UUID) {
-        guard let key = attemptKey(for: record) else { return }
+                               attemptToken: UUID) -> Task<Void, Never>? {
+        guard let key = attemptKey(for: record) else { return nil }
         let retryIntent = DownloadBackendRetryIntentPolicy.jellyfinIntent(
             for: record,
             fallbackItemID: DownloadRecordIdentity.jellyfinItemID(fromRecordKey: record.ratingKey),
             fallbackOriginalIsLocallyPlayable: false)
 
-        Task { [weak self] in
+        return Task { [weak self] in
             guard let self else { return }
             // #84: gate on the Jellyfin lane being configured (resolved from its own session),
             // independent of `activeBackend`; an unconfigured lane stays retryable with the
@@ -2945,14 +2990,15 @@ public final class DownloadManager {
         }
     }
 
+    @discardableResult
     private func retryEmby(record: DownloadRecord, allowReplacingExistingActiveRow: Bool = false,
-                           attemptToken: UUID) {
-        guard let key = attemptKey(for: record) else { return }
+                           attemptToken: UUID) -> Task<Void, Never>? {
+        guard let key = attemptKey(for: record) else { return nil }
         let retryIntent = DownloadBackendRetryIntentPolicy.embyIntent(
             for: record,
             fallbackItemID: DownloadRecordIdentity.embyItemID(fromRecordKey: record.ratingKey))
 
-        Task { [weak self] in
+        return Task { [weak self] in
             guard let self else { return }
             // #84: gate on the Emby lane being configured (resolved from its own session),
             // independent of `activeBackend`; an unconfigured lane stays retryable with the
@@ -3033,6 +3079,9 @@ public final class DownloadManager {
                 && backend == .emby
                 && record.metadata?.resolvedDownloadLane() == .optimize
                 && !activeJobs.contains(record.ratingKey)
+                // P4: a failed row waiting for its retry is admitted by the coordinator, never
+                // reattached here past the caps.
+                && !isWaitingForAdmission(record)
         }
         // P2: legacy tombstones are migrated into the cleanup journal at launch and executed by
         // the cleanup runner; this sweep only resumes Convert rows.
@@ -3053,6 +3102,11 @@ public final class DownloadManager {
         let token = session.token
         let identity = appModel.identity.emby
         for record in embyPreparing {
+            // P4: as for Plex, a late attach after startup recovery needs prep-lane room (Convert
+            // polling itself continues during Pause All, emby-33).
+            if admission.recoveryComplete,
+               !admissionHasRoom(for: record.ratingKey, lane: .serverPreparation,
+                                 exemptFromQueuePause: true) { continue }
             guard let metadata = record.metadata,
                   metadata.resolvedBackendKind(ratingKey: record.ratingKey) == .emby,
                   let key = attemptKey(for: record) else { continue }
@@ -3085,13 +3139,14 @@ public final class DownloadManager {
             case .poll(let jobId):
                 activeJobs.insert(ratingKey)
                 inFlightAttempts.acquire(key)
-                let attemptID = beginEmbyConvertAttempt(for: key)
+                guard let attemptID = beginEmbyConvertPoller(for: key) else { continue }
                 recordDownloadDiagnostic("downloads.convert_resume", fields: [
                     "download_id": .identifier(ratingKey),
                     "job_id": .int(jobId),
                 ])
                 let task = Task { [weak self] in
                     guard let self else { return }
+                    defer { self.endEmbyConvertPoller(for: key, id: attemptID) }
                     await self.pollAndDownloadEmbyConvertJob(
                         item: item, ratingKey: ratingKey, jobId: jobId,
                         snapshotIds: resumeSnapshot,
@@ -3119,13 +3174,14 @@ public final class DownloadManager {
                     .prepReattached, for: key, context: "emby_convert_recover") else { continue }
                 activeJobs.insert(ratingKey)
                 inFlightAttempts.acquire(key)
-                let attemptID = beginEmbyConvertAttempt(for: key)
+                guard let attemptID = beginEmbyConvertPoller(for: key) else { continue }
                 recordDownloadDiagnostic("downloads.convert_recovery", fields: [
                     "download_id": .identifier(ratingKey),
                     "baseline_count": .int(baseline.count),
                 ])
                 let task = Task { [weak self] in
                     guard let self else { return }
+                    defer { self.endEmbyConvertPoller(for: key, id: attemptID) }
                     await self.recoverAndResumeEmbyConvertJob(
                         item: item, ratingKey: ratingKey, baselineJobIDs: Set(baseline),
                         fingerprint: fingerprint, attemptStartedAtEpochSeconds: startedAt,
@@ -3235,7 +3291,8 @@ public final class DownloadManager {
         // before asking the prep scanner to attach a poller.
         let serverPrepRows = store.records
             .filter(DownloadRetryPolicy.isPlexServerPrepResumeCandidate)
-            .filter { !isDeletionPending($0) }
+            // B62: a planned row (shown `.queued`) belongs to admission, never to the scanner.
+            .filter { !isDeletionPending($0) && !isWaitingForAdmission($0) }
         let candidates = serverPrepRows.filter {
             guard let key = attemptKey(for: $0) else { return false }
             return !serverPrepAttempts.hasPlexPoller(for: key)
@@ -3250,6 +3307,11 @@ public final class DownloadManager {
         guard !candidates.isEmpty else { return }
 
         for record in candidates {
+            // P4: after startup recovery, attaching a row the coordinator never counted (its
+            // backend was unavailable at launch) needs room in the prep lane like any start.
+            if admission.recoveryComplete,
+               !admissionHasRoom(for: record.ratingKey, lane: .serverPreparation,
+                                 exemptFromQueuePause: true) { continue }
             guard let metadata = record.metadata,
                   let targetName = metadata.optimizeTargetName,
                   let key = attemptKey(for: record) else { continue }
@@ -3328,6 +3390,12 @@ public final class DownloadManager {
         serverPrepPollerTasks[key] = task
     }
 
+    #if DEBUG
+    func serverPrepPollerTaskForTesting(for key: DownloadAttemptKey) -> Task<Void, Never>? {
+        serverPrepPollerTasks[key]
+    }
+    #endif
+
     /// Stop only process-owned work after the row became deletion-pending. Do not call
     /// `releaseInFlight`: it also executes/clears external encoder authority, which must remain in
     /// the sealed row until every cleanup intent is independently durable in the journal.
@@ -3381,6 +3449,19 @@ public final class DownloadManager {
             "source": .label(source),
         ])
         return id
+    }
+
+    func beginEmbyConvertPoller(for key: DownloadAttemptKey) -> UUID? {
+        serverPrepAttempts.beginEmbyConvertPoller(for: key)
+    }
+
+    @discardableResult
+    func endEmbyConvertPoller(for key: DownloadAttemptKey, id: UUID) -> Bool {
+        guard serverPrepAttempts.endEmbyConvertPoller(for: key, id: id) else { return false }
+        // Compare-remove before releaseInFlight: never cancel the task doing the static handoff,
+        // and never remove a successor poller's handle from an older task's defer.
+        serverPrepPollerTasks.removeValue(forKey: key)
+        return true
     }
 
     func endServerPrepPoller(for key: DownloadAttemptKey, id: UUID) {
@@ -3449,107 +3530,14 @@ public final class DownloadManager {
             try assertCurrentOptimizeAttempt(attemptKey: key,
                                              metadata: metadata,
                                              targetName: targetName)
-            let currentItem = await fetchCurrentMediaItem(ratingKey: ratingKey, server: server,
-                                                         token: token, identity: identity)
-                ?? metadata.makeMediaItem()
-            guard store.ownsAttempt(key) else {
-                throw DownloadLifecycleCancellation.staleOptimizeAttempt
-            }
-            try assertCurrentOptimizeAttempt(attemptKey: key,
-                                             metadata: metadata,
-                                             targetName: targetName)
+            let currentItem = metadata.makeMediaItem()
             let originalPartIDs = DownloadOptimizeSourcePolicy.resumeBaselinePartIDs(metadata: metadata, item: currentItem)
-            guard !originalPartIDs.isEmpty else {
-                throw DownloadError.optimizeFailed("No source media parts found while resuming optimize.")
-            }
-            let sourceHeight = currentItem.media?[safe: metadata.mediaIndex ?? 0]?.height
-                ?? metadata.sourceMediaHeight
-            // Reconcile the rendered artifact BEFORE inspecting/recreating queue work. Plex may
-            // already have completed and removed the type-42 item while the app was suspended; in
-            // that state a missing queue entry is not evidence that another optimize POST is needed.
-            if let renderedPart = Self.optimizedDownloadCandidate(
-                from: currentItem.media ?? [],
-                baselinePartIDs: originalPartIDs,
-                targetName: targetName,
-                sourceHeight: sourceHeight
-            ) {
-                recordDownloadDiagnostic("downloads.optimize_resume_adopt_completed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "target": .label(targetName),
-                ])
-                try startOptimizedPartDownload(attemptKey: key,
-                                               title: record.title,
-                                               part: renderedPart,
-                                               metadata: metadata,
-                                               server: server,
-                                               token: token)
-                return
-            }
-            // No matching rendered artifact is visible yet. Inspect the exact persisted queue item
-            // before deciding whether its work disappeared and needs to be recreated.
-            let backgroundProcessingKey = await bgKeyForPolling(server: server,
-                                                                 token: token,
-                                                                 identity: identity)
-            guard store.ownsAttempt(key) else {
-                throw DownloadLifecycleCancellation.staleOptimizeAttempt
-            }
-            let persistedQueueStatus: OptimizerQueueResponse.Status?
-            if let backgroundProcessingKey, let queueTitle = metadata.optimizeQueueTitle {
-                persistedQueueStatus = await optimizerQueueStatus(
-                    backgroundProcessingKey: backgroundProcessingKey,
-                    queueTitle: queueTitle,
-                    server: server,
-                    token: token,
-                    identity: identity)
-            } else {
-                persistedQueueStatus = nil
-            }
-            // Recreate only when the queue was actually inspected and the item is provably
-            // absent. A nil backgroundProcessingKey means the key lookup itself failed (bgKey
-            // fetch swallows transient errors), which is "could not inspect", not "vanished" —
-            // re-POSTing there would enqueue a duplicate optimize beside a still-running job.
-            if backgroundProcessingKey != nil,
-               persistedQueueStatus == nil,
-               let queueTitle = metadata.optimizeQueueTitle {
-                guard store.ownsAttempt(key) else {
-                    throw DownloadLifecycleCancellation.staleOptimizeAttempt
-                }
-                recordDownloadDiagnostic("downloads.optimize_resume_recreate", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "target": .label(targetName),
-                ])
-                do {
-                    try await triggerOptimize(item: currentItem, targetName: targetName,
-                                              queueTitle: queueTitle,
-                                              server: server, token: token, identity: identity,
-                                              isStillCurrent: { [weak self] in
-                                                  self?.store.attemptAdmitsWork(key) == true
-                                              })
-                    markPlexOptimizeCreateConfirmed(for: key, queueTitle: queueTitle)
-                } catch {
-                    // Same policy as fresh optimize starts: a recreate failure should not briefly
-                    // turn a queued/preparing row red if the optimized Part can still be discovered.
-                    recordDownloadDiagnostic("downloads.optimize_create_failed", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "target": .label(targetName),
-                        "error": .error(error),
-                    ])
-                }
-                guard store.ownsAttempt(key) else {
-                    throw DownloadLifecycleCancellation.staleOptimizeAttempt
-                }
-                try assertCurrentOptimizeAttempt(attemptKey: key,
-                                                 metadata: metadata,
-                                                 targetName: targetName)
-            }
-            guard store.ownsAttempt(key) else {
-                throw DownloadLifecycleCancellation.staleOptimizeAttempt
-            }
+            let sourceHeight = metadata.sourceMediaHeight
             let part = try await pollForOptimizedPart(ratingKey: ratingKey,
                                                       originalPartIDs: originalPartIDs,
                                                       targetName: targetName,
                                                       sourceHeight: sourceHeight,
-                                                      backgroundProcessingKey: backgroundProcessingKey,
+                                                      backgroundProcessingKey: nil,
                                                       queueTitle: metadata.optimizeQueueTitle,
                                                       startedAtEpochSeconds: optimizeStartedAt,
                                                       mediaTitle: record.title,
@@ -3564,10 +3552,10 @@ public final class DownloadManager {
                                              targetName: targetName)
             try startOptimizedPartDownload(attemptKey: key,
                                            title: record.title,
-                                           part: part,
+                                           part: part.part,
                                            metadata: metadata,
-                                           server: server,
-                                           token: token)
+                                           server: part.session.baseURL,
+                                           token: part.session.token)
         } catch DownloadLifecycleCancellation.staleOptimizeAttempt {
             recordDownloadDiagnostic("downloads.optimize_resume_stale", fields: [
                 "download_id": .identifier(ratingKey),
@@ -3766,6 +3754,8 @@ public final class DownloadManager {
 
     @discardableResult
     private func delete(record rowToDelete: DownloadRecord) -> DeleteHandoff {
+        // P4: a delete ends the row's supervised start and forgets its request and exemption.
+        withdrawAdmission(ratingKey: rowToDelete.ratingKey)
         let ratingKey = rowToDelete.ratingKey
         let rowAttemptKey = rowToDelete.attemptID.map {
             DownloadAttemptKey(ratingKey: ratingKey, attemptID: $0)
@@ -4219,8 +4209,8 @@ public final class DownloadManager {
         let now = Date()
         var fresh = store.records
         let staleQueuedStaticPartials = fresh.filter { record in
-            guard !isDeletionPending(record), !seasonPlannerAdmittingKeys.contains(record.ratingKey),
-                  record.metadata?.seasonPlannerPendingAdmission != true else { return false }
+            guard !isDeletionPending(record), admission.supervised[record.ratingKey] == nil,
+                  !isWaitingForAdmission(record) else { return false }
             return DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
                 record,
                 // B00: a queued append, delayed range retry, or claimed finalizer is still live
@@ -4302,13 +4292,13 @@ public final class DownloadManager {
             fresh = store.records
         }
         let serverPrepKickIsRecent = lastServerPrepRefreshKickAt.map { now.timeIntervalSince($0) < 5 } ?? false
-        // Season-planned rows are durably queued but intentionally have no task/poller until the
-        // bounded admission worker selects them. Ordinary stale/relaunch recovery must not race
-        // that marker and start the entire season at once.
+        // Rows waiting for admission (planned, or parked with a retry request) intentionally have
+        // no task/poller until the coordinator grants them, and a supervised start owns its row.
+        // Ordinary stale/relaunch recovery must not race either and start them all at once.
         let recoveryEligibleFresh = fresh.filter {
             !isDeletionPending($0)
-                && !seasonPlannerAdmittingKeys.contains($0.ratingKey)
-                && $0.metadata?.seasonPlannerPendingAdmission != true
+                && admission.supervised[$0.ratingKey] == nil
+                && !isWaitingForAdmission($0)
         }
         let serverPrepKeysByRatingKey = Dictionary(uniqueKeysWithValues: recoveryEligibleFresh.compactMap { record in
             attemptKey(for: record).map { (record.ratingKey, $0) }
@@ -4326,7 +4316,9 @@ public final class DownloadManager {
             }
         )
         if isQueuePaused {
-            for ratingKey in serverPrepRefreshPlan.parkWhileQueuePausedKeys {
+            // P4.6: a row the user resumed during Pause All stays exempt until the next Pause All.
+            for ratingKey in serverPrepRefreshPlan.parkWhileQueuePausedKeys
+            where !admission.isExempt(ratingKey) {
                 if let record = fresh.first(where: { $0.ratingKey == ratingKey }),
                    record.status != .paused, let key = attemptKey(for: record) {
                     _ = applyQueuePause(for: key, context: "queue_pause_prep")
@@ -4503,9 +4495,7 @@ public final class DownloadManager {
                 self?.restartStalledForwardOnlyStream(restart)
             }
         }
-        if fresh.contains(where: { $0.metadata?.seasonPlannerPendingAdmission == true }) {
-            scheduleSeasonPlannerAdmission()
-        }
+        noteAdmissionOccupancy(fresh)
     }
 
     private func detectForwardOnlyStreamStalls(in records: [DownloadRecord],
@@ -4544,7 +4534,10 @@ public final class DownloadManager {
         // and a persistent wedge restarts the encoder from byte 0 every stall timeout forever.
         forwardOnlyStallTracker.seedRestartAttempts(ratingKey, attempts: restart.attempt)
         refreshRecords()
-        retry(ratingKey: ratingKey)
+        // P4: the restart goes through admission like any other start (it just freed its lane).
+        if let failed = store.record(for: key) {
+            requestAdmission(for: failed, origin: .automatic)
+        }
     }
 
     private func updateDownloadWatchdog(for records: [DownloadRecord]) {
@@ -4881,6 +4874,12 @@ public final class DownloadManager {
     }
 
     private func statusCaption(for record: DownloadRecord, backend: DownloadBackendKind) -> String {
+        // pu-33: a row waiting for admission says so instead of reading as active work.
+        if let waiting = DownloadRowStatusCaptionPolicy.admissionWaitingCaption(
+            lifecycle: record.lifecycle, intent: record.admissionIntent,
+            isQueuePaused: isQueuePaused, isExempt: admission.isExempt(record.ratingKey)) {
+            return waiting
+        }
         let isActive = activeJobs.contains(record.ratingKey) || record.status == .downloading
         let failureCaption = record.status == .failed ? lastError[record.ratingKey].map(message(for:)) : nil
         return DownloadRowStatusCaptionPolicy.caption(.init(
@@ -4922,10 +4921,14 @@ public final class DownloadManager {
 
     /// Poll the item's metadata until an optimized (extra) `Part` shows up.
     ///
-    /// Heuristic: the optimized version appears as an additional `Media`/`Part`
-    /// alongside the original. We snapshot the original part ids first, then poll;
-    /// the first part whose id is NOT in that original set is the optimized output.
-    /// If the item had no media at all, we take the highest-id new part.
+    /// Fresh and resumed prep share the same reconciliation: adopt a playable matching version,
+    /// inspect the queue, dispatch only on proven absence, then keep inspecting through grace.
+    /// The observation carries the exact live lane used to read the rendered Part.
+    struct OptimizedPartObservation {
+        let part: Part
+        let session: BackendSession
+    }
+
     func pollForOptimizedPart(ratingKey: String,
                                       originalPartIDs: Set<Int>,
                                       targetName: String,
@@ -4936,11 +4939,16 @@ public final class DownloadManager {
                                       mediaTitle: String,
                                       server: URL,
                                       token: String,
-                                      identity: ClientIdentity) async throws -> Part {
+                                      identity: ClientIdentity) async throws -> OptimizedPartObservation {
         var pollHealth = PlexOptimizePollHealthPolicy.State()
+        var baselinePartIDs = originalPartIDs
+        var resolvedSourceHeight = sourceHeight
         var successfulCompletionObservedAt: TimeInterval?
         var resolvedBackgroundProcessingKey = backgroundProcessingKey
         var bgKeyRetriesRemaining = 3
+        guard let attemptKey = store.record(for: ratingKey).flatMap(attemptKey(for:)) else {
+            throw CancellationError()
+        }
         while !Task.isCancelled {
             if PlexOptimizeDeadlinePolicy.isExpired(
                 startedAtEpochSeconds: startedAtEpochSeconds,
@@ -4958,8 +4966,7 @@ public final class DownloadManager {
             // remove the queue row entirely. Re-check LIVE app state every iteration and stop
             // polling the server the moment this download no longer exists or lost its slot.
             // P3b: a row being deleted (barrier or capsule) counts as gone for polling.
-            let rowExists = store.record(for: ratingKey)
-                .flatMap { attemptKey(for: $0) }.map(store.attemptAdmitsWork) ?? false
+            let rowExists = store.attemptAdmitsWork(attemptKey) && inFlightAttempts.owns(attemptKey)
             guard ServerPrepRefreshPolicy.plexPrepPollerShouldContinue(
                 rowExists: rowExists,
                 slotActive: activeJobs.contains(ratingKey)
@@ -5009,13 +5016,27 @@ public final class DownloadManager {
                 ])
                 throw DownloadError.notAuthenticated
             }
-            if let metadata = fetch.item {
-                if let newPart = Self.optimizedDownloadCandidate(from: metadata.media ?? [],
-                                                                 baselinePartIDs: originalPartIDs,
+            if let item = fetch.item, let metadata = store.record(for: attemptKey)?.metadata {
+                if baselinePartIDs.isEmpty {
+                    baselinePartIDs = DownloadOptimizeSourcePolicy.resumeBaselinePartIDs(metadata: metadata, item: item)
+                }
+                guard !baselinePartIDs.isEmpty else {
+                    throw DownloadError.optimizeFailed("No source media parts found while inspecting optimize.")
+                }
+                if resolvedSourceHeight == nil {
+                    resolvedSourceHeight = item.media?[safe: metadata.mediaIndex ?? 0]?.height
+                }
+                if let newPart = Self.optimizedDownloadCandidate(from: item.media ?? [],
+                                                                 baselinePartIDs: baselinePartIDs,
                                                                  targetName: targetName,
-                                                                 sourceHeight: sourceHeight) {
+                                                                 sourceHeight: resolvedSourceHeight) {
                     clearOptimizeProgress(ratingKey: ratingKey)
-                    return newPart
+                    try Task.checkCancellation()
+                    try assertCurrentOptimizeAttempt(attemptKey: attemptKey, metadata: metadata, targetName: targetName)
+                    recordDownloadDiagnostic("downloads.optimize_adopt_completed", fields: [
+                        "download_id": .identifier(ratingKey), "target": .label(targetName),
+                    ])
+                    return OptimizedPartObservation(part: newPart, session: liveSession)
                 }
             }
             // Surface server-side optimize/transcode progress for the "Preparing on
@@ -5044,16 +5065,68 @@ public final class DownloadManager {
                 resolvedBackgroundProcessingKey = await bgKeyForPolling(
                     server: server, token: token, identity: identity)
             }
-            if let backgroundProcessingKey = resolvedBackgroundProcessingKey,
-               let queueTitle,
-               let status = await optimizerQueueStatus(backgroundProcessingKey: backgroundProcessingKey,
-                                                       queueTitle: queueTitle, server: server,
-                                                       token: token, identity: identity) {
-                // Pause/delete may have landed while this task was suspended in the await above
-                // (releaseInFlight cancels the task, but an already-produced result still resumes
-                // the continuation). Do not stamp finalizing display state or throw terminal
-                // errors on behalf of a superseded attempt.
-                guard !Task.isCancelled else { throw CancellationError() }
+            let lookup: OptimizerQueueLookup
+            if let backgroundProcessingKey = resolvedBackgroundProcessingKey, let queueTitle {
+                lookup = await optimizerQueueStatus(backgroundProcessingKey: backgroundProcessingKey,
+                                                     queueTitle: queueTitle, server: server,
+                                                     token: token, identity: identity)
+            } else {
+                lookup = .unavailable
+            }
+            try Task.checkCancellation()
+            guard let row = store.record(for: attemptKey), let metadata = row.metadata else {
+                throw DownloadLifecycleCancellation.staleOptimizeAttempt
+            }
+            try assertCurrentOptimizeAttempt(attemptKey: attemptKey, metadata: metadata, targetName: targetName)
+            switch PlexOptimizePrepPolicy.action(
+                queue: lookup.classification, metadataInspected: fetch.item != nil,
+                dispatchedAt: metadata.plexOptimizeCreateDispatchedAtEpochSeconds,
+                now: Date().timeIntervalSince1970) {
+            case .keepInspecting:
+                break
+            case .failMissingCreate:
+                throw DownloadError.optimizeFailed("Plex did not expose the requested optimize job or a playable version.")
+            case .create:
+                if let item = fetch.item, let queueTitle {
+                    do {
+                        try await triggerOptimize(
+                            item: item, targetName: targetName, queueTitle: queueTitle,
+                            server: server, token: token, identity: identity,
+                            isStillCurrent: { [weak self] in
+                                self?.store.attemptAdmitsWork(attemptKey) == true
+                                    && self?.inFlightAttempts.owns(attemptKey) == true
+                            },
+                            willDispatch: { [weak self] in
+                                guard let self else { throw CancellationError() }
+                                try self.persistPlexOptimizeDispatch(for: attemptKey, targetName: targetName)
+                            })
+                        markPlexOptimizeCreateConfirmed(for: attemptKey, queueTitle: queueTitle)
+                    } catch PlexError.http(400) {
+                        // Duplicate creates can race metadata indexing. Re-run adoption immediately;
+                        // if still missing, retain the original dispatch clock and keep inspecting.
+                        let duplicate = await fetchCurrentMediaItemForPoll(
+                            ratingKey: ratingKey, server: server, token: token, identity: identity)
+                        try Task.checkCancellation()
+                        try assertCurrentOptimizeAttempt(attemptKey: attemptKey, metadata: metadata, targetName: targetName)
+                        if let part = Self.optimizedDownloadCandidate(
+                            from: duplicate.item?.media ?? [], baselinePartIDs: baselinePartIDs,
+                            targetName: targetName, sourceHeight: resolvedSourceHeight) {
+                            return OptimizedPartObservation(part: part, session: liveSession)
+                        }
+                        recordDownloadDiagnostic("downloads.optimize_duplicate_pending", fields: [
+                            "download_id": .identifier(ratingKey),
+                        ])
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch let error as DownloadLifecycleCancellation {
+                        throw error
+                    } catch {
+                        throw DownloadError.optimizeFailed(DiagnosticRedactor.safeUserFacingErrorMessage(
+                            error, operation: "Optimize request"))
+                    }
+                }
+            }
+            if case .present(let status) = lookup, let status {
                 switch status.outcome {
                 case .failed:
                     downloadLog.error("optimizer-failed failed=\(status.itemsFailedCount ?? -1, privacy: .public) successful=\(status.itemsSuccessfulCount ?? -1, privacy: .public)")
@@ -5105,6 +5178,23 @@ public final class DownloadManager {
         throw CancellationError()
     }
 
+    private func persistPlexOptimizeDispatch(for key: DownloadAttemptKey, targetName: String) throws {
+        guard let metadata = store.record(for: key)?.metadata else {
+            throw DownloadLifecycleCancellation.staleOptimizeAttempt
+        }
+        try assertCurrentOptimizeAttempt(attemptKey: key, metadata: metadata, targetName: targetName)
+        switch store.updateMetadata(for: key, mutate: { metadata in
+            if metadata.plexOptimizeCreateDispatchedAtEpochSeconds == nil {
+                metadata.plexOptimizeCreateDispatchedAtEpochSeconds = Date().timeIntervalSince1970
+            }
+        }) {
+        case .applied, .noChange: break
+        case .staleOrMissing: throw DownloadLifecycleCancellation.staleOptimizeAttempt
+        case .persistenceFailed:
+            throw DownloadError.optimizeFailed("The optimize request could not be saved safely. Retry to continue.")
+        }
+    }
+
     /// Pick only a NEW Plex server-optimized output that the local/offline player can open.
     ///
     /// GH #135 Stage 1a: the bounding-box / bitrate matching now lives in the pure, unit-tested
@@ -5114,16 +5204,8 @@ public final class DownloadManager {
                                                    baselinePartIDs: Set<Int>,
                                                    targetName: String,
                                                    sourceHeight: Int?) -> Part? {
-        let settings = DownloadPresetPolicy.customDownloadProfile(named: targetName)?.settings ?? DownloadPresetPolicy.mediaSettings(forTargetName: targetName)
-        let targetDimensions = settings.videoResolution
-            .flatMap(DownloadResolutionLabel.dimensions(forVideoResolution:))
-        return OptimizedVersionMatch.candidate(
-            from: media,
-            baselinePartIDs: baselinePartIDs,
-            targetDimensions: targetDimensions,
-            targetVideoKbps: settings.maxVideoBitrateKbps,
-            isOriginalQuality: DownloadPresetPolicy.isPlexOriginalQualityTarget(targetName),
-            sourceHeight: sourceHeight)
+        PlexOptimizePrepPolicy.candidate(from: media, baselinePartIDs: baselinePartIDs,
+                                         targetName: targetName, sourceHeight: sourceHeight)
     }
 
     func fetchCurrentMediaItem(ratingKey: String, server: URL, token: String,
@@ -5164,6 +5246,8 @@ public final class DownloadManager {
             return (response.mediaContainer.metadata.first, .success)
         } catch PlexError.unauthorized {
             return (nil, .authRejected)
+        } catch PlexError.http(403) {
+            return (nil, .authRejected)
         } catch {
             return (nil, .failure)
         }
@@ -5178,7 +5262,7 @@ public final class DownloadManager {
         return pl.key
     }
 
-    private struct OptimizerQueueResponse: Decodable {
+    struct OptimizerQueueResponse: Decodable {
         struct Container: Decodable {
             let item: [Item]
             enum CodingKeys: String, CodingKey { case item = "Item" }
@@ -5203,17 +5287,34 @@ public final class DownloadManager {
         enum CodingKeys: String, CodingKey { case mediaContainer = "MediaContainer" }
     }
 
-    private func optimizerQueueStatus(backgroundProcessingKey: String, queueTitle: String,
+    enum OptimizerQueueLookup {
+        case present(OptimizerQueueResponse.Status?)
+        case inspectedAbsent
+        case unavailable
+
+        var classification: PlexOptimizePrepPolicy.QueueLookup {
+            switch self {
+            case .present: return PlexOptimizePrepPolicy.queueLookup(inspected: true, matchingItemPresent: true)
+            case .inspectedAbsent: return PlexOptimizePrepPolicy.queueLookup(inspected: true, matchingItemPresent: false)
+            case .unavailable: return PlexOptimizePrepPolicy.queueLookup(inspected: false, matchingItemPresent: false)
+            }
+        }
+    }
+
+    func optimizerQueueStatus(backgroundProcessingKey: String, queueTitle: String,
                                       server: URL, token: String,
-                                      identity: ClientIdentity) async -> OptimizerQueueResponse.Status? {
+                                      identity: ClientIdentity) async -> OptimizerQueueLookup {
         let trimmed = backgroundProcessingKey.hasPrefix("/")
             ? String(backgroundProcessingKey.dropFirst()) : backgroundProcessingKey
         let req = PlexRequest(url: server.appendingPathComponent(trimmed), method: "GET",
                               queryItems: [],
                               headers: PlexHeaders.standard(identity: identity, token: token))
         guard let response = try? await appModel.client.send(req, as: OptimizerQueueResponse.self)
-        else { return nil }
-        return response.mediaContainer.item.last(where: { $0.title == queueTitle })?.status
+        else { return .unavailable }
+        guard let item = response.mediaContainer.item.last(where: { $0.title == queueTitle }) else {
+            return .inspectedAbsent
+        }
+        return .present(item.status)
     }
 
     // MARK: - Server-side optimize progress (GET /activities)
