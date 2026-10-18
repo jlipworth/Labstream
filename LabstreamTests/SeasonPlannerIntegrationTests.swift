@@ -36,6 +36,7 @@ struct SeasonPlannerIntegrationTests {
         let session = BackgroundDownloadSession(store: store, protocolClasses: [SeasonMetadataProtocol.self])
         let manager = DownloadManager(appModel: model, store: store, session: session,
                                       registerForBackgroundEvents: false)
+        let completions = AdmissionCompletions(manager)
         manager.setQueuePausedForTesting(false)
         defer {
             manager.admissionPumpTask?.cancel()
@@ -55,6 +56,9 @@ struct SeasonPlannerIntegrationTests {
         // Every admitted row refreshes concurrently (#362): both static episodes fit the
         // two-row static lane, so both metadata requests are in flight at once.
         try #require(await waitUntil { gate.heldIDs.count == ids.count })
+        let generations = try ids.map { id in
+            try #require(manager.admission.supervised[id]?.generation)
+        }
         let first = try #require(gate.heldID)
         let original = try #require(store.record(for: first)?.attemptID)
         let deleted: String?
@@ -91,7 +95,8 @@ struct SeasonPlannerIntegrationTests {
             // The deleted row's refresh was already in flight; its late response must be revoked.
             gate.releaseMetadata(id: deleted, failing: false)
         }
-        try #require(await events.wait { _ = manager.records; return manager.admission.supervised.isEmpty })
+        try #require(await completions.wait(for: generations))
+        try #require(manager.admission.supervised.isEmpty)
         if change == .unchanged || change == .deleteLater {
             try #require(await waitUntil { gate.transferPaths.count == 1 })
             #expect(store.record(for: first)?.attemptID != original)
@@ -145,6 +150,7 @@ struct SeasonPlannerIntegrationTests {
         let session = BackgroundDownloadSession(store: store, protocolClasses: [SeasonMetadataProtocol.self])
         let manager = DownloadManager(appModel: model, store: store, session: session,
                                       registerForBackgroundEvents: false)
+        let completions = AdmissionCompletions(manager)
         manager.setQueuePausedForTesting(false)
         defer {
             manager.admissionPumpTask?.cancel()
@@ -167,6 +173,8 @@ struct SeasonPlannerIntegrationTests {
         let held = gate.heldIDs
         let stuck = held[0]
         let moving = held[1]
+        let movingGeneration = try #require(manager.admission.supervised[moving]?.generation)
+        let stuckGeneration = try #require(manager.admission.supervised[stuck]?.generation)
         // P4: supervised starts occupy the lane, so later admission passes do not admit the
         // third row while both starts are still running (B72).
         for _ in 0..<3 { manager.pumpAdmission() }
@@ -177,6 +185,7 @@ struct SeasonPlannerIntegrationTests {
         // other admitted row from reaching its transfer.
         gate.releaseMetadata(id: moving, failing: false)
         try #require(await waitUntil { gate.transferPaths == ["/library/parts/\(moving)/file.mp4"] })
+        try #require(await completions.wait(for: [movingGeneration]))
         #expect(gate.heldIDs == [stuck])
         #expect(Set(manager.admission.supervised.keys) == [stuck])
         // Both static slots remain occupied (one transferring, one still starting).
@@ -184,7 +193,8 @@ struct SeasonPlannerIntegrationTests {
 
         gate.releaseMetadata(id: stuck, failing: false)
         try #require(await waitUntil { gate.transferPaths.count == 2 })
-        try #require(await events.wait { _ = manager.records; return manager.admission.supervised.isEmpty })
+        try #require(await completions.wait(for: [stuckGeneration]))
+        try #require(manager.admission.supervised.isEmpty)
         #expect(gate.unexpectedPaths.isEmpty)
         for row in store.records { manager.delete(ratingKey: row.ratingKey) }
         try #require(await waitUntil { store.records.isEmpty })
@@ -194,6 +204,25 @@ struct SeasonPlannerIntegrationTests {
 
     // MARK: - P4 admission pins
 
+    /// Supervision is not observable, and its removal precedes async outcome persistence.
+    /// Join the exact start's terminal acknowledgement instead of borrowing records changes.
+    @MainActor private final class AdmissionCompletions {
+        private let events = TestEvents()
+        private var resolved: Set<UUID> = []
+
+        init(_ manager: DownloadManager) {
+            manager.admissionStartDidResolveForTesting = { [weak self] generation in
+                guard let self else { return }
+                self.resolved.insert(generation)
+                self.events.signal()
+            }
+        }
+
+        func wait(for generations: [UUID]) async -> Bool {
+            await events.wait { Set(generations).isSubset(of: resolved) }
+        }
+    }
+
     private struct Harness {
         let directory: URL
         let host: String
@@ -202,6 +231,7 @@ struct SeasonPlannerIntegrationTests {
         let store: DownloadStore
         let session: BackgroundDownloadSession
         let manager: DownloadManager
+        let completions: AdmissionCompletions
 
         @MainActor func teardown() async {
             for row in store.records { manager.delete(ratingKey: row.ratingKey) }
@@ -240,7 +270,8 @@ struct SeasonPlannerIntegrationTests {
         manager.setQueuePausedForTesting(false)
         try #require(await manager.awaitStartupRecoveryForTesting())
         return Harness(directory: directory, host: host, gate: gate, transport: transport,
-                       store: store, session: session, manager: manager)
+                       store: store, session: session, manager: manager,
+                       completions: AdmissionCompletions(manager))
     }
 
     private func plan(_ id: String, choice: DownloadIntentChoice = .existingVersion) throws
@@ -384,17 +415,29 @@ struct SeasonPlannerIntegrationTests {
     /// planned and is retried after backoff; it never becomes a failed row.
     @Test func aRefreshOutageDefersAPlannedRowInsteadOfFailingIt() async throws {
         let h = try await makeHarness("refresh-outage")
+        var now: TimeInterval = 0
+        h.manager.admission.now = { now }
         let result = await h.manager.commitSeasonPlan(.init(newPlans: [try plan("episode-1")],
                                                             retryAttempts: []))
         #expect(result.succeeded)
         try #require(await waitUntil { h.gate.heldIDs == ["episode-1"] })
+        let generation = try #require(h.manager.admission.supervised["episode-1"]?.generation)
         h.gate.releaseMetadata(id: "episode-1", failing: true)
-        try #require(await events.wait { _ = h.manager.records; return h.manager.admission.supervised.isEmpty })
+        try #require(await h.completions.wait(for: [generation]))
+        try #require(h.manager.admission.supervised.isEmpty)
         let deferred = try #require(h.store.record(for: "episode-1"))
         #expect(deferred.lifecycle == .planned)
         #expect(deferred.admissionIntent == .seasonPlanned)
         #expect(deferred.status == .queued)
-        // Backoff (1 s) then a second refresh.
+        // Prove the backoff without racing a real timer against the deferred-row assertions.
+        let backoff = try #require(h.manager.admission.requestStates["episode-1"])
+        #expect(backoff.deferrals == 1)
+        #expect(backoff.eligibleAt == now + 1)
+        h.manager.pumpAdmission()
+        #expect(h.gate.metadataIDs == ["episode-1"])
+        #expect(h.manager.admission.supervised.isEmpty)
+        now = backoff.eligibleAt
+        h.manager.pumpAdmission()
         try #require(await waitUntil { h.gate.metadataIDs.count == 2 })
         await h.teardown()
     }
