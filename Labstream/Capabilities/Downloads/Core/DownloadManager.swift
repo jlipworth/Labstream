@@ -270,6 +270,10 @@ public final class DownloadManager {
     @ObservationIgnored let admission = DownloadAdmissionCoordinator()
     @ObservationIgnored var admissionPumpTask: Task<Void, Never>?
     @ObservationIgnored var admissionWakeTask: Task<Void, Never>?
+    #if DEBUG
+    /// The admitted start has finished classification, including any durable deferral.
+    @ObservationIgnored var admissionStartDidResolveForTesting: ((UUID) -> Void)?
+    #endif
     @ObservationIgnored var lastAdmissionOccupancySignature = ""
     /// Season-plan commits publish their rows atomically but await durability off the main actor.
     /// While one is in flight, the admission worker must not admit rows whose plan has not yet

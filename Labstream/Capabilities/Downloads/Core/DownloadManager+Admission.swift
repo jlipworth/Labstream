@@ -156,6 +156,9 @@ extension DownloadManager {
             }
             await self.finishAdmittedStart(id, generation: generation,
                                      intent: firstStart ? .seasonPlanned : .retryRequested)
+            #if DEBUG
+            self.admissionStartDidResolveForTesting?(generation)
+            #endif
         }
     }
 
