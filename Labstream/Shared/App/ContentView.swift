@@ -47,7 +47,7 @@ struct ContentView: View {
             TVPlayerFixtureView()
                 .environment(musicPlayer)
                 .environment(appModel)
-        case .browse, nil:
+        case .browse, .offline, nil:
             mainBody
         }
         #elseif os(iOS) && DEBUG
@@ -63,32 +63,45 @@ struct ContentView: View {
         #endif
     }
 
+    @ViewBuilder
+    private var gatedBody: some View {
+        switch BrowseUIGate.state(isBrowseReady: appModel.isBrowseReady,
+                                  isRestoring: bootstrap.isRestoring || isResolvingOfflineAvailability,
+                                  isSwitchingBackend: appModel.isSwitchingBackend,
+                                  hasEverBeenBrowseReady: bootstrap.hasEverBeenBrowseReady,
+                                  canOpenOffline: canOpenOffline) {
+        case .browse:
+            RootView(runtime: runtime)
+        case .restoringSplash:
+            RestoringSessionView()
+        case .offline:
+            #if os(tvOS)
+            LoginView(authManager: authManager)
+                .environment(appModel)
+            #else
+            OfflineLaunchView(runtime: runtime)
+            #endif
+        case .login:
+            LoginView(authManager: authManager)
+                .environment(appModel)
+        }
+    }
+
     private var mainBody: some View {
         // #90: the gate is centralized in `BrowseUIGate` so the "switch must not bounce the
         // browse UI" invariant holds for ANY backend (not just Plex via the refreshServers
         // field-preservation carve-out). An already-ready browse UI stays mounted through a
         // switch; a genuinely signed-out user still gets the splash/login.
         Group {
-            switch BrowseUIGate.state(isBrowseReady: appModel.isBrowseReady,
-                                      isRestoring: bootstrap.isRestoring || isResolvingOfflineAvailability,
-                                      isSwitchingBackend: appModel.isSwitchingBackend,
-                                      hasEverBeenBrowseReady: bootstrap.hasEverBeenBrowseReady,
-                                      canOpenOffline: canOpenOffline) {
-            case .browse:
-                RootView(runtime: runtime)
-            case .restoringSplash:
-                RestoringSessionView()
-            case .offline:
-                #if os(tvOS)
-                LoginView(authManager: authManager)
-                    .environment(appModel)
-                #else
+            #if DEBUG && !os(tvOS)
+            if DebugUITestLaunchConfiguration.fixtureKind == .offline {
                 OfflineLaunchView(runtime: runtime)
-                #endif
-            case .login:
-                LoginView(authManager: authManager)
-                    .environment(appModel)
+            } else {
+                gatedBody
             }
+            #else
+            gatedBody
+            #endif
         }
         .onAppear {
             // #90: seed the "has shown browse UI" flag for the case where we're ALREADY

@@ -54,6 +54,7 @@ skipping them.
 | Saved session restores through the neutral Connecting screen without flashing login | [ ] | [ ] | [ ] |
 | Invalid/revoked credentials return to a clear sign-in state | [ ] | [ ] | [ ] |
 | Disconnected cold launch with a completed local file opens restricted Offline mode and plays without a server request | [ ] | [ ] | [ ] |
+| Restricted Offline shows "Server unreachable" as a subtitle (visionOS: toolbar) with Reconnect, Sign In and Settings all reachable; nothing overlaps the title (#415) | [ ] | [ ] | [ ] |
 | A revoked (401) or refused (403) saved session at cold launch shows sign-in, not Offline, even with a completed local file | [ ] | [ ] | [ ] |
 | Explicit sign-out clears the active runtime lane and stops stale music | [ ] | [ ] | [ ] |
 | Reauthentication to the same server refreshes browse state and navigation identity | [ ] | [ ] | [ ] |

@@ -21,6 +21,26 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
         add(attachment)
     }
 
+    /// #415: the restricted Offline surface keeps its status in navigation chrome. Reconnect,
+    /// Sign In, and Settings must all be reachable (the old top inset covered the toolbar).
+    @MainActor
+    func testOfflineLaunchKeepsToolbarActionsReachable() {
+        let app = XCUIApplication()
+        app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
+        app.launchArguments = ["--ui-testing", "--ui-testing-fixture", "offline"]
+        app.launch()
+
+        let reconnect = app.buttons["labstream.offline-launch.reconnect"]
+        XCTAssertTrue(reconnect.waitForExistence(timeout: 10))
+        XCTAssertTrue(reconnect.isHittable)
+        XCTAssertTrue(app.buttons["Sign In"].isHittable)
+        XCTAssertTrue(app.buttons["Settings"].isHittable)
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "offline-launch"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     /// #258: for a fixed device, orientation, and chrome state, the player chrome must occupy the
     /// same screen-relative frames whatever the source aspect (pillarboxed 4:3/16:9 or
     /// letterboxed 2.39:1) and whatever menu set the item offers.

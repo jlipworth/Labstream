@@ -249,6 +249,10 @@ xcrun simctl launch "$SIMID" org.labstream.Labstream \
   --ui-testing --ui-testing-backend plex --ui-testing-fixture browse
 ```
 
+`--ui-testing-fixture offline` (not tvOS) opens the restricted cold-launch Offline surface with no
+server, so its navigation subtitle and Reconnect/Sign In/Settings toolbar can be screenshot-tested
+headlessly. It shows whatever completed downloads exist in the simulator, or the empty state.
+
 ## Install and observe a simulator smoke
 
 After either simulator build above, `$SIMID` and `$APP` identify the exact simulator and product.

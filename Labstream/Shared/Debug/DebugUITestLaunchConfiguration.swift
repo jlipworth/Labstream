@@ -42,6 +42,9 @@ enum DebugUITestLaunchConfiguration {
         /// protects the streaming-only product contract: tvOS must not expose Offline actions.
         case season
         case player
+        /// Restricted cold-launch Offline surface (banner + Offline library) without a
+        /// reachable server. Not available on tvOS, which has no Offline surface.
+        case offline
     }
 
     static var fixtureKind: FixtureKind? {

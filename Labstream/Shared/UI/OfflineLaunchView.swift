@@ -68,15 +68,14 @@ struct OfflineLaunchView: View {
     private var offlineNavigation: some View {
         NavigationStack {
             #if os(visionOS)
+            // visionOS has no navigation subtitle; the status rides in the toolbar ornament.
             OfflineLibraryView(manager: downloadManager, focusedRatingKey: $offlineFocus.ratingKey)
                 .toolbar { launchToolbar }
             #else
             OfflineLibraryView(manager: downloadManager)
+                .navigationSubtitle(Self.offlineStatus)
                 .toolbar { launchToolbar }
             #endif
-        }
-        .safeAreaInset(edge: .top) {
-            offlineStatusBanner
         }
     }
 
@@ -91,30 +90,38 @@ struct OfflineLaunchView: View {
         offlineFocus.consume(router: SystemEntryRouter.shared)
     }
 
-    private var offlineStatusBanner: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "wifi.slash")
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Offline mode")
-                    .font(.headline)
-                Text("Your server could not be reached. Completed downloads remain available.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button(reconnecting ? "Connecting…" : "Reconnect") {
-                reconnect()
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(reconnecting)
-        }
-        .padding(.horizontal)
-        .padding(.vertical, 10)
-        .background(.regularMaterial)
-    }
+    /// #415: the offline state lives in native navigation chrome (subtitle + toolbar action) so
+    /// it can never overlap the title or hide Sign In/Settings, as the old top inset did.
+    private static let offlineStatus = "Server unreachable"
+    private static let offlineExplanation = "Your server could not be reached. Completed downloads remain available."
 
     @ToolbarContentBuilder
     private var launchToolbar: some ToolbarContent {
+        #if os(visionOS)
+        ToolbarItem(placement: .primaryAction) {
+            Label(Self.offlineStatus, systemImage: "wifi.slash")
+                .labelStyle(.titleAndIcon)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Offline. \(Self.offlineExplanation)")
+        }
+        #endif
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                reconnect()
+            } label: {
+                if reconnecting {
+                    ProgressView()
+                } else {
+                    Label("Reconnect", systemImage: "arrow.clockwise")
+                }
+            }
+            .labstreamGlassProminentButtonStyle()
+            .disabled(reconnecting)
+            .accessibilityLabel(reconnecting ? "Connecting" : "Reconnect")
+            .accessibilityHint(Self.offlineExplanation)
+            .accessibilityIdentifier("labstream.offline-launch.reconnect")
+        }
         ToolbarItemGroup {
             Button {
                 showingSignIn = true
