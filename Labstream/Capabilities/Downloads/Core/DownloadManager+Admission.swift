@@ -96,6 +96,7 @@ extension DownloadManager {
         }
         let now = admission.now()
         let grants = DownloadAdmissionPolicy.grants(
+            limits: admission.limits,
             occupants: occupants, requests: requests, now: now,
             queuePaused: isQueuePaused, pauseExemptIDs: admission.pauseExemptions)
         for grant in grants {
@@ -319,6 +320,7 @@ extension DownloadManager {
         let request = DownloadAdmissionRequest(id: id, lane: lane, origin: .user,
                                                requestedAt: admission.now())
         return !DownloadAdmissionPolicy.grants(
+            limits: admission.limits,
             occupants: admissionOccupants(store.records), requests: [request],
             now: admission.now(), queuePaused: isQueuePaused,
             pauseExemptIDs: exemptFromQueuePause ? [id] : []).isEmpty
@@ -414,7 +416,7 @@ extension DownloadManager {
     func admissionMayEnter(_ lane: DownloadAdmissionLane, ratingKey: String) -> Bool {
         if admission.supervised[ratingKey]?.lane == lane { return true }
         guard DownloadAdmissionPolicy.mayEnter(
-            lane, id: ratingKey, occupants: admissionOccupants(store.records)) else {
+            lane, id: ratingKey, occupants: admissionOccupants(store.records), limits: admission.limits) else {
             recordDownloadDiagnostic("downloads.admission_lane_full", fields: [
                 "download_id": .identifier(ratingKey),
                 "lane": .label(lane.rawValue),

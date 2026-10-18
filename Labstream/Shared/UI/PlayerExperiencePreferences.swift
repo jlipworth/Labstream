@@ -14,6 +14,7 @@ enum PlaybackPreferences {
         static let adaptiveBitrateEnabled = "playerAdaptiveBitrateEnabled"
         static let defaultDownloadQuality = "defaultDownloadQuality"
         static let downloadStorageLimitBytes = "downloadStorageLimitBytes"
+        static let simultaneousDownloads = "simultaneousDownloads"
         static let allowCellularDownloads = "allowCellularDownloads"
         static let prioritizeQuickDownloads = "prioritizeQuickDownloads"
         static let systemMediaSuggestionsEnabled = "systemMediaSuggestionsEnabled"
@@ -59,6 +60,7 @@ enum PlaybackPreferences {
     static let defaultDownloadQuality = "1080p 8 Mbps"
     /// Off by default on mobile so a tap-to-download cannot unexpectedly consume a cellular plan.
     static let defaultAllowCellularDownloads = false
+    static let defaultSimultaneousDownloads = DownloadAdmissionLimits.defaultTotal
     /// Off by default: the move PUT reorders the user's server-wide conversion queue and is
     /// admin-gated, so it is opt-in (least surprising — respect the server's queue order).
     static let defaultPrioritizeQuickDownloads = false
@@ -87,6 +89,13 @@ enum PlaybackPreferences {
     static func allowsCellularDownloads(defaults: UserDefaults = .standard) -> Bool {
         TypedPreferenceStore(defaults: defaults).value(for: .bool(
             Keys.allowCellularDownloads, default: defaultAllowCellularDownloads))
+    }
+
+    /// Bounded on read so invalid stored values cannot disable or uncap admission.
+    static func simultaneousDownloads(defaults: UserDefaults = .standard) -> Int {
+        let total = TypedPreferenceStore(defaults: defaults).value(for: .integer(
+            Keys.simultaneousDownloads, default: defaultSimultaneousDownloads))
+        return DownloadAdmissionLimits(maximumTotal: total).maximumTotal
     }
 
     static func qualityKbps(forDefaultsKey key: String, defaults: UserDefaults = .standard) -> Int {

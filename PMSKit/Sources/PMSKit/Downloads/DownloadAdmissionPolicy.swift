@@ -50,16 +50,29 @@ public struct DownloadAdmissionRequest: Sendable, Equatable {
     }
 }
 
-/// The one admission window every download start goes through (P4.1). Pure: the manager-owned
-/// coordinator supplies observed occupancy and reservations and starts what this returns.
-public enum DownloadAdmissionPolicy {
-    public static let maximumTotal = 3
-    public static let maximumByLane: [DownloadAdmissionLane: Int] = [
-        .staticFile: 2,
-        .serverPreparation: 1,
-        .liveForward: 1,
-    ]
+/// Concurrency limits derived from the user's simultaneous-download setting.
+public struct DownloadAdmissionLimits: Sendable, Equatable {
+    public static let supportedTotals = 1...5
+    public static let defaultTotal = 3
 
+    public let maximumTotal: Int
+    public let maximumByLane: [DownloadAdmissionLane: Int]
+
+    public init(maximumTotal: Int) {
+        let total = min(max(maximumTotal, Self.supportedTotals.lowerBound),
+                        Self.supportedTotals.upperBound)
+        self.maximumTotal = total
+        self.maximumByLane = [
+            .staticFile: max(1, total - 1),
+            .serverPreparation: 1,
+            .liveForward: 1,
+        ]
+    }
+}
+
+/// The one admission window every download start goes through (P4.1). Pure: the manager-owned
+/// coordinator supplies current limits, observed occupancy and reservations and starts the grants.
+public enum DownloadAdmissionPolicy {
     /// Backoff after a deferred start (backend unavailable): 1, 5, 15, 30, then 60 s.
     public static let deferralBackoffSeconds: [TimeInterval] = [1, 5, 15, 30, 60]
 
@@ -83,6 +96,7 @@ public enum DownloadAdmissionPolicy {
     /// owned at relaunch, or a server-prep row that handed off into a full static lane) are counted
     /// as they are: nothing new enters that lane until it is back under its cap.
     public static func grants(
+        limits: DownloadAdmissionLimits,
         occupants: [DownloadAdmissionOccupant],
         requests: [DownloadAdmissionRequest],
         now: TimeInterval,
@@ -102,9 +116,9 @@ public enum DownloadAdmissionPolicy {
         var result: [DownloadAdmissionRequest] = []
         var granted = Set<String>()
         for request in ordered {
-            guard total < maximumTotal else { break }
+            guard total < limits.maximumTotal else { break }
             guard granted.insert(request.id).inserted else { continue }
-            let limit = maximumByLane[request.lane] ?? 1
+            let limit = limits.maximumByLane[request.lane] ?? 1
             guard counts[request.lane, default: 0] < limit else { continue }
             result.append(request)
             counts[request.lane, default: 0] += 1
@@ -117,12 +131,13 @@ public enum DownloadAdmissionPolicy {
     /// (P4.5: a Plex original falling back to optimize, an Emby negotiation rerouted to Convert).
     /// The row's own occupancy is not counted against it.
     public static func mayEnter(_ lane: DownloadAdmissionLane, id: String,
-                                occupants: [DownloadAdmissionOccupant]) -> Bool {
+                                occupants: [DownloadAdmissionOccupant],
+                                limits: DownloadAdmissionLimits) -> Bool {
         var seen: Set<String> = [id]
         let others = occupants.filter { seen.insert($0.id).inserted }
-        guard others.count < maximumTotal else { return false }
+        guard others.count < limits.maximumTotal else { return false }
         let inLane = others.filter { $0.lane == lane }.count
-        return inLane < (maximumByLane[lane] ?? 1)
+        return inLane < (limits.maximumByLane[lane] ?? 1)
     }
 
     /// The earliest time a currently ineligible request becomes eligible, for the pump's timer.

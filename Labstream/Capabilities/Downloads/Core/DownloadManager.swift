@@ -267,7 +267,7 @@ public final class DownloadManager {
     @ObservationIgnored private(set) var startupActivationSubmissionCountForTesting = 0
     #endif
     /// P4: the one admission window every download start goes through.
-    @ObservationIgnored let admission = DownloadAdmissionCoordinator()
+    @ObservationIgnored let admission: DownloadAdmissionCoordinator
     @ObservationIgnored var admissionPumpTask: Task<Void, Never>?
     @ObservationIgnored var admissionWakeTask: Task<Void, Never>?
     @ObservationIgnored var lastAdmissionOccupancySignature = ""
@@ -551,11 +551,13 @@ public final class DownloadManager {
          sideAssetFetchCoordinator injectedSideAssetFetchCoordinator: SideAssetFetchCoordinator? = nil,
          backgroundCompletionRegistry: BackgroundDownloadCompletionRegistry = .shared,
          registerForBackgroundEvents: Bool = true,
+         preferencesDefaults: UserDefaults = .standard,
          startupIndexDeadline: @escaping @Sendable () -> DownloadStoreDeadline = { .after(30) }) {
         #if DEBUG && os(tvOS)
         Self.debugConstructionCount += 1
         #endif
         self.appModel = appModel
+        self.admission = DownloadAdmissionCoordinator(defaults: preferencesDefaults)
         self.startupIndexDeadline = startupIndexDeadline
         #if PERFORMANCE_AUDIT
         let downloadStoreSpan = PerformanceInstrumentation.begin(.runtimeDownloadStore,
@@ -586,6 +588,9 @@ public final class DownloadManager {
         self.sideAssetFetchCoordinator = injectedSideAssetFetchCoordinator ?? .shared
         self.cleanupIntentJournal = injectedCleanupIntentJournal
             ?? DownloadCleanupIntentJournal(directory: store.durableCleanupAuthorityDirectory)
+        self.admission.onLimitsChange = { [weak self] in
+            self?.scheduleAdmissionPump()
+        }
         self.records = store.records
         refreshOfflineAvailability()
         self.offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: self.records)

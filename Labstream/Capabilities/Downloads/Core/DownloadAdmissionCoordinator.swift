@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import PMSKit
 
@@ -31,6 +32,34 @@ final class DownloadAdmissionCoordinator {
     var recoveryComplete = false
     /// Injectable clock for backoff (tests drive it).
     var now: () -> TimeInterval = { Date().timeIntervalSinceReferenceDate }
+
+    private let defaults: UserDefaults
+    private var preferenceObservation: AnyCancellable?
+    private var lastObservedLimits: DownloadAdmissionLimits
+    var onLimitsChange: (() -> Void)?
+
+    /// Read at every gate, including recovery, so no pass can use a stale preference.
+    var limits: DownloadAdmissionLimits {
+        DownloadAdmissionLimits(maximumTotal: PlaybackPreferences.simultaneousDownloads(defaults: defaults))
+    }
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        self.lastObservedLimits = DownloadAdmissionLimits(
+            maximumTotal: PlaybackPreferences.simultaneousDownloads(defaults: defaults))
+        // Observe only this key: unrelated preferences must not fan out admission work.
+        preferenceObservation = defaults.publisher(for: \.simultaneousDownloads, options: [.new])
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    let current = self.limits
+                    guard current != self.lastObservedLimits else { return }
+                    self.lastObservedLimits = current
+                    // Only wake admission. Running work, generations and requests are untouched.
+                    self.onLimitsChange?()
+                }
+            }
+    }
 
     /// Record (or refresh the origin of) a waiting request. An explicit user request upgrades an
     /// automatic one and becomes eligible immediately; a repeated request keeps its place.
@@ -111,4 +140,11 @@ final class DownloadAdmissionCoordinator {
     func revokeExemption(_ id: String) { pauseExemptions.remove(id) }
     func revokeAllExemptions() { pauseExemptions.removeAll() }
     func isExempt(_ id: String) -> Bool { pauseExemptions.contains(id) }
+}
+
+private extension UserDefaults {
+    /// UserDefaults publishes KVO changes using the stored key, including AppStorage writes.
+    @objc dynamic var simultaneousDownloads: Int {
+        PlaybackPreferences.simultaneousDownloads(defaults: self)
+    }
 }
