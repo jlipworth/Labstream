@@ -36,7 +36,11 @@ with nothing selected or submitted. Later on 2026-10-18 a third `ship` run built
 Convert job is submitted to the server at once, so a batch renders while the app is suspended,
 and finished renders wait for a transfer slot
 ([#414](https://github.com/jlipworth/Labstream/issues/414)). It shipped the same way: **VALID**,
-internal group only, nothing selected or submitted. Device acceptance and landing on `main` are tracked in
+internal group only, nothing selected or submitted. A fourth `ship` run built **1.8.0 (build 1543)**
+for all four targets from `4dc82ede`. It moves the restricted Offline status into navigation chrome
+(a "Server unreachable" subtitle or visionOS toolbar label plus a Reconnect toolbar action) so it no
+longer covers the title or toolbar ([#415](https://github.com/jlipworth/Labstream/issues/415)). It
+shipped the same way: **VALID**, internal group only, nothing selected or submitted. Device acceptance and landing on `main` are tracked in
 [#403](https://github.com/jlipworth/Labstream/issues/403). PMSKit has no app-version constant; the
 runtime client identity reads the bundle version and falls back to `0.0.0`.
 
