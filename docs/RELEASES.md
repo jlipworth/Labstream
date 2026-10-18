@@ -16,7 +16,22 @@ built clean **1.8.0 (build 1523)** archives for all four targets from `49e186f0`
 `downloads/overhaul` integration branch (not yet on `main`; uploaded with `--allow-unpublished`).
 All four processed to **VALID**, are in beta testing, and are in the internal TestFlight group.
 They are TestFlight builds only: no 1.8.0 App Store version exists, nothing was selected, and
-nothing was submitted for review. Device acceptance and landing on `main` are tracked in
+nothing was submitted for review. On 2026-10-18 a second `ship` run built clean **1.8.0
+(build 1537)** archives for all four targets from `12466ea1` on the same branch, also uploaded with
+`--allow-unpublished`. It adds:
+
+- foreground recovery for background-created range tasks that crawl after the app was off-head
+  or backgrounded ([#409](https://github.com/jlipworth/Labstream/issues/409));
+- fixed Pause All / Resume All for mixed queues
+  ([#410](https://github.com/jlipworth/Labstream/issues/410));
+- posters for queued rows ([#412](https://github.com/jlipworth/Labstream/issues/412));
+- the configurable simultaneous-download limit
+  ([#404](https://github.com/jlipworth/Labstream/issues/404));
+- aggregate speed after sleep ([#379](https://github.com/jlipworth/Labstream/issues/379));
+- the single-line finished-row summary.
+
+All four processed to **VALID** and are in beta testing in the internal TestFlight group, again
+with nothing selected or submitted. Device acceptance and landing on `main` are tracked in
 [#403](https://github.com/jlipworth/Labstream/issues/403). PMSKit has no app-version constant; the
 runtime client identity reads the bundle version and falls back to `0.0.0`.
 
