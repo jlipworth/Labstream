@@ -19,7 +19,8 @@ public struct DownloadRowPresentation: Sendable, Equatable {
         let phase = phase ?? row.phase
         self.phase = phase
         if row.isWaitingForAdmission { lifecycle = .planned }
-        else if phase == .queued || phase == .waitingForBackend || phase == .serverPrepQueued {
+        else if phase == .queued || phase == .waitingForBackend || phase == .serverPrepQueued
+            || phase == .serverPrepReady {
             lifecycle = .admitted
         } else if phase == .transferFinalizing { lifecycle = .finalizing }
         else { lifecycle = row.lifecycle }

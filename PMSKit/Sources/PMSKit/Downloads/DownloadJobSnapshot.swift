@@ -16,6 +16,8 @@ public enum DownloadJobPhase: Sendable, Equatable {
     case serverPrepFinalizing
     case serverPrepProgressing
     case serverPrepQueued
+    /// #414: the server finished rendering; the row waits for a static transfer slot.
+    case serverPrepReady
     case waitingForBackend
     case activeServerPrep
     case queued
@@ -29,6 +31,7 @@ public enum DownloadJobPhase: Sendable, Equatable {
              .serverPrepFinalizing,
              .serverPrepProgressing,
              .serverPrepQueued,
+             .serverPrepReady,
              .activeServerPrep,
              .queued,
              .activeTransfer:

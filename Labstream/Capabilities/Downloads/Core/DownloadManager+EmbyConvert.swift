@@ -176,7 +176,8 @@ extension DownloadManager {
             // process-kill window with no durable row and no way to resume this accepted download.
             await handoffEmbyConvertedSource(item: item, sourceID: reuseId, targetName: targetName,
                                               audioStreamIndex: audioStreamIndex,
-                                              attemptKey: storeAttemptKey, pollerID: attemptID)
+                                              attemptKey: storeAttemptKey, pollerID: attemptID,
+                                              waitsForTransferSlot: false)
             return
         }
 
@@ -205,7 +206,8 @@ extension DownloadManager {
             }
             await handoffEmbyConvertedSource(item: item, sourceID: reuseId, targetName: targetName,
                                               audioStreamIndex: audioStreamIndex,
-                                              attemptKey: storeAttemptKey, pollerID: attemptID)
+                                              attemptKey: storeAttemptKey, pollerID: attemptID,
+                                              waitsForTransferSlot: false)
             return
         }
 
@@ -988,7 +990,24 @@ extension DownloadManager {
     /// coordinator can exempt a row from Pause All by passing allowWhileQueuePaused here.
     func handoffEmbyConvertedSource(item: MediaItem, sourceID: String, targetName: String,
                                      audioStreamIndex: Int?, attemptKey: DownloadAttemptKey,
-                                     pollerID: UUID, allowWhileQueuePaused: Bool = false) async {
+                                     pollerID: UUID, allowWhileQueuePaused: Bool = false,
+                                     waitsForTransferSlot: Bool = true) async {
+        // #414: a finished conversion keeps its prep slot until a static transfer slot is free.
+        // Only a row with a persisted Convert job waits: relaunch recovery resumes that job and
+        // waits again. A start-time reuse has no job identity yet, so it hands off at once as
+        // before (static occupancy may briefly exceed its cap, like any prep handoff).
+        var handoff: UUID?
+        if waitsForTransferSlot {
+            guard let token = await awaitStaticHandoffRoom(for: attemptKey, backend: "Emby", isCurrent: {
+                embyConvertAttemptIsCurrent(ratingKey: attemptKey.ratingKey, attemptID: pollerID,
+                                            targetName: targetName) && inFlightAttempts.owns(attemptKey)
+            }) else {
+                recordStaleEmbyConvertAttempt(ratingKey: attemptKey.ratingKey, phase: "handoff_wait")
+                return
+            }
+            handoff = token
+        }
+        defer { if let handoff { endStaticHandoff(attemptKey.ratingKey, token: handoff) } }
         guard embyConvertAttemptIsCurrent(ratingKey: attemptKey.ratingKey, attemptID: pollerID,
                                           targetName: targetName),
               inFlightAttempts.owns(attemptKey),

@@ -275,6 +275,13 @@ public final class DownloadManager {
     @ObservationIgnored var admissionStartDidResolveForTesting: ((UUID) -> Void)?
     #endif
     @ObservationIgnored var lastAdmissionOccupancySignature = ""
+    /// #414: finished renders waiting for a static transfer slot, and the ones that passed the
+    /// check and are starting their transfer (counted as static occupants until the start returns).
+    /// Each entry is owned by one wait (its token), so a cancelled wait never clears a newer
+    /// attempt's entry; `sequence` keeps waiters first come, first served.
+    @ObservationIgnored var staticHandoffWaiters: [String: (token: UUID, sequence: Int)] = [:]
+    @ObservationIgnored var staticHandoffReservations: [String: UUID] = [:]
+    @ObservationIgnored var staticHandoffSequence = 0
     /// Season-plan commits publish their rows atomically but await durability off the main actor.
     /// While one is in flight, the admission worker must not admit rows whose plan has not yet
     /// proven durable (a failed commit withdraws them again).
@@ -3951,12 +3958,26 @@ public final class DownloadManager {
             try assertCurrentOptimizeAttempt(attemptKey: key,
                                              metadata: metadata,
                                              targetName: targetName)
+            // #414: wait for a transfer slot, then start with the live session.
+            guard let handoff = await awaitStaticHandoffRoom(for: key, backend: "Plex", isCurrent: {
+                serverPrepAttempts.isCurrentPlexPoller(for: key, id: pollerID)
+                    && (try? assertCurrentOptimizeAttempt(attemptKey: key, metadata: metadata,
+                                                          targetName: targetName)) != nil
+            }) else {
+                try Task.checkCancellation()
+                throw DownloadLifecycleCancellation.staleOptimizeAttempt
+            }
+            defer { endStaticHandoff(ratingKey, token: handoff) }
+            guard let live = appModel.backendSession(for: .plex),
+                  live.matchesPersistedServer(metadata) else {
+                throw DownloadLifecycleCancellation.plexSessionUnavailable
+            }
             try await startOptimizedPartDownload(attemptKey: key,
                                            title: record.title,
                                            part: part.part,
                                            metadata: metadata,
-                                           server: part.session.baseURL,
-                                           token: part.session.token)
+                                           server: live.baseURL,
+                                           token: live.token)
         } catch DownloadLifecycleCancellation.staleOptimizeAttempt {
             recordDownloadDiagnostic("downloads.optimize_resume_stale", fields: [
                 "download_id": .identifier(ratingKey),

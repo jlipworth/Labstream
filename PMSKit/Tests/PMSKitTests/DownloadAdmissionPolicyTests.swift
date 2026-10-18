@@ -18,14 +18,17 @@ struct DownloadAdmissionPolicyTests {
         let limits = DownloadAdmissionLimits(maximumTotal: total)
         #expect(limits.maximumTotal == total)
         #expect(limits.maximumByLane[.staticFile] == max(1, total - 1))
-        #expect(limits.maximumByLane[.serverPreparation] == 1)
+        #expect(limits.maximumByLane[.serverPreparation] == DownloadAdmissionLimits.maximumServerPreparations)
         #expect(limits.maximumByLane[.liveForward] == 1)
         let requests = (1...6).map { request("s\($0)", .staticFile) }
-            + (1...2).map { request("p\($0)", .serverPreparation) }
+            + (1...6).map { request("p\($0)", .serverPreparation) }
             + (1...2).map { request("l\($0)", .liveForward) }
         let granted = P.grants(limits: limits, occupants: [], requests: requests,
                                now: 1, queuePaused: false)
-        #expect(granted.count == total)
+        // #414: server jobs never use a transfer slot.
+        #expect(granted.filter { $0.lane != .serverPreparation }.count == total)
+        #expect(granted.filter { $0.lane == .serverPreparation }.count
+            == DownloadAdmissionLimits.maximumServerPreparations)
         for lane in DownloadAdmissionLane.allCases {
             let laneRequests = requests.filter { $0.lane == lane }
             let laneGrants = P.grants(limits: limits, occupants: [], requests: laneRequests,
@@ -52,9 +55,43 @@ struct DownloadAdmissionPolicyTests {
             request("static-1", .staticFile, at: 3),
             request("live-1", .liveForward, at: 4),
             request("static-2", .staticFile, at: 5),
+            request("static-3", .staticFile, at: 6),
         ]
         let granted = P.grants(limits: limits, occupants: [], requests: requests, now: 10, queuePaused: false)
-        #expect(granted.map(\.id) == ["prep-1", "static-1", "live-1"])
+        #expect(granted.map(\.id) == ["prep-1", "prep-2", "static-1", "live-1", "static-2"])
+    }
+
+    /// #414: three transcoded downloads queued together all reach the server at once, even while
+    /// every transfer slot is busy, so they render while the app is suspended.
+    @Test func serverJobsAreSubmittedTogetherWhileTransfersAreFull() {
+        let occupants = [DownloadAdmissionOccupant(id: "s1", lane: .staticFile),
+                         .init(id: "s2", lane: .staticFile),
+                         .init(id: "l1", lane: .liveForward)]
+        let requests = (1...3).map { request("p\($0)", .serverPreparation, at: Double($0)) }
+            + [request("s3", .staticFile, at: 9)]
+        let granted = P.grants(limits: limits, occupants: occupants, requests: requests,
+                               now: 10, queuePaused: false)
+        #expect(granted.map(\.id) == ["p1", "p2", "p3"])
+        // The fixed prep bound still holds.
+        let fullPrep = (1...DownloadAdmissionLimits.maximumServerPreparations)
+            .map { DownloadAdmissionOccupant(id: "p\($0)", lane: .serverPreparation) }
+        #expect(P.grants(limits: limits, occupants: fullPrep,
+                         requests: [request("p9", .serverPreparation), request("s1", .staticFile)],
+                         now: 1, queuePaused: false).map(\.id) == ["s1"])
+    }
+
+    /// #414: a finished render takes a static and a transfer slot only when one is free; prep
+    /// occupants (its own included) never block it.
+    @Test func renderHandOffNeedsAStaticSlot() {
+        let prep = (1...4).map { DownloadAdmissionOccupant(id: "p\($0)", lane: .serverPreparation) }
+        #expect(P.mayHandOffToStatic(id: "p1", occupants: prep, limits: limits))
+        let staticFull = prep + [.init(id: "s1", lane: .staticFile), .init(id: "s2", lane: .staticFile)]
+        #expect(!P.mayHandOffToStatic(id: "p1", occupants: staticFull, limits: limits))
+        let totalFull = prep + [.init(id: "s1", lane: .staticFile), .init(id: "l1", lane: .liveForward),
+                                .init(id: "l2", lane: .liveForward)]
+        #expect(!P.mayHandOffToStatic(id: "p1", occupants: totalFull, limits: limits))
+        let oneFree = prep + [.init(id: "s1", lane: .staticFile), .init(id: "l1", lane: .liveForward)]
+        #expect(P.mayHandOffToStatic(id: "p1", occupants: oneFree, limits: limits))
     }
 
     /// B63: five parked rows resumed together start no more than the caps allow.
@@ -74,10 +111,10 @@ struct DownloadAdmissionPolicyTests {
     }
 
     @Test func aFullLaneDoesNotBlockOtherLanes() {
-        let occupants = [DownloadAdmissionOccupant(id: "p1", lane: .serverPreparation)]
+        let occupants = [DownloadAdmissionOccupant(id: "l1", lane: .liveForward)]
         let granted = P.grants(limits: limits,
             occupants: occupants,
-            requests: [request("p2", .serverPreparation, at: 1), request("s1", .staticFile, at: 2)],
+            requests: [request("l2", .liveForward, at: 1), request("s1", .staticFile, at: 2)],
             now: 5, queuePaused: false)
         #expect(granted.map(\.id) == ["s1"])
     }
@@ -134,15 +171,20 @@ struct DownloadAdmissionPolicyTests {
     /// does not count against it.
     @Test func mayEnterExcludesTheRowItself() {
         let occupants = [DownloadAdmissionOccupant(id: "row", lane: .staticFile),
-                         .init(id: "other", lane: .serverPreparation)]
-        #expect(!P.mayEnter(.serverPreparation, id: "row", occupants: occupants, limits: limits))
-        #expect(P.mayEnter(.liveForward, id: "row", occupants: occupants, limits: limits))
+                         .init(id: "other", lane: .liveForward)]
+        #expect(!P.mayEnter(.liveForward, id: "row", occupants: occupants, limits: limits))
+        #expect(P.mayEnter(.serverPreparation, id: "row", occupants: occupants, limits: limits))
+        let busy = [DownloadAdmissionOccupant(id: "row", lane: .staticFile),
+                    .init(id: "other", lane: .serverPreparation)]
+        #expect(P.mayEnter(.liveForward, id: "row", occupants: busy, limits: limits))
         // The row already counts toward the total, so moving it does not change the total; only
-        // three other occupants close every lane.
-        let busier = occupants + [DownloadAdmissionOccupant(id: "third", lane: .staticFile)]
+        // three other transfer occupants close every transfer lane (#414: prep never counts).
+        let busier = busy + [DownloadAdmissionOccupant(id: "third", lane: .staticFile),
+                             .init(id: "fourth", lane: .staticFile)]
         #expect(P.mayEnter(.liveForward, id: "row", occupants: busier, limits: limits))
-        let full = busier + [DownloadAdmissionOccupant(id: "fourth", lane: .staticFile)]
+        let full = busier + [DownloadAdmissionOccupant(id: "fifth", lane: .staticFile)]
         #expect(!P.mayEnter(.liveForward, id: "row", occupants: full, limits: limits))
+        #expect(P.mayEnter(.serverPreparation, id: "row", occupants: full, limits: limits))
     }
 
     /// pu-33: waiting rows say why they wait; started or plainly parked rows do not.

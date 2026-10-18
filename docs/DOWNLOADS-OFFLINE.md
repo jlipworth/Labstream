@@ -621,8 +621,11 @@ Every download start goes through one admission window (`DownloadAdmissionPolicy
 `DownloadAdmissionCoordinator`): single taps, season rows, Resume All, a row's Resume or Retry,
 automatic static range resumes and stalled-stream restarts. Settings ▸ Downloads ▸
 **Simultaneous downloads** sets the total cap from 1 to 5 (default 3). The static-file lane is
-`max(1, total - 1)`; server preparation (Plex optimize or Emby Convert) and live-forward streams
-each remain capped at 1. The pure policy takes limits supplied by the manager-owned coordinator,
+`max(1, total - 1)` and live-forward streams are capped at 1. Server preparation (Plex optimize or
+Emby Convert) is not a transfer and does not count toward the total (#414): up to 5 server jobs
+are submitted at once whatever the setting, so a queued batch renders on the server while the app
+is suspended, and the server's own transcoder settings decide how many render concurrently. The
+pure policy takes limits supplied by the manager-owned coordinator,
 which reads the persisted preference at every gate, including relaunch recovery. Explicit row
 actions are served before automatic ones; the origin orders requests and never lifts a cap.
 
@@ -634,9 +637,16 @@ available on visionOS, iOS/iPadOS and macOS; tvOS has no Downloads settings.
 - **Occupancy is observed.** A row uses its lane while its persisted lifecycle is `admitted`,
   `serverPrep` or `transferring`, it is not being deleted, and live work backs it (a start slot,
   a registered prep poller or a session-owned transfer). Pause, failure, finalizing and delete
-  free the lane without any release call. A Plex row that hands its render off to the static
-  transfer moves from the server-prep lane to the static lane; static occupancy can then exceed
-  its configured cap, and nothing new enters the static lane meanwhile.
+  free the lane without any release call.
+- **Finished renders wait for a transfer slot (#414).** When a Plex render or an Emby Convert job
+  with a persisted job identity finishes, the row keeps its prep slot and reads **Ready — waiting
+  for a download slot…** until the static and total caps have room, then starts its byte transfer
+  with the live backend session. Waiting renders go first come, first served, and ahead of new
+  transfer starts (taps, Resume, Retry, automatic static resumes); new server jobs can still be
+  submitted meanwhile. The wait is in memory: after a relaunch the resume poller finds the
+  finished render and waits again. An Emby start that reuses an already converted version has no
+  job identity yet, so it hands off at once; that handoff and grandfathered relaunch work can
+  briefly put static occupancy over its cap, and nothing new enters the static lane meanwhile.
 - **Starts are supervised.** A granted start is fenced by a generation until its async work
   finishes. A start that ends without work (no session, a refresh outage) waits again with
   backoff of 1, 5, 15, 30 and then 60 seconds instead of failing; a definitive refusal (signed

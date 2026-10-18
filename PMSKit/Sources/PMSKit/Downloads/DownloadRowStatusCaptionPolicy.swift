@@ -127,6 +127,8 @@ public enum DownloadRowStatusCaptionPolicy {
     }
 
     public static let serverPrepQueuedState = "queued"
+    /// #414: the live prep state while a finished render waits for a static transfer slot.
+    public static let serverPrepReadyState = "ready_waiting_for_slot"
 
     /// Compatibility alias for older call sites; the shared phase vocabulary now lives in
     /// `DownloadJobPhase` so diagnostics and future coordinators can use the same model.
@@ -160,6 +162,7 @@ public enum DownloadRowStatusCaptionPolicy {
             // truthfully claim "Preparing on server". Real active pollers still surface their live
             // progress/finalizing state below, even if configuration changes while they unwind.
             if !context.isActive, !context.isBackendConfigured { return .waitingForBackend }
+            if context.serverPrepState == serverPrepReadyState { return .serverPrepReady }
             if DownloadProgressDisplay.isServerPrepFinalizing(state: context.serverPrepState,
                                                               progress: context.serverPrepProgress) {
                 return .serverPrepFinalizing
@@ -213,6 +216,8 @@ public enum DownloadRowStatusCaptionPolicy {
             return serverPrepProgressCaption(context)
         case .serverPrepQueued, .activeServerPrep:
             return "Preparing on server…"
+        case .serverPrepReady:
+            return "Ready — waiting for a download slot…"
         case .waitingForBackend:
             return "Waiting for \(context.backend.displayName)…"
         case .queued:

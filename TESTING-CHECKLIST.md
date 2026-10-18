@@ -352,9 +352,16 @@ background-session registration, or migration/recovery work.
 - [ ] Plan a season on Emby (and separately on Plex) that mixes one new Convert/optimize episode
       with an episode that already has a converted/optimized version and a directly playable
       original. While the conversion is still preparing, the static episodes are admitted and
-      transfer (at the default setting: at most two static, one server-prep, three total). A waiting
-      row reads **Waiting for a download slot…** in Offline and the current-download sheets,
-      never "Downloading optimized…" with a spinner.
+      transfer (at the default setting: at most two static and three total transfers; server
+      preparation does not use a transfer slot). A waiting row reads **Waiting for a download
+      slot…** in Offline and the current-download sheets, never "Downloading optimized…" with a
+      spinner.
+- [ ] Server jobs (#414): on Plex (and separately Emby), queue three optimize/Convert downloads,
+      then lock or background the device for a few hours. The server shows all three jobs
+      submitted straight away, and all three finish rendering while the app is suspended. On
+      reopening, finished renders beyond the free transfer slots read **Ready — waiting for a
+      download slot…** and start in queue order as slots free; the transfer count never exceeds
+      the simultaneous-downloads setting. Deleting a waiting row cleans up like any server-prep row.
 - [ ] Admission (P4): with five paused rows, Resume All starts at most the caps and the rest read
       **Waiting for a download slot…** until a lane frees. A tap while every lane is busy waits and
       survives relaunch. During Pause All, one row's Resume starts only that row; the next Pause

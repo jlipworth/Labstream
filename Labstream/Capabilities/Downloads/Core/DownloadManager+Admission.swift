@@ -42,13 +42,20 @@ extension DownloadManager {
         var observed = Set<String>()
         for record in snapshot where occupiesAdmissionLane(record) {
             // A supervised start's lane wins over metadata: a lane switch (P4.5) is authoritative
-            // before the route is stamped on the row.
-            let lane = admission.supervised[record.ratingKey]?.lane ?? admissionLane(for: record)
+            // before the route is stamped on the row. A render that passed its handoff check (#414)
+            // already holds a static slot.
+            let lane = staticHandoffReservations[record.ratingKey] != nil ? .staticFile
+                : admission.supervised[record.ratingKey]?.lane ?? admissionLane(for: record)
             occupants.append(.init(id: record.ratingKey, lane: lane))
             observed.insert(record.ratingKey)
         }
         for (id, supervision) in admission.supervised where !observed.contains(id) {
-            occupants.append(.init(id: id, lane: supervision.lane))
+            occupants.append(.init(id: id, lane: staticHandoffReservations[id] != nil
+                ? .staticFile : supervision.lane))
+            observed.insert(id)
+        }
+        for id in staticHandoffReservations.keys where !observed.contains(id) {
+            occupants.append(.init(id: id, lane: .staticFile))
         }
         return occupants
     }
@@ -95,9 +102,15 @@ extension DownloadManager {
             requests.append(admission.request(for: record.ratingKey, lane: admissionLane(for: record)))
         }
         let now = admission.now()
+        // #414: a finished render that can hand off now takes the free transfer slot on its next
+        // check; new transfer starts wait for it. Server-prep submissions are unaffected.
+        let handoffPending = staticHandoffIsPending(occupants: occupants)
         let grants = DownloadAdmissionPolicy.grants(
             limits: admission.limits,
-            occupants: occupants, requests: requests, now: now,
+            occupants: occupants,
+            requests: handoffPending
+                ? requests.filter { !DownloadAdmissionLimits.countsTowardTotal($0.lane) } : requests,
+            now: now,
             queuePaused: isQueuePaused, pauseExemptIDs: admission.pauseExemptions)
         for grant in grants {
             guard let record = waiting[grant.id] else { continue }
@@ -113,7 +126,7 @@ extension DownloadManager {
         scheduleAdmissionWake(at: next)
         // Automatic static resumes keep a pending-resume marker while they wait for a lane; drain
         // them when the static lane has room after this pass's grants.
-        if hasPendingStaticRangeResumes,
+        if hasPendingStaticRangeResumes, !handoffPending,
            admissionHasRoom(for: "\u{1F}static-drain", lane: .staticFile,
                             exemptFromQueuePause: true) {
             Task { @MainActor [weak self] in self?.drainPendingStaticRangeResumes() }
@@ -320,11 +333,15 @@ extension DownloadManager {
         // A row that already holds a lane (a range train rebuilding its request, an adopted
         // remainder) continues under its own admission.
         if let current = store.record(for: id), occupiesAdmissionLane(current) { return true }
+        let occupants = admissionOccupants(store.records)
+        // #414: a finished render waiting for this slot goes before any new transfer start.
+        if DownloadAdmissionLimits.countsTowardTotal(lane),
+           staticHandoffIsPending(occupants: occupants) { return false }
         let request = DownloadAdmissionRequest(id: id, lane: lane, origin: .user,
                                                requestedAt: admission.now())
         return !DownloadAdmissionPolicy.grants(
             limits: admission.limits,
-            occupants: admissionOccupants(store.records), requests: [request],
+            occupants: occupants, requests: [request],
             now: admission.now(), queuePaused: isQueuePaused,
             pauseExemptIDs: exemptFromQueuePause ? [id] : []).isEmpty
     }
@@ -471,6 +488,83 @@ extension DownloadManager {
             backend: backend, downloadLane: DownloadChoicePolicy.downloadLane(for: choice))
         guard admissionMayEnter(lane, ratingKey: record.ratingKey) else { return nil }
         return choice
+    }
+
+    // MARK: - Render handoff (#414)
+
+    static let staticHandoffCheckInterval: Duration = .seconds(1)
+
+    /// The first waiting render, which is next in line for a static slot.
+    private var firstStaticHandoffWaiter: String? {
+        staticHandoffWaiters.min { $0.value.sequence < $1.value.sequence }?.key
+    }
+
+    /// Whether the first waiting render can take a static slot right now. New transfer starts
+    /// yield to it; every waiter needs the same slot, so only the first one matters.
+    func staticHandoffIsPending(occupants: [DownloadAdmissionOccupant]) -> Bool {
+        guard let first = firstStaticHandoffWaiter else { return false }
+        return DownloadAdmissionPolicy.mayHandOffToStatic(id: first, occupants: occupants,
+                                                          limits: admission.limits)
+    }
+
+    /// #414: a server-prep row whose render finished waits here, keeping its prep slot, until a
+    /// static transfer slot is free, so several submitted jobs never start more transfers than the
+    /// simultaneous-downloads setting allows. Waiters go first come, first served, ahead of new
+    /// transfer starts. Returns nil when the wait was cancelled or `isCurrent` stopped holding
+    /// (pause, delete, sign-out, a newer attempt); otherwise the row holds a static reservation
+    /// until the caller passes the returned token to `endStaticHandoff`.
+    func awaitStaticHandoffRoom(for key: DownloadAttemptKey, backend: String,
+                                isCurrent: () -> Bool) async -> UUID? {
+        let id = key.ratingKey
+        let token = UUID()
+        let startedAt = admission.now()
+        var waiting = false
+        defer {
+            if staticHandoffWaiters[id]?.token == token {
+                staticHandoffWaiters[id] = nil
+                scheduleAdmissionPump()
+            }
+            if waiting, optimizeState[id] == DownloadRowStatusCaptionPolicy.serverPrepReadyState {
+                optimizeState[id] = nil
+            }
+        }
+        while true {
+            guard !Task.isCancelled, isCurrent() else { return nil }
+            let first = firstStaticHandoffWaiter
+            if first == nil || first == id,
+               DownloadAdmissionPolicy.mayHandOffToStatic(
+                id: id, occupants: admissionOccupants(store.records), limits: admission.limits) {
+                staticHandoffReservations[id] = token
+                if waiting {
+                    recordDownloadDiagnostic("downloads.handoff_granted", fields: [
+                        "download_id": .identifier(id),
+                        "backend": .label(backend),
+                        "waited_seconds": .int(Int(admission.now() - startedAt)),
+                    ])
+                }
+                return token
+            }
+            if !waiting {
+                waiting = true
+                staticHandoffSequence += 1
+                staticHandoffWaiters[id] = (token, staticHandoffSequence)
+                optimizeState[id] = DownloadRowStatusCaptionPolicy.serverPrepReadyState
+                recordDownloadDiagnostic("downloads.handoff_waiting", fields: [
+                    "download_id": .identifier(id),
+                    "backend": .label(backend),
+                ])
+                refreshRecords()
+            }
+            do { try await Task.sleep(for: Self.staticHandoffCheckInterval) } catch { return nil }
+        }
+    }
+
+    /// Ends a handoff reservation once the transfer start returned (its own occupancy is
+    /// observable by then) or failed. Only the wait that took the reservation can end it.
+    func endStaticHandoff(_ id: String, token: UUID) {
+        guard staticHandoffReservations[id] == token else { return }
+        staticHandoffReservations[id] = nil
+        scheduleAdmissionPump()
     }
 
     /// Pause and delete end a row's supervised start and forget its request and exemption.

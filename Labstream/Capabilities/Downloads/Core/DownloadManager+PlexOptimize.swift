@@ -198,12 +198,27 @@ extension DownloadManager {
             try assertCurrentOptimizeAttempt(attemptKey: attemptKey,
                                              metadata: optimizeMetadata,
                                              targetName: targetName)
+            // #414: wait for a transfer slot, then start with the live session (a long wait can
+            // outlast a token refresh or server change).
+            guard let handoff = await awaitStaticHandoffRoom(for: attemptKey, backend: "Plex", isCurrent: {
+                serverPrepAttempts.isCurrentPlexPoller(for: attemptKey, id: pollerID)
+                    && (try? assertCurrentOptimizeAttempt(attemptKey: attemptKey, metadata: optimizeMetadata,
+                                                          targetName: targetName)) != nil
+            }) else {
+                try Task.checkCancellation()
+                throw DownloadLifecycleCancellation.staleOptimizeAttempt
+            }
+            defer { endStaticHandoff(ratingKey, token: handoff) }
+            guard let live = appModel.backendSession(for: .plex),
+                  live.matchesPersistedServer(optimizeMetadata) else {
+                throw DownloadLifecycleCancellation.plexSessionUnavailable
+            }
             try await startOptimizedPartDownload(attemptKey: attemptKey,
                                            title: item.title,
                                            part: part.part,
                                            metadata: optimizeMetadata,
-                                           server: part.session.baseURL,
-                                           token: part.session.token)
+                                           server: live.baseURL,
+                                           token: live.token)
         } catch DownloadLifecycleCancellation.staleOptimizeAttempt {
             recordDownloadDiagnostic("downloads.optimize_stale", fields: [
                 "download_id": .identifier(ratingKey),

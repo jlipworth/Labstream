@@ -38,6 +38,18 @@ struct DownloadRowStatusCaptionPolicyTests {
         #expect(caption == "Finalizing server transcode… • 720p")
     }
 
+    @Test("#414: a finished render waiting for a transfer slot says so, even at 100%")
+    func serverPrepReadyCaption() {
+        let ready = context(status: .preparing,
+                            resumeMode: .serverPrepThenStatic,
+                            isActive: true,
+                            serverPrepState: DownloadRowStatusCaptionPolicy.serverPrepReadyState,
+                            serverPrepProgress: 1.0)
+        #expect(DownloadRowStatusCaptionPolicy.phase(ready) == .serverPrepReady)
+        #expect(DownloadRowStatusCaptionPolicy.phase(ready).isActiveWork)
+        #expect(DownloadRowStatusCaptionPolicy.caption(ready) == "Ready — waiting for a download slot…")
+    }
+
     @Test("Forward-only active bytes include approximate percent and server-paced rate")
     func activeForwardOnlyCaption() {
         let caption = DownloadRowStatusCaptionPolicy.caption(context(
