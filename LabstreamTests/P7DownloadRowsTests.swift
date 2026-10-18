@@ -137,6 +137,11 @@ struct P7DownloadRowsTests {
         let list = OfflineLibraryView.rowPresentation(libraryRow)
         let sheet = DownloadOptionsSheet.existingPresentation(row, library: library)
         #expect(sheet == list)
+        if lifecycle == .complete || lifecycle == .unverified {
+            #expect(libraryRow.qualityText == nil)
+            #expect(sheet.statusText.hasPrefix(lifecycle == .complete ? "Downloaded" : "Not verified"))
+            #expect(sheet.accessibleStatus.contains(sheet.statusText))
+        }
         if lifecycle == .planned {
             #expect(libraryRow.statusCaption == DownloadRowStatusCaptionPolicy.admissionWaitingCaption(
                 lifecycle: row.lifecycle, intent: row.admissionIntent,

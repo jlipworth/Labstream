@@ -12,7 +12,6 @@ public struct DownloadRowPresentation: Sendable, Equatable {
     public let phase: DownloadJobPhase?
     public let tone: Tone
     public let progress: Progress
-    public let symbol: String
     public let actions: [Action]
 
     public init(row: OfflineDownloadRowSnapshot, phase: DownloadJobPhase? = nil) {
@@ -25,14 +24,11 @@ public struct DownloadRowPresentation: Sendable, Equatable {
         } else if phase == .transferFinalizing { lifecycle = .finalizing }
         else { lifecycle = row.lifecycle }
         switch lifecycle {
-        case .complete: tone = .verified; symbol = "checkmark.circle.fill"
-        case .unverified: tone = .caution; symbol = "exclamationmark.circle"
-        case .failed where !row.isRetrying: tone = .failure; symbol = "exclamationmark.circle"
-        case .paused: tone = .neutral; symbol = "pause.circle"
-        case .planned, .admitted: tone = .neutral; symbol = "clock"
-        case .serverPrep: tone = .neutral; symbol = "gearshape.arrow.triangle.2.circlepath"
-        case .finalizing: tone = .neutral; symbol = "checkmark.magnifyingglass"
-        case .failed, .transferring: tone = .neutral; symbol = "arrow.down.circle"
+        case .complete: tone = .verified
+        case .unverified: tone = .caution
+        case .failed where !row.isRetrying: tone = .failure
+        case .paused, .planned, .admitted, .serverPrep, .finalizing, .failed, .transferring:
+            tone = .neutral
         }
         if row.isRetrying {
             progress = .indeterminate
@@ -60,8 +56,7 @@ public struct DownloadRowPresentation: Sendable, Equatable {
     }
 
     public var statusText: String {
-        guard lifecycle == .complete else { return row.statusCaption }
-        return row.statusCaption.isEmpty ? "Downloaded" : "Downloaded • " + row.statusCaption
+        row.statusCaption
     }
 
     public var actionIdentity: OfflineDownloadRowActionIdentity { row.actionIdentity }
@@ -76,7 +71,7 @@ public struct DownloadRowPresentation: Sendable, Equatable {
         case .paused: "Paused"
         case .failed: row.isRetrying ? "Retrying" : "Failed"
         }
-        return [phase, row.statusCaption, row.errorMessage].compactMap { $0 }
+        return [phase, statusText, row.errorMessage].compactMap { $0 }
             .filter { !$0.isEmpty }.joined(separator: ". ")
     }
     public func actionLabel(_ action: Action) -> String {

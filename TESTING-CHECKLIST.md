@@ -435,11 +435,15 @@ claiming background durability.
       renders and a late parse cannot restore an overlay. Repeat from Detail and Offline.
 - [ ] On narrow iPhone, regular iPad, Vision Pro and resizable Mac, compare Offline rows with
       current-download sheets: waiting/paused and route context are neutral, verified completion
-      green, caution amber, failure/destructive actions red. Waiting has a clock; zero server
-      progress is indeterminate; server indexing and verification have distinct captions.
-      Long context/status/quality stay single-line; VoiceOver reads full values and error details
-      expand. Media/extras and exact/estimated sizes remain distinct; preterminal progress stays
-      below 100%.
+      green, caution amber, failure/destructive actions red. All text lines align without icons;
+      poster badges remain. Zero server progress is indeterminate; server indexing and verification
+      have distinct captions.
+      Finished rows have one summary in status/resolution/average bitrate/size order, no separate
+      quality line, and append `+ <size> extras` only when present. Unknown facts are omitted.
+      Other states retain requested quality, progress and captions. Long context/status/quality
+      stay single-line with tail truncation; VoiceOver reads the full summary plus verified or
+      playback-not-verified phrasing, and error details expand. Media/extras and exact/estimated
+      sizes remain distinct; preterminal progress stays below 100%.
 - [ ] Delete paused and in-prep rows: confirmation explains supported unfinished server-job
       cancellation and retention of finished server versions. Replace the attempt while the
       confirmation is open; accepting the old confirmation leaves the replacement intact.

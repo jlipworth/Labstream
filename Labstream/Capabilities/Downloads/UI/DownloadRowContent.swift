@@ -42,7 +42,7 @@ struct DownloadRowContent: View {
                     .accessibilityValue((estimated ? "Approximately " : "") + "\(Int(value * 100))%. "
                         + presentation.row.statusCaption)
             }
-            Label(presentation.statusText, systemImage: presentation.symbol)
+            Text(presentation.statusText)
                 .font(.caption)
                 .monospacedDigit()
                 .foregroundStyle(statusColor)
@@ -75,7 +75,7 @@ private struct DownloadRowReason: View {
     @State private var showingReason = false
     var body: some View {
         Button { showingReason = true } label: {
-            Label("Details", systemImage: "info.circle")
+            Text("Details")
                 .font(.caption)
                 .foregroundStyle(color)
                 .frame(minHeight: 44, alignment: .leading)

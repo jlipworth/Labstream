@@ -447,7 +447,13 @@ and keep existing cached subtitles and playable media.
 
 Library and current-download sheets share lifecycle-driven rows. Waiting/paused and route/context
 are neutral, verified completion green, caution amber, and failures/destructive controls red.
-Context, status and quality are single-line with full accessibility values; error details expand.
+All text lines share a leading edge without status icons; poster badges remain. Finished rows show
+one tail-truncated summary: `Downloaded • 1080p • 5.7 Mbps avg • 1.6 GB + 12 MB extras` or
+`Not verified • 1080p • 6.1 Mbps avg • 1.8 GB`. Resolution, local media average bitrate and size
+are omitted when unknown; extras appear only when present. Finished rows have no separate quality
+line. Other states retain requested quality, progress and captions. Context and status stay
+single-line with full accessibility values; VoiceOver adds “Downloaded and verified” or
+“Downloaded; playback not verified” to the full summary. Error details expand.
 Server indexing, preparation and verification remain distinct, and preterminal progress never
 claims 100%. Delete captures exact attempt identities and explains supported unfinished server-job
 cancellation while retaining finished server versions.
