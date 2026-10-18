@@ -13,7 +13,7 @@ struct P7DownloadPresentationTests {
         record.lifecycle = lifecycle
         record.admissionIntent = admission
         return OfflineLibrarySnapshotBuilder.make(records: [record], isQueuePaused: false,
-            downloadSpeed: [:], errorMessage: { _ in lifecycle == .failed ? "Fixture failure reason" : nil },
+            aggregateSpeedBytesPerSecond: nil, errorMessage: { _ in lifecycle == .failed ? "Fixture failure reason" : nil },
             displayProgress: { _ in fraction }, statusCaption: { _, _ in "Full fixture status" },
             isRetrying: { _ in false }).rows[0]
     }
@@ -81,7 +81,7 @@ struct P7DownloadPresentationTests {
             status: .downloading, metadata: metadata, sideAssetBytes: 64)
         record.lifecycle = .transferring
         let snapshot = OfflineLibrarySnapshotBuilder.make(records: [record], isQueuePaused: false,
-            downloadSpeed: [:], errorMessage: { _ in nil }, displayProgress: { _ in 0.5 },
+            aggregateSpeedBytesPerSecond: nil, errorMessage: { _ in nil }, displayProgress: { _ in 0.5 },
             statusCaption: { _, _ in "~50% • 128 bytes media • 64 bytes extras" },
             isRetrying: { _ in false }).rows[0]
         #expect(snapshot.progressIsEstimated)

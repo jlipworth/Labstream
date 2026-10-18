@@ -52,7 +52,7 @@ struct DownloadOptionsModel {
                                                                   attemptID: record.attemptID)
         }) { return live }
         return OfflineLibrarySnapshotBuilder.make(records: [record], isQueuePaused: false,
-            downloadSpeed: [:], errorMessage: { _ in nil },
+            aggregateSpeedBytesPerSecond: nil, errorMessage: { _ in nil },
             displayProgress: { $0.progress > 0 ? $0.progress : nil },
             statusCaption: { row, _ in
                 DownloadRowStatusCaptionPolicy.admissionWaitingCaption(
