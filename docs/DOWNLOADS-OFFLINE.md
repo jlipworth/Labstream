@@ -465,6 +465,17 @@ sources. The storage and backup boundary is detailed in [Persistence](PERSISTENC
 
 Side assets such as posters, chapters, and compatible external text subtitles are cached next to the download record when available. They are treated as convenience metadata; the main playable file remains the durable core of the download.
 
+Posters are offered as soon as an owned row is queued, including season plans and restored
+active rows when their matching backend session becomes available. This poster-only pass runs
+independently of media admission and server preparation; BIF, trickplay, chapters and subtitles
+keep their normal later scheduling. It uses the existing paced, authenticated side-asset transport
+and respects Pause All and network preferences. Each attempt/source gets one early offer per
+launch; a failed fetch is non-fatal and remains eligible for normal later side-asset hydration.
+Validation, attempt/source-fenced staging and promotion, `sideAssetBundleOwner`, and
+`posterGeneration` are unchanged. Cached poster bytes count as side-asset storage, survive
+relaunch, and feed the shared Offline row artwork on visionOS, iOS/iPadOS and macOS. Rows
+without artwork retain the placeholder glyph; tvOS has no Downloads capability.
+
 ## Local playback and row presentation
 
 Detail's Play Offline and the Offline library admit the exact rendered attempt after orientation.

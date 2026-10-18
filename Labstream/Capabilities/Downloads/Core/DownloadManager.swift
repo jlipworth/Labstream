@@ -349,6 +349,8 @@ public final class DownloadManager {
     /// lifecycle owner, while the shared default prevents multiple app scenes/managers from creating
     /// independent request budgets for the same server origin.
     @ObservationIgnored let sideAssetFetchCoordinator: SideAssetFetchCoordinator
+    /// One early poster offer per exact attempt/source; normal side-asset hydration owns retries.
+    @ObservationIgnored var earlyPosterOffers: Set<DownloadSideAssetRetryIdentity> = []
     private var serverPrepRefreshKickScheduled = false
     private var lastServerPrepRefreshKickAt: Date?
     private var lastServerPrepQueuePausedLogAt: Date?
@@ -1938,6 +1940,7 @@ public final class DownloadManager {
                 _ = downloadWorkRegistry.cancelCancellableWork(for: previousKey)
                 cancelOptionalSideAssetHydration(for: previousKey)
             }
+            scheduleEarlyPosters(for: [record])
             return true
         case .committed:
             lastError[handle.ratingKey] = .transferFailed(
@@ -4925,6 +4928,7 @@ public final class DownloadManager {
         }
 
         records = fresh
+        scheduleEarlyPosters(for: fresh)
         offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: fresh)
         refreshOfflineAvailability()
         keepaliveCoordinator.reconcile(records: recoveryEligibleFresh)

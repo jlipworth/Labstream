@@ -11,6 +11,28 @@ import os
 
 extension DownloadManager {
 
+    /// Poster-only hydration must not wait for P4 admission or backend negotiation. Reuse the
+    /// normal cache path so request pacing, file validation, ownership, generation and accounting
+    /// stay identical. No filesystem observation or network wait runs on this scheduling path.
+    /// Missing auth does not consume the offer: backend-ready recovery will try again.
+    func scheduleEarlyPosters(for candidates: [DownloadRecord]) {
+        guard startupRecoveryState == .ready, !isQueuePaused,
+              seasonPlanCommitsInFlight == 0 else { return }
+        for record in candidates where record.status.isActiveWork {
+            guard let key = attemptKey(for: record), store.attemptAdmitsWork(key),
+                  let metadata = record.metadata,
+                  DownloadSideAssetPolicy.offlinePosterRef(for: metadata.makeMediaItem())?.isEmpty == false
+            else { continue }
+            let identity = DownloadSideAssetRetryIdentity(
+                attemptKey: key, source: metadata.sideAssetSourceIdentity, kind: .poster)
+            guard !earlyPosterOffers.contains(identity) else { continue }
+            if rehydrateMissingOptionalSideAssets(record: record, attemptKey: key,
+                                                  kinds: [.poster], reason: "queued_poster") {
+                earlyPosterOffers.insert(identity)
+            }
+        }
+    }
+
     /// Retry optional side assets that were cancelled or never finished before media completion.
     ///
     /// Clean-restart retries pass through the normal backend download entry points, which already
@@ -25,6 +47,8 @@ extension DownloadManager {
     /// resource) whose asset the server can never produce; the source-metadata refresh shares one
     /// budget per (attempt, source) across discovery kinds.
     func rehydrateMissingOptionalSideAssetsForCompletedRows(reason: String) {
+        // Ready/foreground edges also cover active rows restored before authentication was ready.
+        scheduleEarlyPosters(for: store.records)
         guard !isQueuePaused, completedSideAssetInventoryWorker == nil else { return }
         let candidates = records.filter(\.isComplete)
         let work = DownloadStoreWork { [store] in

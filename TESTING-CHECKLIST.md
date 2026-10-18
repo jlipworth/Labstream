@@ -458,6 +458,11 @@ claiming background durability.
       than claiming resumability from unsafe resume data.
 - [ ] Simulator evidence is labeled correctly: its normal foreground URLSession substitute
       does not prove device background relaunch/continuation.
+- [ ] On iPhone/iPad, Vision Pro and Mac, fill the download slots and queue individual titles
+      and a season on Plex, Jellyfin and Emby. Waiting and server-preparing rows show posters
+      promptly; relaunch retains them and repairs missing posters after the matching session
+      returns. Check that poster bytes count in storage, delete during a poster fetch leaves no
+      artwork behind, and titles without artwork retain the placeholder.
 - [ ] Completed rows retain backend, resolution/route, poster, subtitles, chapters, and
       trick-play side assets when available; missing optional side assets do not fail the media.
 - [ ] Complete a row while its poster or one or more chapter images are missing. With its matching
