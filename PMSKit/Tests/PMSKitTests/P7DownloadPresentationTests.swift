@@ -102,7 +102,7 @@ struct P7DownloadPresentationTests {
             serverPrepETA: nil, downloadETA: nil, downloadSpeedBytesPerSecond: nil,
             isRetrying: false, failureCaption: nil)
         let snapshot = OfflineLibrarySnapshotBuilder.make(records: [record], isQueuePaused: false,
-            downloadSpeed: [:], errorMessage: { _ in nil }, displayProgress: { _ in nil },
+            aggregateSpeedBytesPerSecond: nil, errorMessage: { _ in nil }, displayProgress: { _ in nil },
             statusCaption: { _, _ in DownloadRowStatusCaptionPolicy.caption(context) },
             isRetrying: { _ in false }).rows[0]
         let word = status == .complete ? "Downloaded" : "Not verified"

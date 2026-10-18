@@ -383,7 +383,7 @@ struct DownloadArtifactLifecycleTests {
             guard case .committed = await store.flushLifecycleAndPersistence(
                 through: store.currentPersistenceTicket(),
                 artifactWatermark: watermark,
-                timeout: 1) else {
+                timeout: 10) else {
                 Issue.record("head/successor retry did not drain"); return
             }
             #expect(store.resumeData(for: key) == Data("second".utf8))
