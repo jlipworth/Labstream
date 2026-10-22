@@ -8,6 +8,16 @@ query; verify them in App Store Connect again before any upload or submission.
 
 ## Current status
 
+On 2026-10-22, the next internal TestFlight run built **1.8.0 (build 1561)** for all four
+platforms from clean commit `a9ab14f4` on `downloads/overhaul`, using
+`--allow-unpublished`. It adds query-consistent Search presentation and bounded title
+ranking, plus owned download-test fixture cleanup. The keychain and download-backlog
+investigations in this source do not change production behavior. All four archives passed
+validation and processed to **VALID**, **IN_BETA_TESTING**, in **Labstream Internal**.
+No App Store build was selected or submitted for review. Two complete Mac hosted runs,
+iPhone/tvOS Search tests, four-platform runtime checks, and repository hygiene passed;
+physical-device and live-backend acceptance remain separate.
+
 On 2026-10-22, an internal TestFlight run built **1.8.0 (build 1555)** for all four
 platforms from clean commit `00614949` on `downloads/overhaul`, using
 `--allow-unpublished`. This includes the Mac navigation and window-close fixes, Home shelf
