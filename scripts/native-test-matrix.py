@@ -16,6 +16,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from xcode_lease import default_path, inherited
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
@@ -261,7 +264,9 @@ def main(argv: list[str] | None = None) -> int:
                 assert simulator_id is not None
                 require_worktree_simulator(entry["simulator"], simulator_id)
             output_dir.mkdir(parents=True, exist_ok=True)
-            return subprocess.run(entry["command"], cwd=REPO_ROOT).returncode
+            lease_fd = inherited(default_path())
+            return subprocess.run(entry["command"], cwd=REPO_ROOT,
+                                  pass_fds=() if lease_fd is None else (lease_fd,)).returncode
 
         payload = {"tier": args.tier, "changed_paths": paths, "lanes": entries}
         if args.format == "json":

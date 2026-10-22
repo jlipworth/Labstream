@@ -60,7 +60,8 @@ class ToolingHardeningTests(unittest.TestCase):
 
     def test_xcodebuild_versioned_passes_dirty_slug_for_untracked_asset(self):
         with self.make_repo() as root:
-            self.copy_script(root, "xcodebuild-versioned.sh")
+            for helper in ("xcodebuild-versioned.sh", "xcodebuild-lease.py", "xcode_lease.py", "bounded_process.py"):
+                self.copy_script(root, helper)
             fakebin = root / "fakebin"
             fakebin.mkdir()
             args_file = root / "xcodebuild-args.txt"

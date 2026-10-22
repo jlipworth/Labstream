@@ -736,3 +736,84 @@ report or signed archive validation. For each exact signed Release archive, insp
 the archived app and dependency manifests and generate/review Xcode's privacy report
 before release. Keep that gate open when only unsigned builds were inspected.
 Required-reason API declarations do not settle App Store collection disclosures.
+
+## Workflow status and review evidence
+
+Use `python3 scripts/workspace-status.py` to recover local worktree/branch state and
+GitHub PR references and explicit issue-number candidates from recent commit subjects.
+These references are candidates, not proof of remaining work. `--offline` skips GitHub; `--issue N` includes the complete issue
+and its comments in JSON output, with outstanding body checklist items labelled as
+reported rather than authoritative. Release excerpts are repository records, not live
+App Store Connect state. The command never fetches, checks out, pulls, merges or writes
+remote state. Failed or incomplete API inventories are errors, not proof of no work.
+
+For duplicate discovery, use `python3 scripts/issues.py find home navigation` or
+`python3 scripts/issues.py show 417`. The finder combines all open issues with issues
+closed in the last 90 days (`--closed-days`), ranks title/body matches, and searches
+comments for additional candidates. It retrieves full comments for the selected results.
+Use `--json` before the subcommand for structured output. These tools use the current
+`gh` login and issue only GET requests; they never file, comment on, or close an issue.
+
+Wait on the exact commit after an authorized push:
+
+```sh
+python3 scripts/ci-wait.py --commit HEAD --branch my-branch
+python3 scripts/ci-wait.py --commit HEAD --branch my-branch --require ci/woodpecker/push/hygiene --require ci/woodpecker/push/pmskit --require ci/woodpecker/push/docs
+```
+
+The default required contexts are the Woodpecker push hygiene and PMSKit checks. Explicit
+`--require` options replace that set. Add docs or other contexts when required by the change.
+The waiter reads GitHub's mirrored statuses/checks rather than a Woodpecker token. It does
+not independently verify the upstream event type. It refuses branch-head drift rather than
+substituting a newer commit. Missing checks remain pending; skipped, neutral and cancelled
+checks are unverified. Exit codes: 0 passed, 1 failed, 2 API/usage error, 3 unverified or
+branch drift, 4 pending at timeout (or `--once`). No remote pipeline is restarted.
+
+### Shared Xcode host lease
+
+`scripts/xcodebuild-versioned.sh` acquires an OS-backed lock for the Xcode command.
+The four `agent-*-run.sh` platform runners hold the same lease across build, install,
+UI work and teardown. Nested calls reuse an inherited descriptor; the bounded runner
+and native matrix preserve it. This supplements, rather than replaces, simulator
+identity and sole-booted checks. Manually booted simulators still need the usual lease
+coordination; commands bypassing these wrappers do not participate.
+
+```sh
+python3 scripts/xcodebuild-lease.py status
+python3 scripts/xcodebuild-lease.py run --lane manual-verification --wait-timeout 300 -- scripts/agent-macos-run.sh fixture-detail
+```
+
+The default lock is per-user at `~/.cache/labstream/xcode.lease`, shared by all worktrees.
+`--lock PATH` (or `LABSTREAM_XCODE_LEASE_PATH`) isolates tests; use the same path in every
+cooperating process. Exit 75 means the wait timed out. Stale metadata is not an active
+lease: the kernel lock decides ownership. Never delete a lock file to break a live lease.
+The runner forwards an interrupted command through normal process-group cleanup and
+releases the lock on exit; status does not reveal command arguments or credentials.
+
+### Receipts, checkpoints and review findings
+
+`scripts/workflow-state.py` records local evidence references in ignored
+`build/workflow/state.json`; `--file PATH` selects an explicit alternative store outside the repository or under a
+gitignored path, so the receipt never hashes its own changes.
+Keep the store private and preserve it with required artifacts before worktree removal.
+A source fingerprint includes HEAD plus tracked/untracked edits, so a receipt becomes stale
+when the source changes. `show` also flags stale checkpoints and stale verified findings;
+the latter reappear in `pending_review` without changing their historical disposition.
+Finding history retains each resolution commit and evidence path when reopened. A receipt is a human/agent claim with evidence, not proof a command
+ran successfully. Inspect the named log/result and distinguish simulation from hardware.
+
+```sh
+python3 scripts/workflow-state.py receipt validation --name hygiene --status passed --evidence build/hygiene.log
+python3 scripts/workflow-state.py receipt docs --name development-guide --status passed --evidence docs/DEVELOPMENT.md
+python3 scripts/workflow-state.py receipt docs --name no-user-visible-change --status not-needed --note 'Internal refactor only; existing behavior remains accurate'
+python3 scripts/workflow-state.py checkpoint --goal 'Finish review' --base main --issue 123 --next-action 'Review F2 and inspect Mac smoke' --authorized 'Local edits and tests' --gate 'Physical headset check'
+python3 scripts/workflow-state.py finding add F2 --summary 'Stale callback replaces newer state' --severity high
+python3 scripts/workflow-state.py finding set F2 --status fixed --commit HEAD --note 'Generation guard added'
+python3 scripts/workflow-state.py show
+```
+
+Stable finding IDs survive review rounds. `fixed` means awaiting review; `verified`
+requires an existing evidence file and a resolution commit reachable from current HEAD.
+Reopened, rejected or deferred findings retain their history. Authorization fields record
+existing user decisions, never grant permission. The mirrored `merge-worktree` and
+`review-ledger` skills use these records without changing push, merge or issue-close gates.

@@ -20,4 +20,5 @@ fi
 
 slug="${commit_count}-${commit}-${dirty}"
 echo "xcodebuild-versioned: LABSTREAM_BUILD_SLUG=${slug} LABSTREAM_BUILD_DATE_UTC=${built_at}" >&2
-exec xcodebuild "LABSTREAM_BUILD_SLUG=${slug}" "LABSTREAM_BUILD_DATE_UTC=${built_at}" "$@"
+exec python3 "$(dirname "${BASH_SOURCE[0]}")/xcodebuild-lease.py" run --lane xcodebuild -- \
+  xcodebuild "LABSTREAM_BUILD_SLUG=${slug}" "LABSTREAM_BUILD_DATE_UTC=${built_at}" "$@"

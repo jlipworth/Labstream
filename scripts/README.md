@@ -5,6 +5,27 @@ privacy-safe evidence collection, and opt-in live-server probes. Scripts that ne
 gitignored environment files; keep tokens, server URLs, item IDs, device IDs, generated logs, and
 media details out of commits and public issues.
 
+## Workflow inspection and continuity
+
+- `workspace-status.py [--offline] [--issue N] [--json]` — read-only worktrees, dirt,
+  upstream divergence, PRs and explicit issue references, local checkpoints/receipts, and
+  repository-recorded release evidence. Does not fetch or query App Store Connect. API
+  failures are reported as unavailable, not as an empty backlog.
+- `issues.py [--repo OWNER/REPO] [--json] find WORDS...` and `show N` — read-only
+  GitHub issue search over open and recently closed issues, including comment-only matches
+  and full comments for the selected results. Pagination/search limits fail explicitly.
+- `ci-wait.py --commit SHA --branch BRANCH [--require CONTEXT]` — exact-commit CI
+  statuses/checks through the existing `gh` login. Defaults to Woodpecker push hygiene and
+  PMSKit contexts; include the docs context when applicable. No restarts or writes.
+- `xcodebuild-lease.py run --lane NAME -- COMMAND...` and `status` — shared host lock
+  across worktrees. The versioned Xcode wrapper and platform scenario runners use it.
+  Busy waits are bounded; no live owner is killed to acquire the lock.
+- `workflow-state.py` — worktree-local validation/docs receipts, resume checkpoints and
+  stable review finding IDs. `show` is read-only. Other subcommands explicitly write only
+  the local store, defaulting to ignored `build/workflow/state.json`.
+
+Commands and limitations: [workflow status and review evidence](../docs/DEVELOPMENT.md#workflow-status-and-review-evidence).
+
 ## Build and validation
 
 - `xcodebuild-versioned.sh` — wraps `xcodebuild` and stamps a source-derived internal Build ID.
