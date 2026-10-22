@@ -17,9 +17,12 @@ Mac-specific code supplies window commands, keyboard navigation, fullscreen/play
 and system media integration while backend wire behavior and pure policies remain shared.
 
 The app owns exactly one reusable browse/player window plus the singleton system Settings window.
-Closing the main window hides it instead of dismantling its SwiftUI graph: Dock reopen, system
-entries, and menu commands reactivate that same window deterministically, while active playback,
-music, and background downloads continue until the user explicitly stops them or quits the app.
+Closing the main window dismisses ordinary video through the normal player cleanup path, then
+hides the retained window. Dock reopen, system entries, and menu commands reactivate that same
+window in browsing state. Music and background downloads continue. Active Picture-in-Picture
+sessions are exempt; the current native Mac player does not expose Picture-in-Picture.
+Command-Q behavior is unchanged. Live-backend progress and session-cleanup acceptance for
+window close remains tracked in [#357](https://github.com/jlipworth/Labstream/issues/357).
 The scene remains a command-suppressed `WindowGroup` so Finder, Dock, and direct executable launches
 all create the initial window reliably; the retained-window controller, hidden-close behavior, and
 removed New Window command prevent a second browse/navigation stack.
@@ -27,7 +30,12 @@ removed New Window command prevent a second browse/navigation stack.
 The Mac root uses a native source-list split view. Home is followed by the active server's visible
 non-music libraries, an optional Music section whose child routes share an explicit selected-library
 context, and a standalone Offline destination. Search lives in the native toolbar: Command-F
-focuses it, Escape or a source-list selection dismisses it, and the prior detail route is restored.
+focuses it. Explicit Home activation returns to the Home root, and explicit music-category
+activation opens that category’s root while preserving selected-library context and music playback.
+Sidebar and menu destination activation dismisses Search, including reselection. Command-[ pops
+one detail level while preserving the Search query and results; at the Search root it dismisses
+Search. Escape dismisses Search directly. Back is disabled when no back action exists, and Back,
+Search, and Offline commands are disabled during video playback.
 The source list collapses to detail-only below 900 points while retaining the native toggle; the
 window minimum is 760 by 640 points. Account-menu sign-out always requires confirmation.
 
