@@ -24,6 +24,8 @@ struct PosterImage: View {
     /// Optional request-scale override. Ordinary posters use the environment's actual display
     /// scale; decorative blurred/backdrop art can retain its explicit @1x request.
     var requestScale: CGFloat? = nil
+    /// Home crops into a uniform shelf frame after fetching at the source aspect.
+    var requestAspectRatio: Double? = nil
     /// SF Symbol shown when there's no artwork (or it fails). Defaults to the film glyph
     /// for video posters; music cells pass a `music.*` glyph so an art-less artist/album
     /// reads as "no cover" rather than "broken" (#111).
@@ -50,34 +52,43 @@ struct PosterImage: View {
         Group {
             // Hide old pixels immediately on sign-out, path removal, or facade loss; do not wait
             // for the replacement task to run and clear state.
-            if artworkDescriptor == nil || artworkPipeline == nil {
-                placeholder
-            } else if let loaded {
-                loaded
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .transition(.opacity)
-                    #if DEBUG || PERFORMANCE_AUDIT
-                    .macLoadedArtworkMeasurementMilestone(loadedMeasurementMilestone)
-                    #endif
-            } else if failed {
-                placeholder
+            #if DEBUG
+            if let fixture = DebugUIFixtureCatalog.homeArtwork(for: path) {
+                fixture.resizable().aspectRatio(contentMode: .fill)
             } else {
-                skeleton
+                artworkContent
             }
+            #else
+            artworkContent
+            #endif
         }
-        // task(id:) replaces AsyncImage, which retries NOTHING: one burst of failed
-        // requests during a fast scroll left a whole grid page as permanent
-        // placeholders (seen live). This loader retries transient errors with
-        // backoff; a definitive 4xx (e.g. PMS's 404 for absent art) fails fast.
+        // Retry transient image failures and restart when source, size, or authority changes.
         .task(id: loadKey) { await load() }
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .overlay(
-            // Hairline inner edge gives the artwork a crisp, framed finish on glass.
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .strokeBorder(.primary.opacity(0.08), lineWidth: 0.5)
         )
+    }
+
+    @ViewBuilder
+    private var artworkContent: some View {
+        if artworkDescriptor == nil || artworkPipeline == nil {
+            placeholder
+        } else if let loaded {
+            loaded
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .transition(.opacity)
+                #if DEBUG || PERFORMANCE_AUDIT
+                .macLoadedArtworkMeasurementMilestone(loadedMeasurementMilestone)
+                #endif
+        } else if failed {
+            placeholder
+        } else {
+            skeleton
+        }
     }
 
     private func load() async {
@@ -85,6 +96,9 @@ struct PosterImage: View {
         failed = false
         #if DEBUG || PERFORMANCE_AUDIT
         loadedMeasurementMilestone = false
+        #endif
+        #if DEBUG
+        if DebugUIFixtureCatalog.homeArtwork(for: path) != nil { return }
         #endif
         guard let descriptor = artworkDescriptor,
               let artworkPipeline else { return }
@@ -231,7 +245,7 @@ struct PosterImage: View {
 
     private var pixelDimensions: (width: Int, height: Int) {
         MediaArtwork.pixelDimensions(width: width,
-                                     height: height,
+                                     height: requestAspectRatio.map { width / CGFloat($0) } ?? height,
                                      displayScale: displayScale,
                                      requestScale: requestScale)
     }

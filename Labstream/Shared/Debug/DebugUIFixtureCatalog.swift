@@ -1,5 +1,6 @@
 #if DEBUG
 import Foundation
+import SwiftUI
 import PMSKit
 
 /// Small synthetic catalog used only by DEBUG agent/UI-test launches. It exercises the real Home,
@@ -55,6 +56,7 @@ enum DebugUIFixtureCatalog {
                 Hub(key: "/library/sections/1/recentlyAdded", title: "Recently Added",
                     hubIdentifier: "fixture-latest", metadata: rows),
             ]
+            hubs.append(contentsOf: mixedShapeHubs(backend: backend))
             // Enough additional shelves that Home's LazyVStack must realize and
             // derealize rows during vertical traversal — the regime where SwiftUI's
             // DynamicContainer item removal runs (2026-07-21 manual-session crash).
@@ -78,7 +80,54 @@ enum DebugUIFixtureCatalog {
                                      items: Array(rows.prefix(4)), destination: nil),
                 MediaBrowserHomeRail(id: "fixture-latest", title: "Recently Added Movies",
                                      items: rows, destination: nil),
-            ])
+            ] + mixedShapeHubs(backend: backend).map {
+                MediaBrowserHomeRail(id: $0.id, title: $0.title,
+                                     items: $0.metadata, destination: nil)
+            })
+    }
+
+    /// Reproduces #360 without a server: the leading movie is landscape, later
+    /// cards alternate aspect and missing metadata, and episode art mixes stills/posters.
+    static func mixedShapeHubs(backend: MediaBackendKind) -> [Hub] {
+        let prefix = backend.rawValue
+        return [("movie", "Mixed Artwork Movies"), ("show", "Mixed Artwork Shows"),
+                ("episode", "Mixed Artwork Episodes")].map { kind, title in
+            Hub(title: title, type: kind, hubIdentifier: "fixture-shapes-\(kind)",
+                metadata: (0..<8).map { index in
+                    MediaItem(ratingKey: "\(prefix)-shapes-\(kind)-\(index)",
+                              title: "\(kind == "episode" ? "Chapter" : "Horizon") \(index + 1)", type: kind,
+                              thumb: "fixture://home-artwork/\(index % 2 == 0 ? "landscape" : "portrait")",
+                              year: index % 2 == 0 ? 2026 : nil,
+                              grandparentTitle: kind == "episode" ? "Distant Horizons" : nil,
+                              parentIndex: kind == "episode" ? 1 : nil,
+                              index: kind == "episode" ? index + 1 : nil,
+                              primaryImageAspectRatio: index % 2 == 0 ? 16.0 / 9.0 : 2.0 / 3.0)
+                })
+        }
+    }
+
+    /// Real raster sources make crop versus stretch visible: the white circle must
+    /// remain round in either shelf shape. These paths never make network requests.
+    static func homeArtwork(for path: String?) -> Image? {
+        guard isBrowseEnabled else { return nil }
+        switch path {
+        case "fixture://home-artwork/landscape": return landscapeArtwork
+        case "fixture://home-artwork/portrait": return portraitArtwork
+        default: return nil
+        }
+    }
+
+    private static let landscapeArtwork = makeHomeArtwork(width: 320, height: 180)
+    private static let portraitArtwork = makeHomeArtwork(width: 120, height: 180)
+
+    private static func makeHomeArtwork(width: CGFloat, height: CGFloat) -> Image? {
+        let renderer = ImageRenderer(content:
+            ZStack {
+                LinearGradient(colors: [.indigo, .teal], startPoint: .topLeading, endPoint: .bottomTrailing)
+                Circle().fill(.white).frame(width: 70, height: 70)
+            }.frame(width: width, height: height))
+        guard let image = renderer.cgImage else { return nil }
+        return Image(decorative: image, scale: 1)
     }
 
     static func libraryRootItems(for backend: MediaBackendKind) -> [LibraryRootItem]? {

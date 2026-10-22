@@ -21,6 +21,67 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
         add(attachment)
     }
 
+    /// #360: use the real Home LazyHStack with landscape-first mixed artwork. Test both
+    /// visible cards and a later card after horizontal realization changes the lazy row.
+    @MainActor
+    func testHomeMixedArtworkShelvesHaveStableGeometry() {
+        for backend in ["plex", "jellyfin", "emby"] {
+            let app = XCUIApplication()
+            app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
+            app.launchArguments = ["--ui-testing", "--ui-testing-backend", backend,
+                                   "--ui-testing-fixture", "browse"]
+            app.launch()
+            XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", "-orbit"))
+                .firstMatch.waitForExistence(timeout: 10))
+
+            for (kind, title, nextTitle) in [
+                ("movie", "Mixed Artwork Movies", "Mixed Artwork Shows"),
+                ("show", "Mixed Artwork Shows", "Mixed Artwork Episodes"),
+                ("episode", "Mixed Artwork Episodes", "")
+            ] {
+                let railID = backend == "plex" ? "fixture-shapes-\(kind)"
+                    : "\(backend)-fixture-shapes-\(kind)"
+                let first = app.buttons["labstream.home.\(railID).\(backend)-shapes-\(kind)-0"]
+                for _ in 0..<12 {
+                    if first.exists && first.isHittable,
+                       nextTitle.isEmpty || app.staticTexts[nextTitle].isHittable { break }
+                    app.swipeUp()
+                }
+                XCTAssertTrue(first.isHittable, "\(backend) \(kind) shelf should be reachable")
+                let second = app.buttons["labstream.home.\(railID).\(backend)-shapes-\(kind)-1"]
+                XCTAssertTrue(second.exists)
+                let firstFrame = first.frame
+                XCTAssertGreaterThan(firstFrame.height, 0)
+                XCTAssertEqual(firstFrame.height, second.frame.height, accuracy: 1)
+                XCTAssertEqual(firstFrame.minY, second.frame.minY, accuracy: 1)
+                XCTAssertTrue(app.staticTexts[title].exists)
+                XCTAssertLessThanOrEqual(app.staticTexts[title].frame.maxY, firstFrame.minY,
+                                         "Cards must start below their own header")
+                if !nextTitle.isEmpty {
+                    XCTAssertTrue(app.staticTexts[nextTitle].exists)
+                    XCTAssertLessThanOrEqual(firstFrame.maxY, app.staticTexts[nextTitle].frame.minY,
+                                             "Labels must finish before the next header")
+                }
+                let rail = app.scrollViews["labstream.home.rail.\(railID)"]
+                XCTAssertTrue(rail.exists)
+                let last = app.buttons["labstream.home.\(railID).\(backend)-shapes-\(kind)-7"]
+                for _ in 0..<8 {
+                    if last.exists && last.isHittable { break }
+                    rail.swipeLeft()
+                }
+                XCTAssertTrue(last.isHittable)
+                XCTAssertEqual(firstFrame.height, last.frame.height, accuracy: 1,
+                               "Realizing later artwork must not resize the shelf")
+                XCTAssertEqual(firstFrame.minY, last.frame.minY, accuracy: 1)
+                let attachment = XCTAttachment(screenshot: app.screenshot())
+                attachment.name = "home-mixed-artwork-\(backend)-\(kind)"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            }
+            app.terminate()
+        }
+    }
+
     /// #415: the restricted Offline surface keeps its status in navigation chrome. Reconnect,
     /// Sign In, and Settings must all be reachable (the old top inset covered the toolbar).
     @MainActor

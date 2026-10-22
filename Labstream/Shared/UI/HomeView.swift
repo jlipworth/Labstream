@@ -423,6 +423,37 @@ private struct HubRail: View {
     @Environment(\.labstreamCompactWidth) private var compactWidth
     @Environment(\.labstreamHomeUsesDenseSectionSpacing) private var denseSectionSpacing
 
+    #if os(tvOS)
+    @ScaledMetric(relativeTo: .body) private var shelfLabelHeight: CGFloat = 100
+    #else
+    @ScaledMetric(relativeTo: .headline) private var shelfLabelHeight: CGFloat = 46
+    #endif
+
+    private var presentation: HomeRailArtworkPolicy.Presentation? {
+        HomeShelfPresentationPolicy.presentation(for: hub)
+    }
+
+    private var shelfWidth: CGFloat {
+        presentation == .landscape
+            ? HomeRailCellMetrics.episodeWidth(compact: compactWidth)
+            : DS.Poster.railWidth(compact: compactWidth)
+    }
+
+    private var shelfImageHeight: CGFloat {
+        shelfWidth / CGFloat(presentation?.aspectRatio ?? Double(DS.Poster.aspect))
+    }
+
+    private var shelfHeight: CGFloat? {
+        guard let presentation else { return nil }
+        let contentHeight = shelfImageHeight + DS.Space.sm + shelfLabelHeight
+        if presentation == .landscape,
+           HomeLayoutMetrics.reservePosterHeightForEpisodeRails(denseSections: denseSectionSpacing) {
+            return max(contentHeight, DS.Poster.height(for: DS.Poster.railWidth(compact: compactWidth))
+                       + DS.Space.sm + shelfLabelHeight)
+        }
+        return contentHeight
+    }
+
     var body: some View {
         VStack(alignment: .leading,
                spacing: HomeLayoutMetrics.titleToRailSpacing(compact: compactWidth,
@@ -430,10 +461,16 @@ private struct HubRail: View {
             RailSectionHeader(title: hub.title, destination: destination)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: HomeLayoutMetrics.itemSpacing(compact: compactWidth)) {
+                LazyHStack(alignment: .top, spacing: HomeLayoutMetrics.itemSpacing(compact: compactWidth)) {
                     ForEach(hub.metadata) { item in
                         NavigationLink(value: item) {
-                            RailMediaCell(item: item, context: .home)
+                            if let presentation {
+                                HomeShelfMediaCell(item: item, presentation: presentation,
+                                                   width: shelfWidth, imageHeight: shelfImageHeight,
+                                                   labelHeight: shelfLabelHeight)
+                            } else {
+                                RailMediaCell(item: item)
+                            }
                         }
                         .accessibilityIdentifier("labstream.home.\(hub.id).\(item.ratingKey)")
                         #if os(tvOS)
@@ -455,6 +492,8 @@ private struct HubRail: View {
                     }
                     #endif
                 }
+                // LazyHStack must not infer the shelf height from its currently realized cards.
+                .frame(height: shelfHeight, alignment: .top)
                 .padding(.vertical,
                          HomeLayoutMetrics.railVerticalPadding(denseSections: denseSectionSpacing))
             }
@@ -462,6 +501,7 @@ private struct HubRail: View {
             // keeps the inset out of the cards' own geometry (see the gaze-routing
             // gotcha in docs/DEVELOPMENT.md).
             .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth))
+            .accessibilityIdentifier("labstream.home.rail.\(hub.id)")
             #if os(tvOS)
             // Declared focus row: vertical moves treat the whole rail as a target, so a
             // card whose column doesn't overlap the row above/below still routes into it.
@@ -474,14 +514,62 @@ private struct HubRail: View {
     /// Match the trailing View All card to the rail's artwork frame: 16:9 for episode
     /// shelves, the canonical 2:3 poster otherwise.
     private var viewAllCardSize: CGSize {
-        if hub.metadata.first?.kind == .episode {
-            return CGSize(width: HomeRailCellMetrics.episodeWidth(compact: compactWidth),
-                          height: HomeRailCellMetrics.episodeImageHeight(compact: compactWidth))
-        }
-        let width = DS.Poster.railWidth(compact: compactWidth)
-        return CGSize(width: width, height: DS.Poster.height(for: width))
+        CGSize(width: shelfWidth, height: shelfImageHeight)
     }
     #endif
+}
+
+/// Home-only card: uniform shelf geometry, with aspect-preserving fill and crop.
+private struct HomeShelfMediaCell: View {
+    let item: MediaItem
+    let presentation: HomeRailArtworkPolicy.Presentation
+    let width: CGFloat
+    let imageHeight: CGFloat
+    let labelHeight: CGFloat
+
+    var body: some View {
+        let artwork = HomeShelfPresentationPolicy.artwork(for: item, presentation: presentation)
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
+            PosterImage(path: artwork.path, width: width, height: imageHeight,
+                        requestAspectRatio: HomeShelfPresentationPolicy.sourceAspect(for: item, artwork: artwork))
+                .overlay(alignment: .bottom) {
+                    ProgressSliver(offset: item.viewOffset, duration: item.duration)
+                }
+                .posterHover()
+                .tvFocusHighlight()
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.kind == .episode ? item.grandparentTitle ?? item.title : item.title)
+                    #if os(tvOS)
+                    .font(.body.weight(.medium))
+                    .lineLimit(2)
+                    #else
+                    .font(.headline)
+                    .lineLimit(1)
+                    #endif
+                if item.kind == .episode {
+                    Text([item.seasonEpisodeCode, item.title].compactMap { $0 }.joined(separator: " · "))
+                        .font(subtitleFont)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else if let year = item.year {
+                    Text(String(year))
+                        .font(subtitleFont)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(width: width, height: labelHeight, alignment: .topLeading)
+        }
+        .frame(width: width, alignment: .topLeading)
+    }
+
+    private var subtitleFont: Font {
+        #if os(tvOS)
+        .caption
+        #else
+        .subheadline
+        #endif
+    }
 }
 
 private enum HomeLayoutMetrics {
@@ -536,44 +624,16 @@ private extension EnvironmentValues {
     }
 }
 
-/// Rail cell that respects the media artwork shape.
-///
-/// Search/standard rails keep episode stills as 16:9 cards. Home has its own TV artwork
-/// policy: when an episode carries season/show poster context, render that poster art in
-/// the canonical rail poster frame instead of showing an episode screenshot by default.
+/// Search/standard rails retain item-specific artwork; Home uses HomeShelfMediaCell.
 struct RailMediaCell: View {
-    enum Context {
-        case standard
-        case home
-    }
-
     let item: MediaItem
-    var context: Context = .standard
 
     @ViewBuilder
     var body: some View {
         if item.kind == .episode {
-            switch context {
-            case .home:
-                homeEpisodeCell
-            case .standard:
-                EpisodeRailCell(item: item)
-            }
+            EpisodeRailCell(item: item)
         } else {
             PosterCell(item: item)
-        }
-    }
-
-    @ViewBuilder
-    private var homeEpisodeCell: some View {
-        let selection = HomeRailArtworkPolicy.selection(for: item)
-        switch selection.presentation {
-        case .poster:
-            PosterCell(item: item,
-                       artworkPath: selection.path,
-                       aspectOverride: selection.presentation.aspectRatio)
-        case .landscape:
-            EpisodeRailCell(item: item, artworkPath: selection.path)
         }
     }
 }

@@ -154,9 +154,17 @@ cancellation fences. Other Plex request descriptors, canonical response DTOs,
 timeline, optimizer, and universal-transcode APIs remain spread across the root PMSKit
 folders rather than a `Plex/` directory.
 
-For MediaBrowser Home artwork (Jellyfin and Emby), synthetic season/series Primary sources are
-treated as portrait posters; Thumb and Backdrop fallbacks retain 16:9 request and presentation
-geometry. Automated policy, request, mapping, and hosted checks cover this shared policy.
+Home video shelves choose one presentation from their content type: movie/show shelves use
+2:3 portrait cards and episode shelves use 16:9 landscape cards, independently of individual
+source-image aspects. Episode shelves prefer stills, falling back to contextual artwork. Images
+are requested at their source aspect when known and cropped with aspect-preserving fill into
+the shelf frame; they are not stretched. Each shelf reserves its artwork and scaled caption
+height before lazy horizontal realization, so mixed artwork and missing years cannot overlap
+its own or the following header. Music/photo shelves retain their existing presentation.
+
+The expanded View All artwork policy remains separate: synthetic season/series Primary sources
+can use portrait presentation, while Thumb/Backdrop fallbacks retain landscape presentation.
+Search, library/detail cards, and playback keep their existing artwork and video aspect rules.
 
 ## Package boundary
 
