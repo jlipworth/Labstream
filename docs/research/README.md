@@ -23,6 +23,10 @@ When the investigation resolves:
 
 ## Active research notes
 
+- [`2026-10-22-download-backlog-memory-and-writes.md`](2026-10-22-download-backlog-memory-and-writes.md)
+  — bounded synthetic investigation of side-asset payload queues, inherited file
+  backlog, and static append write amplification (#394, #390, #391).
+
 - [`dv-p7-decoder-boundary.md`](dv-p7-decoder-boundary.md) — bounded cross-backend DV/HDR
   delivery investigation and exact-source decoder experiments. The macOS P7 HDR10-base
   candidate is default-off and DEBUG-only; full-session and physical acceptance remain open.
