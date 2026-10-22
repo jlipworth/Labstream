@@ -42,10 +42,25 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
                 let railID = backend == "plex" ? "fixture-shapes-\(kind)"
                     : "\(backend)-fixture-shapes-\(kind)"
                 let first = app.buttons["labstream.home.\(railID).\(backend)-shapes-\(kind)-0"]
+                let rail = app.scrollViews["labstream.home.rail.\(railID)"]
+                let viewport = app.windows.firstMatch.frame.insetBy(dx: 0, dy: 90)
                 for _ in 0..<12 {
-                    if first.exists && first.isHittable,
+                    // A partially visible row can report a hittable first card while its
+                    // scroll view's gesture center remains under the bottom tab bar.
+                    if first.exists && rail.exists,
+                       rail.frame.minY >= viewport.minY, rail.frame.maxY <= viewport.maxY,
                        nextTitle.isEmpty || app.staticTexts[nextTitle].isHittable { break }
-                    app.swipeUp()
+                    if rail.exists {
+                        let frame = rail.frame
+                        let delta = frame.minY < viewport.minY
+                            ? max(-220, frame.minY - viewport.minY - 20)
+                            : min(220, max(80, frame.maxY - viewport.maxY + 20))
+                        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55))
+                        start.press(forDuration: 0.01,
+                                    thenDragTo: start.withOffset(CGVector(dx: 0, dy: -delta)))
+                    } else {
+                        app.swipeUp()
+                    }
                 }
                 XCTAssertTrue(first.isHittable, "\(backend) \(kind) shelf should be reachable")
                 let second = app.buttons["labstream.home.\(railID).\(backend)-shapes-\(kind)-1"]
@@ -62,11 +77,10 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
                     XCTAssertLessThanOrEqual(firstFrame.maxY, app.staticTexts[nextTitle].frame.minY,
                                              "Labels must finish before the next header")
                 }
-                let rail = app.scrollViews["labstream.home.rail.\(railID)"]
                 XCTAssertTrue(rail.exists)
                 let last = app.buttons["labstream.home.\(railID).\(backend)-shapes-\(kind)-7"]
                 for _ in 0..<8 {
-                    if last.exists && last.isHittable { break }
+                    if last.exists, viewport.contains(last.frame), !last.frame.isEmpty { break }
                     rail.swipeLeft()
                 }
                 XCTAssertTrue(last.isHittable)
