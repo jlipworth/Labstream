@@ -4,7 +4,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
-@Suite("P6 store and manager review pins", .serialized)
+@Suite("P6 store and manager review pins", .downloadTestFiles, .serialized)
 struct P6ManagerReworkTests {
     @Test("Startup normalization leaves MainActor responsive and transport dormant", arguments: [false, true])
     func initializationHeartbeat(fails: Bool) async throws {
@@ -27,13 +27,13 @@ struct P6ManagerReworkTests {
         hold.arm()
         defer { hold.release.signal() }
         let construction = Task { @MainActor in
-            let store = DownloadStore(baseDirectory: fixture.directory, indexPersistence: .init { data, url in
+            let store = DownloadTestFiles.store(baseDirectory: fixture.directory, indexPersistence: .init { data, url in
                 hold.hit()
                 if fails { throw CocoaError(.fileWriteUnknown) }
                 try DownloadIndexFileCommitter().commit(data, to: url)
             }, startupOnWorker: true)
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
-            let manager = DownloadManager(appModel: AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "p6-startup")),
+            let manager = DownloadTestFiles.manager(appModel: AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "p6-startup")),
                 store: store, session: session, registerForBackgroundEvents: false)
             return (manager, session)
         }
@@ -78,7 +78,7 @@ struct P6ManagerReworkTests {
         let (manager, session) = await MainActor.run {
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "p6-recovery"))
-            let manager = DownloadManager(appModel: model, store: store, session: session, registerForBackgroundEvents: false)
+            let manager = DownloadTestFiles.manager(appModel: model, store: store, session: session, registerForBackgroundEvents: false)
             manager.setQueuePausedForTesting(true)
             return (manager, session)
         }

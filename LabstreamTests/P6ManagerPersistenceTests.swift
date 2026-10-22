@@ -5,7 +5,7 @@ import Synchronization
 import Testing
 @testable import Labstream
 
-@Suite("P6 lead manager pins", .serialized)
+@Suite("P6 lead manager pins", .downloadTestFiles, .serialized)
 struct P6ManagerPersistenceTests {
     @Test("P6-pin-01 manager heartbeat survives a held index commit", arguments: [false, true], [false, true])
     func commitHeartbeat(fails: Bool, replace: Bool) async throws {
@@ -21,7 +21,7 @@ struct P6ManagerPersistenceTests {
         let pair = await MainActor.run {
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "p6-fixture"))
-            return (DownloadManager(appModel: model, store: store, session: session,
+            return (DownloadTestFiles.manager(appModel: model, store: store, session: session,
                                     registerForBackgroundEvents: false), session)
         }
         defer { hold.release.signal(); pair.1.invalidateInjectedSessionForTesting() }
@@ -72,7 +72,7 @@ struct P6ManagerPersistenceTests {
         }))
         let pair = await MainActor.run {
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
-            return (DownloadManager(appModel: AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "p6-stat")),
+            return (DownloadTestFiles.manager(appModel: AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "p6-stat")),
                                     store: store, session: session, registerForBackgroundEvents: false), session)
         }
         defer { hold.release.signal(); pair.1.invalidateInjectedSessionForTesting() }
@@ -109,7 +109,7 @@ struct P6ManagerPersistenceTests {
         })
         let pair = await MainActor.run {
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
-            let manager = DownloadManager(appModel: AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "p6-admission")),
+            let manager = DownloadTestFiles.manager(appModel: AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "p6-admission")),
                 store: store, session: session, registerForBackgroundEvents: false)
             manager.setQueuePausedForTesting(false)
             return (manager, session)

@@ -8,7 +8,7 @@ import Testing
 /// so the durable history records why a row paused or failed — not just the derived status. Each
 /// test drives the real session delegate through an injected URLProtocol that holds every request
 /// until the test resolves it (modelled on the range-ownership harness).
-@Suite("Session lifecycle events", .serialized)
+@Suite("Session lifecycle events", .downloadTestFiles, .serialized)
 struct SessionLifecycleEventTests {
     private static let trainBytes = 2 * StaticRangeTransferConfiguration.segmentBytes
 
@@ -92,11 +92,11 @@ struct SessionLifecycleEventTests {
         _ body: (BackgroundDownloadSession, DownloadStore, LifecycleHeldRequests) async throws -> Void
     ) async throws {
         let directory = try makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+
         let requests = LifecycleHeldRequests()
         LifecycleHeldRequestURLProtocol.configure(requests)
         defer { LifecycleHeldRequestURLProtocol.configure(nil) }
-        let store = DownloadStore(baseDirectory: directory)
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let session = BackgroundDownloadSession(
             store: store, protocolClasses: [LifecycleHeldRequestURLProtocol.self])
         defer { session.invalidateInjectedSessionForTesting() }
@@ -135,7 +135,7 @@ struct SessionLifecycleEventTests {
     }
 
     private func makeTemporaryDirectory() throws -> URL {
-        let parent = FileManager.default.temporaryDirectory
+        let parent = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("session-lifecycle-\(UUID().uuidString)", isDirectory: true)
         let directory = parent.appendingPathComponent("Downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

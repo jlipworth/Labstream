@@ -6,17 +6,17 @@ import Testing
 
 /// P3a store pins: additive lifecycle/history in the v4 envelope, structural derivation for rows
 /// written without them, and rollback compatibility with binaries that drop them (R2-3, R2-6).
-@Suite("Download lifecycle store compatibility", .serialized)
+@Suite("Download lifecycle store compatibility", .downloadTestFiles, .serialized)
 struct DownloadLifecycleStoreTests {
     @Test("Lifecycle is written next to the derived status and survives a reload")
     func lifecycleIsPersisted() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let key = try seed("plex:one", status: .paused, in: store)
             let index = try indexRows(directory)
             #expect(index.first?["lifecycle"] as? String == "paused")
             #expect(index.first?["status"] as? String == "paused")
-            #expect(DownloadStore(baseDirectory: directory).lifecycleState(for: key)?.lifecycle
+            #expect(DownloadTestFiles.store(baseDirectory: directory).lifecycleState(for: key)?.lifecycle
                     == .paused)
         }
     }
@@ -24,14 +24,14 @@ struct DownloadLifecycleStoreTests {
     @Test("A row re-encoded by an older binary derives its lifecycle structurally")
     func olderBinaryReencodeDerivesStructurally() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let key = try seed("plex:two", status: .complete, in: store)
             // An older binary drops the unknown keys when it rewrites the row.
             try rewriteRows(directory) { row in
                 row.removeValue(forKey: "lifecycle")
                 row.removeValue(forKey: "history")
             }
-            let reloaded = DownloadStore(baseDirectory: directory)
+            let reloaded = DownloadTestFiles.store(baseDirectory: directory)
             #expect(reloaded.lifecycleState(for: key)?.lifecycle == .complete)
             #expect(reloaded.record(for: key)?.status == .complete)
         }
@@ -40,10 +40,10 @@ struct DownloadLifecycleStoreTests {
     @Test("A status changed by an older binary wins over a stale lifecycle")
     func staleLifecycleYieldsToOlderBinaryStatus() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let key = try seed("plex:three", status: .paused, in: store)
             try rewriteRows(directory) { row in row["status"] = "failed" }
-            let reloaded = DownloadStore(baseDirectory: directory)
+            let reloaded = DownloadTestFiles.store(baseDirectory: directory)
             #expect(reloaded.lifecycleState(for: key)?.lifecycle == .failed)
         }
     }
@@ -54,7 +54,7 @@ struct DownloadLifecycleStoreTests {
     @Test("The legacy season flag becomes lifecycle and an admission intent")
     func legacySeasonFlagIsAbsorbedIntoLifecycle() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             var metadata = OfflineMetadata(ratingKey: "plex:ep", title: "Ep", type: "episode")
             metadata.seasonPlannerPendingAdmission = true
             let queued = try seed("plex:ep", status: .queued, metadata: metadata, in: store)
@@ -76,7 +76,7 @@ struct DownloadLifecycleStoreTests {
                 let metadataObject = row["metadata"] as? [String: Any]
                 #expect(metadataObject?["seasonPlannerPendingAdmission"] == nil)
             }
-            let reloaded = DownloadStore(baseDirectory: directory)
+            let reloaded = DownloadTestFiles.store(baseDirectory: directory)
             #expect(reloaded.lifecycleState(for: queued)?.lifecycle == .planned)
             #expect(reloaded.lifecycleState(for: failed)?.history.admissionIntent == .retryRequested)
         }
@@ -87,7 +87,7 @@ struct DownloadLifecycleStoreTests {
     @Test("A stale season flag never overrides start evidence")
     func staleFlagNeverOverridesStartEvidence() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             var queued = OfflineMetadata(ratingKey: "plex:prep", title: "Ep", type: "episode")
             queued.seasonPlannerPendingAdmission = true
             queued.optimizeQueueTitle = "Ep [Labstream 0000]"
@@ -108,7 +108,7 @@ struct DownloadLifecycleStoreTests {
     @Test("A P3b planned retry row loads as failed with a retry request")
     func p3bPlannedRetryRowLoadsAsFailedWaiting() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let key = try seed("plex:ep", status: .failed,
                                metadata: OfflineMetadata(ratingKey: "plex:ep", title: "Ep",
                                                          type: "episode"), in: store)
@@ -118,7 +118,7 @@ struct DownloadLifecycleStoreTests {
                 metadata["seasonPlannerPendingAdmission"] = true
                 row["metadata"] = metadata
             }
-            let reloaded = DownloadStore(baseDirectory: directory)
+            let reloaded = DownloadTestFiles.store(baseDirectory: directory)
             #expect(reloaded.lifecycleState(for: key)?.lifecycle == .failed)
             #expect(reloaded.lifecycleState(for: key)?.history.admissionIntent == .retryRequested)
         }
@@ -139,7 +139,7 @@ struct DownloadLifecycleStoreTests {
     @Test("Progress records bytes but never promotes a paused or failed row (B09)")
     func progressDoesNotPromotePausedRows() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let paused = try seed("plex:paused", status: .paused, in: store)
             _ = store.submitProgress(for: paused, bytes: 500, progress: 0.5)
             #expect(store.record(for: paused)?.status == .paused)
@@ -155,7 +155,7 @@ struct DownloadLifecycleStoreTests {
     @Test("Lifecycle events persist history and reject illegal transitions without writing")
     func lifecycleEventsPersistHistory() async throws {
         try await withAsyncDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let key = try seed("plex:event", status: .downloading, in: store)
             guard case .accepted(_, let ticket?) = store.submitLifecycleEvent(
                 .transferInterrupted(.cancelledBySystem), for: key,
@@ -169,7 +169,7 @@ struct DownloadLifecycleStoreTests {
             #expect(store.submitLifecycleEvent(
                 .transferProgress, for: key, facts: DownloadRowFacts(route: .staticRange))
                 == .rejected(.illegal))
-            let reloaded = DownloadStore(baseDirectory: directory)
+            let reloaded = DownloadTestFiles.store(baseDirectory: directory)
             #expect(reloaded.lifecycleState(for: key)?.history.pauseCause == .systemInterrupted)
             let stale = DownloadAttemptKey(ratingKey: key.ratingKey,
                                            attemptID: DownloadAttemptID(uuid: UUID()))
@@ -182,7 +182,7 @@ struct DownloadLifecycleStoreTests {
     @Test("Truncation strikes persist, survive relaunch and are inherited by a Retry (B54)")
     func truncationStrikesSurviveRelaunchAndRetry() async throws {
         try await withAsyncDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let first = try seed("plex:strike", status: .downloading,
                                  metadata: profiled("1080p"), in: store)
             #expect(store.recordTruncationStrike(for: first, outcomeID: "A-1") == 1)
@@ -194,7 +194,7 @@ struct DownloadLifecycleStoreTests {
             }
 
             // Relaunch keeps the strike.
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.truncationStrikes(for: first) == 1)
 
             // Retry mints attempt B for the same source: the strike is inherited.
@@ -219,7 +219,7 @@ struct DownloadLifecycleStoreTests {
     @Test("Relaunch keeps a finished forward-only body for re-finalization (B10)")
     func relaunchKeepsFinishedForwardOnlyBody() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             var metadata = OfflineMetadata(ratingKey: "jellyfin:done", title: "Done", type: "movie")
             metadata.resumeMode = .liveForwardOnly
             let finished = try seed("jellyfin:done", status: .downloading, metadata: metadata,
@@ -246,7 +246,7 @@ struct DownloadLifecycleStoreTests {
     @Test("A persisted finalizing static row survives relaunch with its body")
     func relaunchKeepsFinalizingStaticRow() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             var metadata = OfflineMetadata(ratingKey: "plex:final", title: "Final", type: "movie")
             metadata.resumeMode = .staticByteRange
             let key = try seed("plex:final", status: .downloading, metadata: metadata, in: store)
@@ -266,7 +266,7 @@ struct DownloadLifecycleStoreTests {
     @Test("Relaunch keeps a static partial as the checkpoint even beside a resume manifest")
     func relaunchPrefersStaticPartialOverResumeManifest() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             var metadata = OfflineMetadata(ratingKey: "plex:ckpt", title: "Ckpt", type: "movie")
             metadata.resumeMode = .staticByteRange
             metadata.resumeDataRelativePath = "plex-ckpt.resume"   // manifest whose blob is gone
@@ -285,7 +285,7 @@ struct DownloadLifecycleStoreTests {
     @Test("A resume manifest whose blob is gone does not keep a paused live-stream row")
     func missingResumeBlobIsNotACheckpoint() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             var metadata = OfflineMetadata(ratingKey: "jellyfin:blob", title: "Blob", type: "movie")
             metadata.resumeMode = .liveForwardOnly
             metadata.resumeDataRelativePath = "jellyfin-blob.resume"
@@ -311,7 +311,7 @@ struct DownloadLifecycleStoreTests {
             var metadata = OfflineMetadata(ratingKey: "plex:race", title: "Race", type: "movie")
             metadata.resumeMode = .staticByteRange
             // Control: an empty condemned working file is deleted with its failed row.
-            let control = DownloadStore(baseDirectory: directory)
+            let control = DownloadTestFiles.store(baseDirectory: directory)
             let controlKey = try seed("plex:race", status: .downloading, metadata: metadata,
                                       in: control)
             let controlBody = try #require(control.attemptWorkingFileURL(for: controlKey))
@@ -343,7 +343,7 @@ struct DownloadLifecycleStoreTests {
                 var failing = false
             }
             let writer = SwitchableWriter()
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init(atomicWrite: { data, url in
                     if writer.failing { throw CocoaError(.fileWriteOutOfSpace) }
@@ -393,7 +393,7 @@ struct DownloadLifecycleStoreTests {
     @Test("A condemned body that could not be moved still never seeds a Retry")
     func condemnationFenceHoldsWithoutTheRename() async throws {
         try await withAsyncDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             var metadata = profiled("1080p")
             metadata.resumeMode = .staticByteRange
             let key = try seed("plex:strike", status: .downloading, metadata: metadata, in: store)
@@ -441,7 +441,7 @@ struct DownloadLifecycleStoreTests {
     @Test("A committed truncation verdict deletes exactly the condemned body")
     func committedTruncationDeletesTheCondemnedBody() async throws {
         try await withAsyncDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let key = try seed("plex:strike", status: .downloading, metadata: profiled("1080p"),
                                in: store)
             let body = try #require(store.attemptWorkingFileURL(for: key))
@@ -467,7 +467,7 @@ struct DownloadLifecycleStoreTests {
     @Test("A Retry that removes the failed row first still inherits its strikes; Delete does not")
     func retryRemovalCarriesStrikes() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let first = try seed("plex:strike", status: .failed, metadata: profiled("1080p"),
                                  in: store)
             #expect(store.recordTruncationStrike(for: first, outcomeID: "A-1") == 1)
@@ -498,7 +498,7 @@ struct DownloadLifecycleStoreTests {
     @Test("Re-finalizing the same body after a relaunch replays its truncation, not a second strike")
     func refinalizedBodyReplaysItsOutcome() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let key = try seed("plex:strike", status: .downloading, metadata: profiled("1080p"),
                                in: store)
             _ = store.submitLifecycleEvent(.bodyAtWorking, for: key,
@@ -531,7 +531,7 @@ struct DownloadLifecycleStoreTests {
     @Test("A probe-miss publication records its unverified reason")
     func probeMissRecordsUnverifiedReason() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let key = try seed("plex:miss", status: .downloading, in: store)
             _ = store.submitLifecycleEvent(.bodyAtWorking, for: key,
                                            facts: DownloadRowFacts(route: .staticRange))
@@ -553,7 +553,7 @@ struct DownloadLifecycleStoreTests {
         try withDirectory { directory in
             let index = directory.appendingPathComponent("index.json")
             try Data("not-json".utf8).write(to: index)
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             #expect(store.startupIndexAdmission() == .unreadableIndex)
             // Still unreadable: Retry keeps it blocked and leaves the bytes alone.
             #expect(store.reprobeBlockedIndex() == .unreadableIndex)
@@ -577,7 +577,7 @@ struct DownloadLifecycleStoreTests {
     @Test("An indeterminate season commit is its own state and clears once memory re-commits (B21)")
     func indeterminateSeasonCommitRecovers() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             _ = try seed("plex:season", status: .complete, in: store)
             store.markSeasonCommitIndeterminateForTesting()
             #expect(store.startupIndexAdmission() == .seasonCommitIndeterminate)
@@ -634,20 +634,20 @@ struct DownloadLifecycleStoreTests {
     }
 
     private func withAsyncDirectory(_ body: (URL) async throws -> Void) async throws {
-        let parent = FileManager.default.temporaryDirectory
+        let parent = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("lifecycle-store-\(UUID().uuidString)", isDirectory: true)
         let directory = parent.appendingPathComponent("Downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: parent) }
+
         try await body(directory)
     }
 
     private func withDirectory(_ body: (URL) throws -> Void) throws {
-        let parent = FileManager.default.temporaryDirectory
+        let parent = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("lifecycle-store-\(UUID().uuidString)", isDirectory: true)
         let directory = parent.appendingPathComponent("Downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: parent) }
+
         try body(directory)
     }
 }

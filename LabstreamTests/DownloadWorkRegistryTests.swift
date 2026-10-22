@@ -4,6 +4,7 @@ import Testing
 @testable import Labstream
 
 @MainActor
+@Suite(.downloadTestFiles)
 struct DownloadWorkRegistryTests {
     @Test func exactCompletionCannotRemoveAnotherTokenOrAttempt() {
         let registry = DownloadWorkRegistry()
@@ -212,12 +213,12 @@ struct DownloadWorkRegistryTests {
     func suspendedOldSideAssetCannotPublishIntoReaddedAttempt(
         asset: SuspendedSideAssetCase
     ) async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+        let directory = DownloadTestFiles.temporaryDirectory.appendingPathComponent(
             "download-side-tail-\(asset.rawValue)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
 
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let old = key("plex:side-tail", "attempt-A")
         let replacement = key("plex:side-tail", "attempt-B")
         #expect(createRecord(store: store, key: old))
@@ -254,12 +255,12 @@ struct DownloadWorkRegistryTests {
     /// production terminal publication API must therefore reject A after B owns the row even if
     /// the old task reaches the Store after replacement.
     @Test func suspendedOldFinalizerCannotPromoteReaddedAttempt() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+        let directory = DownloadTestFiles.temporaryDirectory.appendingPathComponent(
             "download-finalizer-tail-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
 
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let registry = DownloadWorkRegistry()
         let old = key("plex:finalizer-tail", "attempt-A")
         let replacement = key("plex:finalizer-tail", "attempt-B")
@@ -289,12 +290,12 @@ struct DownloadWorkRegistryTests {
     /// response arrives after delete/re-add, the production compare-clear must target both A's
     /// attempt and A's exact server handle and leave B untouched.
     @Test func suspendedRequiredCleanupCannotClearReaddedAttemptsSession() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+        let directory = DownloadTestFiles.temporaryDirectory.appendingPathComponent(
             "download-cleanup-tail-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
 
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let registry = DownloadWorkRegistry()
         let old = key("emby:cleanup-tail", "attempt-A")
         let replacement = key("emby:cleanup-tail", "attempt-B")
@@ -419,6 +420,7 @@ enum SuspendedSideAssetCase: String, CaseIterable, Sendable {
     }
 }
 
+@Suite(.downloadTestFiles)
 struct DownloadPlaybackValidationLimiterTests {
     @Test func cancelledWaiterIsRemovedAndDoesNotConsumePermit() async throws {
         let limiter = DownloadPlaybackValidationLimiter()

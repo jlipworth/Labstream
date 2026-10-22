@@ -8,13 +8,13 @@ import Testing
 /// row records why it paused or failed, not only the visible status. No network: every backend
 /// lane is signed out, so each path stops at its local decision.
 @MainActor
-@Suite("Manager lifecycle events", .serialized)
+@Suite("Manager lifecycle events", .downloadTestFiles, .serialized)
 struct ManagerLifecycleEventTests {
     @Test("A user pause through the manager records the user cause")
     func userPauseRecordsUserCause() async throws {
         let directory = try makeDirectory("user-pause")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let (manager, session) = makeManager(store: store)
         defer { session.invalidateInjectedSessionForTesting() }
         #expect(await manager.awaitStartupRecoveryForTesting())
@@ -34,8 +34,8 @@ struct ManagerLifecycleEventTests {
     @Test("Pause leaves a finalizing body and its finalizer alone")
     func pauseLeavesFinalizingBodyAlone() async throws {
         let directory = try makeDirectory("pause-finalizing")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let (manager, session) = makeManager(store: store)
         defer { session.invalidateInjectedSessionForTesting() }
         #expect(await manager.awaitStartupRecoveryForTesting())
@@ -63,8 +63,8 @@ struct ManagerLifecycleEventTests {
     @Test("A queue-paused refresh parks an unattached prep row with the queue cause")
     func queuePausedRefreshRecordsQueueCause() async throws {
         let directory = try makeDirectory("queue-pause")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let (manager, session) = makeManager(store: store)
         defer { session.invalidateInjectedSessionForTesting() }
         #expect(await manager.awaitStartupRecoveryForTesting())
@@ -82,8 +82,8 @@ struct ManagerLifecycleEventTests {
     @Test("A retry refused for a signed-out lane records an auth failure")
     func rejectedRetryRecordsAuthFailure() async throws {
         let directory = try makeDirectory("retry-auth")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let (manager, session) = makeManager(store: store)
         defer { session.invalidateInjectedSessionForTesting() }
         #expect(await manager.awaitStartupRecoveryForTesting())
@@ -105,8 +105,8 @@ struct ManagerLifecycleEventTests {
     @Test("Admitting a waiting retry row runs Retry; a refusal fails it as auth and stops waiting")
     func plannedSeasonRowAdmissionRunsRetry() async throws {
         let directory = try makeDirectory("season-planned")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let (manager, session) = makeManager(store: store)
         defer { session.invalidateInjectedSessionForTesting() }
         #expect(await manager.awaitStartupRecoveryForTesting())
@@ -131,8 +131,8 @@ struct ManagerLifecycleEventTests {
     @Test("Stale session error and rebuild callbacks cannot act on the current row (P5 pin 11)")
     func staleSessionCallbacksAreIgnored() async throws {
         let directory = try makeDirectory("stale-callback")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let (manager, session) = makeManager(store: store)
         defer { session.invalidateInjectedSessionForTesting() }
         #expect(await manager.awaitStartupRecoveryForTesting())
@@ -153,8 +153,8 @@ struct ManagerLifecycleEventTests {
     @Test("A same-attempt rebuild queued before Pause cannot requeue the paused row (P5 after-review 1)")
     func pausedSessionRebuildCallbackIsIgnored() async throws {
         let directory = try makeDirectory("paused-rebuild-callback")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let (manager, session) = makeManager(store: store)
         defer { session.invalidateInjectedSessionForTesting() }
         #expect(await manager.awaitStartupRecoveryForTesting())
@@ -227,7 +227,7 @@ struct ManagerLifecycleEventTests {
         appModel.embyServerBaseURL = nil
         appModel.embyAccessToken = nil
         appModel.embyUserID = nil
-        let manager = DownloadManager(
+        let manager = DownloadTestFiles.manager(
             appModel: appModel, store: store, session: session,
             cleanupIntentJournal: DownloadCleanupIntentJournal(
                 directory: store.durableCleanupAuthorityDirectory),
@@ -244,7 +244,7 @@ struct ManagerLifecycleEventTests {
     }
 
     private func makeDirectory(_ label: String) throws -> URL {
-        let parent = FileManager.default.temporaryDirectory
+        let parent = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("manager-lifecycle-\(label)-\(UUID().uuidString)",
                                     isDirectory: true)
         let directory = parent.appendingPathComponent("Downloads", isDirectory: true)

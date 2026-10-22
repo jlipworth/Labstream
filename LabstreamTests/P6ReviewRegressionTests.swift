@@ -5,7 +5,7 @@ import Synchronization
 import Testing
 @testable import Labstream
 
-@Suite("P6 review regression pins", .serialized)
+@Suite("P6 review regression pins", .downloadTestFiles, .serialized)
 struct P6ReviewRegressionTests {
     @Test("cleanup journal failure and held index commit leave MainActor responsive", arguments: [false, true])
     func cleanupRecoveryHeartbeat(relaunch: Bool) async throws {
@@ -36,9 +36,10 @@ struct P6ReviewRegressionTests {
         })
         let pair = await MainActor.run {
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
-            return (DownloadManager(appModel: AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "cleanup-pin")),
+            return (DownloadTestFiles.manager(appModel: AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "cleanup-pin")),
                 store: store, session: session, cleanupIntentJournal: journal, registerForBackgroundEvents: false), session)
         }
+        DownloadTestFiles.onCleanup { await pair.0.drainManagerOperationsForTesting() }
         defer { hold.release.signal(); pair.1.invalidateInjectedSessionForTesting() }
         if relaunch {
             // Initial recovery can beat test arming; explicitly repeat the same production sweep.
@@ -66,7 +67,7 @@ struct P6ReviewRegressionTests {
         try Data([1, 2, 3]).write(to: initial.record(for: key)!.localURL)
         let hold = P6Hold()
         hold.arm()
-        let store = DownloadStore(baseDirectory: fixture.directory, startupOnWorker: true,
+        let store = DownloadTestFiles.store(baseDirectory: fixture.directory, startupOnWorker: true,
             startupRepairWillBegin: { hold.hit() })
         defer { hold.release.signal() }
         try #require(await hold.acknowledgement.wait())
@@ -80,7 +81,7 @@ struct P6ReviewRegressionTests {
             registry.store(identifier: BackgroundDownloadSession.identifier) { fired.withLock { $0 += 1 }; handlerDelivered.signal() }
             let session = BackgroundDownloadSession(store: store, protocolClasses: [], wakeClockHooks: clock.hooks,
                 releaseBackgroundCompletion: { registry.fireCompletions(in: $0) })
-            let manager = DownloadManager(appModel: AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "late-startup")),
+            let manager = DownloadTestFiles.manager(appModel: AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "late-startup")),
                 store: store, session: session, backgroundCompletionRegistry: registry)
             manager.startupActivationDecisionForTesting = { activationDecision.signal(true) }
             return (manager, session)

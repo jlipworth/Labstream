@@ -7,7 +7,7 @@ import Testing
 /// Pins for the P1 review findings on static-range ownership (B00), system-cancel parking (B09) and
 /// post-construction activation failure (B05/B07). Each test drives the real session delegate
 /// through an injected URLProtocol that holds every request until the test resolves it.
-@Suite("Background download range ownership", .serialized)
+@Suite("Background download range ownership", .downloadTestFiles, .serialized)
 struct BackgroundDownloadRangeOwnershipTests {
     private static let trainBytes = 2 * StaticRangeTransferConfiguration.segmentBytes
     /// One closed segment: no sibling task can mask a gap in the finishing task's own ownership.
@@ -86,9 +86,9 @@ struct BackgroundDownloadRangeOwnershipTests {
     @Test("Failed activation with a live transport keeps owned holds before releasing the wake (B07)")
     func failedActivationKeepsOwnedHoldsUntilTheyDrain() async throws {
         let directory = try makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+
         try writeUnsupportedIndex(in: directory)
-        let store = DownloadStore(
+        let store = DownloadTestFiles.store(
             baseDirectory: directory,
             indexPersistence: .init(atomicWrite: { _, _ in throw CocoaError(.fileWriteOutOfSpace) }))
         let clock = P6WakeClock()
@@ -134,11 +134,11 @@ struct BackgroundDownloadRangeOwnershipTests {
         _ body: (BackgroundDownloadSession, DownloadStore, HeldRangeRequests) async throws -> Void
     ) async throws {
         let directory = try makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+
         let requests = HeldRangeRequests()
         HeldRangeRequestURLProtocol.configure(requests)
         defer { HeldRangeRequestURLProtocol.configure(nil) }
-        let store = DownloadStore(baseDirectory: directory)
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let session = BackgroundDownloadSession(
             store: store, protocolClasses: [HeldRangeRequestURLProtocol.self])
         defer { session.invalidateInjectedSessionForTesting() }
@@ -177,7 +177,7 @@ struct BackgroundDownloadRangeOwnershipTests {
     }
 
     private func makeTemporaryDirectory() throws -> URL {
-        let parent = FileManager.default.temporaryDirectory
+        let parent = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("range-ownership-\(UUID().uuidString)", isDirectory: true)
         let directory = parent.appendingPathComponent("Downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

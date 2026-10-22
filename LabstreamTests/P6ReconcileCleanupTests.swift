@@ -4,7 +4,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
-@Suite("P6 lead reconcile pins", .serialized)
+@Suite("P6 lead reconcile pins", .downloadTestFiles, .serialized)
 struct P6ReconcileCleanupTests {
     @Test("P6-pin-05 interrupted forward-only cleanup retires durable resume authority")
     func clearResumeAuthority() throws {

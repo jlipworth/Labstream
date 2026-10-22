@@ -5,7 +5,7 @@ import Synchronization
 import Testing
 @testable import Labstream
 
-@Suite("Foreground static range health", .serialized)
+@Suite("Foreground static range health", .downloadTestFiles, .serialized)
 struct ForegroundStaticRangeHealthTests {
     private let segment = StaticRangeTransferConfiguration.segmentBytes
 
@@ -313,7 +313,7 @@ struct ForegroundStaticRangeHealthTests {
             defer { defaults.removePersistentDomain(forName: suite) }
             defaults.set(1, forKey: PlaybackPreferences.Keys.simultaneousDownloads)
             let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "health-lease"))
-            let manager = DownloadManager(appModel: model, store: store, session: session,
+            let manager = DownloadTestFiles.manager(appModel: model, store: store, session: session,
                 registerForBackgroundEvents: false, preferencesDefaults: defaults)
             try #require(await manager.awaitStartupRecoveryForTesting())
             manager.setQueuePausedForTesting(false)
@@ -475,7 +475,7 @@ struct ForegroundStaticRangeHealthTests {
     func userIntentDuringRecovery(action: String) async throws {
         try await withSession(bytes: segment) { session, store, requests, clock, _, key in
             let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "health-recovery"))
-            let manager = DownloadManager(appModel: model, store: store, session: session,
+            let manager = DownloadTestFiles.manager(appModel: model, store: store, session: session,
                                           registerForBackgroundEvents: false)
             try #require(await manager.awaitStartupRecoveryForTesting())
             manager.setQueuePausedForTesting(false)

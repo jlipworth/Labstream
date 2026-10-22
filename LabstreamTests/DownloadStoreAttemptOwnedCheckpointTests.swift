@@ -3,7 +3,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
-@Suite("DownloadStore attempt-owned checkpoints")
+@Suite("DownloadStore attempt-owned checkpoints", .downloadTestFiles)
 struct DownloadStoreAttemptOwnedCheckpointTests {
     @Test @MainActor func orderedAsyncCoordinatorDeliversOverlappingSameKeyCompletions() async {
         let coordinator = OrderedAsyncWorkCoordinator<String, Int>()
@@ -29,7 +29,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             try Data([1, 2, 3]).write(to: working)
             let gate = BlockCheckpointStat()
             let live = DownloadStaticCheckpointFilesystem.live
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 checkpointFilesystem: .init(
                     exists: live.exists,
@@ -66,7 +66,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             let working = try #require(initial.attemptWorkingFileURL(for: owner))
             try Data([1]).write(to: working)
             let gate = BlockFirstHeldIndexWrite()
-            let store = DownloadStore(baseDirectory: directory,
+            let store = DownloadTestFiles.store(baseDirectory: directory,
                 indexPersistence: .init { data, url in try gate.write(data, to: url) })
             defer { gate.release.signal() }
             // Hold the first prepared commit, before any worker can reserve the path. All
@@ -111,7 +111,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             try Data([1, 2, 3]).write(to: working)
             let gate = BlockCheckpointStat()
             let live = DownloadStaticCheckpointFilesystem.live
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 checkpointFilesystem: .init(
                     exists: live.exists,
@@ -155,7 +155,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             let working = try #require(initial.attemptWorkingFileURL(for: owner))
             try Data([1, 2]).write(to: working)
             let gate = BlockFirstHeldIndexWrite()
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try gate.write(data, to: url) })
             let promotion = store.submitValidatedPromotion(
@@ -179,7 +179,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
 
             let gate = BlockCheckpointCopy(failAfterRelease: true)
             let live = DownloadStaticCheckpointFilesystem.live
-            let failing = DownloadStore(
+            let failing = DownloadTestFiles.store(
                 baseDirectory: directory,
                 checkpointFilesystem: .init(
                     exists: live.exists,
@@ -209,7 +209,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
 
             // The prepared copy recipe survived the process boundary. Launch recovery retries the
             // idempotent copy, publishes the exact-attempt working path, and retains stable bytes.
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.resolveArtifactSynchronouslyForTests(
                 through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
             #expect(relaunched.record(for: owner)?.bytes == 4)
@@ -232,7 +232,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             let working = try #require(initial.attemptWorkingFileURL(for: owner))
             try Data([1, 2]).write(to: working)
             let writes = FailNthIndexWrite(2)
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
             let first = store.submitStaticRangeCheckpointReset(for: owner, expectedBytes: 10)
@@ -257,7 +257,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(await initial.resolveValidatedPromotion(initial.submitValidatedPromotion(for: owner, terminalStatus: .complete), deadline: .after(30))
                 == .promoted(owner, bytes: 3, status: .complete))
             let writes = FailNthIndexWrite(2)
-            let failing = DownloadStore(
+            let failing = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
             guard case .persistenceFailed(bytes: 3, _) =
@@ -270,7 +270,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(FileManager.default.fileExists(atPath: reconstructed.path))
             #expect(FileManager.default.fileExists(atPath: stable.path))
 
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.resolveArtifactSynchronouslyForTests(
                 through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
             #expect(relaunched.record(for: owner)?.bytes == 3)
@@ -290,7 +290,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 == .promoted(owner, bytes: 4, status: .complete))
             let gate = BlockAfterCheckpointCopy()
             let live = DownloadStaticCheckpointFilesystem.live
-            let original = DownloadStore(
+            let original = DownloadTestFiles.store(
                 baseDirectory: directory,
                 checkpointFilesystem: .init(
                     exists: live.exists, size: live.size,
@@ -303,7 +303,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
 
             // Disk still contains only the prepared recipe: the original worker has copied the
             // body but cannot enqueue its terminal row. A fresh process must replay that recipe.
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.resolveArtifactSynchronouslyForTests(
                 through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
             #expect(relaunched.record(for: owner)?.bytes == 4)
@@ -313,7 +313,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             case .applied(bytes: 4), .unchanged(bytes: 4): break
             default: Issue.record("original worker did not retire idempotently")
             }
-            #expect(DownloadStore(baseDirectory: directory).record(for: owner)?.bytes == 4)
+            #expect(DownloadTestFiles.store(baseDirectory: directory).record(for: owner)?.bytes == 4)
         }
     }
 
@@ -323,7 +323,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             let media = directory.appendingPathComponent("mixed-artifact-retry.mp4")
             #expect(created(initial, key: owner, media: media))
             let writes = FailFirstIndexWrite()
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
 
@@ -366,7 +366,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
 
             // R1 prepares the replacement; R2 is its terminal intent retirement and fails.
             let writes = FailNthIndexWrite(2)
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
             let first = OfflineHeldRangeSegment(
@@ -417,7 +417,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             }
             #expect(await initial.resolveArtifact(heldSeed2.ticket, deadline: .after(30)) == .completed)
             let gate = BlockFirstHeldIndexWrite()
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try gate.write(data, to: url) })
             let next = OfflineHeldRangeSegment(
@@ -590,7 +590,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             let media = directory.appendingPathComponent("resume-fault.mp4")
             #expect(created(initial, key: owner, media: media))
             let writes = FailFirstIndexWrite()
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
 
@@ -601,7 +601,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             }
             // No artifact is touched before its prepared intent commits.
             #expect(store.resumeData(for: owner) == nil)
-            #expect(DownloadStore(baseDirectory: directory).resumeData(for: owner) == nil)
+            #expect(DownloadTestFiles.store(baseDirectory: directory).resumeData(for: owner) == nil)
 
             #expect(store.setRangeValidator(for: owner, "retry-barrier") == .applied)
             let watermark = store.currentArtifactLifecycleWatermark()
@@ -612,7 +612,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 Issue.record("Expected artifact retry to commit")
                 return
             }
-            let restored = DownloadStore(baseDirectory: directory)
+            let restored = DownloadTestFiles.store(baseDirectory: directory)
             #expect(restored.resumeData(for: owner) == Data("resume".utf8))
             #expect(restored.rangeValidator(for: owner) == "retry-barrier")
             #expect(writes.count >= 2)
@@ -635,7 +635,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             }
             #expect(await initial.resolveArtifact(heldSeed4.ticket, deadline: .after(30)) == .completed)
             let writes = FailFirstIndexWrite()
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
 
@@ -646,7 +646,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(!failed.removal.committed)
             #expect(failed.removedRelativePaths.isEmpty)
             #expect(FileManager.default.fileExists(atPath: body.path))
-            #expect(DownloadStore(baseDirectory: directory)
+            #expect(DownloadTestFiles.store(baseDirectory: directory)
                 .record(for: owner)?.metadata?.heldRangeSegments == [segment])
 
             guard case .purged(let refused) = store.completeDeferredHeldRangeBodyDeletions(
@@ -663,10 +663,10 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             }
             #expect(retry.removal.committed)
             #expect(retry.removedRelativePaths == [segment.relativePath])
-            #expect(DownloadStore(baseDirectory: directory)
+            #expect(DownloadTestFiles.store(baseDirectory: directory)
                 .record(for: owner)?.metadata?.heldRangeSegments == nil)
             #expect(!FileManager.default.fileExists(atPath: body.path))
-            #expect(DownloadStore(baseDirectory: directory)
+            #expect(DownloadTestFiles.store(baseDirectory: directory)
                 .deferredHeldRangeBodyDeletionRelativePaths(for: owner) == [])
         }
     }
@@ -687,7 +687,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(await initial.resolveArtifact(heldSeed5.ticket, deadline: .after(30)) == .completed)
 
             let writes = FailFirstIndexWrite()
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
             guard case .purged(let failed) = store.purgeHeldRangeSegments(for: a) else {
@@ -755,7 +755,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(store.deferredHeldRangeBodyDeletionRelativePaths(for: owner)
                 == [segment.relativePath])
 
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             _ = relaunched.resolveArtifactSynchronouslyForTests(through: relaunched.currentArtifactLifecycleWatermark())
             #expect(!FileManager.default.fileExists(atPath: body.path))
             #expect(relaunched.record(for: owner)?.metadata?.heldRangeSegments == nil)
@@ -763,7 +763,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
 
             // A second launch proves missing-body cleanup is idempotent and does not recreate
             // authority or perturb the exact owner.
-            let second = DownloadStore(baseDirectory: directory)
+            let second = DownloadTestFiles.store(baseDirectory: directory)
             #expect(second.ownsAttempt(owner))
             #expect(second.deferredHeldRangeBodyDeletionRelativePaths(for: owner) == [])
         }
@@ -784,7 +784,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(await initial.resolveArtifact(heldSeed8.ticket, deadline: .after(30)) == .completed)
 
             let writes = FailNthIndexWrite(2)
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
             guard case .purged(let purge) = store.purgeHeldRangeSegments(for: owner) else {
@@ -797,7 +797,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
 
             // Disk still has the intent because clearing it faulted after body deletion. Relaunch
             // treats the absent file as idempotent success and durably clears only A's authority.
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             _ = relaunched.resolveArtifactSynchronouslyForTests(through: relaunched.currentArtifactLifecycleWatermark())
             #expect(relaunched.ownsAttempt(owner))
             #expect(relaunched.deferredHeldRangeBodyDeletionRelativePaths(for: owner) == [])
@@ -840,7 +840,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(FileManager.default.fileExists(atPath: body.path))
             #expect(store.record(for: b)?.metadata?.heldRangeSegments == [shared])
 
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(FileManager.default.fileExists(atPath: body.path))
             #expect(relaunched.record(for: b)?.metadata?.heldRangeSegments == [shared])
             #expect(relaunched.deferredHeldRangeBodyDeletionRelativePaths(for: a) == [])
@@ -868,7 +868,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(await initial.resolveArtifact(heldSeed11.ticket, deadline: .after(30)) == .completed)
 
             let writes = FailNthIndexWrite(2)
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
             guard case .accepted(let r1) = store.removeHeldRangeSegments(
@@ -893,7 +893,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(writes.count == 2)
             #expect(FileManager.default.fileExists(atPath: bodyY.path))
 
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             _ = relaunched.resolveArtifactSynchronouslyForTests(through: relaunched.currentArtifactLifecycleWatermark())
             #expect(relaunched.record(for: owner)?.metadata?.heldRangeSegments == [y])
             #expect(FileManager.default.fileExists(atPath: bodyY.path))
@@ -911,7 +911,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             let working = try #require(initial.attemptWorkingFileURL(for: owner))
             try Data([4, 5]).write(to: working)
             let writes = FailFirstIndexWrite()
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
 
@@ -922,9 +922,9 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 return
             }
             #expect(bytes == 2)
-            #expect(DownloadStore(baseDirectory: directory).record(for: owner)?.bytes == 99)
+            #expect(DownloadTestFiles.store(baseDirectory: directory).record(for: owner)?.bytes == 99)
             #expect(store.setRangeValidator(for: owner, "retry") == .applied)
-            #expect(DownloadStore(baseDirectory: directory).record(for: owner)?.bytes == 2)
+            #expect(DownloadTestFiles.store(baseDirectory: directory).record(for: owner)?.bytes == 2)
         }
     }
 
@@ -940,7 +940,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             // source capture: park the original store's stat and abandon it mid-flight.
             let originalGate = BlockFirstPromotionStat()
             let live = DownloadPromotionFilesystem.live
-            let original = DownloadStore(
+            let original = DownloadTestFiles.store(
                 baseDirectory: directory,
                 promotionFilesystem: .init(
                     exists: live.exists,
@@ -955,7 +955,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             // replay-vs-reconcile window. Reconcile must not demote the liveForwardOnly row
             // to `.failed` or delete the working file that IS the fully-validated body.
             let replayGate = BlockFirstPromotionStat()
-            let relaunched = DownloadStore(
+            let relaunched = DownloadTestFiles.store(
                 baseDirectory: directory,
                 promotionFilesystem: .init(
                     exists: live.exists,
@@ -987,7 +987,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             try Data("validated".utf8).write(to: working)
             let gate = BlockFirstPromotionStat()
             let live = DownloadPromotionFilesystem.live
-            let original = DownloadStore(
+            let original = DownloadTestFiles.store(
                 baseDirectory: directory,
                 promotionFilesystem: .init(
                     exists: live.exists,
@@ -1003,7 +1003,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             // `.artifactLifecyclePending`.
             try FileManager.default.removeItem(at: working)
 
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.resolveArtifactSynchronouslyForTests(
                 through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
             #expect(relaunched.record(for: owner)?.status == .failed)
@@ -1080,21 +1080,21 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
     private func withStore(
         _ body: (DownloadStore, URL) throws -> Void
     ) throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("attempt-checkpoint-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try body(DownloadStore(baseDirectory: directory), directory)
+
+        try body(DownloadTestFiles.store(baseDirectory: directory), directory)
     }
 
     private func withStoreAsync(
         _ body: (DownloadStore, URL) async throws -> Void
     ) async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("attempt-checkpoint-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try await body(DownloadStore(baseDirectory: directory), directory)
+
+        try await body(DownloadTestFiles.store(baseDirectory: directory), directory)
     }
 
     private func signal(_ semaphore: DispatchSemaphore, timeout: TimeInterval) async -> Bool {

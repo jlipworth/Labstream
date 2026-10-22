@@ -4,7 +4,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
-@Suite("P7 review regression pins", .serialized)
+@Suite("P7 review regression pins", .downloadTestFiles, .serialized)
 struct P7ReviewRegressionTests {
     @Test(arguments: [DownloadBackendKind.emby, .jellyfin])
     func enabledRunnerDoesNotBlockSignOutHeartbeat(backend: DownloadBackendKind) async throws {
@@ -104,7 +104,7 @@ struct P7ReviewRegressionTests {
         #expect(journal.load() == .loaded([]))
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         defer { session.invalidateInjectedSessionForTesting() }
-        let manager = DownloadManager(appModel: AppModel(identity: PlatformClientIdentity.make(
+        let manager = DownloadTestFiles.manager(appModel: AppModel(identity: PlatformClientIdentity.make(
             clientIdentifier: "paused-recovery")), store: store, session: session,
             cleanupIntentJournal: journal, registerForBackgroundEvents: false)
         try #require(await manager.awaitStartupRecoveryForTesting())
@@ -135,7 +135,7 @@ struct P7ReviewRegressionTests {
         #expect(await store.createAttemptOwnedRecordAsync(row, attemptID: key.attemptID) == .committed(key))
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         defer { session.invalidateInjectedSessionForTesting() }
-        let manager = DownloadManager(appModel: AppModel(identity: PlatformClientIdentity.make(
+        let manager = DownloadTestFiles.manager(appModel: AppModel(identity: PlatformClientIdentity.make(
             clientIdentifier: "prep-recovery")), store: store, session: session, registerForBackgroundEvents: false)
         try #require(await manager.awaitStartupRecoveryForTesting())
         await manager.launchSweepJournaling?.value

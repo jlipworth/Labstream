@@ -6,7 +6,7 @@ import Testing
 
 /// #414: submitted server jobs keep their prep slot after rendering and take a static transfer
 /// slot only when one is free, first come, first served, ahead of new transfer starts.
-@Suite("Server-prep render handoff", .serialized)
+@Suite("Server-prep render handoff", .downloadTestFiles, .serialized)
 @MainActor
 struct ServerPrepHandoffTests {
     private func key(_ id: String) -> DownloadAttemptKey {

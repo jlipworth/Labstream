@@ -5,7 +5,7 @@ import Testing
 import Synchronization
 @testable import Labstream
 
-@Suite("P7 offline availability pins", .serialized)
+@Suite("P7 offline availability pins", .downloadTestFiles, .serialized)
 @MainActor
 struct P7OfflineAvailabilityTests {
     @Test func repeatedGateReadsDoNotStatAgain() async throws {

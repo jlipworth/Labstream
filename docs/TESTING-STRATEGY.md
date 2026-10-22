@@ -72,6 +72,24 @@ manifest and normal test parallelism for the final combined gate. A focused seri
 run can isolate deliberately held workers, but it is not a substitute for the full normal-parallel
 hosted run. Fixtures must isolate coordinators/identities and acknowledge worker entry, commit or
 recovery completion with bounded waits; do not widen heartbeat deadlines to hide ordering races.
+Download file fixtures use `@Suite(.downloadTestFiles)` and
+`DownloadTestFiles.temporaryDirectory`. Each test case owns a fresh root; fixture bases
+must be children of that root so their hidden durable-authority siblings remain owned too.
+Create stores with `DownloadTestFiles.store` so startup, artifact workers and index writes
+are drained before removal, including stores created by detached probes. Use
+`DownloadTestFiles.manager` to stop callbacks and admission work before draining its stores.
+The scope awaits registered asynchronous cleanup before removing its exact root on success,
+throw or early return. XCTest side-asset fixtures use `DownloadFileTestCase`, with an
+instance-owned root and awaited teardown block for the same lifetime guarantee.
+Register resource teardown with `DownloadTestFiles.onCleanup` before
+throwing startup waits; do not rely on fixture `deinit` or launch an unawaited cleanup task.
+This also keeps fixture debris out of the app temporary-directory range-stash sweep. No
+host-wide temporary cleanup or macOS runner `TMPDIR` override is needed for these fixtures.
+Current-store startup inventories its base and authority, then schedules interrupted
+unsupported-root reclamation. That reclamation intentionally lists their parent to select only that root's exact pending quarantine and
+retired-root prefix; range-body recovery lists its configured temp directory, while durable
+held-range recovery lists the store base. These are distinct ownership boundaries.
+
 Require terminal xcodebuild success and the result bundle, not merely a printed test summary.
 Expected known issues must be named explicitly: P7 release pin 15 remains a pending P7.7/version
 gate at this checkpoint. No hosted suite establishes live backend or physical-device acceptance.

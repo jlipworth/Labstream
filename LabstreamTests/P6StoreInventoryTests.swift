@@ -4,6 +4,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
+@Suite(.downloadTestFiles)
 struct P6StoreInventoryTests {
     @Test("P6-pin-12 audit accounts for hidden working/held/temp bytes and protects intent paths")
     func auditAllBytes() async throws {

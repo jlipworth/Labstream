@@ -4,6 +4,7 @@ import Synchronization
 import Testing
 @testable import Labstream
 
+@Suite(.downloadTestFiles)
 struct DownloadStorePersistenceTests {
     /// B15: init reads and classifies the index; load() must decode those same bytes. A second
     /// read that fails transiently previously admitted an empty store as `.current`, and the next
@@ -15,12 +16,12 @@ struct DownloadStorePersistenceTests {
                 ratingKey: "existing", attemptID: existingID, title: "Existing",
                 localURL: directory.appendingPathComponent("existing.mp4"), status: .complete,
                 metadata: OfflineMetadata(ratingKey: "existing", title: "Existing", type: "movie"))
-            let seed = DownloadStore(baseDirectory: directory)
+            let seed = DownloadTestFiles.store(baseDirectory: directory)
             #expect(seed.createAttemptOwnedRecord(existing, attemptID: existingID)
                 == .committed(DownloadAttemptKey(ratingKey: "existing", attemptID: existingID)))
 
             let reads = Mutex(0)
-            let flaky = DownloadStore(
+            let flaky = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init(
                     read: { url in
@@ -41,7 +42,7 @@ struct DownloadStorePersistenceTests {
                 metadata: OfflineMetadata(ratingKey: "added", title: "Added", type: "movie"))
             #expect(flaky.createAttemptOwnedRecord(added, attemptID: newID)
                 == .committed(DownloadAttemptKey(ratingKey: "added", attemptID: newID)))
-            let reopened = DownloadStore(baseDirectory: directory)
+            let reopened = DownloadTestFiles.store(baseDirectory: directory)
             #expect(reopened.record(for: "existing") != nil)
             #expect(reopened.record(for: "added") != nil)
         }
@@ -51,7 +52,7 @@ struct DownloadStorePersistenceTests {
         try withTemporaryDirectory { directory in
             let retryID = DownloadAttemptID.generated()
             let retryKey = DownloadAttemptKey(ratingKey: "episode-retry", attemptID: retryID)
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let failed = DownloadRecord(
                 ratingKey: retryKey.ratingKey, attemptID: retryID, title: "Retry",
                 localURL: directory.appendingPathComponent("retry.mp4"), status: .failed,
@@ -67,7 +68,7 @@ struct DownloadStorePersistenceTests {
 
             #expect(store.applySeasonPlanAtomically(
                 newRecords: inserted, retryAttempts: [retryKey]) == .applied(inserted: 2, retried: 1))
-            let restored = DownloadStore(baseDirectory: directory)
+            let restored = DownloadTestFiles.store(baseDirectory: directory)
             for record in inserted {
                 let row = try #require(restored.record(for: record.ratingKey))
                 #expect(row.status == .queued)
@@ -82,7 +83,7 @@ struct DownloadStorePersistenceTests {
 
     @Test func seasonPlanStaleRetryRejectsEveryMutation() throws {
         try withTemporaryDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let inserted = DownloadRecord(
                 ratingKey: "episode-new", attemptID: .generated(), title: "New",
                 localURL: directory.appendingPathComponent("new.mp4"), status: .queued,
@@ -99,7 +100,7 @@ struct DownloadStorePersistenceTests {
     @Test func seasonPlanPostReplaceFailurePublishesTheExactDurableCandidate() throws {
         try withTemporaryDirectory { directory in
             let writes = PostReplaceFailureHarness()
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
             let inserted = DownloadRecord(
@@ -111,7 +112,7 @@ struct DownloadStorePersistenceTests {
             #expect(store.applySeasonPlanAtomically(
                 newRecords: [inserted], retryAttempts: []) == .applied(inserted: 1, retried: 0))
             #expect(store.record(for: inserted.ratingKey) != nil)
-            #expect(DownloadStore(baseDirectory: directory).record(for: inserted.ratingKey) != nil)
+            #expect(DownloadTestFiles.store(baseDirectory: directory).record(for: inserted.ratingKey) != nil)
         }
     }
 
@@ -121,14 +122,14 @@ struct DownloadStorePersistenceTests {
         try withTemporaryDirectory { directory in
             let retryID = DownloadAttemptID.generated()
             let retryKey = DownloadAttemptKey(ratingKey: "episode-retry", attemptID: retryID)
-            let seed = DownloadStore(baseDirectory: directory)
+            let seed = DownloadTestFiles.store(baseDirectory: directory)
             let failed = DownloadRecord(
                 ratingKey: retryKey.ratingKey, attemptID: retryID, title: "Retry",
                 localURL: directory.appendingPathComponent("retry.mp4"), status: .failed,
                 metadata: OfflineMetadata(ratingKey: retryKey.ratingKey, title: "Retry", type: "episode"))
             #expect(seed.createAttemptOwnedRecord(failed, attemptID: retryID) == .committed(retryKey))
 
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
             let inserted = DownloadRecord(
@@ -145,7 +146,7 @@ struct DownloadStorePersistenceTests {
             #expect(retryRow.metadata?.seasonPlannerPendingAdmission == nil)
             #expect(retryRow.admissionIntent == nil, "rollback withdraws the plan's retry request")
 
-            let restored = DownloadStore(baseDirectory: directory)
+            let restored = DownloadTestFiles.store(baseDirectory: directory)
             #expect(restored.record(for: inserted.ratingKey) == nil)
             #expect(restored.record(for: retryKey.ratingKey)?.metadata?.seasonPlannerPendingAdmission == nil)
         }
@@ -156,7 +157,7 @@ struct DownloadStorePersistenceTests {
     @Test func seasonPlanDurabilityWaitDoesNotHoldTheStoreLock() async throws {
         try await withTemporaryDirectory { directory in
             let writes = FirstBlockingAtomicWriteHarness()
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
             let inserted = DownloadRecord(
@@ -182,21 +183,21 @@ struct DownloadStorePersistenceTests {
 
             writes.release.signal()
             #expect(await waitForSignal(applyReturned, timeout: 5))
-            #expect(DownloadStore(baseDirectory: directory)
+            #expect(DownloadTestFiles.store(baseDirectory: directory)
                 .record(for: inserted.ratingKey)?.status == .queued)
         }
     }
 
     @Test func mutationDoesNotReturnBeforeAtomicWriteAttemptFinishes() async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("download-store-persistence-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
 
         let writeStarted = DispatchSemaphore(value: 0)
         let releaseWrite = DispatchSemaphore(value: 0)
         let mutationReturned = DispatchSemaphore(value: 0)
-        let store = DownloadStore(
+        let store = DownloadTestFiles.store(
             baseDirectory: directory,
             indexPersistence: .init { data, url in
                 writeStarted.signal()
@@ -231,7 +232,7 @@ struct DownloadStorePersistenceTests {
                 bytes: 1_024
             )
 
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             store.upsert(record)
 
             let indexData = try Data(contentsOf: directory.appendingPathComponent("index.json"))
@@ -240,7 +241,7 @@ struct DownloadStorePersistenceTests {
             )
             #expect(index["schemaVersion"] as? Int == DownloadIndexCoding.currentSchemaVersion)
 
-            let restored = DownloadStore(baseDirectory: directory)
+            let restored = DownloadTestFiles.store(baseDirectory: directory)
             let restoredRecord = try #require(
                 restored.records.first { $0.ratingKey == record.ratingKey }
             )
@@ -272,14 +273,14 @@ struct DownloadStorePersistenceTests {
                     serverPreparedVersion: true
                 )
             )
-            DownloadStore(baseDirectory: directory).upsert(legacyHandoff)
+            DownloadTestFiles.store(baseDirectory: directory).upsert(legacyHandoff)
 
-            let repaired = DownloadStore(baseDirectory: directory)
+            let repaired = DownloadTestFiles.store(baseDirectory: directory)
             #expect(repaired.record(for: ratingKey)?.metadata?.downloadLane == .original)
             #expect(repaired.record(for: ratingKey)?.metadata?.isServerPreparedVersion == true)
 
             // The repair is durable, not merely a presentation-time interpretation.
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.record(for: ratingKey)?.metadata?.downloadLane == .original)
         }
     }
@@ -293,7 +294,7 @@ struct DownloadStorePersistenceTests {
                                         ratingKey: key.ratingKey, title: "Delete", type: "movie"))
             try Data([1, 2, 3, 4]).write(to: record.localURL)
             let writes = SelectedAtomicWriteFailureHarness(failingAttempts: [2])
-            let store = DownloadStore(baseDirectory: directory,
+            let store = DownloadTestFiles.store(baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
             #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
             guard case .persistenceFailed = store.remove(for: key) else {
@@ -321,7 +322,7 @@ struct DownloadStorePersistenceTests {
             let blocker = BlockingFailOnceArtifactDelete(
                 path: record.localURL.path, shouldFail: deleteFails)
             let live = DownloadArtifactFilesystem.live
-            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+            let store = DownloadTestFiles.store(baseDirectory: directory, artifactFilesystem: .init(
                 writeAuthArtifact: live.writeAuthArtifact,
                 removeItem: { url, fm in try blocker.remove(url, fm: fm) },
                 fileExists: live.fileExists))
@@ -360,7 +361,7 @@ struct DownloadStorePersistenceTests {
             try Data([1]).write(to: record.localURL)
             let blocker = BlockingFailOnceArtifactDelete(path: record.localURL.path)
             let live = DownloadArtifactFilesystem.live
-            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+            let store = DownloadTestFiles.store(baseDirectory: directory, artifactFilesystem: .init(
                 writeAuthArtifact: live.writeAuthArtifact,
                 removeItem: { url, fm in try blocker.remove(url, fm: fm) },
                 fileExists: live.fileExists))
@@ -400,7 +401,7 @@ struct DownloadStorePersistenceTests {
             try Data([1]).write(to: record.localURL)
             let blocker = BlockingArtifactDelete(path: record.localURL.path)
             let live = DownloadArtifactFilesystem.live
-            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+            let store = DownloadTestFiles.store(baseDirectory: directory, artifactFilesystem: .init(
                 writeAuthArtifact: live.writeAuthArtifact,
                 removeItem: { url, fm in try blocker.remove(url, fm: fm) },
                 fileExists: live.fileExists))
@@ -449,7 +450,7 @@ struct DownloadStorePersistenceTests {
             try Data([1]).write(to: record.localURL)
             let blocker = BlockingArtifactWrite(shouldFail: predecessorFails)
             let live = DownloadArtifactFilesystem.live
-            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+            let store = DownloadTestFiles.store(baseDirectory: directory, artifactFilesystem: .init(
                 writeAuthArtifact: { data, url, fm in try blocker.write(data, url: url, fm: fm) },
                 removeItem: live.removeItem, fileExists: live.fileExists,
                 syncParentDirectory: live.syncParentDirectory))
@@ -495,7 +496,7 @@ struct DownloadStorePersistenceTests {
                                         ratingKey: key.ratingKey, title: "Clear", type: "movie"))
             try Data([1]).write(to: record.localURL)
             let writes = SelectedAtomicWriteFailureHarness(failingAttempts: [2])
-            let store = DownloadStore(baseDirectory: directory,
+            let store = DownloadTestFiles.store(baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
             #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
             // No resume blob exists, so the clear takes the no-change branch: a one-shot
@@ -518,7 +519,7 @@ struct DownloadStorePersistenceTests {
                                         ratingKey: key.ratingKey, title: "Sync", type: "movie"))
             try Data([1]).write(to: record.localURL)
             let live = DownloadArtifactFilesystem.live
-            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+            let store = DownloadTestFiles.store(baseDirectory: directory, artifactFilesystem: .init(
                 writeAuthArtifact: live.writeAuthArtifact, removeItem: live.removeItem,
                 fileExists: live.fileExists,
                 syncParentDirectory: { _ in throw CocoaError(.fileWriteOutOfSpace) }))
@@ -529,7 +530,7 @@ struct DownloadStorePersistenceTests {
             }
             #expect(store.record(for: key) != nil)
             #expect(!FileManager.default.fileExists(atPath: record.localURL.path))
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.resolveArtifactSynchronouslyForTests(
                 through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
             #expect(relaunched.record(for: key) == nil)
@@ -547,7 +548,7 @@ struct DownloadStorePersistenceTests {
             let writes = SelectedAtomicWriteFailureHarness(failingAttempts: [4])
             let artifactWrite = BlockingFailOnceArtifactWrite()
             let live = DownloadArtifactFilesystem.live
-            let store = DownloadStore(baseDirectory: directory,
+            let store = DownloadTestFiles.store(baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) },
                 artifactFilesystem: .init(
                     writeAuthArtifact: { data, url, fm in
@@ -583,7 +584,7 @@ struct DownloadStorePersistenceTests {
             let blocker = BlockingFailOnceArtifactDelete(path: heldURL.path,
                                                          shouldFail: predecessorFails)
             let live = DownloadArtifactFilesystem.live
-            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+            let store = DownloadTestFiles.store(baseDirectory: directory, artifactFilesystem: .init(
                 writeAuthArtifact: live.writeAuthArtifact,
                 removeItem: { url, fm in try blocker.remove(url, fm: fm) },
                 fileExists: live.fileExists, syncParentDirectory: live.syncParentDirectory))
@@ -610,7 +611,7 @@ struct DownloadStorePersistenceTests {
             let heldURL = directory.appendingPathComponent("held-dir-sync.body")
             try Data([1]).write(to: heldURL)
             let live = DownloadArtifactFilesystem.live
-            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+            let store = DownloadTestFiles.store(baseDirectory: directory, artifactFilesystem: .init(
                 writeAuthArtifact: live.writeAuthArtifact, removeItem: live.removeItem,
                 fileExists: live.fileExists,
                 syncParentDirectory: { _ in throw CocoaError(.fileWriteOutOfSpace) }))
@@ -625,7 +626,7 @@ struct DownloadStorePersistenceTests {
                 Issue.record("held deletion must fail closed on directory sync"); return
             }
             #expect(store.deferredHeldRangeBodyDeletionRelativePaths(for: key) == [heldURL.lastPathComponent])
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.resolveArtifactSynchronouslyForTests(
                 through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
             #expect(relaunched.deferredHeldRangeBodyDeletionRelativePaths(for: key) == [])
@@ -646,7 +647,7 @@ struct DownloadStorePersistenceTests {
             try Data([1]).write(to: record.localURL)
             let copy = BlockingCheckpointCopy(shouldFail: predecessorFails)
             let liveCheckpoint = DownloadStaticCheckpointFilesystem.live
-            let store = DownloadStore(baseDirectory: directory, checkpointFilesystem: .init(
+            let store = DownloadTestFiles.store(baseDirectory: directory, checkpointFilesystem: .init(
                 exists: liveCheckpoint.exists, size: liveCheckpoint.size,
                 durableCopy: { source, destination, temporary in
                     try copy.copy(source, destination, temporary)
@@ -670,7 +671,7 @@ struct DownloadStorePersistenceTests {
             try Data([5, 6]).write(to: record.localURL)
             let deletes = FailOneLegacyResetDelete(name: record.localURL.lastPathComponent)
             let live = DownloadArtifactFilesystem.live
-            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+            let store = DownloadTestFiles.store(baseDirectory: directory, artifactFilesystem: .init(
                 writeAuthArtifact: live.writeAuthArtifact,
                 removeItem: { url, fm in try deletes.remove(url, fm: fm) },
                 fileExists: live.fileExists))
@@ -680,7 +681,7 @@ struct DownloadStorePersistenceTests {
             }
             #expect(store.record(for: key) != nil)
             #expect(FileManager.default.fileExists(atPath: record.localURL.path))
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.resolveArtifactSynchronouslyForTests(
                 through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
             #expect(relaunched.record(for: key) == nil)
@@ -699,7 +700,7 @@ struct DownloadStorePersistenceTests {
                 bytes: 0,
                 metadata: OfflineMetadata(ratingKey: ratingKey, title: "New v3", type: "movie")
             )
-            #expect(DownloadStore(baseDirectory: directory)
+            #expect(DownloadTestFiles.store(baseDirectory: directory)
                 .createAttemptOwnedRecord(record, attemptID: id)
                 == .committed(DownloadAttemptKey(ratingKey: ratingKey, attemptID: id)))
             let data = try Data(contentsOf: directory.appendingPathComponent("index.json"))
@@ -718,7 +719,7 @@ struct DownloadStorePersistenceTests {
             let first = DownloadAttemptID(rawValue: "attempt-A")!
             let second = DownloadAttemptID(rawValue: "attempt-B")!
             let stale = DownloadAttemptID(rawValue: "attempt-stale")!
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let record = makeRecord(
                 ratingKey: ratingKey, title: "CAS", directory: directory, bytes: 0,
                 metadata: OfflineMetadata(ratingKey: ratingKey, title: "CAS", type: "movie"))
@@ -763,7 +764,7 @@ struct DownloadStorePersistenceTests {
                 chapterImageRelativePaths: [0: "chapter.jpg"],
                 offlineTextSubtitles: subtitles, backendKind: .plex)
             let destination = directory.appendingPathComponent("movie.mp4")
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             #expect(store.createAttemptOwnedRecord(
                 DownloadRecord(ratingKey: ratingKey, attemptID: attemptA, title: "Source A",
                                localURL: destination, status: .queued, metadata: metadataA),
@@ -802,7 +803,7 @@ struct DownloadStorePersistenceTests {
                 ratingKey: ratingKey, title: "Source A", type: "movie",
                 posterRelativePath: poster.lastPathComponent, backendKind: .jellyfin,
                 mediaSourceID: "source-a")
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             #expect(store.createAttemptOwnedRecord(
                 DownloadRecord(ratingKey: ratingKey, attemptID: attempt, title: "Source A",
                                localURL: directory.appendingPathComponent("source-change.mp4"),
@@ -820,14 +821,14 @@ struct DownloadStorePersistenceTests {
     }
 
     @Test func delayedOldSourceSideAssetCannotPublishAfterSameAttemptRenegotiation() async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("side-source-race-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let ratingKey = "jellyfin:source-race"
         let attempt = DownloadAttemptID(rawValue: "attempt-current")!
         let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attempt)
-        let store = DownloadStore(baseDirectory: directory)
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let metadata = OfflineMetadata(
             ratingKey: ratingKey, title: "Source A", type: "movie",
             backendKind: .jellyfin, mediaSourceID: "source-a")
@@ -864,14 +865,14 @@ struct DownloadStorePersistenceTests {
     }
 
     @Test func delayedPlexOptimizeSideAssetCannotPublishAfterPreparedSourceChange() async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("side-plex-race-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let ratingKey = "plex:optimize-source-race"
         let attempt = DownloadAttemptID(rawValue: "attempt-current")!
         let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attempt)
-        let store = DownloadStore(baseDirectory: directory)
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let metadata = OfflineMetadata(
             ratingKey: ratingKey, title: "Original", type: "movie", sourcePartID: 10,
             backendKind: .plex, downloadLane: .optimize)
@@ -916,7 +917,7 @@ struct DownloadStorePersistenceTests {
             let ratingKey = "plex:hydration-generation"
             let attempt = DownloadAttemptID(rawValue: "attempt-current")!
             let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attempt)
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let metadata = OfflineMetadata(
                 ratingKey: ratingKey, title: "Hydration", type: "movie", backendKind: .plex)
             #expect(store.createAttemptOwnedRecord(
@@ -952,7 +953,7 @@ struct DownloadStorePersistenceTests {
         try withTemporaryDirectory { directory in
             let expected = DownloadAttemptID(rawValue: "attempt-expected")!
             let replacement = DownloadAttemptID(rawValue: "attempt-new")!
-            let missingStore = DownloadStore(baseDirectory: directory)
+            let missingStore = DownloadTestFiles.store(baseDirectory: directory)
             let missingRecord = makeRecord(
                 ratingKey: "plex:missing", title: "Missing", directory: directory, bytes: 0)
             #expect(missingStore.createAttemptOwnedRecord(
@@ -977,7 +978,7 @@ struct DownloadStorePersistenceTests {
     @Test func failedAttemptCreateCanRetryOnlyWithSameOwner() throws {
         try withTemporaryDirectory { directory in
             let writes = AtomicWriteHarness(failFirstWrite: true)
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
             let ratingKey = "plex:retry-create"
@@ -1011,7 +1012,7 @@ struct DownloadStorePersistenceTests {
                 directory: directory,
                 bytes: 0,
                 metadata: metadata)
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
 
             #expect(store.createAttemptOwnedRecord(record, attemptID: attemptA) == .committed(keyA))
             #expect(store.createAttemptOwnedRecord(
@@ -1062,7 +1063,7 @@ struct DownloadStorePersistenceTests {
                 directory: directory,
                 bytes: 0,
                 metadata: metadata)
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
 
             #expect(store.createAttemptOwnedRecord(record, attemptID: attemptA) == .committed(keyA))
             #expect(store.clearPlaySessionID(
@@ -1094,17 +1095,17 @@ struct DownloadStorePersistenceTests {
     }
 
     @Test func conditionalRemovalSerializesStablePathAgainstReplacementSeed() async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("attempt-remove-race-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let ratingKey = "plex:remove-race"
         let attemptA = DownloadAttemptID(rawValue: "attempt-A")!
         let attemptB = DownloadAttemptID(rawValue: "attempt-B")!
         let keyA = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptA)
         let fileURL = directory.appendingPathComponent("remove-race.mp4")
         let fileManager = BlockingRemovalFileManager(blockedPath: fileURL.path)
-        let store = DownloadStore(baseDirectory: directory, fileManager: fileManager)
+        let store = DownloadTestFiles.store(baseDirectory: directory, fileManager: fileManager)
         let record = DownloadRecord(
             ratingKey: ratingKey,
             title: "Remove race",
@@ -1151,7 +1152,7 @@ struct DownloadStorePersistenceTests {
     @Test func failedAtomicWriteIsRecoveredByLaterFullStateMutation() throws {
         try withTemporaryDirectory { directory in
             let writes = AtomicWriteHarness(failFirstWrite: true)
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in
                     try writes.write(data, to: url)
@@ -1178,7 +1179,7 @@ struct DownloadStorePersistenceTests {
             ))
 
             #expect(writes.attemptCount == 2)
-            let restored = DownloadStore(baseDirectory: directory)
+            let restored = DownloadTestFiles.store(baseDirectory: directory)
             #expect(Set(restored.records.map(\.ratingKey)) == ["plex:item-1", "plex:item-2"])
             #expect(Dictionary(uniqueKeysWithValues: restored.records.map { ($0.ratingKey, $0.bytes) }) == [
                 "plex:item-1": 100,
@@ -1191,7 +1192,7 @@ struct DownloadStorePersistenceTests {
         try withTemporaryDirectory { directory in
             let staticKey = "plex:static-zero"
             let liveKey = "jellyfin:live-zero"
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             store.upsert(makeRecord(
                 ratingKey: staticKey,
                 title: "Static Zero",
@@ -1217,7 +1218,7 @@ struct DownloadStorePersistenceTests {
                 )
             ))
 
-            let restored = DownloadStore(baseDirectory: directory)
+            let restored = DownloadTestFiles.store(baseDirectory: directory)
             restored.reconcile(
                 liveRatingKeys: [],
                 snapshotRatingKeys: [staticKey, liveKey]
@@ -1225,7 +1226,7 @@ struct DownloadStorePersistenceTests {
 
             #expect(restored.status(for: staticKey) == .paused)
             #expect(restored.status(for: liveKey) == .failed)
-            let afterRelaunch = DownloadStore(baseDirectory: directory)
+            let afterRelaunch = DownloadTestFiles.store(baseDirectory: directory)
             #expect(afterRelaunch.status(for: staticKey) == .paused)
             #expect(afterRelaunch.status(for: liveKey) == .failed)
         }
@@ -1234,7 +1235,7 @@ struct DownloadStorePersistenceTests {
     @Test func ownerlessSubtitleFileIsNotAdoptedOnLoad() throws {
         try withTemporaryDirectory { directory in
             let ratingKey = "plex:item-1"
-            let initial = DownloadStore(baseDirectory: directory)
+            let initial = DownloadTestFiles.store(baseDirectory: directory)
             initial.upsert(makeRecord(
                 ratingKey: ratingKey,
                 title: "Subtitle Item",
@@ -1255,7 +1256,7 @@ struct DownloadStorePersistenceTests {
             try Data("1\n00:00:00,000 --> 00:00:01,000\nHello\n".utf8).write(to: subtitleURL)
 
             let writes = AtomicWriteHarness()
-            let repaired = DownloadStore(
+            let repaired = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in
                     try writes.write(data, to: url)
@@ -1265,7 +1266,7 @@ struct DownloadStorePersistenceTests {
             #expect(writes.attemptCount == 0)
             #expect(repaired.records.first?.metadata?.offlineTextSubtitles == nil)
 
-            let restored = DownloadStore(baseDirectory: directory)
+            let restored = DownloadTestFiles.store(baseDirectory: directory)
             #expect(restored.records.first?.metadata?.offlineTextSubtitles == nil)
         }
     }
@@ -1280,7 +1281,7 @@ struct DownloadStorePersistenceTests {
         let attempt = DownloadAttemptID(rawValue: "attempt-current")!
         let poster = directory.appendingPathComponent("ownerless.poster.jpg")
         try Data([0x1]).write(to: poster)
-        let seed = DownloadStore(baseDirectory: directory)
+        let seed = DownloadTestFiles.store(baseDirectory: directory)
         #expect(seed.createAttemptOwnedRecord(DownloadRecord(
             ratingKey: ratingKey, attemptID: attempt, title: "Ownerless",
             localURL: directory.appendingPathComponent("ownerless.mp4"), status: .complete,
@@ -1312,14 +1313,14 @@ struct DownloadStorePersistenceTests {
                 row["metadata"] = metadata
             }
 
-            let restored = DownloadStore(baseDirectory: directory)
+            let restored = DownloadTestFiles.store(baseDirectory: directory)
 
             let metadata = try #require(restored.metadata(for: ratingKey))
             #expect(metadata.posterRelativePath == poster.lastPathComponent)
             #expect(metadata.sideAssetBundleOwner == OfflineSideAssetBundleOwner(
                 attemptID: attempt.rawValue, source: metadata.sideAssetSourceIdentity))
             #expect(FileManager.default.fileExists(atPath: poster.path))
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             let durable = try #require(relaunched.metadata(for: ratingKey))
             #expect(durable.posterRelativePath == poster.lastPathComponent)
             #expect(durable.sideAssetBundleOwner == OfflineSideAssetBundleOwner(
@@ -1361,13 +1362,13 @@ struct DownloadStorePersistenceTests {
                 corruption.mutate(&row)
             }
 
-            let restored = DownloadStore(baseDirectory: directory)
+            let restored = DownloadTestFiles.store(baseDirectory: directory)
 
             let metadata = try #require(restored.metadata(for: ratingKey))
             #expect(!metadata.hasCachedSideAssets)
             #expect(metadata.sideAssetBundleOwner == nil)
             #expect(!FileManager.default.fileExists(atPath: poster.path))
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.metadata(for: ratingKey)?.posterRelativePath == nil)
         }
     }
@@ -1379,7 +1380,7 @@ struct DownloadStorePersistenceTests {
             let attemptB = DownloadAttemptID(rawValue: "attempt-b")!
             let keyA = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptA)
             let keyB = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptB)
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let metadata = OfflineMetadata(ratingKey: ratingKey, title: "Playback", type: "movie")
             let destination = directory.appendingPathComponent("playback.mp4")
             guard case .committed = store.createAttemptOwnedRecord(
@@ -1411,7 +1412,7 @@ struct DownloadStorePersistenceTests {
             let attempt = DownloadAttemptID(rawValue: "attempt")!
             let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attempt)
             let metadata = OfflineMetadata(ratingKey: ratingKey, title: "Conditional", type: "movie")
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             guard case .committed = store.createAttemptOwnedRecord(
                 DownloadRecord(ratingKey: ratingKey, attemptID: attempt, title: "Conditional",
                                localURL: directory.appendingPathComponent("conditional.mp4"),
@@ -1428,7 +1429,7 @@ struct DownloadStorePersistenceTests {
             #expect(store.setLocalPlaybackPosition(
                 for: key, positionMs: 15_000, durationMs: 60_000) == .applied)
 
-            let restored = DownloadStore(baseDirectory: directory)
+            let restored = DownloadTestFiles.store(baseDirectory: directory)
             #expect(restored.record(for: key)?.status == .complete)
             #expect(restored.record(for: key)?.metadata?.localPlaybackPositionMs == 15_000)
         }
@@ -1455,20 +1456,20 @@ struct DownloadStorePersistenceTests {
     private func withTemporaryDirectory(
         _ body: (URL) throws -> Void
     ) throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("download-store-persistence-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         try body(directory)
     }
 
     private func withTemporaryDirectory(
         _ body: (URL) async throws -> Void
     ) async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("download-store-persistence-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         try await body(directory)
     }
 

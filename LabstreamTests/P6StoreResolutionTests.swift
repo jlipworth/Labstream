@@ -5,7 +5,7 @@ import Synchronization
 import Testing
 @testable import Labstream
 
-@Suite("P6 lead exact resolution pins", .serialized)
+@Suite("P6 lead exact resolution pins", .downloadTestFiles, .serialized)
 struct P6StoreResolutionTests {
     enum Kind: String, CaseIterable, Sendable { case mutation, resume, artifact, promotion, checkpoint, deletion, seed, compareClear }
 

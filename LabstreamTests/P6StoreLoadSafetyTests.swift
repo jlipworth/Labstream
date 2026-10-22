@@ -4,6 +4,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
+@Suite(.downloadTestFiles)
 struct P6StoreLoadSafetyTests {
     @Test("P6-pin-10 loader source guard plus duplicate conservation", arguments: [4, 5], [false, true])
     func checkedIngestion(version: Int, differentAttempt: Bool) throws {
@@ -47,7 +48,7 @@ struct P6StoreLoadSafetyTests {
         let valid = try Data(contentsOf: index)
         try Data("invalid".utf8).write(to: index)
         let hold = P6Hold()
-        let store = DownloadStore(baseDirectory: fixture.directory, indexPersistence: .init(read: { url in
+        let store = DownloadTestFiles.store(baseDirectory: fixture.directory, indexPersistence: .init(read: { url in
             let data = try Data(contentsOf: url)
             hold.hit()
             return data

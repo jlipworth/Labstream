@@ -7,7 +7,7 @@ import Testing
 
 /// B18 pins: cleanup journals use the index's full commit protocol, and a visible-but-unsynced
 /// value is never reported as durable authority.
-@Suite("Durable cleanup journal commits")
+@Suite("Durable cleanup journal commits", .downloadTestFiles)
 struct DurableJournalCommitTests {
     @Test("A directory-sync failure after rename is recommitted once, then reported committed")
     func directorySyncFailureRecommitsOnce() throws {
@@ -159,10 +159,10 @@ struct DurableJournalCommitTests {
     }
 
     private func withTemporaryDirectory(_ body: (URL) throws -> Void) throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("durable-journal-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         try body(directory)
     }
 }

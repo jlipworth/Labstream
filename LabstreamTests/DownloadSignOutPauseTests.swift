@@ -6,6 +6,7 @@ import Testing
 // Setup uses async persistence too: synchronous compatibility writes here starved other
 // MainActor fixtures' two-second P6 startup heartbeat under normal parallel testing.
 @MainActor
+@Suite(.downloadTestFiles)
 struct DownloadSignOutPauseTests {
     @Test func acknowledgementHasAFailFastBoundAndAcceptsALateSignal() async {
         let acknowledgement = P6Acknowledgement<Bool>()
@@ -15,18 +16,18 @@ struct DownloadSignOutPauseTests {
     }
 
     @Test func renderedRowActionsRejectAnOvertakenAttempt() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+        let directory = DownloadTestFiles.temporaryDirectory.appendingPathComponent(
             "download-row-attempt-fence-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
 
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let first = try #require(makeRecord(
             store: store, ratingKey: "plex:item", backend: .plex, attemptSuffix: "first"))
 
         let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "row-action-fence"))
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
-        let manager = DownloadManager(appModel: model, store: store, session: session,
+        let manager = DownloadTestFiles.manager(appModel: model, store: store, session: session,
                                       registerForBackgroundEvents: false)
         defer { session.invalidateInjectedSessionForTesting() }
         try #require(await manager.awaitStartupRecoveryForTesting())
@@ -58,19 +59,19 @@ struct DownloadSignOutPauseTests {
     }
 
     @Test func signingOutPausesOnlyActiveRowsOwnedByThatBackend() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+        let directory = DownloadTestFiles.temporaryDirectory.appendingPathComponent(
             "download-signout-pause-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
 
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let emby = try #require(makeRecord(store: store, ratingKey: "emby:item", backend: .emby))
         let jellyfin = try #require(makeRecord(store: store, ratingKey: "jellyfin:item", backend: .jellyfin))
         let plex = try #require(makeRecord(store: store, ratingKey: "plex:item", backend: .plex))
 
         let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "download-signout"))
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
-        let manager = DownloadManager(appModel: model, store: store, session: session,
+        let manager = DownloadTestFiles.manager(appModel: model, store: store, session: session,
                                       registerForBackgroundEvents: false)
         defer { session.invalidateInjectedSessionForTesting() }
         try #require(await manager.awaitStartupRecoveryForTesting())
@@ -95,12 +96,12 @@ struct DownloadSignOutPauseTests {
     }
 
     @Test func coordinatedSignOutPausesEveryBackendWithoutDeletingRecordsOrFiles() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+        let directory = DownloadTestFiles.temporaryDirectory.appendingPathComponent(
             "download-signout-all-preserve-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
 
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let rows = try MediaBackendKind.allCases.map { backend in
             let kind = DownloadBackendKind(rawValue: backend.rawValue)!
             return try #require(makeRecord(
@@ -110,7 +111,7 @@ struct DownloadSignOutPauseTests {
         let model = AppModel(identity: PlatformClientIdentity.make(
             clientIdentifier: "download-signout-all"))
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
-        let manager = DownloadManager(appModel: model, store: store, session: session,
+        let manager = DownloadTestFiles.manager(appModel: model, store: store, session: session,
                                       registerForBackgroundEvents: false)
         defer { session.invalidateInjectedSessionForTesting() }
         try #require(await manager.awaitStartupRecoveryForTesting())

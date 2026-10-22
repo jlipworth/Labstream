@@ -5,6 +5,7 @@ import Synchronization
 import Testing
 @testable import Labstream
 
+@Suite(.downloadTestFiles)
 struct P6ArtifactRetryTests {
     @Test("P6-pin-11 600 explicit failures of one durable head use bounded bookkeeping")
     func failedHeadGrowth() async throws {
@@ -12,7 +13,7 @@ struct P6ArtifactRetryTests {
         let initial = fixture.store()
         let key = try fixture.seed(initial)
         let live = DownloadArtifactFilesystem.live
-        let store = DownloadStore(baseDirectory: fixture.directory, artifactFilesystem: .init(
+        let store = DownloadTestFiles.store(baseDirectory: fixture.directory, artifactFilesystem: .init(
             writeAuthArtifact: { _, _, _ in throw CocoaError(.fileWriteUnknown) },
             removeItem: live.removeItem, fileExists: live.fileExists))
         let submission = store.submitResumeData(for: key, Data([1]))
@@ -70,7 +71,7 @@ struct P6ArtifactRetryTests {
             writeAuthArtifact: { _, _, _ in attempts.withLock { $0 += 1 }; throw CocoaError(.fileWriteUnknown) },
             removeItem: DownloadArtifactFilesystem.live.removeItem,
             fileExists: DownloadArtifactFilesystem.live.fileExists)
-        let store = DownloadStore(baseDirectory: fixture.directory, artifactFilesystem: filesystem)
+        let store = DownloadTestFiles.store(baseDirectory: fixture.directory, artifactFilesystem: filesystem)
         let submission = store.submitResumeData(for: key, Data([1]))
         guard case .artifactWriteFailed = await store.resolve(submission, deadline: .after(30)) else { Issue.record("head did not fail"); return }
         let before = attempts.withLock { $0 }
@@ -93,7 +94,7 @@ struct P6ArtifactRetryTests {
             .init(ratingKey: other.ratingKey, attemptID: other.attemptID!)))
         let attempts = Mutex(0)
         let live = DownloadArtifactFilesystem.live
-        let store = DownloadStore(baseDirectory: fixture.directory, artifactFilesystem: .init(
+        let store = DownloadTestFiles.store(baseDirectory: fixture.directory, artifactFilesystem: .init(
             writeAuthArtifact: { data, url, manager in
                 if data == Data([1]) {
                     attempts.withLock { $0 += 1 }

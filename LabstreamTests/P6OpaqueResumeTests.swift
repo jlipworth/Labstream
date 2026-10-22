@@ -4,7 +4,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
-@Suite("P6 opaque manual resume", .serialized)
+@Suite("P6 opaque manual resume", .downloadTestFiles, .serialized)
 struct P6OpaqueResumeTests {
     @Test("Opaque Resume reaches network admission; a Pause during task creation wins", arguments: [false, true])
     func pauseThenResume(pauseDuringCreation: Bool) async throws {

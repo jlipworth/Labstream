@@ -6,12 +6,12 @@ import Testing
 
 /// P3b pins: a v4 index stays v4 on disk until the upgrade stamps it, every snapshot after the
 /// stamp is v5, and the stamp fills `migratedUnknown` only where no reason exists.
-@Suite("Download schema upgrade", .serialized)
+@Suite("Download schema upgrade", .downloadTestFiles, .serialized)
 struct DownloadSchemaUpgradeTests {
     @Test("A new index is written as v5 and needs no upgrade")
     func freshIndexIsCurrent() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             _ = try seed("plex:new", status: .complete, in: store)
             #expect(!store.requiresSchemaUpgrade)
             #expect(try schemaVersion(directory) == 5)
@@ -21,11 +21,11 @@ struct DownloadSchemaUpgradeTests {
     @Test("A v4 index keeps writing v4 until the stamp, then every snapshot is v5")
     func v4StaysV4UntilStamped() async throws {
         try await withAsyncDirectory { directory in
-            let first = DownloadStore(baseDirectory: directory)
+            let first = DownloadTestFiles.store(baseDirectory: directory)
             _ = try seed("plex:a", status: .complete, in: first)
             try rewriteEnvelope(directory) { $0["schemaVersion"] = 4 }
 
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             #expect(store.requiresSchemaUpgrade)
             // An ordinary write before the stamp keeps the loaded version.
             _ = try seed("plex:b", status: .complete, in: store)
@@ -40,7 +40,7 @@ struct DownloadSchemaUpgradeTests {
             _ = try seed("plex:c", status: .complete, in: store)
             #expect(try schemaVersion(directory) == 5)
 
-            let reloaded = DownloadStore(baseDirectory: directory)
+            let reloaded = DownloadTestFiles.store(baseDirectory: directory)
             #expect(!reloaded.requiresSchemaUpgrade)
             #expect(reloaded.record(for: "plex:a")?.status == .complete)
         }
@@ -49,7 +49,7 @@ struct DownloadSchemaUpgradeTests {
     @Test("The stamp fills migratedUnknown only for unverified rows without a reason")
     func stampFillsMissingUnverifiedReasons() async throws {
         try await withAsyncDirectory { directory in
-            let first = DownloadStore(baseDirectory: directory)
+            let first = DownloadTestFiles.store(baseDirectory: directory)
             let bare = try seed("plex:bare", status: .unverified, in: first)
             let reasoned = try seed("plex:reasoned", status: .downloading, in: first)
             _ = first.submitLifecycleEvent(.bodyAtWorking, for: reasoned,
@@ -65,7 +65,7 @@ struct DownloadSchemaUpgradeTests {
             }
             try rewriteEnvelope(directory) { $0["schemaVersion"] = 4 }
 
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let ticket = store.stampSchemaV5()
             _ = await store.flushPersistence(through: ticket, timeout: 5)
             #expect(store.lifecycleState(for: bare)?.history.unverifiedReason == .migratedUnknown)
@@ -79,7 +79,7 @@ struct DownloadSchemaUpgradeTests {
     @Test("A row-deletion barrier or a capsule admits no work; a healthy owner does")
     func deletingRowsAdmitNoWork() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let healthy = try seed("plex:ok", status: .downloading, in: store)
             #expect(store.attemptAdmitsWork(healthy))
 
@@ -105,7 +105,7 @@ struct DownloadSchemaUpgradeTests {
     @Test("Start-chain admission accepts fresh starts and A-to-B replacement, never a deleting row")
     func startChainAdmissionIsPhaseAware() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let minted = DownloadAttemptID(uuid: UUID())
             // Fresh start: the key is empty before the seed.
             #expect(store.startChainAdmits(ratingKey: "plex:fresh", attemptID: minted,
@@ -163,7 +163,7 @@ struct DownloadSchemaUpgradeTests {
     @Test("A season plan never re-plans a row that is being deleted")
     func seasonPlanRefusesDeletingRetryRow() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let retry = try seed("plex:season-retry", status: .failed, in: store)
             guard case .accepted = store.submitRemove(for: retry) else {
                 Issue.record("Expected the removal to be accepted"); return
@@ -182,7 +182,7 @@ struct DownloadSchemaUpgradeTests {
     @Test("Upgrade candidates: keep finished and paused static; skip rows already being deleted")
     func upgradeCandidateMatrix() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let complete = try seed("plex:complete", status: .complete, in: store)
             let pausedStatic = try seed("plex:paused-static", status: .paused,
                                         mode: .staticByteRange, in: store)
@@ -202,7 +202,7 @@ struct DownloadSchemaUpgradeTests {
     @Test("A crash after barriers commit but before the stamp reclassifies what remains")
     func crashBeforeStampReclassifies() async throws {
         try await withAsyncDirectory { directory in
-            let first = DownloadStore(baseDirectory: directory)
+            let first = DownloadTestFiles.store(baseDirectory: directory)
             let failed = try seed("plex:failed", status: .failed, in: first)
             let queued = try seed("plex:queued", status: .queued, in: first)
             guard case .committed = await first.flushPersistence(timeout: 5) else {
@@ -211,7 +211,7 @@ struct DownloadSchemaUpgradeTests {
             try rewriteEnvelope(directory) { $0["schemaVersion"] = 4 }
 
             // The pass barriers one row, the barrier commits as v4, then the process dies.
-            let interrupted = DownloadStore(baseDirectory: directory)
+            let interrupted = DownloadTestFiles.store(baseDirectory: directory)
             #expect(interrupted.requiresSchemaUpgrade)
             guard case .accepted = interrupted.submitRemove(for: failed) else {
                 Issue.record("Expected the removal to be accepted"); return
@@ -219,7 +219,7 @@ struct DownloadSchemaUpgradeTests {
             _ = await interrupted.flushPersistence(timeout: 5)
             #expect(try schemaVersion(directory) == 4)
 
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.requiresSchemaUpgrade)
             #expect(Set(relaunched.schemaUpgradeCandidates()) == [queued],
                     "a barriered row is finished by v4 recovery, not re-counted")
@@ -229,7 +229,7 @@ struct DownloadSchemaUpgradeTests {
     @Test("A pre-P3a v4 row without lifecycle fields is classified structurally")
     func prePhaseThreeRowsClassifyStructurally() throws {
         try withDirectory { directory in
-            let first = DownloadStore(baseDirectory: directory)
+            let first = DownloadTestFiles.store(baseDirectory: directory)
             let paused = try seed("jellyfin:legacy", status: .paused, mode: .liveForwardOnly,
                                   in: first)
             try rewriteEnvelope(directory) { envelope in
@@ -242,7 +242,7 @@ struct DownloadSchemaUpgradeTests {
                     envelope["rows"] = rows
                 }
             }
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             #expect(store.requiresSchemaUpgrade)
             #expect(store.schemaUpgradeCandidates() == [paused])
         }
@@ -289,20 +289,20 @@ struct DownloadSchemaUpgradeTests {
     }
 
     private func withAsyncDirectory(_ body: (URL) async throws -> Void) async throws {
-        let parent = FileManager.default.temporaryDirectory
+        let parent = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("schema-upgrade-\(UUID().uuidString)", isDirectory: true)
         let directory = parent.appendingPathComponent("Downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: parent) }
+
         try await body(directory)
     }
 
     private func withDirectory(_ body: (URL) throws -> Void) throws {
-        let parent = FileManager.default.temporaryDirectory
+        let parent = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("schema-upgrade-\(UUID().uuidString)", isDirectory: true)
         let directory = parent.appendingPathComponent("Downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: parent) }
+
         try body(directory)
     }
 }

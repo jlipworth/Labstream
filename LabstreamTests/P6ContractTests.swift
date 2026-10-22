@@ -5,6 +5,7 @@ import Testing
 @testable import Labstream
 
 /// Green seam/contract coverage is deliberately separate from behavioral red pins.
+@Suite(.downloadTestFiles)
 struct P6ContractTests {
     @Test func pathLeaseLifetimeAndExactRelease() async throws {
         let fixture = try P6Fixture()

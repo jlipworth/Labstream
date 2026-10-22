@@ -5,16 +5,17 @@ import Testing
 @testable import Labstream
 
 @MainActor
+@Suite(.downloadTestFiles)
 struct SeasonPlannerIntegrationTests {
     private let events = TestEvents()
     enum Change: CaseIterable { case deleteCurrent, deleteCurrentError, deleteLater, pauseCurrent, unchanged }
 
     @Test(arguments: Change.allCases)
     func persistedSeasonAdmissionHonorsDeletionDuringRealMetadataRequest(change: Change) async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("season-integration-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let host = "\(UUID().uuidString.lowercased()).season.test.invalid"
         let gate = SeasonMetadataGate(events: events)
         SeasonMetadataProtocol.register(host: host, gate: gate)
@@ -29,12 +30,12 @@ struct SeasonPlannerIntegrationTests {
         model.serverToken = "fixture-token"
         model.serverBaseURL = URL(string: "https://\(host)")
         let events = self.events
-        let store = DownloadStore(baseDirectory: directory, indexPersistence: .init { data, url in
+        let store = DownloadTestFiles.store(baseDirectory: directory, indexPersistence: .init { data, url in
             try DownloadIndexFileCommitter().commit(data, to: url)
             events.signal()
         })
         let session = BackgroundDownloadSession(store: store, protocolClasses: [SeasonMetadataProtocol.self])
-        let manager = DownloadManager(appModel: model, store: store, session: session,
+        let manager = DownloadTestFiles.manager(appModel: model, store: store, session: session,
                                       registerForBackgroundEvents: false)
         let completions = AdmissionCompletions(manager)
         manager.setQueuePausedForTesting(false)
@@ -83,7 +84,7 @@ struct SeasonPlannerIntegrationTests {
             }
             #expect(revision >= deletionTicket.revision)
             // A newly opened index must agree before the suspended response is released.
-            #expect(DownloadStore(baseDirectory: directory).record(for: deleted) == nil)
+            #expect(DownloadTestFiles.store(baseDirectory: directory).record(for: deleted) == nil)
         }
         if change == .pauseCurrent {
             let row = OfflineDownloadRowActionIdentity(ratingKey: first, attemptID: original)
@@ -113,7 +114,7 @@ struct SeasonPlannerIntegrationTests {
         }
         if let deleted {
             #expect(store.record(for: deleted) == nil)
-            #expect(DownloadStore(baseDirectory: directory).record(for: deleted) == nil)
+            #expect(DownloadTestFiles.store(baseDirectory: directory).record(for: deleted) == nil)
             #expect(!manager.activeJobs.contains(deleted))
         }
         #expect(gate.unexpectedPaths.isEmpty) // No backend negotiation or auxiliary fetch.
@@ -125,10 +126,10 @@ struct SeasonPlannerIntegrationTests {
     /// until the server job finishes) must not hold back other admitted rows, and in-flight starts
     /// must still count against lane caps across repeated admission passes.
     @Test func seasonAdmissionStartsRowsConcurrentlyWithinLaneCaps() async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("season-concurrency-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let host = "\(UUID().uuidString.lowercased()).season.test.invalid"
         let gate = SeasonMetadataGate(events: events)
         SeasonMetadataProtocol.register(host: host, gate: gate)
@@ -143,12 +144,12 @@ struct SeasonPlannerIntegrationTests {
         model.serverToken = "fixture-token"
         model.serverBaseURL = URL(string: "https://\(host)")
         let events = self.events
-        let store = DownloadStore(baseDirectory: directory, indexPersistence: .init { data, url in
+        let store = DownloadTestFiles.store(baseDirectory: directory, indexPersistence: .init { data, url in
             try DownloadIndexFileCommitter().commit(data, to: url)
             events.signal()
         })
         let session = BackgroundDownloadSession(store: store, protocolClasses: [SeasonMetadataProtocol.self])
-        let manager = DownloadManager(appModel: model, store: store, session: session,
+        let manager = DownloadTestFiles.manager(appModel: model, store: store, session: session,
                                       registerForBackgroundEvents: false)
         let completions = AdmissionCompletions(manager)
         manager.setQueuePausedForTesting(false)
@@ -236,16 +237,20 @@ struct SeasonPlannerIntegrationTests {
         @MainActor func teardown() async {
             for row in store.records { manager.delete(ratingKey: row.ratingKey) }
             while gate.heldID != nil { gate.releaseMetadata(failing: true) }
-            manager.admissionPumpTask?.cancel()
+            let pump = manager.admissionPumpTask
+            pump?.cancel()
             session.invalidateInjectedSessionForTesting()
             transport.invalidateAndCancel()
+            await pump?.value
+            await manager.drainManagerOperationsForTesting()
+            await store.drainArtifactWorkerForP6Testing()
+            _ = await store.flushPersistence(timeout: 5)
             SeasonMetadataProtocol.unregister(host: host)
-            try? FileManager.default.removeItem(at: directory)
         }
     }
 
     private func makeHarness(_ label: String, defaults: UserDefaults = .standard) async throws -> Harness {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("admission-\(label)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let host = "\(UUID().uuidString.lowercased()).season.test.invalid"
@@ -260,18 +265,20 @@ struct SeasonPlannerIntegrationTests {
         model.serverToken = "fixture-token"
         model.serverBaseURL = URL(string: "https://\(host)")
         let events = self.events
-        let store = DownloadStore(baseDirectory: directory, indexPersistence: .init { data, url in
+        let store = DownloadTestFiles.store(baseDirectory: directory, indexPersistence: .init { data, url in
             try DownloadIndexFileCommitter().commit(data, to: url)
             events.signal()
         })
         let session = BackgroundDownloadSession(store: store, protocolClasses: [SeasonMetadataProtocol.self])
-        let manager = DownloadManager(appModel: model, store: store, session: session,
+        let manager = DownloadTestFiles.manager(appModel: model, store: store, session: session,
                                       registerForBackgroundEvents: false, preferencesDefaults: defaults)
         manager.setQueuePausedForTesting(false)
+        let harness = Harness(directory: directory, host: host, gate: gate, transport: transport,
+                              store: store, session: session, manager: manager,
+                              completions: AdmissionCompletions(manager))
+        DownloadTestFiles.onCleanup { await harness.teardown() }
         try #require(await manager.awaitStartupRecoveryForTesting())
-        return Harness(directory: directory, host: host, gate: gate, transport: transport,
-                       store: store, session: session, manager: manager,
-                       completions: AdmissionCompletions(manager))
+        return harness
     }
 
     private func plan(_ id: String, choice: DownloadIntentChoice = .existingVersion) throws
@@ -370,10 +377,10 @@ struct SeasonPlannerIntegrationTests {
             return
         }
         let reopenedDefaults = try #require(UserDefaults(suiteName: suiteName))
-        let reopenedStore = DownloadStore(baseDirectory: h.directory)
+        let reopenedStore = DownloadTestFiles.store(baseDirectory: h.directory)
         let reopenedSession = BackgroundDownloadSession(store: reopenedStore,
                                                         protocolClasses: [SeasonMetadataProtocol.self])
-        let relaunched = DownloadManager(appModel: h.manager.appModel, store: reopenedStore,
+        let relaunched = DownloadTestFiles.manager(appModel: h.manager.appModel, store: reopenedStore,
                                          session: reopenedSession, registerForBackgroundEvents: false,
                                          preferencesDefaults: reopenedDefaults)
         relaunched.setQueuePausedForTesting(false)
@@ -586,7 +593,7 @@ struct SeasonPlannerIntegrationTests {
         #expect(waiting.lifecycle == .planned)
         #expect(waiting.admissionIntent == .seasonPlanned)
         #expect(waiting.metadata?.sourcePartID == nil || waiting.metadata?.sourcePartID == 11)
-        #expect(DownloadStore(baseDirectory: h.directory).record(for: "episode-3")?.lifecycle
+        #expect(DownloadTestFiles.store(baseDirectory: h.directory).record(for: "episode-3")?.lifecycle
             == .planned, "the waiting tap is durable")
         for _ in 0..<3 { h.manager.pumpAdmission() }
         #expect(h.manager.admission.supervised.count == 2)

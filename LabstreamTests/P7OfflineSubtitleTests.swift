@@ -6,7 +6,7 @@ import Synchronization
 import Testing
 @testable import Labstream
 
-@Suite(.serialized)
+@Suite(.downloadTestFiles, .serialized)
 @MainActor
 struct P7OfflineSubtitleTests {
     private let preferences = TestUserDefaults()

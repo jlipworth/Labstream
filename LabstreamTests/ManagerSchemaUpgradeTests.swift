@@ -7,14 +7,14 @@ import Testing
 /// P3b upgrade pass: a v4 index keeps complete, unverified and paused static-range rows, removes
 /// every other row through Delete before `.ready`, records the notice once, and stamps v5.
 @MainActor
-@Suite("Manager schema upgrade", .serialized)
+@Suite("Manager schema upgrade", .downloadTestFiles, .serialized)
 struct ManagerSchemaUpgradeTests {
     @Test("A v4 library keeps finished and paused-static rows, removes the rest, and stamps v5")
     func upgradeKeepsPartialsAndRemovesInFlightRows() async throws {
         let directory = try makeDirectory("upgrade")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
 
-        let seedStore = DownloadStore(baseDirectory: directory)
+
+        let seedStore = DownloadTestFiles.store(baseDirectory: directory)
         let complete = try seed("plex:complete", status: .complete, mode: .staticByteRange,
                                 in: seedStore)
         let pausedStatic = try seed("plex:paused-static", status: .paused, mode: .staticByteRange,
@@ -30,7 +30,7 @@ struct ManagerSchemaUpgradeTests {
         }
         try rewriteEnvelope(directory) { $0["schemaVersion"] = 4 }
 
-        let store = DownloadStore(baseDirectory: directory)
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         #expect(store.requiresSchemaUpgrade)
         let (manager, session) = makeManager(store: store)
         defer { session.invalidateInjectedSessionForTesting() }
@@ -53,7 +53,7 @@ struct ManagerSchemaUpgradeTests {
         #expect(try schemaVersion(directory) == 5)
 
         // A v5 relaunch runs no pass and keeps the notice until it is dismissed.
-        let reloaded = DownloadStore(baseDirectory: directory)
+        let reloaded = DownloadTestFiles.store(baseDirectory: directory)
         #expect(!reloaded.requiresSchemaUpgrade)
         let authority = store.durableCleanupAuthorityDirectory
         #expect(DownloadUpgradeNotice.load(from: authority)?.retiredCount == 3)
@@ -65,7 +65,7 @@ struct ManagerSchemaUpgradeTests {
     @Test("A repeated pass counts each removal once")
     func noticeUnionIsIdempotent() throws {
         let directory = try makeDirectory("notice")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+
         var notice = DownloadUpgradeNotice()
         notice.retiredAttemptIDs.formUnion(["a", "b"])
         #expect(notice.save(to: directory))
@@ -78,7 +78,7 @@ struct ManagerSchemaUpgradeTests {
     @Test("A failed durable notice save is carried to the next load; shared legacy IDs count twice")
     func noticeSurvivesFailedSaveAndCountsFullKeys() throws {
         let directory = try makeDirectory("notice-fail")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+
         let defaults = try #require(UserDefaults(suiteName: "notice-\(UUID().uuidString)"))
         let shared = DownloadAttemptID(rawValue: "legacy-shared")!
         var notice = DownloadUpgradeNotice()
@@ -147,7 +147,7 @@ struct ManagerSchemaUpgradeTests {
         appModel.embyServerBaseURL = nil
         appModel.embyAccessToken = nil
         appModel.embyUserID = nil
-        let manager = DownloadManager(
+        let manager = DownloadTestFiles.manager(
             appModel: appModel, store: store, session: session,
             cleanupIntentJournal: DownloadCleanupIntentJournal(
                 directory: store.durableCleanupAuthorityDirectory),
@@ -164,7 +164,7 @@ struct ManagerSchemaUpgradeTests {
     }
 
     private func makeDirectory(_ label: String) throws -> URL {
-        let parent = FileManager.default.temporaryDirectory
+        let parent = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("schema-upgrade-\(label)-\(UUID().uuidString)",
                                     isDirectory: true)
         let directory = parent.appendingPathComponent("Downloads", isDirectory: true)

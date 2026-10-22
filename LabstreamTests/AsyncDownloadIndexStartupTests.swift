@@ -5,7 +5,7 @@ import Synchronization
 import Testing
 @testable import Labstream
 
-@Suite("Async download index startup", .serialized)
+@Suite("Async download index startup", .downloadTestFiles, .serialized)
 struct AsyncDownloadIndexStartupTests {
     enum Fixture: CaseIterable, Sendable {
         case empty, current, unreadable, readFailure, unsupported, newer
@@ -42,9 +42,9 @@ struct AsyncDownloadIndexStartupTests {
         var completions = 0
         registry.store(identifier: BackgroundDownloadSession.identifier, completion: { completions += 1 })
         // Exercise the manager's production construction edge, with only filesystem/index seams.
-        let manager = DownloadManager(appModel: AppModel(identity: PlatformClientIdentity.make(
+        let manager = DownloadTestFiles.manager(appModel: AppModel(identity: PlatformClientIdentity.make(
             clientIdentifier: "async-index-fixture")), storeConstruction: {
-                DownloadStore(baseDirectory: f.directory, indexPersistence: .init(read: { url in
+                DownloadTestFiles.store(baseDirectory: f.directory, indexPersistence: .init(read: { url in
                     reads.withLock { $0 += 1 }
                     gate.hold()
                     if fixture == .readFailure { throw CocoaError(.fileReadNoPermission) }
@@ -141,12 +141,12 @@ struct AsyncDownloadIndexStartupTests {
         try Data([1]).write(to: row.localURL)
         let gate = StartupIndexReadGate()
         defer { gate.release.signal() }
-        let store = DownloadStore(baseDirectory: f.directory, startupOnWorker: true,
+        let store = DownloadTestFiles.store(baseDirectory: f.directory, startupOnWorker: true,
             startupRepairWillBegin: { gate.hold() })
         try #require(await p6Signal(gate.entered))
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         defer { session.invalidateInjectedSessionForTesting() }
-        let manager = DownloadManager(appModel: AppModel(identity: PlatformClientIdentity.make(
+        let manager = DownloadTestFiles.manager(appModel: AppModel(identity: PlatformClientIdentity.make(
             clientIdentifier: "deadline-fixture")), store: store, session: session,
             registerForBackgroundEvents: false, startupIndexDeadline: { .after(0) })
         #expect(await manager.awaitStartupRecoveryForTesting() == false)
@@ -200,7 +200,7 @@ struct AsyncDownloadIndexStartupTests {
         try Data([1, 2, 3]).write(to: seed.record(for: key)!.localURL)
         let gate = StartupIndexReadGate()
         defer { gate.release.signal() }
-        let store = DownloadStore(baseDirectory: f.directory, startupOnWorker: true,
+        let store = DownloadTestFiles.store(baseDirectory: f.directory, startupOnWorker: true,
             startupRepairWillBegin: { gate.hold() })
         try #require(await p6Signal(gate.entered))
         let clock = P6WakeClock()
@@ -227,7 +227,7 @@ struct AsyncDownloadIndexStartupTests {
         // Expire the initial-load wait only after the 25-second wake. The injected deadline
         // and wake clock avoid real sleeps while the same physical index load remains held.
         clock.advance(to: 30)
-        let manager = DownloadManager(appModel: AppModel(identity: PlatformClientIdentity.make(
+        let manager = DownloadTestFiles.manager(appModel: AppModel(identity: PlatformClientIdentity.make(
             clientIdentifier: "expired-wake-index-fixture")), store: store, session: session,
             backgroundCompletionRegistry: registry, registerForBackgroundEvents: false,
             startupIndexDeadline: { .after(0) })
@@ -286,7 +286,7 @@ struct AsyncDownloadIndexStartupTests {
         let retry = StartupIndexReadGate()
         defer { initial.release.signal(); retry.release.signal() }
         let reads = Mutex(0)
-        let store = DownloadStore(baseDirectory: f.directory, indexPersistence: .init(read: { url in
+        let store = DownloadTestFiles.store(baseDirectory: f.directory, indexPersistence: .init(read: { url in
             let number = reads.withLock { $0 += 1; return $0 }
             if number == 1 { initial.hold(); return Data("invalid".utf8) }
             retry.hold()
@@ -305,7 +305,7 @@ struct AsyncDownloadIndexStartupTests {
             clock.advance(to: 30)
             #expect(session.startupAuthorizationExpired)
         }
-        let manager = DownloadManager(appModel: AppModel(identity: PlatformClientIdentity.make(
+        let manager = DownloadTestFiles.manager(appModel: AppModel(identity: PlatformClientIdentity.make(
             clientIdentifier: "generation-fixture")), store: store, session: session,
             registerForBackgroundEvents: false, startupIndexDeadline: { .after(0) })
         #expect(await manager.awaitStartupRecoveryForTesting() == false)
@@ -350,7 +350,7 @@ struct AsyncDownloadIndexStartupTests {
         let gate = StartupIndexReadGate()
         defer { gate.release.signal() }
         let writes = Mutex(0)
-        let store = DownloadStore(baseDirectory: f.directory, indexPersistence: .init { data, url in
+        let store = DownloadTestFiles.store(baseDirectory: f.directory, indexPersistence: .init { data, url in
             writes.withLock { $0 += 1 }
             try DownloadIndexFileCommitter().commit(data, to: url)
         }, startupOnWorker: true, startupRepairWillBegin: { gate.hold() })

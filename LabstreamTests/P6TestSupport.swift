@@ -115,17 +115,16 @@ func p6Signal(_ signal: DispatchSemaphore, seconds: Double = 2) async -> Bool {
 final class P6Fixture: @unchecked Sendable {
     let directory: URL
     init() throws {
-        directory = FileManager.default.temporaryDirectory.appendingPathComponent("p6-\(UUID())")
+        directory = DownloadTestFiles.temporaryDirectory.appendingPathComponent("p6-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
-    deinit { try? FileManager.default.removeItem(at: directory) }
     func store(filesystem: DownloadStoreFilesystem = .live,
                index: DownloadStore.IndexPersistence = .live,
                promotion: DownloadPromotionFilesystem = .live,
                checkpoint: DownloadStaticCheckpointFilesystem = .live) -> DownloadStore {
-        DownloadStore(baseDirectory: directory, indexPersistence: index,
-                      checkpointFilesystem: checkpoint, promotionFilesystem: promotion,
-                      storeFilesystem: filesystem)
+        DownloadTestFiles.store(baseDirectory: directory, indexPersistence: index,
+                                checkpointFilesystem: checkpoint, promotionFilesystem: promotion,
+                                storeFilesystem: filesystem)
     }
     func record(_ suffix: String = "a", status: DownloadStatus = .downloading,
                 mode: DownloadResumeMode = .staticByteRange, ratingKey: String = "plex:fixture", filename: String = "fixture.mp4") -> DownloadRecord {

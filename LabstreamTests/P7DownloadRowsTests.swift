@@ -4,7 +4,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
-@Suite("P7 real sheet adapters", .serialized)
+@Suite("P7 real sheet adapters", .downloadTestFiles, .serialized)
 @MainActor
 struct P7DownloadRowsTests {
     @Test(arguments: [DownloadBackendKind.plex, .emby])

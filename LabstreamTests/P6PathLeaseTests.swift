@@ -5,7 +5,7 @@ import Testing
 @testable import Labstream
 
 /// Delegate lane: this file moves with session append; lead consumes the frozen lease API.
-@Suite("P6 delegate path exclusion pins", .serialized)
+@Suite("P6 delegate path exclusion pins", .downloadTestFiles, .serialized)
 struct P6PathLeaseTests {
     /// Synchronous cleanup bridge; the test runs off MainActor and never leaves a held worker.
     private func drainWorkers(_ workers: DispatchGroup) -> Bool {

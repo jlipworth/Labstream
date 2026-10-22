@@ -4,7 +4,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
-@Suite("Published download row I/O", .serialized)
+@Suite("Published download row I/O", .downloadTestFiles, .serialized)
 @MainActor
 struct DownloadRowIOPerformanceTests {
     @Test func repeatedPresentationAndProgressReadsDoNotStat() async throws {

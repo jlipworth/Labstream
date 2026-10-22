@@ -5,7 +5,7 @@ import Synchronization
 import Testing
 @testable import Labstream
 
-@Suite("P6 session checkpoint responsiveness", .serialized)
+@Suite("P6 session checkpoint responsiveness", .downloadTestFiles, .serialized)
 struct P6SessionCheckpointTests {
     @Test("A held checkpoint leaves delivery free, expires its waiter, and rejects a later halt",
           arguments: ["normal", "deadline", "halt"])

@@ -4,14 +4,13 @@ import PMSKit
 import Testing
 @testable import Labstream
 
-@Suite(.serialized)
+@Suite(.downloadTestFiles, .serialized)
 @MainActor
 struct ServerPrepRunnerIntegrationTests {
     // Pins 18, 20: use the real Plex executor, including a duplicate's second metadata read.
     @Test(arguments: [false, true])
     func plexAdoptsWithoutCreatingAnotherRender(duplicate: Bool) async throws {
         let fixture = try await PrepRunnerFixture()
-        defer { fixture.close() }
         fixture.wire.withValue { $0.plexOutput = !duplicate; $0.createStatus = 400 }
         let key = try await fixture.seed(.plex)
         fixture.startPlex(key)
@@ -26,7 +25,6 @@ struct ServerPrepRunnerIntegrationTests {
     @Test(arguments: [false, true])
     func plexUnavailableQueueKeepsInspecting(expired: Bool) async throws {
         let fixture = try await PrepRunnerFixture()
-        defer { fixture.close() }
         fixture.wire.withValue { $0.queueStatus = 503 }
         let key = try await fixture.seed(.plex, active: false, dispatchedAt: expired ? Date().timeIntervalSince1970 - 181 : nil)
         fixture.manager.resumePendingServerPrepDownloads()
@@ -38,7 +36,6 @@ struct ServerPrepRunnerIntegrationTests {
     @Test(arguments: [false, true])
     func plexUnavailableMetadataCannotCreateOrFailGrace(expired: Bool) async throws {
         let fixture = try await PrepRunnerFixture()
-        defer { fixture.close() }
         fixture.wire.withValue { $0.metadataStatus = 503 }
         let key = try await fixture.seed(.plex, active: false,
                                    dispatchedAt: expired ? Date().timeIntervalSince1970 - 181 : nil)
@@ -50,20 +47,18 @@ struct ServerPrepRunnerIntegrationTests {
 
     @Test func plexRelaunchInsideCreateGraceDoesNotPostOrResetClock() async throws {
         let fixture = try await PrepRunnerFixture()
-        defer { fixture.close() }
         let dispatched = Date().timeIntervalSince1970 - 60
         let key = try await fixture.seed(.plex, active: false, dispatchedAt: dispatched)
         fixture.manager.resumePendingServerPrepDownloads()
         try #require(await fixture.wait { fixture.wire.value.queueReads >= 3 })
         #expect(fixture.wire.value.creates == 0)
         #expect(fixture.store.metadata(for: key.ratingKey)?.plexOptimizeCreateDispatchedAtEpochSeconds == dispatched)
-        let reopened = DownloadStore(baseDirectory: fixture.directory)
+        let reopened = DownloadTestFiles.store(baseDirectory: fixture.directory)
         #expect(reopened.metadata(for: key.ratingKey)?.plexOptimizeCreateDispatchedAtEpochSeconds == dispatched)
     }
 
     @Test func plexProvenMissingCreateFailsAfterGrace() async throws {
         let fixture = try await PrepRunnerFixture()
-        defer { fixture.close() }
         let key = try await fixture.seed(.plex, active: false, dispatchedAt: Date().timeIntervalSince1970 - 181)
         fixture.manager.resumePendingServerPrepDownloads()
         try #require(await fixture.wait { fixture.store.record(for: key)?.status == .failed })
@@ -73,7 +68,6 @@ struct ServerPrepRunnerIntegrationTests {
 
     @Test func plexCreateFailureIsImmediateAndDispatchPrecedesRequest() async throws {
         let fixture = try await PrepRunnerFixture()
-        defer { fixture.close() }
         fixture.wire.withValue { $0.createStatus = 500 }
         let key = try await fixture.seed(.plex)
         fixture.startPlex(key)
@@ -86,7 +80,6 @@ struct ServerPrepRunnerIntegrationTests {
     // Pin 21: refresh the lane while a real poller is attached, then expose its rendered Part.
     @Test func plexHandoffUsesObservedLiveLane() async throws {
         let fixture = try await PrepRunnerFixture()
-        defer { fixture.close() }
         fixture.wire.withValue { $0.queuePresent = true }
         let key = try await fixture.seed(.plex)
         fixture.startPlex(key)
@@ -104,7 +97,6 @@ struct ServerPrepRunnerIntegrationTests {
     @Test(arguments: [DownloadBackendKind.plex, .emby])
     func freshStartReturnsBeforeRendering(backend: DownloadBackendKind) async throws {
         let fixture = try await PrepRunnerFixture()
-        defer { fixture.close() }
         fixture.wire.withValue { $0.queuePresent = true }
         let key = try await fixture.seed(backend)
         let returned = TestLockedBox(false)
@@ -128,7 +120,6 @@ struct ServerPrepRunnerIntegrationTests {
     // then the app relaunched) is adopted, not failed as timed out.
     @Test func plexRelaunchAdoptsAFinishedRenderPastTheDeadline() async throws {
         let fixture = try await PrepRunnerFixture()
-        defer { fixture.close() }
         fixture.wire.withValue { $0.plexOutput = true }
         let key = try await fixture.seed(.plex, active: false,
                                          startedAt: Date().timeIntervalSince1970 - 48 * 3_600)
@@ -143,7 +134,6 @@ struct ServerPrepRunnerIntegrationTests {
     @Test(arguments: [DownloadBackendKind.plex, .emby], [false, true])
     func finishedRenderWaitsForATransferSlot(backend: DownloadBackendKind, deleteWhileWaiting: Bool) async throws {
         let fixture = try await PrepRunnerFixture()
-        defer { fixture.close() }
         let staticCap = try #require(fixture.manager.admission.limits.maximumByLane[.staticFile])
         let generations = (0..<staticCap).map {
             ("static-\($0)", fixture.manager.admission.beginSupervision("static-\($0)", lane: .staticFile, origin: .user))
@@ -179,7 +169,6 @@ struct ServerPrepRunnerIntegrationTests {
     @Test(arguments: Handoff.allCases)
     func embyHandoffsDoNotCancelThemselves(branch: Handoff) async throws {
         let fixture = try await PrepRunnerFixture()
-        defer { fixture.close() }
         fixture.wire.withValue {
             $0.embyReuseAfterRead = branch == .freshReuse || branch == .resumeReuse ? 1
                 : (branch == .refreshedReuse ? 2 : Int.max)
@@ -201,7 +190,6 @@ struct ServerPrepRunnerIntegrationTests {
     @Test(arguments: [false, true])
     func embyDeleteAndPauseAllDuringFreshPolling(pauseAll: Bool) async throws {
         let fixture = try await PrepRunnerFixture()
-        defer { fixture.close() }
         let key = try await fixture.seed(.emby)
         fixture.startEmby(key)
         try #require(await fixture.wait { fixture.wire.value.jobReads >= 1 })
@@ -267,10 +255,11 @@ private final class PrepRunnerFixture {
     let embyLane: BackendSession
 
     init() async throws {
+        let fixtureItem = try JSONDecoder().decode(MediaItem.self, from: Data(Self.plexItem(output: false).utf8))
         let events = self.events
         wire = TestLockedBox(Wire(), didChange: { events.signal() })
         transfers = TestLockedBox([], didChange: { events.signal() })
-        directory = FileManager.default.temporaryDirectory.appendingPathComponent("prep-runner-\(UUID().uuidString)")
+        directory = DownloadTestFiles.temporaryDirectory.appendingPathComponent("prep-runner-\(UUID().uuidString)")
         let base = URL(string: "https://\(UUID().uuidString.lowercased()).prep.test.invalid")!
         plexLane = BackendSession(kind: .plex, baseURL: base, token: "initial-fixture", serverID: nil)
         embyLane = BackendSession(kind: .emby, baseURL: base, token: "fixture", userID: "fixture-user", serverID: "fixture-server")
@@ -289,7 +278,7 @@ private final class PrepRunnerFixture {
                     body = #"{"MediaContainer":{"Metadata":[{"key":"/playlists/9/items","playlistType":"42"}]}}"#
                 } else if path == "/playlists/9/items", method == "PUT" || method == "POST" {
                     state.creates += 1
-                    state.dispatchWasDurable = DownloadStore(baseDirectory: directory)
+                    state.dispatchWasDurable = DownloadTestFiles.store(baseDirectory: directory)
                         .metadata(for: "item")?.plexOptimizeCreateDispatchedAtEpochSeconds != nil
                     status = state.createStatus
                     if status == 400 { state.plexOutput = true }
@@ -333,19 +322,20 @@ private final class PrepRunnerFixture {
         model.embyAccessToken = embyLane.token
         model.embyUserID = embyLane.userID
         model.embyServerID = embyLane.serverID
-        store = DownloadStore(baseDirectory: directory, indexPersistence: .init { data, url in
+        store = DownloadTestFiles.store(baseDirectory: directory, indexPersistence: .init { data, url in
             try DownloadIndexFileCommitter().commit(data, to: url)
             events.signal()
         })
         let transfers = self.transfers
         PrepRunnerStaticProtocol.routes.withValue { $0[base.host!] = transfers }
         background = BackgroundDownloadSession(store: store, protocolClasses: [PrepRunnerStaticProtocol.self])
-        manager = DownloadManager(appModel: model, store: store, session: background, registerForBackgroundEvents: false)
+        manager = DownloadTestFiles.manager(appModel: model, store: store, session: background, registerForBackgroundEvents: false)
         manager.setQueuePausedForTesting(false)
         manager.optimizePollInterval = 0.01
         manager.embyConvertPollInterval = 0.01
         manager.embyConvertSession = transport
-        item = try JSONDecoder().decode(MediaItem.self, from: Data(Self.plexItem(output: false).utf8))
+        item = fixtureItem
+        DownloadTestFiles.onCleanup { await self.close() }
         try #require(await manager.awaitStartupRecoveryForTesting())
         // Cleanup execution has its own integration suite; keep these prep pins off the network.
         await manager.cleanupRunner?.waitUntilIdle()
@@ -396,26 +386,27 @@ private final class PrepRunnerFixture {
         }
     }
 
-    func close() {
+    func close() async {
         let pollers = store.records.compactMap { row -> Task<Void, Never>? in
             guard let id = row.attemptID else { return nil }
             return manager.serverPrepPollerTaskForTesting(for: .init(ratingKey: row.ratingKey, attemptID: id))
         }
         model.serverToken = nil
         model.embyAccessToken = nil
+        pollers.forEach { $0.cancel() }
         entryTasks.forEach { $0.cancel() }
-        manager.setQueuePausedForTesting(false)
+        background.invalidateInjectedSessionForTesting()
+        manager.setQueuePausedForTesting(true)
         for row in store.records {
             if let id = row.attemptID { manager.releaseInFlight(for: .init(ratingKey: row.ratingKey, attemptID: id)) }
         }
-        Task {
-            // Do not invalidate the transport while a cancelled poller's tail still owns an await.
-            for task in pollers + entryTasks { await task.value }
-            background.invalidateInjectedSessionForTesting()
-            transport.invalidateAndCancel()
-            PrepRunnerStaticProtocol.routes.withValue { $0.removeValue(forKey: plexLane.baseURL.host!) }
-            try? FileManager.default.removeItem(at: directory)
-        }
+        // Do not invalidate the transport while a cancelled poller's tail still owns an await.
+        for task in pollers + entryTasks { await task.value }
+        await manager.drainManagerOperationsForTesting()
+        await store.drainArtifactWorkerForP6Testing()
+        _ = await store.flushPersistence(timeout: 5)
+        transport.invalidateAndCancel()
+        PrepRunnerStaticProtocol.routes.withValue { $0.removeValue(forKey: plexLane.baseURL.host!) }
     }
 
     nonisolated static func requestBody(_ request: URLRequest) -> [String: Any]? {

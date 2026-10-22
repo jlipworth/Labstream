@@ -4,7 +4,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
-@Suite("P7 ordered side work", .serialized)
+@Suite("P7 ordered side work", .downloadTestFiles, .serialized)
 @MainActor
 struct P7SideAssetOrderingTests {
     @Test(arguments: [false, true], [false, true])

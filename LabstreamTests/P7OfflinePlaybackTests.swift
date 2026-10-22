@@ -36,7 +36,7 @@ final class P7PlaybackFixture {
             return row
         }.value
         record = row
-        store = DownloadStore(baseDirectory: files.directory, fileManager: fileManager, indexPersistence: index)
+        store = DownloadTestFiles.store(baseDirectory: files.directory, fileManager: fileManager, indexPersistence: index)
         session = BackgroundDownloadSession(store: store, protocolClasses: [])
         let requests = self.requests
         networkStub = TestURLProtocolStub { _ in
@@ -45,12 +45,13 @@ final class P7PlaybackFixture {
         }
         transport = URLSession(configuration: networkStub.configuration)
         let identity = PlatformClientIdentity.make(clientIdentifier: "p7-fixture")
-        manager = DownloadManager(appModel: AppModel(identity: identity,
+        manager = DownloadTestFiles.manager(appModel: AppModel(identity: identity,
             client: PlexClient(session: transport, identity: identity)), store: store, session: session,
             cleanupIntentJournal: DownloadCleanupIntentJournal(directory: store.durableCleanupAuthorityDirectory,
                 persistence: cleanupPersistence), sideAssetFetchCoordinator: SideAssetFetchCoordinator(),
             registerForBackgroundEvents: false)
         manager.embyConvertSession = transport
+        DownloadTestFiles.onCleanup { await self.finish() }
         try #require(await manager.awaitStartupRecoveryForTesting())
     }
 
@@ -93,14 +94,19 @@ final class P7PlaybackFixture {
     }
 
     func finish() async {
-        await manager.drainManagerOperationsForTesting()
-        await store.drainArtifactWorkerForP6Testing()
+        manager.setQueuePausedForTesting(true)
+        session.onChange = nil
         session.invalidateInjectedSessionForTesting()
         transport.invalidateAndCancel()
+        await manager.launchSweepJournaling?.value
+        await manager.scheduledRefreshTaskForTesting?.value
+        await manager.drainManagerOperationsForTesting()
+        await store.drainArtifactWorkerForP6Testing()
+        _ = await store.flushPersistence(timeout: 5)
     }
 }
 
-@Suite("P7 exact offline playback pins", .serialized)
+@Suite("P7 exact offline playback pins", .downloadTestFiles, .serialized)
 @MainActor
 struct P7OfflinePlaybackTests {
     @Test func detailProgressSavesLocalPosition() async throws {

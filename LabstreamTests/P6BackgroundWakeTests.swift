@@ -35,7 +35,7 @@ final class P6WakeClock: @unchecked Sendable {
     }
 }
 
-@Suite("P6 delegate wake pins", .serialized)
+@Suite("P6 delegate wake pins", .downloadTestFiles, .serialized)
 struct P6BackgroundWakeTests {
     @Test("P6-pin-06 terminal startup failure releases late and pre-registration tokens once", arguments: [false, true])
     @MainActor func startupFailure(lateRegistration: Bool) throws {
@@ -166,7 +166,7 @@ struct P6BackgroundWakeTests {
         #expect(await initial.resolveStaticCheckpoint(initial.submitStaticRangeCheckpointReset(for: key, expectedBytes: 10), deadline: .after(30)) == .applied(bytes: 3))
         let artifactHold = P6Hold()
         let live = DownloadArtifactFilesystem.live
-        let store = DownloadStore(baseDirectory: fixture.directory, artifactFilesystem: .init(
+        let store = DownloadTestFiles.store(baseDirectory: fixture.directory, artifactFilesystem: .init(
             writeAuthArtifact: { data, url, manager in
                 try live.writeAuthArtifact(data, url, manager)
                 artifactHold.hit()

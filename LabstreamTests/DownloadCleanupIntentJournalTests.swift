@@ -3,6 +3,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
+@Suite(.downloadTestFiles)
 struct DownloadCleanupIntentJournalTests {
     @Test func managerFactoryBindsOnlyMediaBrowserAttemptsToPersistedServerAuthority() throws {
         let attemptID = try #require(DownloadAttemptID(rawValue: "attempt-1"))
@@ -331,10 +332,10 @@ struct DownloadCleanupIntentJournalTests {
     }
 
     private func withTemporaryDirectory(_ body: (URL) throws -> Void) throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("download-cleanup-journal-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         try body(directory)
     }
 }

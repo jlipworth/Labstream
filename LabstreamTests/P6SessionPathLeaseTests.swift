@@ -4,7 +4,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
-@Suite("P6 session append leases", .serialized)
+@Suite("P6 session append leases", .downloadTestFiles, .serialized)
 struct P6SessionPathLeaseTests {
     @Test("Append owns source and destination until handles close, including after waiter expiry")
     func physicalAppendLease() async throws {

@@ -3,7 +3,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
-@Suite("DownloadStore attempt staging")
+@Suite("DownloadStore attempt staging", .downloadTestFiles)
 struct DownloadStoreAttemptStagingTests {
     @Test func validatedPromotionPreparedFailureKeepsWorkingAuthorityAndRetries() async throws {
         try await withStoreAsync { initial, directory in
@@ -14,7 +14,7 @@ struct DownloadStoreAttemptStagingTests {
             let working = try #require(initial.attemptWorkingFileURL(for: owner))
             try Data("validated".utf8).write(to: working)
             let writes = FailPromotionWriteNth(1)
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
             guard case .persistenceFailed = await store.resolveValidatedPromotion(store.submitValidatedPromotion(
@@ -36,7 +36,7 @@ struct DownloadStoreAttemptStagingTests {
             let working = try #require(initial.attemptWorkingFileURL(for: owner))
             try Data("validated".utf8).write(to: working)
             let writes = FailPromotionWriteNth(3)
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
             guard case .persistenceFailed = await store.resolveValidatedPromotion(store.submitValidatedPromotion(
@@ -58,7 +58,7 @@ struct DownloadStoreAttemptStagingTests {
             try Data("validated".utf8).write(to: working)
             let gate = BlockingPromotionRename()
             let live = DownloadPromotionFilesystem.live
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 promotionFilesystem: .init(
                     exists: live.exists, size: live.size,
@@ -89,7 +89,7 @@ struct DownloadStoreAttemptStagingTests {
             try Data("validated".utf8).write(to: working)
             let gate = BlockAfterPromotionRename()
             let live = DownloadPromotionFilesystem.live
-            let original = DownloadStore(
+            let original = DownloadTestFiles.store(
                 baseDirectory: directory,
                 promotionFilesystem: .init(
                     exists: live.exists, size: live.size,
@@ -105,7 +105,7 @@ struct DownloadStoreAttemptStagingTests {
             #expect(String(decoding: try Data(contentsOf: stable), as: UTF8.self) == "validated")
 
             let replayDurability = PromotionDurabilityRecorder()
-            let relaunched = DownloadStore(
+            let relaunched = DownloadTestFiles.store(
                 baseDirectory: directory,
                 promotionFilesystem: .init(
                     exists: live.exists, size: live.size,
@@ -136,7 +136,7 @@ struct DownloadStoreAttemptStagingTests {
             try Data("validated".utf8).write(to: working)
             let gate = BlockAfterPromotionRename()
             let live = DownloadPromotionFilesystem.live
-            let original = DownloadStore(
+            let original = DownloadTestFiles.store(
                 baseDirectory: directory,
                 promotionFilesystem: .init(
                     exists: live.exists, size: live.size,
@@ -149,7 +149,7 @@ struct DownloadStoreAttemptStagingTests {
                 for: owner, terminalStatus: .complete)
             #expect(await wait(gate.renamed, timeout: 1))
 
-            let failingReplay = DownloadStore(
+            let failingReplay = DownloadTestFiles.store(
                 baseDirectory: directory,
                 promotionFilesystem: .init(
                     exists: live.exists, size: live.size,
@@ -164,7 +164,7 @@ struct DownloadStoreAttemptStagingTests {
                 contentsOf: directory.appendingPathComponent("index.json"))) as? [String: Any])
             let rows = try #require(index["rows"] as? [[String: Any]])
             #expect(rows.first?["status"] as? String == "queued")
-            let survivor = DownloadStore(baseDirectory: directory)
+            let survivor = DownloadTestFiles.store(baseDirectory: directory)
             #expect(survivor.resolveArtifactSynchronouslyForTests(
                 through: survivor.currentArtifactLifecycleWatermark()) == .completed)
             #expect(survivor.record(for: owner)?.status == .complete)
@@ -182,7 +182,7 @@ struct DownloadStoreAttemptStagingTests {
             try Data("validated".utf8).write(to: working)
             let recorder = PromotionDurabilityRecorder()
             let live = DownloadPromotionFilesystem.live
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 promotionFilesystem: .init(
                     exists: live.exists, size: live.size,
@@ -214,7 +214,7 @@ struct DownloadStoreAttemptStagingTests {
             let working = try #require(initial.attemptWorkingFileURL(for: owner))
             try Data("validated".utf8).write(to: working)
             let live = DownloadPromotionFilesystem.live
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 promotionFilesystem: .init(
                     exists: live.exists, size: live.size,
@@ -251,7 +251,7 @@ struct DownloadStoreAttemptStagingTests {
 
             let recorder = PromotionDurabilityRecorder()
             let live = DownloadPromotionFilesystem.live
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 promotionFilesystem: .init(
                     exists: live.exists, size: live.size,
@@ -332,7 +332,7 @@ struct DownloadStoreAttemptStagingTests {
             #expect(initial.workingURL != stable)
             #expect(store.record(for: owner)?.localURL == stable)
 
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.attemptWorkingFileLayout(for: owner) == initial)
             #expect(relaunched.record(for: owner)?.localURL == stable)
             #expect(relaunched.attemptWorkingFileURL(
@@ -354,7 +354,7 @@ struct DownloadStoreAttemptStagingTests {
             #expect(String(decoding: try Data(contentsOf: stable), as: UTF8.self) == "validated")
             #expect(!FileManager.default.fileExists(atPath: working.path))
             #expect(store.attemptWorkingFileLayout(for: owner) == nil)
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.record(for: owner)?.status == .complete)
             #expect(relaunched.record(for: owner)?.bytes == 9)
             #expect(relaunched.record(for: owner)?.localURL == stable)
@@ -362,14 +362,14 @@ struct DownloadStoreAttemptStagingTests {
     }
 
     @Test func durableValidatedIntentRecoversRenameToTerminalCommitCrashWindow() async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("download-promotion-recovery-\(UUID().uuidString)",
                                     isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let writes = PromotionWriteCounter()
         let owner = key("plex:promotion-crash", "attempt-a")
-        let store = DownloadStore(
+        let store = DownloadTestFiles.store(
             baseDirectory: directory,
             indexPersistence: .init { data, url in
                 let count = writes.next()
@@ -394,12 +394,12 @@ struct DownloadStoreAttemptStagingTests {
         #expect(String(decoding: try Data(contentsOf: stable), as: UTF8.self)
                 == "validated-owner-a")
 
-        let relaunched = DownloadStore(baseDirectory: directory)
+        let relaunched = DownloadTestFiles.store(baseDirectory: directory)
         #expect(relaunched.resolveArtifactSynchronouslyForTests(
             through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
         #expect(relaunched.record(for: owner)?.status == .complete)
         #expect(relaunched.record(for: owner)?.bytes == 17)
-        let verified = DownloadStore(baseDirectory: directory)
+        let verified = DownloadTestFiles.store(baseDirectory: directory)
         #expect(verified.record(for: owner)?.status == .complete)
         #expect(verified.record(for: owner)?.bytes == 17)
         #expect(verified.attemptWorkingFileLayout(for: owner) == nil)
@@ -450,7 +450,7 @@ struct DownloadStoreAttemptStagingTests {
             let unrelated = directory.appendingPathComponent(".attempt-stage-v1-not-a-digest.stage")
             try Data("unrelated".utf8).write(to: unrelated)
 
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.unreferencedAttemptStagingURLs().map(\.lastPathComponent)
                     == [orphanStage.lastPathComponent])
             #expect(relaunched.unreferencedAttemptStagingURLs(
@@ -479,7 +479,7 @@ struct DownloadStoreAttemptStagingTests {
             // A subsequent launch has a later cutoff and can prove the unadopted file predates all
             // writers in that process.
             Thread.sleep(forTimeInterval: 0.01)
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.sweepUnreferencedAttemptStaging().removedRelativePaths
                 == [staging.lastPathComponent])
             #expect(!FileManager.default.fileExists(atPath: staging.path))
@@ -487,14 +487,14 @@ struct DownloadStoreAttemptStagingTests {
     }
 
     @Test func validatedPromotionDurabilityWaitDoesNotBlockUnrelatedStoreReaders() async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("download-promotion-lock-\(UUID().uuidString)",
                                     isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let writes = BlockingPromotionWriter()
         let owner = key("plex:promotion-reader", "attempt-a")
-        let store = DownloadStore(
+        let store = DownloadTestFiles.store(
             baseDirectory: directory,
             indexPersistence: .init { data, url in try writes.write(data, to: url) })
         let stable = store.destinationURL(ratingKey: owner.ratingKey, ext: "mp4")
@@ -539,21 +539,21 @@ struct DownloadStoreAttemptStagingTests {
     }
 
     private func withStore(_ body: (DownloadStore, URL) throws -> Void) throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("download-stage-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try body(DownloadStore(baseDirectory: directory), directory)
+
+        try body(DownloadTestFiles.store(baseDirectory: directory), directory)
     }
 
     private func withStoreAsync(
         _ body: (DownloadStore, URL) async throws -> Void
     ) async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("download-stage-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try await body(DownloadStore(baseDirectory: directory), directory)
+
+        try await body(DownloadTestFiles.store(baseDirectory: directory), directory)
     }
 
     private func wait(_ semaphore: DispatchSemaphore, timeout: TimeInterval) async -> Bool {

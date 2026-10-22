@@ -7,14 +7,14 @@ import Testing
 
 /// P2 commit 2 pins: the store's cleanup disposition, Plex server-scoped intents built only from
 /// persisted authority, and the Plex-only legacy quarantine re-import with its receipt barrier.
-@Suite("Cleanup authority contracts", .serialized)
+@Suite("Cleanup authority contracts", .downloadTestFiles, .serialized)
 struct CleanupAuthorityContractTests {
     // MARK: - Store disposition
 
     @Test("A present row reports present; a staged deletion reports retiring")
     func presentAndPendingDeletion() async throws {
         try await withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let key = try seed("plex:present", in: store, directory: directory)
             guard case .present(let record) = store.cleanupDisposition(for: key) else {
                 Issue.record("Expected present"); return
@@ -36,7 +36,7 @@ struct CleanupAuthorityContractTests {
     func removalWindowIsNotAbsence() async throws {
         try await withDirectory { directory in
             let gate = TerminalSnapshotGate()
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try gate.write(data, to: url) })
             let key = try seed("plex:window", in: store, directory: directory)
@@ -61,7 +61,7 @@ struct CleanupAuthorityContractTests {
     @Test("Another attempt on the same item does not make the intent's attempt present")
     func replacedAttemptIsAbsent() async throws {
         try await withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let current = try seed("plex:replaced", in: store, directory: directory)
             let older = DownloadAttemptKey(
                 ratingKey: current.ratingKey, attemptID: DownloadAttemptID(uuid: UUID()))
@@ -240,19 +240,19 @@ struct CleanupAuthorityContractTests {
     }
 
     private func withSyncDirectory(_ body: (URL) throws -> Void) throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("cleanup-authority-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         try body(directory)
     }
 
     private func withDirectory(_ body: (URL) async throws -> Void) async throws {
-        let parent = FileManager.default.temporaryDirectory
+        let parent = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("cleanup-disposition-\(UUID().uuidString)", isDirectory: true)
         let directory = parent.appendingPathComponent("Downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: parent) }
+
         try await body(directory)
     }
 }

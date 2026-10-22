@@ -4,12 +4,11 @@ import Testing
 @testable import Labstream
 
 #if !os(tvOS)
-@Suite("Download keepalive coordinator")
+@Suite("Download keepalive coordinator", .downloadTestFiles)
 struct DownloadKeepaliveCoordinatorTests {
     @Test @MainActor
     func cancellingExactAttemptDoesNotCancelReplacementForSameRatingKey() async throws {
         let fixture = try Fixture("exact-cancel")
-        defer { fixture.remove() }
         let coordinator = fixture.coordinator
         let attemptA = key("attempt-A")
         let attemptB = key("attempt-B")
@@ -36,7 +35,6 @@ struct DownloadKeepaliveCoordinatorTests {
     @Test @MainActor
     func staleGenerationCannotRemoveReplacementTask() async throws {
         let fixture = try Fixture("generation-cas")
-        defer { fixture.remove() }
         let coordinator = fixture.coordinator
         let attempt = key("attempt-A")
         let oldTask = HeldKeepaliveTask()
@@ -67,7 +65,6 @@ struct DownloadKeepaliveCoordinatorTests {
     @Test @MainActor
     func backendTaskRegistriesRemainIndependent() async throws {
         let fixture = try Fixture("backend-slots")
-        defer { fixture.remove() }
         let coordinator = fixture.coordinator
         let attempt = key("attempt-A")
         let jellyfin = HeldKeepaliveTask()
@@ -95,7 +92,6 @@ struct DownloadKeepaliveCoordinatorTests {
     @Test(arguments: [DownloadBackendKind.jellyfin, .emby]) @MainActor
     func reconcileStartsKeepaliveOnlyForTrackedTransfer(backend: DownloadBackendKind) throws {
         let fixture = try Fixture("tracking-gate-\(backend.rawValue)")
-        defer { fixture.remove() }
         fixture.signIn(backend)
         let coordinator = fixture.coordinator
         let record = Self.keepaliveRecord(backend: backend, attempt: "attempt-A")
@@ -117,7 +113,6 @@ struct DownloadKeepaliveCoordinatorTests {
     @Test @MainActor
     func reconcileGateIsExactAttempt() throws {
         let fixture = try Fixture("tracking-gate-exact")
-        defer { fixture.remove() }
         fixture.signIn(.jellyfin)
         let coordinator = fixture.coordinator
         let stale = Self.keepaliveRecord(backend: .jellyfin, attempt: "attempt-A")
@@ -162,12 +157,12 @@ struct DownloadKeepaliveCoordinatorTests {
         var trackingQueries: Set<DownloadAttemptKey> { tracking.queries }
 
         init(_ label: String) throws {
-            directory = FileManager.default.temporaryDirectory
+            directory = DownloadTestFiles.temporaryDirectory
                 .appendingPathComponent("DownloadKeepaliveCoordinatorTests-\(label)-\(UUID().uuidString)",
                                         isDirectory: true)
             try FileManager.default.createDirectory(
                 at: directory, withIntermediateDirectories: true)
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let appModel = AppModel(identity: PlatformClientIdentity.make(
                 clientIdentifier: "keepalive-coordinator-tests"))
             self.appModel = appModel
@@ -191,9 +186,6 @@ struct DownloadKeepaliveCoordinatorTests {
             }
         }
 
-        func remove() {
-            try? FileManager.default.removeItem(at: directory)
-        }
     }
 
     private func key(_ attempt: String) -> DownloadAttemptKey {

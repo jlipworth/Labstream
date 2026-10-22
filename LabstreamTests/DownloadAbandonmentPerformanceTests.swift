@@ -4,7 +4,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
-@Suite("Abandonment journal performance", .serialized)
+@Suite("Abandonment journal performance", .downloadTestFiles, .serialized)
 @MainActor
 struct DownloadAbandonmentPerformanceTests {
     @Test(arguments: [DownloadBackendKind.plex, .emby, .jellyfin])

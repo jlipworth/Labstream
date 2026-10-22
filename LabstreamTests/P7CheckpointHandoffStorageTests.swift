@@ -5,7 +5,7 @@ import Synchronization
 import Testing
 @testable import Labstream
 
-@Suite("P7 checkpoint handoff storage")
+@Suite("P7 checkpoint handoff storage", .downloadTestFiles)
 struct P7CheckpointHandoffStorageTests {
     @Test("B86 hard-kill residue is swept with startup identity, references and leases intact")
     func hardKillResidueSweepGuards() async throws {
@@ -81,7 +81,7 @@ struct P7CheckpointHandoffStorageTests {
         #expect(store.lifecycleState(for: owner)?.history.lastFailure == .storage)
         #expect(DownloadStaticCheckpointFilesystem.live.size(source) == 1_000_000_000)
         #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.directory.path).sorted() == before)
-        #expect(DownloadStore(baseDirectory: fixture.directory).record(for: owner)?.attemptID == owner.attemptID)
+        #expect(DownloadTestFiles.store(baseDirectory: fixture.directory).record(for: owner)?.attemptID == owner.attemptID)
     }
 
     @Test("B87 seed caller surfaces the existing storage-full message")
@@ -94,7 +94,7 @@ struct P7CheckpointHandoffStorageTests {
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         defer { session.invalidateInjectedSessionForTesting() }
         let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "handoff-storage-fixture"))
-        let manager = DownloadManager(appModel: model, store: store, session: session,
+        let manager = DownloadTestFiles.manager(appModel: model, store: store, session: session,
             registerForBackgroundEvents: false)
         try #require(await manager.awaitStartupRecoveryForTesting())
         let handle = try #require(manager.acquireStartAttempt(ratingKey: owner.ratingKey, backend: "plex"))
@@ -149,16 +149,11 @@ struct P7CheckpointHandoffStorageTests {
 private final class HandoffStorageFixture {
     let directory: URL
     init() throws {
-        directory = FileManager.default.temporaryDirectory.appendingPathComponent("handoff-storage-\(UUID())")
+        directory = DownloadTestFiles.temporaryDirectory.appendingPathComponent("handoff-storage-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
-    deinit {
-        try? FileManager.default.removeItem(at: directory)
-        try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()
-            .appendingPathComponent(".\(directory.lastPathComponent)-download-authority"))
-    }
     func store(free: Int64? = nil, checkpoint: DownloadStaticCheckpointFilesystem = .live) -> DownloadStore {
-        DownloadStore(baseDirectory: directory, checkpointFilesystem: checkpoint,
+        DownloadTestFiles.store(baseDirectory: directory, checkpointFilesystem: checkpoint,
             availableStorageBytes: { _ in free })
     }
     func record(_ attempt: String = "a", ratingKey: String = "fixture", filename: String = "fixture.mp4") -> DownloadRecord {

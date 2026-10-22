@@ -4,7 +4,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
-@Suite("Foreground side-asset inventory I/O", .serialized)
+@Suite("Foreground side-asset inventory I/O", .downloadTestFiles, .serialized)
 @MainActor
 struct DownloadSideAssetInventoryPerformanceTests {
     @Test func foregroundInventoriesCompletedRowsOffMainAndSharesChapterEvidence() async throws {

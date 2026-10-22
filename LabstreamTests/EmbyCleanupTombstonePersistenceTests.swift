@@ -3,6 +3,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
+@Suite(.downloadTestFiles)
 struct EmbyCleanupTombstonePersistenceTests {
     private func cleanupAuthority(for root: URL) -> URL {
         root.deletingLastPathComponent().appendingPathComponent(
@@ -15,7 +16,7 @@ struct EmbyCleanupTombstonePersistenceTests {
             let releaseRead = DispatchSemaphore(value: 0)
             let loadFinished = DispatchSemaphore(value: 0)
             let indexReadFinished = DispatchSemaphore(value: 0)
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 embyCleanupPersistence: .init(
                     read: { _ in
@@ -54,7 +55,7 @@ struct EmbyCleanupTombstonePersistenceTests {
 
     @Test func missingQueueLoadsEmptyAndValidMutationsPreserveSiblings() throws {
         try withTemporaryDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             #expect(try loaded(store).isEmpty)
 
             let first = LegacyEmbyTombstoneFixture.make(ratingKey: "emby:same")
@@ -81,7 +82,7 @@ struct EmbyCleanupTombstonePersistenceTests {
                 at: cleanupAuthority(for: directory), withIntermediateDirectories: true)
             let corrupt = Data("not-json".utf8)
             try corrupt.write(to: canonical)
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
 
             guard case .failed(let loadFailure) = store.loadEmbyConvertCleanupTombstones() else {
                 Issue.record("Expected corrupt queue to fail decoding")
@@ -101,7 +102,7 @@ struct EmbyCleanupTombstonePersistenceTests {
 
     @Test func readAndEncodeFailuresAreObservableAndFailClosed() throws {
         try withTemporaryDirectory { directory in
-            let readFailureStore = DownloadStore(
+            let readFailureStore = DownloadTestFiles.store(
                 baseDirectory: directory,
                 embyCleanupPersistence: .init(
                     read: { _ in throw InjectedTombstoneFailure() },
@@ -121,7 +122,7 @@ struct EmbyCleanupTombstonePersistenceTests {
 
             let tombstone = LegacyEmbyTombstoneFixture.make(ratingKey: "emby:encode")
             let legacyData = try JSONEncoder().encode([tombstone])
-            let encodeFailureStore = DownloadStore(
+            let encodeFailureStore = DownloadTestFiles.store(
                 baseDirectory: directory,
                 embyCleanupPersistence: .init(
                     read: { _ in legacyData },
@@ -141,7 +142,7 @@ struct EmbyCleanupTombstonePersistenceTests {
 
     @Test func removalFailuresNeverClaimDurableRecovery() throws {
         try withTemporaryDirectory { directory in
-            let initial = DownloadStore(baseDirectory: directory)
+            let initial = DownloadTestFiles.store(baseDirectory: directory)
             let first = LegacyEmbyTombstoneFixture.make(ratingKey: "emby:first")
             let second = LegacyEmbyTombstoneFixture.make(ratingKey: "emby:second")
             try LegacyEmbyTombstoneFixture.write([first, second], to: initial)
@@ -149,7 +150,7 @@ struct EmbyCleanupTombstonePersistenceTests {
                 .appendingPathComponent("emby-convert-cleanup.json")
             let previous = try Data(contentsOf: canonical)
 
-            let beforeReplace = DownloadStore(
+            let beforeReplace = DownloadTestFiles.store(
                 baseDirectory: directory,
                 embyCleanupPersistence: .init(
                     read: { try Data(contentsOf: $0) },
@@ -165,9 +166,9 @@ struct EmbyCleanupTombstonePersistenceTests {
             }
             #expect(preFailure.stage == .commit)
             #expect(try Data(contentsOf: canonical) == previous)
-            #expect(try loaded(DownloadStore(baseDirectory: directory)).map(\.id) == [first.id, second.id])
+            #expect(try loaded(DownloadTestFiles.store(baseDirectory: directory)).map(\.id) == [first.id, second.id])
 
-            let afterReplace = DownloadStore(
+            let afterReplace = DownloadTestFiles.store(
                 baseDirectory: directory,
                 embyCleanupPersistence: replaceThenThrowPersistence()
             )
@@ -204,10 +205,10 @@ struct EmbyCleanupTombstonePersistenceTests {
     }
 
     private func withTemporaryDirectory(_ body: (URL) throws -> Void) throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("emby-cleanup-tombstones-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         try body(directory)
     }
 }

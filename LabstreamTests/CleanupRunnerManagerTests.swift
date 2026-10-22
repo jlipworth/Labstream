@@ -7,13 +7,13 @@ import Testing
 /// P2 commit 3 manager pins: legacy tombstone migration and its receipt barrier, and the Emby
 /// 24-hour expiry journaling its abandonment before the row gives up its recovery identity.
 @MainActor
-@Suite("Cleanup runner manager integration", .serialized)
+@Suite("Cleanup runner manager integration", .downloadTestFiles, .serialized)
 struct CleanupRunnerManagerTests {
     @Test("Legacy tombstones migrate into the journal; unconvertible ones are kept as evidence")
     func tombstonesMigrateWithStableIdentity() async throws {
         let directory = try makeDirectory("migrate")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let convertible = LegacyEmbyTombstoneFixture.make(
             ratingKey: "emby:item", metadata: crashWindowMetadata(ratingKey: "emby:item"))
         let unconvertible = LegacyEmbyTombstoneFixture.make(
@@ -47,8 +47,8 @@ struct CleanupRunnerManagerTests {
     @Test("A migrated intent stays blocked while its source tombstone still exists")
     func migrationReceiptBlocksReplay() async throws {
         let directory = try makeDirectory("receipt")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let tombstone = LegacyEmbyTombstoneFixture.make(
             ratingKey: "emby:item", metadata: crashWindowMetadata(ratingKey: "emby:item"))
         try LegacyEmbyTombstoneFixture.write([tombstone], to: store)
@@ -72,8 +72,8 @@ struct CleanupRunnerManagerTests {
     @Test("Expiry journals its abandonment before clearing the recovery identity")
     func expiryJournalsFirst() async throws {
         let directory = try makeDirectory("expiry")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let key = try seedExpiredPreparingRow(in: store)
         let (manager, journal, session) = makeManager(store: store, directory: directory)
         defer { session.invalidateInjectedSessionForTesting() }
@@ -99,8 +99,8 @@ struct CleanupRunnerManagerTests {
     @Test("When the expiry intent cannot be journaled, the row keeps its identity")
     func expiryJournalFailureKeepsIdentity() async throws {
         let directory = try makeDirectory("expiry-fail")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let key = try seedExpiredPreparingRow(in: store)
         let failingJournal = DownloadCleanupIntentJournal(
             directory: directory.appendingPathComponent("failing-journal", isDirectory: true),
@@ -124,8 +124,8 @@ struct CleanupRunnerManagerTests {
     @Test("Deleting a paused Plex prep row journals its queue-item cleanup first (D2)")
     func plexPausedPrepDeleteJournals() async throws {
         let directory = try makeDirectory("plex-delete")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let key = DownloadAttemptKey(ratingKey: "plex:101", attemptID: DownloadAttemptID(uuid: UUID()))
         let metadata = OfflineMetadata(
             ratingKey: key.ratingKey, title: "Item", type: "movie",
@@ -160,8 +160,8 @@ struct CleanupRunnerManagerTests {
     @Test("A superseded encoder stop is journaled from the captured session, with no row")
     func supersededStopJournalsFromCapturedSession() async throws {
         let directory = try makeDirectory("superseded")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let (manager, journal, session) = makeManager(store: store, directory: directory)
         defer { session.invalidateInjectedSessionForTesting() }
         let key = DownloadAttemptKey(
@@ -186,8 +186,8 @@ struct CleanupRunnerManagerTests {
     @Test("A launch-sweep intent reused by delete is eligible to run once the removal commits")
     func terminalReleaseReusedByDeleteRuns() async throws {
         let directory = try makeDirectory("reuse")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let key = DownloadAttemptKey(
             ratingKey: "jellyfin:done", attemptID: DownloadAttemptID(uuid: UUID()))
         let url = store.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
@@ -235,8 +235,8 @@ struct CleanupRunnerManagerTests {
     @Test("An abandonment cannot cancel a resource its still-active origin row holds")
     func activeOriginKeepsItsClaim() async throws {
         let directory = try makeDirectory("active-origin")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let (manager, _, session) = makeManager(store: store, directory: directory)
         defer { session.invalidateInjectedSessionForTesting() }
         #expect(await waitUntil { manager.startupRecoveryState == .ready })
@@ -269,8 +269,8 @@ struct CleanupRunnerManagerTests {
     @Test("An abandonment cannot cancel a job its failed-but-retryable origin row kept")
     func failedOriginKeepsItsJob() async throws {
         let directory = try makeDirectory("failed-origin")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let key = DownloadAttemptKey(
             ratingKey: "emby:kept", attemptID: DownloadAttemptID(uuid: UUID()))
         var metadata = crashWindowMetadata(ratingKey: key.ratingKey)
@@ -300,8 +300,8 @@ struct CleanupRunnerManagerTests {
     @Test("An encoder abandonment is not blocked by a paused origin's stale PlaySessionId")
     func pausedOriginDoesNotStrandEncoderStop() async throws {
         let directory = try makeDirectory("paused-origin")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let key = DownloadAttemptKey(
             ratingKey: "jellyfin:paused", attemptID: DownloadAttemptID(uuid: UUID()))
         // A crash between the abandonment commit and the reference clear left both on disk.
@@ -349,8 +349,8 @@ struct CleanupRunnerManagerTests {
     @Test("Producer sessions never rebind captured work to another user on the same server")
     func cleanupSessionKeepsCapturedUser() async throws {
         let directory = try makeDirectory("session-user")
-        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let (manager, _, session) = makeManager(store: store, directory: directory)
         defer { session.invalidateInjectedSessionForTesting() }
         signInEmby(manager.appModel)
@@ -407,7 +407,7 @@ struct CleanupRunnerManagerTests {
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         let journal = journal ?? DownloadCleanupIntentJournal(
             directory: store.durableCleanupAuthorityDirectory)
-        let manager = DownloadManager(
+        let manager = DownloadTestFiles.manager(
             appModel: AppModel(identity: PlatformClientIdentity.make(
                 clientIdentifier: "cleanup-runner-\(UUID().uuidString)"), activeBackend: .emby),
             store: store, session: session, cleanupIntentJournal: journal,
@@ -424,7 +424,7 @@ struct CleanupRunnerManagerTests {
     }
 
     private func makeDirectory(_ label: String) throws -> URL {
-        let parent = FileManager.default.temporaryDirectory
+        let parent = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("cleanup-runner-\(label)-\(UUID().uuidString)", isDirectory: true)
         let directory = parent.appendingPathComponent("Downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

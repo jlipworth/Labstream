@@ -5,7 +5,7 @@ import Testing
 @testable import Labstream
 
 /// Exercise the enqueue adapter, not just the negotiator's decode/verdict helper.
-@Suite(.serialized)
+@Suite(.downloadTestFiles, .serialized)
 @MainActor
 struct P7JoinedDownloadControlsTests {
     @Test(arguments: [false, true])

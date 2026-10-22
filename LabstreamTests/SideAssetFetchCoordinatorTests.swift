@@ -4,7 +4,7 @@ import XCTest
 import os
 @testable import Labstream
 
-final class SideAssetFetchCoordinatorTests: XCTestCase {
+final class SideAssetFetchCoordinatorTests: DownloadFileTestCase {
     func testNonpersistentTransportPolicyDisablesCredentialStores() {
         let configuration = SideAssetTransportPolicy.nonpersistentConfiguration()
 
@@ -610,7 +610,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
     }
 
     func testExistingNonemptyFileBypassesNetwork() async throws {
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let file = downloadTestFiles.root.appendingPathComponent(UUID().uuidString)
         try Data([4, 2]).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
         let calls = TestCounter()
@@ -830,7 +830,7 @@ private final class SideAssetCancellationURLProtocol: URLProtocol, @unchecked Se
     }
 }
 
-final class DownloadSideAssetRetryBudgetTests: XCTestCase {
+final class DownloadSideAssetRetryBudgetTests: DownloadFileTestCase {
     private let source = OfflineSideAssetSourceIdentity(
         backendKind: .plex, backendBaseURLString: "https://one.example",
         backendServerID: "server", mediaSourceID: "source", mediaIndex: 0,
@@ -895,14 +895,14 @@ final class DownloadSideAssetRetryBudgetTests: XCTestCase {
 /// refresh must go through the side-asset coordinator's per-origin pacing, so a foreground edge
 /// over many completed rows cannot burst one unpaced request per row.
 @MainActor
-final class DownloadSideAssetPlexRepairPacingTests: XCTestCase {
+final class DownloadSideAssetPlexRepairPacingTests: DownloadFileTestCase {
     func testCompletedPlexRowMetadataRefreshIsAdmittedByTheCoordinator() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+        let directory = downloadTestFiles.root.appendingPathComponent(
             "side-asset-plex-repair-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
 
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let serverURL = "https://plex.example.invalid:32400"
         var owners: Set<String> = []
         for ratingKey in ["101", "102"] {
@@ -931,7 +931,7 @@ final class DownloadSideAssetPlexRepairPacingTests: XCTestCase {
             maximumRequestStartsPerSecond: 1_000, maximumConcurrentRequests: 4))
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         defer { session.invalidateInjectedSessionForTesting() }
-        let manager = DownloadManager(
+        let manager = DownloadTestFiles.manager(
             appModel: model, store: store, session: session,
             cleanupIntentJournal: DownloadCleanupIntentJournal(directory: directory),
             sideAssetFetchCoordinator: coordinator,
@@ -958,12 +958,12 @@ final class DownloadSideAssetPlexRepairPacingTests: XCTestCase {
     }
 }
 
-final class DownloadSideAssetServiceTests: XCTestCase {
+final class DownloadSideAssetServiceTests: DownloadFileTestCase {
     func testPreparationValidatesOffMainBeforeWriting() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+        let directory = downloadTestFiles.root.appendingPathComponent(
             "side-asset-service-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
 
         let invalidURL = directory.appendingPathComponent("invalid.jpg")
         let rejected = await DownloadSideAssetService.prepare(

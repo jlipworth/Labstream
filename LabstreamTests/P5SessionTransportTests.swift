@@ -4,7 +4,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
-@Suite("P5 session transport", .serialized)
+@Suite("P5 session transport", .downloadTestFiles, .serialized)
 struct P5SessionTransportTests {
     private let total = 1_048_576
     private let headroom = DownloadStorageAdmissionPolicy.headroomBytes
@@ -262,7 +262,7 @@ struct P5SessionTransportTests {
             let key = try seed(in: store, expected: total)
             let working = try #require(store.attemptWorkingFileURL(for: key))
             try Data().write(to: working)
-            let stash = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let stash = DownloadTestFiles.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             try Data(repeating: 1, count: 64).write(to: stash)
             let observed = P5Values<Bool>()
             session.durableHeldBodyDidRenameForTesting = { url in
@@ -504,13 +504,13 @@ struct P5SessionTransportTests {
     }
 
     private func withSession(_ body: (BackgroundDownloadSession, DownloadStore, P5HeldRequests) async throws -> Void) async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("p5-\(UUID().uuidString)")
+        let directory = DownloadTestFiles.temporaryDirectory.appendingPathComponent("p5-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let requests = P5HeldRequests()
         P5HeldRequestURLProtocol.configure(requests)
         defer { P5HeldRequestURLProtocol.configure(nil) }
-        let store = DownloadStore(baseDirectory: directory)
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let session = BackgroundDownloadSession(store: store, protocolClasses: [P5HeldRequestURLProtocol.self])
         let temporaryBodies = directory.appendingPathComponent("NetworkTemps", isDirectory: true)
         try FileManager.default.createDirectory(at: temporaryBodies, withIntermediateDirectories: true)
@@ -521,7 +521,9 @@ struct P5SessionTransportTests {
             session.activateCurrentStore { continuation.resume(returning: $0) }
         }
         #expect(activated == .activated(cancelledTaskCount: 0))
-        try await body(session, store, requests)
+        let outcome: Result<Void, Error>
+        do { try await body(session, store, requests); outcome = .success(()) }
+        catch { outcome = .failure(error) }
         for record in store.records { session.cancel(ratingKey: record.ratingKey) }
         _ = await waitUntil {
             session.diagnosticSnapshot(includePendingTempCleanupBytes: false)
@@ -529,6 +531,7 @@ struct P5SessionTransportTests {
         }
         _ = await store.flushLifecycleAndPersistence(through: store.currentPersistenceTicket(),
             artifactWatermark: store.currentArtifactLifecycleWatermark(), timeout: 5)
+        try outcome.get()
     }
 
     private func waitUntil(_ predicate: () -> Bool) async -> Bool {

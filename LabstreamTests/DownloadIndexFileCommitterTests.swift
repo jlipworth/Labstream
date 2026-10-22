@@ -3,7 +3,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
-@Suite("Download index explicit file committer")
+@Suite("Download index explicit file committer", .downloadTestFiles)
 struct DownloadIndexFileCommitterTests {
     @Test func atomicallyReplacesCanonicalBytesAndLeavesNoTemporaryFile() throws {
         try withTemporaryDirectory { directory in
@@ -130,10 +130,10 @@ struct DownloadIndexFileCommitterTests {
     }
 
     private func withTemporaryDirectory(_ body: (URL) throws -> Void) throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("DownloadIndexFileCommitterTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         try body(directory)
     }
 

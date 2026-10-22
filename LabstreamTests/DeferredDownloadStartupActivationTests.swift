@@ -4,7 +4,7 @@ import Testing
 
 @testable import Labstream
 
-@Suite("Deferred current-store startup activation")
+@Suite("Deferred current-store startup activation", .downloadTestFiles)
 struct DeferredDownloadStartupActivationTests {
   @Test @MainActor
   func currentStoreDoesNotActivateSynchronouslyButSubmitsPromptly() async throws {
@@ -26,8 +26,8 @@ struct DeferredDownloadStartupActivationTests {
   @Test @MainActor
   func pendingBackgroundHandlerIsRegisteredBeforeActivationCanSubmit() async throws {
     let directory = try makeTemporaryDirectory()
-    defer { try? FileManager.default.removeItem(at: directory) }
-    let store = DownloadStore(baseDirectory: directory)
+
+    let store = DownloadTestFiles.store(baseDirectory: directory)
     let registry = BackgroundDownloadCompletionRegistry()
     let session = BackgroundDownloadSession(
       store: store,
@@ -40,7 +40,7 @@ struct DeferredDownloadStartupActivationTests {
       identifier: BackgroundDownloadSession.identifier,
       completion: { completionCount += 1 }
     )
-    let manager = DownloadManager(
+    let manager = DownloadTestFiles.manager(
       appModel: makeAppModel("deferred-registration-order"),
       store: store,
       session: session,
@@ -76,12 +76,12 @@ struct DeferredDownloadStartupActivationTests {
   @Test @MainActor
   func failedAdmissionNeverSchedulesActivation() async throws {
     let directory = try makeTemporaryDirectory()
-    defer { try? FileManager.default.removeItem(at: directory) }
+
     try Data("not-json".utf8).write(to: directory.appendingPathComponent("index.json"))
-    let store = DownloadStore(baseDirectory: directory)
+    let store = DownloadTestFiles.store(baseDirectory: directory)
     let session = BackgroundDownloadSession(store: store, protocolClasses: [])
     defer { session.invalidateInjectedSessionForTesting() }
-    let manager = DownloadManager(
+    let manager = DownloadTestFiles.manager(
       appModel: makeAppModel("deferred-failed-admission"),
       store: store,
       session: session,
@@ -100,8 +100,8 @@ struct DeferredDownloadStartupActivationTests {
   @Test @MainActor
   func pendingTurnRetainsManagerUntilItsRegisteredSessionActivates() async throws {
     let directory = try makeTemporaryDirectory()
-    defer { try? FileManager.default.removeItem(at: directory) }
-    let store = DownloadStore(baseDirectory: directory)
+
+    let store = DownloadTestFiles.store(baseDirectory: directory)
     let registry = BackgroundDownloadCompletionRegistry()
     let session = BackgroundDownloadSession(
       store: store,
@@ -112,7 +112,7 @@ struct DeferredDownloadStartupActivationTests {
     weak var weakManager: DownloadManager?
 
     do {
-      let manager = DownloadManager(
+      let manager = DownloadTestFiles.manager(
         appModel: makeAppModel("deferred-deallocation"),
         store: store,
         session: session,
@@ -135,8 +135,8 @@ struct DeferredDownloadStartupActivationTests {
     ) async throws -> Void
   ) async throws {
     let directory = try makeTemporaryDirectory()
-    defer { try? FileManager.default.removeItem(at: directory) }
-    let store = DownloadStore(baseDirectory: directory)
+
+    let store = DownloadTestFiles.store(baseDirectory: directory)
     let registry = BackgroundDownloadCompletionRegistry()
     let session = BackgroundDownloadSession(
       store: store,
@@ -144,7 +144,7 @@ struct DeferredDownloadStartupActivationTests {
       releaseBackgroundCompletion: { registry.fireCompletions(in: $0) }
     )
     defer { session.invalidateInjectedSessionForTesting() }
-    let manager = DownloadManager(
+    let manager = DownloadTestFiles.manager(
       appModel: makeAppModel("deferred-current-\(UUID().uuidString)"),
       store: store,
       session: session,
@@ -154,7 +154,7 @@ struct DeferredDownloadStartupActivationTests {
   }
 
   private func makeTemporaryDirectory() throws -> URL {
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+    let directory = DownloadTestFiles.temporaryDirectory.appendingPathComponent(
       "deferred-download-activation-\(UUID().uuidString)",
       isDirectory: true
     )

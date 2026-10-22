@@ -4,7 +4,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
-@Suite("P6 lead store I/O pins", .serialized)
+@Suite("P6 lead store I/O pins", .downloadTestFiles, .serialized)
 struct P6StoreIOTests {
     @Test("P6-pin-03 Retry clone does not hold the row lock", arguments: [false, true])
     func retryCloneLookup(failedCommit: Bool) async throws {

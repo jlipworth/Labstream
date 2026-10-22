@@ -3,12 +3,12 @@ import PMSKit
 import Testing
 @testable import Labstream
 
-@Suite("Download cleanup/index ordering")
+@Suite("Download cleanup/index ordering", .downloadTestFiles)
 struct DownloadCleanupOrderingTests {
     @Test func journalFailureDurablyReservesExactIntentAndRejectsReplacement() throws {
         try withDirectory { directory in
             let key = attemptKey("attempt-A")
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             #expect(createRecord(store: store, key: key, persistedSession: nil))
             let candidate = try intent(key: key, session: "transient-session-A")
             let failedJournal = DownloadCleanupIntentJournal(
@@ -23,7 +23,7 @@ struct DownloadCleanupOrderingTests {
             }
             #expect(reserved == key)
 
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.isDeletionPending(for: key))
             #expect(relaunched.deletionPendingCleanupIntents(for: key) == [candidate])
             let replacement = attemptKey("attempt-B")
@@ -41,7 +41,7 @@ struct DownloadCleanupOrderingTests {
     @Test func partialJournalCommitKeepsAllOperationsInIndexThenRetriesWithoutDuplicates() throws {
         try withDirectory { directory in
             let key = attemptKey("attempt-A")
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             #expect(createRecord(store: store, key: key, persistedSession: "session-A"))
             let active = try intent(key: key, session: "session-A")
             let convert = try convertIntent(key: key, jobID: 42)
@@ -57,7 +57,7 @@ struct DownloadCleanupOrderingTests {
                 Issue.record("Expected partial journal failure to reserve index authority"); return
             }
             #expect(try loadedJournal(directory) == [active])
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             let pending = try #require(relaunched.deletionPendingCleanupIntents(for: key))
             #expect(pending == [active, convert])
 
@@ -72,14 +72,14 @@ struct DownloadCleanupOrderingTests {
             #expect(try loadedJournal(directory) == [active, convert])
             #expect(relaunched.remove(for: key) == .staleOrMissing)
             #expect(relaunched.completePendingDeletion(for: key) == .applied)
-            #expect(DownloadStore(baseDirectory: directory).record(for: key.ratingKey) == nil)
+            #expect(DownloadTestFiles.store(baseDirectory: directory).record(for: key.ratingKey) == nil)
         }
     }
 
     @Test func indexFailureLeavesOriginalDurableRowAndCleanupMetadataRetryable() throws {
         try withDirectory { directory in
             let writer = IndexWriteController(failOnWrite: 2)
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try writer.write(data, to: url) })
             let key = attemptKey("attempt-A")
@@ -97,7 +97,7 @@ struct DownloadCleanupOrderingTests {
             }
             #expect(failedKey == key)
 
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(!relaunched.isDeletionPending(for: key))
             #expect(relaunched.record(for: key.ratingKey)?.metadata?.playSessionID == "session-A")
             #expect(relaunched.record(for: key.ratingKey) != nil)
@@ -107,7 +107,7 @@ struct DownloadCleanupOrderingTests {
     @Test func pendingDeletionHaltPreservesHeldManifestAndBodyUntilJournaledDeletion() async throws {
         try await withDirectory { directory in
             let key = attemptKey("attempt-A")
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             #expect(createRecord(store: store, key: key, persistedSession: "session-A"))
             let mediaURL = store.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
             try Data("partial-media".utf8).write(to: mediaURL)
@@ -153,7 +153,7 @@ struct DownloadCleanupOrderingTests {
     @Test func exactRemovalCannotBypassDeletionReservation() throws {
         try withDirectory { directory in
             let key = attemptKey("attempt-A")
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             #expect(createRecord(store: store, key: key, persistedSession: "session-A"))
             let mediaURL = store.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
             try Data("owned-media".utf8).write(to: mediaURL)
@@ -165,7 +165,7 @@ struct DownloadCleanupOrderingTests {
             #expect(store.isDeletionPending(for: key))
             #expect(store.deletionPendingCleanupIntents(for: key) == [candidate])
             #expect(FileManager.default.fileExists(atPath: mediaURL.path))
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.isDeletionPending(for: key))
         }
     }
@@ -173,7 +173,7 @@ struct DownloadCleanupOrderingTests {
     @Test func embeddedPendingIntentsRecoverWithoutRowMetadata() throws {
         try withDirectory { directory in
             let key = attemptKey("attempt-A")
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let row = DownloadRecord(
                 ratingKey: key.ratingKey,
                 attemptID: key.attemptID,
@@ -190,7 +190,7 @@ struct DownloadCleanupOrderingTests {
                 Issue.record("Expected embedded pending authority"); return
             }
 
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.record(for: key.ratingKey)?.metadata == nil)
             let embedded = try #require(relaunched.deletionPendingCleanupIntents(for: key))
             guard case .ready(let durable) = DownloadCleanupOrdering.prepareForDestructiveDeletion(
@@ -207,13 +207,13 @@ struct DownloadCleanupOrderingTests {
 
     @Test @MainActor
     func relaunchWithJournalStillFailingPreservesAllArtifactsAndAdmitsNoRecovery() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+        let directory = DownloadTestFiles.temporaryDirectory.appendingPathComponent(
             "download-cleanup-relaunch-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
 
         let key = attemptKey("attempt-A")
-        let initial = DownloadStore(baseDirectory: directory)
+        let initial = DownloadTestFiles.store(baseDirectory: directory)
         let mediaURL = initial.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
         let row = DownloadRecord(
             ratingKey: key.ratingKey,
@@ -253,12 +253,12 @@ struct DownloadCleanupOrderingTests {
         let candidate = try intent(key: key, session: "session-A")
         #expect(initial.markDeletionPending(for: key, cleanupIntents: [candidate]) == .applied)
 
-        let relaunched = DownloadStore(baseDirectory: directory)
+        let relaunched = DownloadTestFiles.store(baseDirectory: directory)
         let session = BackgroundDownloadSession(store: relaunched, protocolClasses: [])
         defer { session.invalidateInjectedSessionForTesting() }
         let failedJournal = DownloadCleanupIntentJournal(
             directory: directory, persistence: failingJournalPersistence())
-        let manager = DownloadManager(
+        let manager = DownloadTestFiles.manager(
             appModel: AppModel(identity: PlatformClientIdentity.make(
                 clientIdentifier: "pending-relaunch"), activeBackend: .emby),
             store: relaunched,
@@ -289,11 +289,11 @@ struct DownloadCleanupOrderingTests {
     @Test @MainActor
     func journalFailureCancelsHeldJellyfinKeepaliveWithoutClearingCleanupAuthority() async throws {
         let directory = try makeTemporaryDirectory("keepalive")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let key = DownloadAttemptKey(
             ratingKey: "jellyfin:item",
             attemptID: DownloadAttemptID(rawValue: "attempt-A")!)
-        let store = DownloadStore(baseDirectory: directory)
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let mediaURL = store.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
         let metadata = OfflineMetadata(
             ratingKey: key.ratingKey, title: "Keepalive", type: "movie",
@@ -308,7 +308,7 @@ struct DownloadCleanupOrderingTests {
         try Data("main".utf8).write(to: mediaURL)
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         defer { session.invalidateInjectedSessionForTesting() }
-        let manager = DownloadManager(
+        let manager = DownloadTestFiles.manager(
             appModel: AppModel(identity: PlatformClientIdentity.make(
                 clientIdentifier: "pending-keepalive"), activeBackend: .jellyfin),
             store: store,
@@ -338,9 +338,9 @@ struct DownloadCleanupOrderingTests {
     @Test @MainActor
     func journalFailureCancelsHeldEmbyConvertControlWithoutClearingJobAuthority() async throws {
         let directory = try makeTemporaryDirectory("emby-poll")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let key = attemptKey("attempt-A")
-        let store = DownloadStore(baseDirectory: directory)
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let mediaURL = store.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
         let metadata = OfflineMetadata(
             ratingKey: key.ratingKey, title: "Convert", type: "movie",
@@ -354,7 +354,7 @@ struct DownloadCleanupOrderingTests {
         #expect(await store.createAttemptOwnedRecordAsync(record, attemptID: key.attemptID) == .committed(key))
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         defer { session.invalidateInjectedSessionForTesting() }
-        let manager = DownloadManager(
+        let manager = DownloadTestFiles.manager(
             appModel: AppModel(identity: PlatformClientIdentity.make(
                 clientIdentifier: "pending-emby-poll"), activeBackend: .emby),
             store: store,
@@ -418,9 +418,9 @@ struct DownloadCleanupOrderingTests {
         _ authority: FailedConvertAuthority
     ) async throws {
         let directory = try makeTemporaryDirectory(authority.rawValue)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let key = attemptKey("attempt-A")
-        let store = DownloadStore(baseDirectory: directory)
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let metadata = authority.metadata(for: key)
         let record = DownloadRecord(
             ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Convert",
@@ -430,7 +430,7 @@ struct DownloadCleanupOrderingTests {
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         defer { session.invalidateInjectedSessionForTesting() }
         let journal = DownloadCleanupIntentJournal(directory: directory)
-        let manager = DownloadManager(
+        let manager = DownloadTestFiles.manager(
             appModel: AppModel(identity: PlatformClientIdentity.make(
                 clientIdentifier: authority.rawValue), activeBackend: .emby),
             store: store, session: session, cleanupIntentJournal: journal,
@@ -467,9 +467,9 @@ struct DownloadCleanupOrderingTests {
     @Test @MainActor
     func launchSweepStillCleansUpCompletedConvertJob() async throws {
         let directory = try makeTemporaryDirectory("complete-convert")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let key = attemptKey("attempt-A")
-        let store = DownloadStore(baseDirectory: directory)
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let record = DownloadRecord(
             ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Convert",
             localURL: store.destinationURL(ratingKey: key.ratingKey, ext: "mp4"),
@@ -481,7 +481,7 @@ struct DownloadCleanupOrderingTests {
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         defer { session.invalidateInjectedSessionForTesting() }
         let journal = DownloadCleanupIntentJournal(directory: directory)
-        let manager = DownloadManager(
+        let manager = DownloadTestFiles.manager(
             appModel: AppModel(identity: PlatformClientIdentity.make(
                 clientIdentifier: "complete-convert"), activeBackend: .emby),
             store: store, session: session, cleanupIntentJournal: journal,
@@ -542,9 +542,9 @@ struct DownloadCleanupOrderingTests {
     @Test(arguments: [LeakBranch.activeEncoding, .embyConvert]) @MainActor
     func deleteDisclosesCleanupLeakThatSurvivesSuccessfulRemoval(_ branch: LeakBranch) async throws {
         let directory = try makeTemporaryDirectory(branch.rawValue)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let key = attemptKey("attempt-A")
-        let store = DownloadStore(baseDirectory: directory)
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let mediaURL = store.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
         let metadata = branch.metadata(for: key)
         let record = DownloadRecord(
@@ -554,7 +554,7 @@ struct DownloadCleanupOrderingTests {
         try Data("main".utf8).write(to: mediaURL)
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         defer { session.invalidateInjectedSessionForTesting() }
-        let manager = DownloadManager(
+        let manager = DownloadTestFiles.manager(
             appModel: AppModel(identity: PlatformClientIdentity.make(
                 clientIdentifier: branch.rawValue), activeBackend: .emby),
             store: store, session: session,
@@ -575,7 +575,7 @@ struct DownloadCleanupOrderingTests {
     }
 
     private func makeTemporaryDirectory(_ label: String) throws -> URL {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+        let directory = DownloadTestFiles.temporaryDirectory.appendingPathComponent(
             "download-cleanup-\(label)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
@@ -670,18 +670,18 @@ struct DownloadCleanupOrderingTests {
     }
 
     private func withDirectory(_ body: (URL) throws -> Void) throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+        let directory = DownloadTestFiles.temporaryDirectory.appendingPathComponent(
             "download-cleanup-ordering-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         try body(directory)
     }
 
     private func withDirectory(_ body: (URL) async throws -> Void) async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+        let directory = DownloadTestFiles.temporaryDirectory.appendingPathComponent(
             "download-cleanup-ordering-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         try await body(directory)
     }
 

@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import Labstream
 
+@Suite(.downloadTestFiles)
 struct DownloadVolumeFreeSpaceTests {
     /// Important-usage capacity wins when positive; zero or missing falls back to the system
     /// free size; neither available is unmeasured.
@@ -23,7 +24,7 @@ struct DownloadVolumeFreeSpaceTests {
     @Test func downloadsContainerVolumeIsMeasurable() throws {
         // On every supported download platform the app container volume must yield a
         // positive measurement through the real resource-value/statfs path.
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
         let measured = try #require(DownloadVolumeFreeSpace.measure(directory: directory))
         #expect(measured.bytes > 0)
     }

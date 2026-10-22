@@ -4,7 +4,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
-@Suite("Queued download posters", .serialized)
+@Suite("Queued download posters", .downloadTestFiles, .serialized)
 @MainActor
 struct DownloadQueuedPosterTests {
     enum Entry: CaseIterable { case individual, season, restored }
@@ -94,7 +94,7 @@ struct DownloadQueuedPosterTests {
             #expect(updated.lifecycle == .planned)
             // The on-disk index and cached file remain usable by a newly loaded store.
             await f.store.drainArtifactWorkerForP6Testing()
-            let relaunched = DownloadStore(baseDirectory: f.files.directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: f.files.directory)
             #expect(relaunched.record(for: id)?.posterURL == poster)
         }
         #expect(requested.value.count == 1, "Only the poster may fetch before admission")
