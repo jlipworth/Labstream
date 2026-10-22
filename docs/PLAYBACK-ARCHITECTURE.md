@@ -488,7 +488,11 @@ offline return. The player window detaches only after both the platform open res
 immersive generation's appearance have succeeded; a failed or missing appearance leaves it in
 place. Window disappearance during the accepted handoff is not an exit and preserves the same
 controller, `AVPlayer`, and audio path. Stale scaffold generations cannot bind player callbacks,
-maintain SharePlay attachment, tick, or finalize. Do not restore a hidden second player or
+maintain SharePlay attachment, tick, or finalize. Cinema binds presentation callbacks once per
+scaffold/controller pair using weak controller and session references. Queued delivery checks both
+the binding owner and Cinema generation; disappearing scaffolds clear only their own binding.
+Terminal controller stop releases all presentation callbacks. These lifetime guards preserve the
+same controller during window-to-Cinema handoff. Do not restore a hidden second player or
 reintroduce an AVKit-only control surface.
 
 ## Restart and cleanup principles

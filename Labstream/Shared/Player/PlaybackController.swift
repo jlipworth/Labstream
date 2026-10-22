@@ -121,12 +121,38 @@ final class PlaybackController {
     /// resolved next item. The PlayerView wires this to its `onRequestPlay`, which the
     /// DetailView turns into a presented-item swap (rebuilding this view/controller for the
     /// next episode). Nil for sessions with no advance handler (e.g. offline playback).
-    var onAdvanceToNext: ((MediaItem) -> Void)?
+    var onAdvanceToNext: ((MediaItem) -> Void)? {
+        didSet { presentationCallbackOwner = nil }
+    }
 
     /// Invoked when playback reaches EOF and there is no resolved Up Next item to advance to.
     /// Player presentations wire this to their close/dismiss action so completed movies and
     /// offline files return to the app instead of sitting on a paused final frame.
-    var onPlaybackEnded: (() -> Void)?
+    var onPlaybackEnded: (() -> Void)? {
+        didSet { presentationCallbackOwner = nil }
+    }
+
+    private var presentationCallbackOwner: UUID?
+
+    /// A presenter may clear only the callbacks it installed. Direct assignments by another
+    /// presenter revoke this lease, as does terminal stop.
+    func bindPresentationCallbacks(owner: UUID,
+                                   advance: @escaping (MediaItem) -> Void,
+                                   ended: @escaping () -> Void) {
+        onAdvanceToNext = advance
+        onPlaybackEnded = ended
+        presentationCallbackOwner = owner
+    }
+
+    func ownsPresentationCallbacks(_ owner: UUID) -> Bool {
+        presentationCallbackOwner == owner
+    }
+
+    func clearPresentationCallbacks(owner: UUID) {
+        guard ownsPresentationCallbacks(owner) else { return }
+        onAdvanceToNext = nil
+        onPlaybackEnded = nil
+    }
 
     /// Fired whenever the item reaches `.playing`. PlayerView uses it to dismiss the
     /// "Reconnecting…" overlay shown during a failure-recovery rebuild (GH #33): the overlay
@@ -1102,6 +1128,11 @@ final class PlaybackController {
     /// Tear down observers and report a final `stopped` timeline. Call from the
     /// view's `dismantle`.
     func stop() {
+        // Presentation closures can retain their view/session graph. Release them even when
+        // the stopped controller is intentionally kept alive for diagnostics or final reporting.
+        onAdvanceToNext = nil
+        onPlaybackEnded = nil
+        onPlaybackActive = nil
         offlinePlaybackClosed = true
         failureRetryTask?.cancel()
         failureRetryTask = nil

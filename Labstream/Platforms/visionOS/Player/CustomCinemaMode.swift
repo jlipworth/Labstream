@@ -303,6 +303,60 @@ final class CustomCinemaSessionStore {
     }
 }
 
+/// One callback lease per scaffold/controller pair. Neither stored callback retains the
+/// controller or the session store that owns it; queued deliveries recheck the lease and generation.
+@MainActor
+final class CustomCinemaCallbackBinding {
+    private weak var controller: PlaybackController?
+    private var generation: CinemaTransitionGeneration?
+    private var owner = UUID()
+
+    func bind(session: CustomCinemaSessionStore,
+              generation: CinemaTransitionGeneration,
+              dismissImmersiveSpace: @escaping () async -> Void) {
+        guard session.transitionCoordinator.ownsActiveScaffold(generation: generation),
+              let controller = session.controller else { return }
+        if self.controller === controller, self.generation == generation,
+           controller.ownsPresentationCallbacks(owner) { return }
+        clear()
+        self.controller = controller
+        self.generation = generation
+        let owner = UUID()
+        self.owner = owner
+        controller.bindPresentationCallbacks(owner: owner, advance: { [weak controller, weak session] next in
+            Task { @MainActor [weak controller, weak session] in
+                guard let controller, let session,
+                      controller.ownsPresentationCallbacks(owner),
+                      session.controller === controller,
+                      session.transitionCoordinator.ownsActiveScaffold(generation: generation) else { return }
+                await session.transitionCoordinator.requestExit(
+                    generation: generation,
+                    request: .upNext(origin: session.origin, hasNextItem: true),
+                    stageReturn: { session.stageReturnItem(next) },
+                    dismissImmersiveSpace: dismissImmersiveSpace)
+            }
+        }, ended: { [weak controller, weak session] in
+            Task { @MainActor [weak controller, weak session] in
+                guard let controller, let session,
+                      controller.ownsPresentationCallbacks(owner),
+                      session.controller === controller,
+                      session.transitionCoordinator.ownsActiveScaffold(generation: generation) else { return }
+                await session.transitionCoordinator.requestExit(
+                    generation: generation,
+                    request: .playbackEnded(origin: session.origin, hasCurrentItem: session.item != nil),
+                    stageReturn: { session.stageReturnItem(session.item) },
+                    dismissImmersiveSpace: dismissImmersiveSpace)
+            }
+        })
+    }
+
+    func clear() {
+        controller?.clearPresentationCallbacks(owner: owner)
+        controller = nil
+        generation = nil
+    }
+}
+
 /// Black immersive theater surface for the custom player.
 ///
 /// Cinema Mode renders a single `RealityView` attachment — the real `PlayerLayerView` video surface
@@ -329,6 +383,7 @@ struct CustomCinemaScaffoldView: View {
     /// Holds the live attachment entity so the scrubber clock can re-run placement until RealityKit
     /// has laid the attachment out (and thus reports a real intrinsic size to calibrate against).
     @State private var entityBox = EntityBox()
+    @State private var callbackBinding = CustomCinemaCallbackBinding()
 
     /// Captured when this immersive scene instance is composed. All callbacks from this instance
     /// retain that generation even if a newer player session starts before a late callback lands.
@@ -374,7 +429,11 @@ struct CustomCinemaScaffoldView: View {
             bindCinemaCallbacks()
             startWatchTogetherAttachMaintenance()
         }
+        .onChange(of: session.controller.map(ObjectIdentifier.init)) { _, _ in
+            bindCinemaCallbacks()
+        }
         .onDisappear {
+            callbackBinding.clear()
             watchTogetherAttachTask?.cancel()
             watchTogetherAttachTask = nil
             finishCinemaDismissal()
@@ -413,39 +472,10 @@ struct CustomCinemaScaffoldView: View {
 
     @MainActor
     private func bindCinemaCallbacks() {
-        guard session.transitionCoordinator.ownsActiveScaffold(generation: generation) else {
-            return
-        }
-        guard let controller = session.controller else { return }
-        controller.onAdvanceToNext = { next in
-            Task { @MainActor in
-                guard session.controller === controller else { return }
-                await requestCinemaExit(
-                    request: .upNext(origin: session.origin, hasNextItem: true),
-                    returningTo: next)
-            }
-        }
-        controller.onPlaybackEnded = {
-            Task { @MainActor in
-                guard session.controller === controller else { return }
-                await requestCinemaExit(
-                    request: .playbackEnded(origin: session.origin,
-                                            hasCurrentItem: session.item != nil),
-                    returningTo: session.item)
-            }
-        }
-    }
-
-    @MainActor
-    private func requestCinemaExit(request: CinemaExitRequest, returningTo item: MediaItem?) async {
-        guard session.transitionCoordinator.ownsActiveScaffold(generation: generation) else {
-            return
-        }
-        await session.transitionCoordinator.requestExit(
-            generation: generation,
-            request: request,
-            stageReturn: { session.stageReturnItem(item) },
-            dismissImmersiveSpace: { await dismissImmersiveSpace() })
+        // Capture only the platform action, never this View (which retains the session store).
+        let dismiss = dismissImmersiveSpace
+        callbackBinding.bind(session: session, generation: generation,
+                             dismissImmersiveSpace: { await dismiss() })
     }
 
     @MainActor
@@ -497,7 +527,6 @@ struct CustomCinemaScaffoldView: View {
         if let screen = entityBox.entity {
             Self.place(screen, geometry: session.geometry)
         }
-        bindCinemaCallbacks()
         guard let controller = session.controller else { return }
         tickCustomScrubberClock(&scrubState, from: controller, fallbackDurationMs: session.item?.duration ?? 0)
     }
