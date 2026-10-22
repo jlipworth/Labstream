@@ -101,8 +101,8 @@ enum DebugUIFixtureCatalog {
                 let itemTitle = "\(isEpisode ? "Chapter" : "Horizon") \(index + 1)"
                 let artwork = "fixture://home-artwork/\(isLandscape ? "landscape" : "portrait")"
                 return MediaItem(ratingKey: "\(prefix)-shapes-\(kind)-\(index)",
-                                 title: itemTitle, type: kind, thumb: artwork,
-                                 year: isLandscape ? 2026 : nil,
+                                 title: itemTitle, type: kind,
+                                 year: isLandscape ? 2026 : nil, thumb: artwork,
                                  grandparentTitle: isEpisode ? "Distant Horizons" : nil,
                                  parentIndex: isEpisode ? 1 : nil,
                                  index: isEpisode ? index + 1 : nil,
