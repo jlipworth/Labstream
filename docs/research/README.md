@@ -23,6 +23,9 @@ When the investigation resolves:
 
 ## Active research notes
 
+- [`2026-10-22-macos-keychain-signature-prompts.md`](2026-10-22-macos-keychain-signature-prompts.md)
+  — storage-error and migration investigation for macOS signing-channel changes (#343).
+
 - [`2026-10-22-download-backlog-memory-and-writes.md`](2026-10-22-download-backlog-memory-and-writes.md)
   — bounded synthetic investigation of side-asset payload queues, inherited file
   backlog, and static append write amplification (#394, #390, #391).
