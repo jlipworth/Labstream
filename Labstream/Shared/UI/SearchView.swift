@@ -22,10 +22,8 @@ struct SearchView: View {
     @Environment(\.dismissSearch) private var dismissSearch
 
     @State private var internalQuery = ""
-    @State private var results: SearchResults = .empty
+    @State private var display = SearchDisplayState()
     @State private var loadState: BrowseLoadState = .idle
-    /// The query the current results were fetched for (pop-back no-op guard).
-    @State private var loadedQuery: SearchLoadIdentity?
     /// Drives programmatic focus of the `.searchable` field for ⌘F (RootView).
     @FocusState private var searchFieldFocused: Bool
 
@@ -151,7 +149,7 @@ struct SearchView: View {
 
     private var searchResultsContent: some View {
         ScrollView {
-            switch loadState {
+            switch visibleLoadState {
             case .idle:
                 ContentUnavailableView("Search your libraries",
                                        systemImage: "magnifyingglass",
@@ -167,24 +165,33 @@ struct SearchView: View {
                                        description: Text(message))
                 .frame(maxWidth: .infinity, minHeight: 300)
             case .loaded:
-                if results.presentationGroups.isEmpty {
-                    ContentUnavailableView.search(text: queryText)
+                if display.groups.isEmpty {
+                    ContentUnavailableView.search(text: display.identity?.query ?? "")
                         .frame(maxWidth: .infinity, minHeight: 300)
                 } else {
                     LazyVStack(alignment: .leading, spacing: DS.Space.xxxl) {
-                        ForEach(results.presentationGroups) { group in
+                        ForEach(display.groups) { group in
                             SearchLibrarySection(group: group,
-                                                 query: queryText,
+                                                 query: display.identity?.query ?? "",
                                                  backend: appModel.activeBackend,
                                                  sessionIdentity: appModel.activeBrowseSessionKey,
                                                  isMeasurementMilestone:
-                                                    group.id == results.presentationGroups.first?.id)
+                                                    group.id == display.groups.first?.id)
                         }
                     }
                     .padding(.vertical, DS.Space.xl)
                 }
             }
         }
+    }
+
+    // Retain a previous query during debounce only within the same authenticated
+    // session. Never expose an old backend's navigation targets while a task restarts.
+    private var visibleLoadState: BrowseLoadState {
+        guard !searchTaskID.query.isEmpty else { return .idle }
+        if case .loaded = loadState,
+           !display.isVisible(in: searchTaskID) { return .loading }
+        return loadState
     }
 
     private var queryBinding: Binding<String> { externalQuery ?? $internalQuery }
@@ -205,8 +212,7 @@ struct SearchView: View {
 
     private func clearSearch() {
         queryBinding.wrappedValue = ""
-        results = .empty
-        loadedQuery = nil
+        display.clear()
         loadState = .idle
         searchFieldFocused = false
         dismissSearch()
@@ -220,14 +226,14 @@ struct SearchView: View {
     private func runSearch() async {
         let trimmed = queryText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            results = .empty
+            display.clear()
             loadState = .idle
             return
         }
         // `.task(id:)` re-fires on pop-back from a result with the query unchanged;
         // re-running then would flash the spinner and dump the scroll position.
         let searchKey = SearchLoadIdentity(appModel: appModel, query: trimmed)
-        if searchKey == loadedQuery, case .loaded = loadState { return }
+        if searchKey == display.identity, case .loaded = loadState { return }
         // Light debounce so we don't fire a request per keystroke.
         try? await Task.sleep(for: .milliseconds(300))
         guard SearchRequestAuthority.accepts(capturedKey: searchKey,
@@ -236,8 +242,8 @@ struct SearchView: View {
         #if DEBUG
         if let fixture = DebugUIFixtureCatalog.searchResults(query: trimmed,
                                                              backend: appModel.activeBackend) {
-            results = fixture
-            loadedQuery = searchKey
+            display.publish(fixture, for: searchKey, current: currentSearchAuthorityKey,
+                            isCancelled: Task.isCancelled)
             loadState = .loaded
             return
         }
@@ -262,8 +268,8 @@ struct SearchView: View {
                     span.end(result: Task.isCancelled ? "cancelled" : "superseded")
                     return
                 }
-                results = searchResults
-                loadedQuery = searchKey
+                display.publish(searchResults, for: searchKey, current: currentSearchAuthorityKey,
+                                isCancelled: Task.isCancelled)
                 loadState = .loaded
                 span.end(fields: searchPerformanceFields(searchResults))
             } catch {
@@ -305,8 +311,8 @@ struct SearchView: View {
                 span.end(result: Task.isCancelled ? "cancelled" : "superseded")
                 return
             }
-            results = combined
-            loadedQuery = searchKey
+            display.publish(combined, for: searchKey, current: currentSearchAuthorityKey,
+                            isCancelled: Task.isCancelled)
             loadState = .loaded
             span.end(fields: searchPerformanceFields(combined))
         } catch {
@@ -343,6 +349,30 @@ struct SearchLoadIdentity: Hashable {
     init(appModel: AppModel, query: String) {
         browse = AuthenticatedBrowseLoadIdentity(appModel: appModel)
         self.query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+/// One atomic publication owns both the rendered projection and its request identity.
+/// In particular, View All must use this query throughout the next query's debounce.
+struct SearchDisplayState {
+    private(set) var identity: SearchLoadIdentity?
+    private(set) var groups: [SearchPresentationGroup] = []
+
+    mutating func publish(_ results: SearchResults, for captured: SearchLoadIdentity,
+                          current: SearchLoadIdentity, isCancelled: Bool) {
+        guard SearchRequestAuthority.accepts(capturedKey: captured, currentKey: current,
+                                             isCancelled: isCancelled) else { return }
+        groups = results.presentationGroups(query: captured.query)
+        identity = captured
+    }
+
+    func isVisible(in current: SearchLoadIdentity) -> Bool {
+        !current.query.isEmpty && identity?.browse == current.browse
+    }
+
+    mutating func clear() {
+        identity = nil
+        groups = []
     }
 }
 

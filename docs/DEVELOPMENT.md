@@ -298,6 +298,38 @@ scripts/agent-mobile-run.sh ipad fixture-detail-semantic --allow-simulator
 Shutting down preserves the simulator and its app state. Do not use `teardown` for the main
 worktree's golden visionOS simulator.
 
+## Search matching and result identity
+
+Search uses the server's retrieval capabilities: Plex `/hubs/search`, and Jellyfin/Emby
+recursive `SearchTerm` requests scoped to each allowed user-view library (50 initial hits
+per library, at most four library requests concurrently). The 300 ms debounce suppresses
+requests while typing. No library download or alternate-query fanout is performed.
+
+Each accepted response publishes its trimmed query, authenticated session identity, and
+presentation groups together. During the next debounce, visible rows and MediaBrowser
+**View All** continue to use the query that produced them. Clearing hides results immediately;
+backend/session changes hide old results, and cancelled or superseded responses cannot publish.
+Library discovery order, type sections, music navigation, and native search/keyboard controls
+remain intact, including the existing command-F stack-reset policy.
+
+Within each returned library/type section, shared title ranking folds case, diacritics and
+width, treats punctuation as word separators, and ranks exact title, title prefix, all-word
+prefix matches (any order), substring, then one-edit word matches. For example, `cafe moon`
+ranks `Café—Moon` as exact; `pap moo` matches `Paper Moon`; `horizno`, `horizn`, and `horixon`
+can rank `Horizon` through a transposition, deletion, or substitution. Typo matching requires
+at least four query characters per fuzzy word and is bounded to 16 query words, 64 title
+words, and 64 characters per fuzzy word. Equal title matches sort by normalized title then
+item ID; non-title matches retain server relevance order. No returned hit is removed, since
+servers may match people or other metadata. Rankings never move items across libraries/types.
+
+These examples describe **ranking of returned hits**, not corpus-wide fuzzy recall. A server
+may omit a typo, accent, punctuation, or prefix match before the app can rank it, and the
+initial MediaBrowser page is limited and server-sorted. View All retains server pagination
+and ordering. Reliable corpus-wide typo recall would need a backend-supported fuzzy query
+or a separately designed, incremental, permission-scoped index; it must not be simulated by
+fetching entire libraries or sending multiple queries on every keystroke. Live backend recall
+and physical keyboard/headset behavior remain separate acceptance checks from fixture tests.
+
 ## Linked-worktree simulator cleanup
 
 Linked worktrees own their `vpwt-*`, `iphonewt-*`, `ipadwt-*`, and `tvwt-*` simulators. Before removing a
