@@ -126,6 +126,65 @@ struct MacMainWindowLifecycleTests {
     }
 
     @Test
+    func closingMountedPlayerRunsRealViewCleanup() async throws {
+        let windowController = MacMainWindowController()
+        let presenter = MacPlayerPresentationStore(windowController: windowController)
+        let identity = PlatformClientIdentity.make(clientIdentifier: "mac-close-mounted-player")
+        let model = AppModel(identity: identity)
+        let artwork = ArtworkPipeline()
+        let music = MusicPlayerController(appModel: model, artworkPipeline: artwork,
+                                          resolveStream: { _, _ in
+            throw MusicStreamResolver.ResolveError.notConnected
+        })
+        let item = MediaItem(ratingKey: "close-fixture", title: "Fixture", type: "movie",
+                             duration: 60_000)
+        var playback: PlaybackController?
+        var closeSamples: [Int] = []
+        presenter.present(ownerID: UUID(), contentID: "mounted-player", onClose: {}) {
+            CustomPlayerView(item: item, controllerFactory: {
+                let value = PlaybackController(
+                    item: item,
+                    sessionSource: .offline(OfflinePlaybackSession(
+                        fileURL: URL(fileURLWithPath: "/fixture.invalid"),
+                        onPlaybackClose: { position, _ in closeSamples.append(position) })),
+                    identity: identity, client: PlexClient(identity: identity))
+                playback = value
+                return value
+            })
+        }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 640),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        defer {
+            window.contentView = nil
+            window.close()
+            playback?.stop()
+            music.stop()
+        }
+        window.contentView = NSHostingView(rootView:
+            MacCloseMountedPlayerHost(presenter: presenter)
+                .environment(model).environment(music).environment(\.artworkPipeline, artwork))
+        windowController.register(window)
+        window.orderFront(nil)
+        let mountDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while playback == nil, ContinuousClock.now < mountDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let mountedPlayback = try #require(playback)
+        #expect(!mountedPlayback.debugEvidenceSnapshot().cleanupRequested)
+        window.performClose(nil)
+        let closeDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !mountedPlayback.debugEvidenceSnapshot().cleanupRequested,
+              ContinuousClock.now < closeDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(!window.isVisible)
+        #expect(!presenter.isPresented)
+        #expect(mountedPlayback.debugEvidenceSnapshot().cleanupRequested)
+        #expect(!closeSamples.isEmpty)
+        #expect(mountedPlayback.player.currentItem == nil)
+    }
+
+    @Test
     func activePictureInPictureSurvivesCloseAndReopenUntilItEnds() {
         let controller = MacMainWindowController()
         let presenter = MacPlayerPresentationStore(windowController: controller)
@@ -182,6 +241,17 @@ struct MacMainWindowLifecycleTests {
         #expect(controller.pendingCommands.isEmpty)
         MacMainWindowController().hideMainWindow(nil)
         #expect(!MacAppDelegate().applicationShouldTerminateAfterLastWindowClosed(NSApp))
+    }
+}
+private struct MacCloseMountedPlayerHost: View {
+    let presenter: MacPlayerPresentationStore
+    var body: some View {
+        ZStack {
+            Text("Browse")
+            if let presentation = presenter.presentation {
+                presentation.content
+            }
+        }
     }
 }
 #endif

@@ -90,19 +90,26 @@ enum DebugUIFixtureCatalog {
     /// cards alternate aspect and missing metadata, and episode art mixes stills/posters.
     static func mixedShapeHubs(backend: MediaBackendKind) -> [Hub] {
         let prefix = backend.rawValue
-        return [("movie", "Mixed Artwork Movies"), ("show", "Mixed Artwork Shows"),
-                ("episode", "Mixed Artwork Episodes")].map { kind, title in
-            Hub(title: title, type: kind, hubIdentifier: "fixture-shapes-\(kind)",
-                metadata: (0..<8).map { index in
-                    MediaItem(ratingKey: "\(prefix)-shapes-\(kind)-\(index)",
-                              title: "\(kind == "episode" ? "Chapter" : "Horizon") \(index + 1)", type: kind,
-                              thumb: "fixture://home-artwork/\(index % 2 == 0 ? "landscape" : "portrait")",
-                              year: index % 2 == 0 ? 2026 : nil,
-                              grandparentTitle: kind == "episode" ? "Distant Horizons" : nil,
-                              parentIndex: kind == "episode" ? 1 : nil,
-                              index: kind == "episode" ? index + 1 : nil,
-                              primaryImageAspectRatio: index % 2 == 0 ? 16.0 / 9.0 : 2.0 / 3.0)
-                })
+        let shelves: [(String, String)] = [
+            ("movie", "Mixed Artwork Movies"), ("show", "Mixed Artwork Shows"),
+            ("episode", "Mixed Artwork Episodes"),
+        ]
+        return shelves.map { kind, title in
+            let items: [MediaItem] = (0..<8).map { index in
+                let isEpisode = kind == "episode"
+                let isLandscape = index.isMultiple(of: 2)
+                let itemTitle = "\(isEpisode ? "Chapter" : "Horizon") \(index + 1)"
+                let artwork = "fixture://home-artwork/\(isLandscape ? "landscape" : "portrait")"
+                return MediaItem(ratingKey: "\(prefix)-shapes-\(kind)-\(index)",
+                                 title: itemTitle, type: kind, thumb: artwork,
+                                 year: isLandscape ? 2026 : nil,
+                                 grandparentTitle: isEpisode ? "Distant Horizons" : nil,
+                                 parentIndex: isEpisode ? 1 : nil,
+                                 index: isEpisode ? index + 1 : nil,
+                                 primaryImageAspectRatio: isLandscape ? 16.0 / 9.0 : 2.0 / 3.0)
+            }
+            return Hub(title: title, type: kind, hubIdentifier: "fixture-shapes-\(kind)",
+                       metadata: items)
         }
     }
 
