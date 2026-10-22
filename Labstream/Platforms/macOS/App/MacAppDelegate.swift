@@ -75,6 +75,8 @@ final class MacMainWindowController: NSObject {
     /// Retained until RootView acknowledges each request. Commands therefore cannot disappear in
     /// the brief interval while the main scene is being restored or its task observers remount.
     private(set) var pendingCommands: [CommandRequest] = []
+    /// Published by the retained shell so menu validation uses the same guards as dispatch.
+    var navigationCommandAvailability = MacNavigationPolicy.CommandAvailability()
 
     func register(_ window: NSWindow) {
         mainWindow = window

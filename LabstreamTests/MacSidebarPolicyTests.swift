@@ -111,4 +111,101 @@ struct MacSidebarPolicyTests {
         #expect(store.route(for: "emby:server:user") == embyRoute)
     }
 }
+@Suite("Mac explicit navigation transitions")
+@MainActor
+struct MacNavigationPolicyTests {
+    @Test func homeActivationAlwaysReachesRoot() {
+        for previous: MacSidebarDestination in [.home, .offline, .library("movies"), .music(.albums)] {
+            let navigation = populatedCoordinator()
+            MacNavigationPolicy.activate(.home, from: previous, navigation: navigation)
+            #expect(navigation.selection == .home)
+            #expect(navigation.homePath.isEmpty)
+            #expect(navigation.searchPath.isEmpty)
+            #expect(navigation.musicPath.count == 2)
+            #expect(navigation.librariesPath.count == 2)
+        }
+    }
+
+    @Test func everyExplicitMusicPivotIncludingReselectionReachesRoot() {
+        for pivot: MusicPivot in [.home, .artists, .albums, .playlists] {
+            for previous: MacSidebarDestination in [.home, .music(pivot), .music(.artists)] {
+                let navigation = populatedCoordinator()
+                MacNavigationPolicy.activate(.music(pivot), from: previous, navigation: navigation)
+                #expect(navigation.selection == .music)
+                #expect(navigation.musicPath.isEmpty)
+                #expect(navigation.searchPath.isEmpty)
+                #expect(navigation.homePath.count == 2)
+            }
+        }
+    }
+
+    @Test func destinationsDismissSearchEvenOnReselectionAndKeepLibraryHistory() {
+        for destination: MacSidebarDestination in [.offline, .library("movies")] {
+            let navigation = populatedCoordinator()
+            MacNavigationPolicy.activate(destination, from: destination, navigation: navigation)
+            #expect(navigation.searchPath.isEmpty)
+            #expect(navigation.selection == MacNavigationPolicy.destination(for: destination))
+            #expect(navigation.librariesPath.count == 2)
+        }
+        let navigation = populatedCoordinator()
+        MacNavigationPolicy.activate(.library("shows"), from: .library("movies"), navigation: navigation)
+        #expect(navigation.librariesPath.isEmpty)
+    }
+
+    @Test func searchBackPopsOneLevelBeforeRequestingDismissal() {
+        let navigation = populatedCoordinator()
+        #expect(!MacNavigationPolicy.navigateBack(isSearching: true, selection: .home, navigation: navigation))
+        #expect(navigation.searchPath.count == 1)
+        #expect(!MacNavigationPolicy.navigateBack(isSearching: true, selection: .home, navigation: navigation))
+        #expect(navigation.searchPath.isEmpty)
+        #expect(MacNavigationPolicy.navigateBack(isSearching: true, selection: .home, navigation: navigation))
+        #expect(navigation.homePath.count == 2)
+    }
+
+    @Test func browseBackOnlyPopsItsOwnStack() {
+        let navigation = populatedCoordinator()
+        #expect(!MacNavigationPolicy.navigateBack(isSearching: false, selection: .music(.albums), navigation: navigation))
+        #expect(navigation.musicPath.count == 1)
+        #expect(navigation.homePath.count == 2)
+        #expect(navigation.searchPath.count == 2)
+    }
+
+    @Test func commandValidationMatchesAuthenticationPlaybackAndActualBackAction() {
+        let navigation = RootNavigationCoordinator()
+        func availability(authenticated: Bool = true, playing: Bool = false, searching: Bool = false) -> MacNavigationPolicy.CommandAvailability {
+            MacNavigationPolicy.availability(isAuthenticated: authenticated, isPlayingVideo: playing,
+                                             isSearching: searching, selection: .home, navigation: navigation)
+        }
+        #expect(availability() == .init(canNavigateBack: false, canSelectDestination: true))
+        #expect(availability(searching: true) == .init(canNavigateBack: true, canSelectDestination: true))
+        navigation.homePath.append("detail")
+        #expect(availability().canNavigateBack)
+        for searching in [false, true] {
+            #expect(availability(playing: true, searching: searching) == .init())
+            #expect(availability(authenticated: false, searching: searching) == .init())
+        }
+    }
+
+    @Test func searchQueryEditsStillRevealNewResultsAfterBack() {
+        let navigation = populatedCoordinator()
+        _ = MacNavigationPolicy.navigateBack(isSearching: true, selection: .home, navigation: navigation)
+        navigation.searchQueryDidChange(from: "first", to: " first ")
+        #expect(navigation.searchPath.count == 1)
+        navigation.searchQueryDidChange(from: "first", to: "second")
+        #expect(navigation.searchPath.isEmpty)
+        navigation.searchPath.append("detail")
+        navigation.focusSearchFromCommand(selectsSearch: false)
+        #expect(navigation.searchPath.isEmpty)
+    }
+
+    private func populatedCoordinator() -> RootNavigationCoordinator {
+        let navigation = RootNavigationCoordinator()
+        for destination: AppDestination in [.home, .libraries, .music, .search] {
+            for _ in 0..<2 {
+                navigation.push(.init(ratingKey: "fixture", title: "Fixture", type: "movie"), on: destination)
+            }
+        }
+        return navigation
+    }
+}
 #endif

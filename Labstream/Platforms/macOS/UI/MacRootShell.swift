@@ -89,6 +89,9 @@ struct PlatformRootShell: View {
     .onChange(of: macSelection) { oldSelection, newSelection in
       macSidebarSelectionChanged(from: oldSelection, to: newSelection)
     }
+    .onChange(of: macCommandAvailability, initial: true) { _, availability in
+      MacMainWindowController.shared.navigationCommandAvailability = availability
+    }
     .onChange(of: macPlayerPresenter.isPresented) { _, isPresented in
       updateMacNavigationChrome(forPlayerPresentation: isPresented)
     }
@@ -185,9 +188,7 @@ struct PlatformRootShell: View {
     case .focusSearch:
       focusSearch()
     case .selectOffline:
-      if !macPlayerPresenter.isPresented {
-        macSelection = .offline
-      }
+      activateMacDestination(.offline)
     case .requestSignOut:
       if appModel.isAuthenticated {
         macConfirmingSignOut = true
@@ -213,7 +214,10 @@ struct PlatformRootShell: View {
   }
 
   private var macSidebar: some View {
-    List(selection: $macSelection) {
+    List(selection: Binding(
+      get: { macSelection },
+      set: { activateMacDestination($0) }
+    )) {
       macSidebarRow(.home, title: "Home", systemImage: "house")
         .accessibilityIdentifier("performance.mac.sidebar.home")
 
@@ -342,36 +346,28 @@ struct PlatformRootShell: View {
     navigation.searchPath = NavigationPath()
   }
 
-  private var canMacNavigateBack: Bool {
-    guard !macPlayerPresenter.isPresented else { return false }
-    guard !macSearchPresented else { return true }
-    switch macSelection {
-    case .home:
-      return !navigation.homePath.isEmpty
-    case .library:
-      return !navigation.librariesPath.isEmpty
-    case .music:
-      return !navigation.musicPath.isEmpty
-    case .offline:
-      return false
-    }
+  private var macCommandAvailability: MacNavigationPolicy.CommandAvailability {
+    MacNavigationPolicy.availability(
+      isAuthenticated: appModel.isAuthenticated,
+      isPlayingVideo: macPlayerPresenter.isPresented,
+      isSearching: macSearchPresented,
+      selection: macSelection,
+      navigation: navigation)
+  }
+
+  private func activateMacDestination(_ destination: MacSidebarDestination) {
+    guard macCommandAvailability.canSelectDestination else { return }
+    MacNavigationPolicy.activate(destination, from: macSelection, navigation: navigation)
+    dismissMacSearch()
+    macSelection = destination
   }
 
   private func macNavigateBack() {
-    if macSearchPresented {
+    guard macCommandAvailability.canNavigateBack else { return }
+    if MacNavigationPolicy.navigateBack(
+      isSearching: macSearchPresented, selection: macSelection, navigation: navigation
+    ) {
       dismissMacSearch()
-      return
-    }
-    guard canMacNavigateBack else { return }
-    switch macSelection {
-    case .home:
-      navigation.homePath.removeLast()
-    case .library:
-      navigation.librariesPath.removeLast()
-    case .music:
-      navigation.musicPath.removeLast()
-    case .offline:
-      break
     }
   }
 
@@ -382,6 +378,13 @@ struct PlatformRootShell: View {
   ) -> some View {
     Label(title, systemImage: systemImage)
       .tag(destination)
+      .contentShape(Rectangle())
+      .simultaneousGesture(TapGesture().onEnded {
+        // Native List selection handles changed rows and keyboard navigation. A click on
+        // the selected row has no selection change, but still expresses activation intent.
+        if macSelection == destination { activateMacDestination(destination) }
+      })
+      .accessibilityAction { activateMacDestination(destination) }
   }
 
   private func macLibrarySidebarRow(_ library: MacSidebarLibraryDescriptor) -> some View {
@@ -419,6 +422,11 @@ struct PlatformRootShell: View {
       }
     }
     .tag(MacSidebarDestination.offline)
+    .contentShape(Rectangle())
+    .simultaneousGesture(TapGesture().onEnded {
+      if macSelection == .offline { activateMacDestination(.offline) }
+    })
+    .accessibilityAction { activateMacDestination(.offline) }
   }
 
   private var macSignOutConfirmationMessage: String {
