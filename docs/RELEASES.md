@@ -8,6 +8,15 @@ query; verify them in App Store Connect again before any upload or submission.
 
 ## Current status
 
+On 2026-10-22, an internal TestFlight run built **1.8.0 (build 1555)** for all four
+platforms from clean commit `00614949` on `downloads/overhaul`, using
+`--allow-unpublished`. This includes the Mac navigation and window-close fixes, Home shelf
+layout corrections, and workflow tooling improvements. All four archives passed signing,
+entitlement, version, and matching privacy-manifest checks. All four builds processed to
+**VALID**, reached **IN_BETA_TESTING**, and are available in **Labstream Internal**.
+No App Store build was selected or submitted for review. Physical-device and live-backend
+acceptance remain open; the source commit is local and is not yet on `origin/main`.
+
 The repository source on the downloads-overhaul stack is **1.8.0 (build 2)** across all four app
 targets. 1.8.0 is the downloads overhaul (P1–P7): download admission, cleanup and lifecycle
 durability, storage accounting, bounded background wakes, offline playback and shared download rows;
