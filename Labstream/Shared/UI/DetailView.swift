@@ -689,7 +689,11 @@ struct DetailView: View {
         }
 
         macPlayerPresenter.present(ownerID: macPlayerPresentationOwnerID,
-                                   contentID: macPlayerContentID) {
+                                   contentID: macPlayerContentID,
+                                   onClose: {
+                                       presentingPlayer = false
+                                       localPlaybackRequest = nil
+                                   }) {
             macPlayerPresentation
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black)

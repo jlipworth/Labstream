@@ -46,8 +46,9 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
 /// Process-lifetime owner for the one macOS browse/player window.
 ///
 /// Closing the main window intentionally means "hide", not "destroy": preserving the same
-/// SwiftUI graph is what keeps a window-owned video player alive, while AppRuntime independently
-/// keeps authentication, downloads, and music alive. A Dock reopen, system entry, or menu command
+/// SwiftUI graph preserves browsing state, while ordinary video is dismissed through its normal
+/// owner before hiding. AppRuntime independently keeps authentication, downloads, and music alive.
+/// A Dock reopen, system entry, or menu command
 /// orders this exact window back to the front; no window selection heuristic is involved.
 @MainActor
 @Observable
@@ -72,6 +73,8 @@ final class MacMainWindowController: NSObject {
     private(set) weak var mainWindow: NSWindow?
     @ObservationIgnored
     private var shouldActivateWhenRegistered = false
+    @ObservationIgnored
+    weak var playerPresentationStore: MacPlayerPresentationStore?
     /// Retained until RootView acknowledges each request. Commands therefore cannot disappear in
     /// the brief interval while the main scene is being restored or its task observers remount.
     private(set) var pendingCommands: [CommandRequest] = []
@@ -84,8 +87,8 @@ final class MacMainWindowController: NSObject {
         window.isReleasedWhenClosed = false
 
         // NSWindow.performClose (including Command-W) dispatches through the standard close
-        // button. Repointing that action lets us preserve the SwiftUI scene instead of trying to
-        // reconstruct an active PlaybackController after its view graph has been dismantled.
+        // button. Repointing that action lets us dismiss ordinary video while preserving the
+        // browse scene and process-owned background music/downloads.
         if let closeButton = window.standardWindowButton(.closeButton) {
             closeButton.target = self
             closeButton.action = #selector(hideMainWindow(_:))
@@ -146,6 +149,7 @@ final class MacMainWindowController: NSObject {
 
     @objc func hideMainWindow(_ sender: Any?) {
         let senderWindow = (sender as? NSButton)?.window
+        playerPresentationStore?.dismissForMainWindowClose()
         (senderWindow ?? mainWindow)?.orderOut(nil)
     }
 }

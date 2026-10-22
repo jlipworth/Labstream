@@ -238,7 +238,8 @@ public struct OfflineLibraryView: View {
         }
 
         macPlayerPresenter.present(ownerID: macPlayerPresentationOwnerID,
-                                   contentID: AnyHashable("offline-\(playing.id)")) {
+                                   contentID: AnyHashable("offline-\(playing.id)"),
+                                   onClose: { self.playing = nil }) {
             offlinePlayerView(for: playing)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black)
