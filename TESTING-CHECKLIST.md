@@ -167,6 +167,12 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
       preferences behave as configured.
 - [ ] Network loss or a starved stream shows buffering/reconnecting/failure status instead
       of a black surface with no explanation. Recovery never revives a superseded player.
+- [ ] Buffering overlay timing: waits under ~0.6 s show nothing; a sustained wait shows a
+      spinner only (no card), escalating to the card with Pause after ~3.5 s; brief
+      waiting/playing chatter never flickers; pausing during a wait shows the "Resume when
+      ready" card at once; reconnect/failure appear immediately. With chrome visible, the
+      spinner/card sits between the top bar and the scrubber (iPhone landscape, iPad both
+      orientations), and appear/escalate transitions animate rather than pop.
 - [ ] Stats reports source, decision/play method, rendered stream, bitrate, audio,
       and HDR facts without private server or media identifiers.
 - [ ] **Stats redesign (#331):** Stats opens on the compact summary, and See more / Show less

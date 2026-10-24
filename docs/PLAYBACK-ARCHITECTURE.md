@@ -241,6 +241,43 @@ adaptive bitrate is enabled, it may move among bounded transcode rungs below tha
 forward-buffer duration remains a hint, not a guarantee; a full server throttle window, a
 single-rendition copy stream, or AVPlayer's realized buffer is not itself an adaptive bitrate ladder.
 
+### Transport-status presentation
+
+`PlaybackController` resolves one `PlaybackTransportStatus` from AVPlayer state, user intent,
+retry lifecycle, and surfaced failures, and feeds it to `PlaybackTransportStatusState`. That
+object owns every presentation timer; the chrome renders only its published `status` and
+`stage`, so no view owns a buffering timer. The contract:
+
+- **Show delay (600 ms).** Buffering-class states (`.buffering`, `.pausedBuffering`,
+  `.preparingLocal`) publish nothing until the wait has lasted 600 ms, so short waits never
+  flash an overlay. This is the single delay mechanism; local preparation (including the
+  initial Offline open) uses it too. The one exception: a remote wait before the current item
+  has played any frame (black surface, nothing to cover) shows the spinner immediately.
+- **Minimum visible (600 ms).** Once shown, a wait stays up for at least 600 ms. A clear inside
+  that hold is deferred, and waiting that resumes within it continues the same presentation,
+  so waiting ↔ playing chatter cannot flicker.
+- **Staged escalation (3.5 s).** A continuous wait first shows stage 1, a spinner on a subtle
+  dark disc with no platter. After 3.5 s from the start of the wait it escalates to stage 2,
+  the full card with title, detail copy, and the Pause / "Resume when ready" action. First
+  start and rebuffers share the same stages and timer. A paused wait (`.pausedBuffering`,
+  paused local preparation) presents the card directly, because the viewer explicitly paused
+  and needs "Resume when ready". A wait never demotes from card back to spinner.
+- **Preemption.** `.reconnecting` and `.failed` publish immediately as cards, cancelling any
+  pending show and the minimum-visible hold. Their clear is immediate. Retry from a failure
+  replaces the card with the stage-1 spinner without a blank gap.
+
+On iOS/iPadOS the card is sized by layout: regular width uses a 420 pt card with `.title3`
+title and `.subheadline` detail; compact width scales with the viewport (up to 380 pt); compact
+height (iPhone landscape) uses a tighter rhythm and smaller controls so it clears the scrubber.
+tvOS, visionOS, and macOS keep their established card sizes. When chrome is visible, the
+overlay centers in the free space between the measured top bar and bottom controls. When chrome
+is hidden, it centers in the chrome's safe-area frame. Appear/disappear and the
+spinner → card transition animate with an opacity and scale change. On iOS the center
+play/pause stays hidden while any status is presented. The pre-controller startup spinner in
+`CustomPlayerView` uses the same stage-1 view, so startup reads as one indicator. The
+`--ui-testing-player-buffering` fixture (add `--ui-testing-player-paused` for the paused card)
+pins the status through the real timing for deterministic review.
+
 ## Seeking and restart budgets
 
 The custom scrubber owns user seek intent. `RemoteSeekModePolicy` selects native in-buffer
@@ -337,7 +374,8 @@ and its typed offline session still shares player UI, diagnostics, chapters/subt
 and error surfaces with remote playback. Transport-status presentation is source-aware:
 `PlaybackTransportPresentationPolicy` maps AVPlayer's shared waiting state to local-preparation
 wording for `.localFile` sessions instead of remote buffering language, while stall-watchdog
-mechanics remain shared with remote playback.
+mechanics and the [presentation timing](#transport-status-presentation) remain shared with
+remote playback.
 
 ## HDR and Dolby Vision
 
