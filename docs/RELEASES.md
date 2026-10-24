@@ -8,6 +8,16 @@ query; verify them in App Store Connect again before any upload or submission.
 
 ## Current status
 
+On 2026-10-23, the next internal TestFlight run built **1.8.0 (build 1565)** for all four
+platforms from clean commit `76dbbd14` on `downloads/overhaul`, using
+`--allow-unpublished`. It adds the staged player transport-status presentation: a show delay,
+minimum hold, spinner-to-card escalation, size-class card sizing on iPhone/iPad, and centering
+between player chrome. All four archives passed validation and processed to **VALID**,
+**IN_BETA_TESTING**, in **Labstream Internal**. No App Store build was selected or submitted for
+review. App tests, the iPhone/iPad buffering-fixture UI test, hermetic PMSKit tests, four-platform
+builds, and a visionOS runtime smoke passed; physical-device and live-backend acceptance remain
+separate.
+
 On 2026-10-22, the next internal TestFlight run built **1.8.0 (build 1561)** for all four
 platforms from clean commit `a9ab14f4` on `downloads/overhaul`, using
 `--allow-unpublished`. It adds query-consistent Search presentation and bounded title
