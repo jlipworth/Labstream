@@ -59,7 +59,7 @@ struct TVPlayerFixtureView: View {
     private func fixturePlayer(url: URL) -> some View {
         let item = DebugPlayerFixtureMedia.item
         if DebugUITestLaunchConfiguration.playerFixtureStartsBuffering || DebugStatsFixture.scenario != nil {
-            // The buffering-review variant needs the controller instance so it can hold
+            // The buffering-review variant needs the controller instance so it can pin
             // `transportStatus` in `.buffering` against the KVO-driven transitions that would
             // otherwise clear it as local playback primes instantly. The Stats-scenario
             // variant needs it to seed synthetic diagnostics (#331).
@@ -87,14 +87,9 @@ struct TVPlayerFixtureView: View {
     }
 
     private func holdBufferingStatus(on controller: PlaybackController) {
-        Task { @MainActor [weak controller] in
-            let deadline = ContinuousClock.now.advanced(by: .seconds(600))
-            while ContinuousClock.now < deadline {
-                guard let controller else { return }
-                controller.transportStatus.set(.buffering)
-                try? await Task.sleep(for: .milliseconds(250))
-            }
-        }
+        // Pinned through the real presentation timing: spinner after the show delay, card
+        // after the escalation threshold, while KVO-driven updates are ignored.
+        controller.transportStatus.holdForTesting(.buffering)
     }
 
     private func prepare() async {

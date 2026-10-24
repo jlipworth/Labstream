@@ -4572,7 +4572,7 @@ final class PlaybackController {
 
     private func updateTransportStatus() {
         let nextStatus = resolvedTransportStatus()
-        transportStatus.set(nextStatus)
+        transportStatus.set(nextStatus, hasObservedPlayback: hasObservedPlayback)
         guard nextStatus != lastLoggedTransportStatus else { return }
         lastLoggedTransportStatus = nextStatus
         recordPlaybackDiagnostic("playback.transport_status", fields: [
@@ -6109,31 +6109,94 @@ enum PlaybackTransportStatus: Equatable {
     }
 }
 
+extension PlaybackTransportStatus {
+    /// Buffering-class states: AVPlayer is waiting for media. These share the show delay,
+    /// minimum-visible hold, and staged spinner → card escalation.
+    var isWaitingForMedia: Bool {
+        switch self {
+        case .buffering, .pausedBuffering, .preparingLocal: true
+        case .none, .reconnecting, .failed: false
+        }
+    }
+
+    /// States that always present the full card. A paused wait means the viewer explicitly
+    /// paused and is engaged, so they get the "Resume when ready" affordance at once;
+    /// reconnect and failure need their Close/Retry actions.
+    var presentsCardImmediately: Bool {
+        switch self {
+        case .pausedBuffering, .reconnecting, .failed: true
+        case .preparingLocal(let isPaused, _): isPaused
+        case .none, .buffering: false
+        }
+    }
+}
+
+/// How much of a visible transport status is rendered. Stage 1 is a lightweight spinner over
+/// the picture; stage 2 is the full card with copy and the Pause / "Resume when ready" action.
+enum PlaybackTransportStatusStage: Equatable {
+    case spinner
+    case card
+}
+
+/// Presentation state machine for the transport status (see PLAYBACK-ARCHITECTURE.md,
+/// "Buffering and stalls"). The controller feeds the raw resolved status on every change; this
+/// object owns every timer so views only render `status` + `stage`:
+///
+/// - Buffering-class waits publish nothing until `showDelay` elapses, so short waits never flash.
+///   The one exception is a remote wait before the current item has played any frame (black
+///   surface, nothing to cover), which shows the spinner at once.
+/// - Once shown, a wait stays visible for at least `minimumVisible` so waiting ↔ playing chatter
+///   cannot flicker.
+/// - A continuous wait starts as the spinner and escalates to the card after `escalation`
+///   (measured from the start of the wait). Paused waits present the card directly. A wait
+///   never demotes from the card back to the spinner.
+/// - `.reconnecting` / `.failed` publish immediately and preempt any pending timer.
 @Observable
 @MainActor
 final class PlaybackTransportStatusState {
-    static let localInitialPreparationDelay: Duration = .milliseconds(750)
+    struct Timing: Equatable {
+        var showDelay: Duration = .milliseconds(600)
+        var minimumVisible: Duration = .milliseconds(600)
+        var escalation: Duration = .milliseconds(3_500)
 
+        static let standard = Timing()
+    }
+
+    /// Schedules `action` after `delay` on the main actor and returns its cancellation.
+    typealias Scheduler = @MainActor (Duration, @escaping @MainActor () -> Void) -> (@MainActor () -> Void)
+
+    static let taskScheduler: Scheduler = { delay, action in
+        let task = Task { @MainActor in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard !Task.isCancelled else { return }
+            action()
+        }
+        return { task.cancel() }
+    }
+
+    /// The presented status (`.none` while hidden or while a wait is still inside its show delay).
     private(set) var status: PlaybackTransportStatus = .none
-    @ObservationIgnored private var pendingStatus: PlaybackTransportStatus?
-    @ObservationIgnored private var pendingStatusTask: Task<Void, Never>?
-    @ObservationIgnored private let initialPreparationDelay: Duration
-    @ObservationIgnored private let preparationSleep: @Sendable (Duration) async throws -> Void
+    /// The presented stage; meaningful only while `status != .none`.
+    private(set) var stage: PlaybackTransportStatusStage = .spinner
 
-    init(initialPreparationDelay: Duration = localInitialPreparationDelay) {
-        self.initialPreparationDelay = initialPreparationDelay
-        self.preparationSleep = { try await Task.sleep(for: $0) }
-    }
-
+    /// The latest status requested by the controller, before presentation timing.
+    @ObservationIgnored private(set) var requestedStatus: PlaybackTransportStatus = .none
+    @ObservationIgnored private let timing: Timing
+    @ObservationIgnored private let scheduler: Scheduler
+    @ObservationIgnored private var cancelShowTimer: (@MainActor () -> Void)?
+    @ObservationIgnored private var cancelMinimumVisibleTimer: (@MainActor () -> Void)?
+    @ObservationIgnored private var cancelEscalationTimer: (@MainActor () -> Void)?
+    @ObservationIgnored private var isWaitActive = false
+    @ObservationIgnored private var hasEscalated = false
+    @ObservationIgnored private var isMinimumVisibleSatisfied = true
     #if DEBUG
-    init(initialPreparationDelay: Duration,
-         preparationSleep: @escaping @Sendable (Duration) async throws -> Void) {
-        self.initialPreparationDelay = initialPreparationDelay
-        self.preparationSleep = preparationSleep
-    }
-
-    var pendingPreparationForTesting: Task<Void, Never>? { pendingStatusTask }
+    @ObservationIgnored private var heldStatusForTesting: PlaybackTransportStatus?
     #endif
+
+    init(timing: Timing = .standard, scheduler: @escaping Scheduler = PlaybackTransportStatusState.taskScheduler) {
+        self.timing = timing
+        self.scheduler = scheduler
+    }
 
     var activeStatus: PlaybackTransportStatus? {
         status == .none ? nil : status
@@ -6143,29 +6206,137 @@ final class PlaybackTransportStatusState {
         status.keepsChromeVisible
     }
 
-    func set(_ value: PlaybackTransportStatus) {
-        if case .preparingLocal(_, false) = value {
-            guard status != value else { return }
-            guard pendingStatus != value else { return }
-            pendingStatusTask?.cancel()
-            pendingStatus = value
-            if status != .none { status = .none }
-            let delay = initialPreparationDelay
-            let sleep = preparationSleep
-            pendingStatusTask = Task { @MainActor [weak self] in
-                try? await sleep(delay)
-                guard !Task.isCancelled, let self, self.pendingStatus == value else { return }
-                self.pendingStatus = nil
-                self.pendingStatusTask = nil
-                if self.status != value { self.status = value }
-            }
-            return
-        }
+    /// Feed the controller's resolved status. `hasObservedPlayback` is whether the current item
+    /// has rendered playback yet; it only matters for remote waits (local preparation carries
+    /// its own flag and always honors the show delay so an instant local open never flashes).
+    func set(_ value: PlaybackTransportStatus, hasObservedPlayback: Bool = true) {
+        #if DEBUG
+        if heldStatusForTesting != nil { return }
+        #endif
+        apply(value, hasObservedPlayback: hasObservedPlayback)
+    }
 
-        pendingStatusTask?.cancel()
-        pendingStatusTask = nil
-        pendingStatus = nil
+    #if DEBUG
+    /// Debug fixtures: pin the requested status (ignoring controller updates) while still
+    /// running it through the real presentation timing, so reviews see both stages.
+    func holdForTesting(_ value: PlaybackTransportStatus) {
+        heldStatusForTesting = nil
+        apply(value, hasObservedPlayback: true)
+        heldStatusForTesting = value
+    }
+    #endif
+
+    private func apply(_ value: PlaybackTransportStatus, hasObservedPlayback: Bool) {
+        requestedStatus = value
+        switch value {
+        case .none:
+            cancel(&cancelShowTimer)
+            if status == .none {
+                endWait()
+            } else if isMinimumVisibleSatisfied || !status.isWaitingForMedia {
+                hide()
+            }
+            // Otherwise the minimum-visible timer hides it, unless waiting resumes first.
+        case .reconnecting, .failed:
+            cancel(&cancelShowTimer)
+            cancel(&cancelMinimumVisibleTimer)
+            endWait()
+            isMinimumVisibleSatisfied = true
+            publish(value, stage: .card)
+        case .buffering, .pausedBuffering, .preparingLocal:
+            if !isWaitActive { beginWait() }
+            if status != .none {
+                publish(value, stage: waitingStage(for: value))
+            } else if cancelShowTimer == nil {
+                if showsWithoutDelay(value, hasObservedPlayback: hasObservedPlayback) {
+                    show()
+                } else {
+                    cancelShowTimer = scheduler(timing.showDelay) { [weak self] in
+                        self?.showDelayElapsed()
+                    }
+                }
+            }
+            // A pending show publishes whatever `requestedStatus` is when it fires.
+        }
+    }
+
+    private func showsWithoutDelay(_ value: PlaybackTransportStatus, hasObservedPlayback: Bool) -> Bool {
+        switch value {
+        case .buffering, .pausedBuffering: !hasObservedPlayback
+        default: false
+        }
+    }
+
+    /// A wait never demotes from the card back to the spinner: once a paused wait (or the
+    /// escalation timer) has shown the card, the rest of that continuous wait keeps it.
+    private func waitingStage(for value: PlaybackTransportStatus) -> PlaybackTransportStatusStage {
+        if value.presentsCardImmediately { hasEscalated = true }
+        return hasEscalated ? .card : .spinner
+    }
+
+    private func beginWait() {
+        isWaitActive = true
+        hasEscalated = false
+        cancel(&cancelEscalationTimer)
+        cancelEscalationTimer = scheduler(timing.escalation) { [weak self] in
+            self?.escalationElapsed()
+        }
+    }
+
+    private func endWait() {
+        cancel(&cancelShowTimer)
+        cancel(&cancelEscalationTimer)
+        isWaitActive = false
+        hasEscalated = false
+    }
+
+    private func showDelayElapsed() {
+        cancelShowTimer = nil
+        guard requestedStatus.isWaitingForMedia, status == .none else { return }
+        show()
+    }
+
+    private func show() {
+        cancel(&cancelShowTimer)
+        publish(requestedStatus, stage: waitingStage(for: requestedStatus))
+        isMinimumVisibleSatisfied = false
+        cancel(&cancelMinimumVisibleTimer)
+        cancelMinimumVisibleTimer = scheduler(timing.minimumVisible) { [weak self] in
+            self?.minimumVisibleElapsed()
+        }
+    }
+
+    private func minimumVisibleElapsed() {
+        cancelMinimumVisibleTimer = nil
+        isMinimumVisibleSatisfied = true
+        if requestedStatus == .none, status != .none { hide() }
+    }
+
+    private func escalationElapsed() {
+        cancelEscalationTimer = nil
+        guard isWaitActive else { return }
+        hasEscalated = true
+        if status.isWaitingForMedia, requestedStatus.isWaitingForMedia, stage != .card {
+            stage = .card
+        }
+    }
+
+    private func hide() {
+        cancel(&cancelMinimumVisibleTimer)
+        endWait()
+        isMinimumVisibleSatisfied = true
+        if status != .none { status = .none }
+        if stage != .spinner { stage = .spinner }
+    }
+
+    private func publish(_ value: PlaybackTransportStatus, stage newStage: PlaybackTransportStatusStage) {
         if status != value { status = value }
+        if stage != newStage { stage = newStage }
+    }
+
+    private func cancel(_ timer: inout (@MainActor () -> Void)?) {
+        timer?()
+        timer = nil
     }
 }
 

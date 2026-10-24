@@ -69,8 +69,9 @@ enum DebugUITestLaunchConfiguration {
         isEnabled && ProcessInfo.processInfo.arguments.contains(downloadCompositionEvidenceFlag)
     }
 
-    /// Player-fixture variant: holds the controller's transport status in `.buffering` so the
-    /// buffering overlay can be reviewed deterministically (TVUI-025).
+    /// Player-fixture variant: pins the controller's transport status in `.buffering` (or
+    /// `.pausedBuffering` with the paused flag on iPhone/iPad) through the real presentation
+    /// timing, so the spinner and escalated card can be reviewed deterministically (TVUI-025).
     static var playerFixtureStartsBuffering: Bool {
         fixtureKind == .player && ProcessInfo.processInfo.arguments.contains("--ui-testing-player-buffering")
     }

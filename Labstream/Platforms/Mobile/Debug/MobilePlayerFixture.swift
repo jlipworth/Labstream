@@ -62,6 +62,13 @@ struct MobilePlayerFixtureView: View {
                                     if DebugUITestLaunchConfiguration.playerFixtureStartsPaused {
                                         holdPaused(controller)
                                     }
+                                    if DebugUITestLaunchConfiguration.playerFixtureStartsBuffering {
+                                        // Pinned through the real presentation timing: spinner
+                                        // after the show delay, card after escalation.
+                                        controller.transportStatus.holdForTesting(
+                                            DebugUITestLaunchConfiguration.playerFixtureStartsPaused
+                                                ? .pausedBuffering : .buffering)
+                                    }
                                     DebugStatsFixture.seedWhenReady(controller)
                                     return controller
                                 },
