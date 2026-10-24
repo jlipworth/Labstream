@@ -8,6 +8,18 @@ query; verify them in App Store Connect again before any upload or submission.
 
 ## Current status
 
+On 2026-10-24, the next internal TestFlight run built **1.8.0 (build 1567)** for all four
+platforms from clean commit `41f6f6dd` on `downloads/overhaul`, using
+`--allow-unpublished`. It makes every Home video shelf use 2:3 poster cards, so a mixed Continue
+Watching shelf no longer switches to 16:9 episode stills when an episode sorts first; episodes
+show season/show posters. All four archives passed validation and processed to **VALID**,
+**IN_BETA_TESTING**, in **Labstream Internal**. The run took about 14 minutes: about 2 minutes
+for preflight and the visionOS archive, 1–2 minutes for each other archive, about 5 minutes of
+serial uploads, and about 2.5 minutes more for processing after the last upload. No App Store
+build was selected or submitted for review. Hermetic PMSKit tests, the Home shelf fixture unit and
+iPhone UI tests, and an iPhone runtime smoke passed; physical-device and live-backend acceptance
+remain separate.
+
 On 2026-10-23, the next internal TestFlight run built **1.8.0 (build 1565)** for all four
 platforms from clean commit `76dbbd14` on `downloads/overhaul`, using
 `--allow-unpublished`. It adds the staged player transport-status presentation: a show delay,
