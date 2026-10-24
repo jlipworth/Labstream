@@ -236,6 +236,67 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(element.frame.height, 44, "hit height: \(context)")
     }
 
+    /// Buffering overlay staging: the held `.buffering` fixture shows the stage-1 spinner after
+    /// the show delay, escalates to the stage-2 card, and a paused wait presents the card
+    /// directly. With chrome visible each stage sits between the top bar and the scrubber.
+    @MainActor
+    func testBufferingStatusStagesSitBetweenChrome() throws {
+        // iPhone: the player forces landscape. iPad keeps the device orientation, so audit both.
+        let orientations: [UIDeviceOrientation] = UIDevice.current.userInterfaceIdiom == .pad
+            ? [.portrait, .landscapeLeft] : [.portrait]
+        defer { XCUIDevice.shared.orientation = .portrait }
+        for orientation in orientations {
+            XCUIDevice.shared.orientation = orientation
+            let label = orientation == .portrait ? "portrait" : "landscape"
+
+            let app = XCUIApplication()
+            app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
+            app.launchArguments = ["--ui-testing", "--ui-testing-fixture", "player",
+                                   "--ui-testing-player-buffering"]
+            app.launch()
+            let spinner = app.descendants(matching: .any)["playback.transportStatus.spinner"]
+            XCTAssertTrue(spinner.waitForExistence(timeout: 30), "stage-1 spinner (\(label))")
+            XCTAssertFalse(app.buttons["playback.buffer.playPause"].exists,
+                           "stage 1 must not show the card action (\(label))")
+            assertBetweenVisibleChrome(spinner.frame, in: app, context: "spinner \(label)")
+            attachScreenshot(app, name: "buffering-stage1-spinner-\(label)")
+            let cardAction = app.buttons["playback.buffer.playPause"]
+            XCTAssertTrue(cardAction.waitForExistence(timeout: 10), "stage-2 card (\(label))")
+            attachScreenshot(app, name: "buffering-stage2-card-\(label)")
+            app.terminate()
+
+            let paused = XCUIApplication()
+            paused.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
+            paused.launchArguments = ["--ui-testing", "--ui-testing-fixture", "player",
+                                      "--ui-testing-player-buffering", "--ui-testing-player-paused"]
+            paused.launch()
+            let resume = paused.buttons["playback.buffer.playPause"]
+            XCTAssertTrue(resume.waitForExistence(timeout: 30), "paused card (\(label))")
+            XCTAssertEqual(resume.label, "Resume when ready")
+            XCTAssertTrue(paused.buttons["Close"].waitForExistence(timeout: 5))
+            assertBetweenVisibleChrome(resume.frame, in: paused, context: "paused card \(label)")
+            attachScreenshot(paused, name: "buffering-paused-card-chrome-\(label)")
+            paused.terminate()
+        }
+    }
+
+    @MainActor
+    private func assertBetweenVisibleChrome(_ frame: CGRect, in app: XCUIApplication, context: String) {
+        let close = app.buttons["Close"]
+        let timeline = app.sliders["playback.timeline"]
+        guard close.exists, close.isHittable, timeline.exists, timeline.isHittable else { return }
+        XCTAssertGreaterThan(frame.minY, close.frame.maxY, "\(context) clears the top bar")
+        XCTAssertLessThan(frame.maxY, timeline.frame.minY, "\(context) clears the scrubber")
+    }
+
+    @MainActor
+    private func attachScreenshot(_ app: XCUIApplication, name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     /// #258 on iPad: the chrome shows/hides the status bar with itself. Hiding and revealing the
     /// chrome must not move the chrome envelope (and so must not move the top controls or the
     /// centered overlays) by the status-bar inset.

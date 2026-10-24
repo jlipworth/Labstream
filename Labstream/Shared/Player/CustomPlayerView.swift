@@ -237,10 +237,9 @@ struct CustomPlayerView: View {
             }
 
             if controller == nil {
-                ProgressView()
-                    .controlSize(.large)
-                    .padding(28)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
+                // Same stage-1 visual as the controller-owned transport status, so the
+                // pre-controller startup wait and the first-start spinner read as one indicator.
+                PlayerTransportSpinner()
             }
         }
         // iOS/iPadOS (#258): the black backdrop and AVPlayerLayer above ignore the safe area so the

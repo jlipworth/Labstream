@@ -48,6 +48,10 @@ struct CustomPlayerChrome: View {
     @State var hoverPreviewTargetMs: Int?
     @State var hoverPreviewX: CGFloat?
     @State var mobileDisplayStatus: String?
+    /// Measured heights of the visible top bar and bottom controls (including their insets), so
+    /// the transport status centers in the free space between them rather than the full frame.
+    @State var topChromeOccupiedHeight: CGFloat = 0
+    @State var bottomChromeOccupiedHeight: CGFloat = 0
     @State var mobileDisplayStatusTask: Task<Void, Never>?
     #if os(tvOS)
     @FocusState var tvPlayerFocus: TVPlayerFocus?
@@ -160,8 +164,9 @@ struct CustomPlayerChrome: View {
 
             transientStatusOverlay
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                .padding(40)
-                .transition(.scale(scale: 0.96).combined(with: .opacity))
+                .padding(.top, statusOverlayTopClearance)
+                .padding(.bottom, statusOverlayBottomClearance)
+                .padding(.horizontal, statusOverlayMargin)
 
             #if os(iOS)
             if let mobileDisplayStatus {
@@ -211,6 +216,9 @@ struct CustomPlayerChrome: View {
                     controls
                         .padding(.horizontal, bottomChromeHorizontalInset)
                         .padding(.bottom, bottomChromeBottomInset)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                            bottomChromeOccupiedHeight = $0
+                        }
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
@@ -290,6 +298,8 @@ struct CustomPlayerChrome: View {
         .animation(.easeInOut(duration: 0.18), value: shouldShowChrome)
         .animation(.easeInOut(duration: 0.18), value: selectedMenu)
         .animation(.easeInOut(duration: 0.18), value: controller.skipMarker.active != nil)
+        // Transport status appear/disappear (stage changes animate inside the overlay).
+        .animation(.easeInOut(duration: 0.24), value: controller.transportStatus.status)
         #if os(iOS)
         // System-player look: the whole chrome is monochrome — white pills, symbols,
         // and scrubber — instead of inheriting the amber app accent. The brand color
@@ -392,6 +402,38 @@ struct CustomPlayerChrome: View {
         controller.transportStatus.activeStatus != nil
     }
 
+    /// Breathing room between the transport status and the frame / visible chrome.
+    var statusOverlayMargin: CGFloat {
+        #if os(iOS)
+        isCompactMobileChrome ? 12 : 24
+        #else
+        40
+        #endif
+    }
+
+    /// With chrome visible the status centers between the top bar and the bottom controls;
+    /// with chrome hidden it centers in the (safe-area) frame the chrome is laid out in.
+    var statusOverlayTopClearance: CGFloat {
+        let chrome = shouldShowChrome && !tvSubmenuHidesTopChrome ? topChromeOccupiedHeight : 0
+        return chrome + statusOverlayMargin
+    }
+
+    var statusOverlayBottomClearance: CGFloat {
+        let chrome = shouldShowChrome && selectedMenu == nil ? bottomChromeOccupiedHeight : 0
+        return chrome + statusOverlayMargin
+    }
+
+    var transportStatusLayout: PlayerTransportStatusLayout {
+        #if os(iOS)
+        PlayerTransportStatusLayout.resolve(usesCompactChrome: isCompactMobileChrome,
+                                            isCompactHeight: isPhoneLandscapeChrome
+                                                || verticalSizeClass == .compact,
+                                            availableWidth: chromeViewportSize.width)
+        #else
+        .standard
+        #endif
+    }
+
     var isCompactMobileChrome: Bool {
         #if os(iOS)
         mobileChromeLayout.usesCompactChrome
@@ -492,6 +534,7 @@ struct CustomPlayerChrome: View {
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
         } else if let status = controller.transportStatus.activeStatus {
             CustomTransportStatusOverlay(status: status,
+                                         stage: controller.transportStatus.stage,
                                          onRetry: {
                                              revealChrome()
                                              onRetry()
@@ -501,7 +544,8 @@ struct CustomPlayerChrome: View {
                                              revealChrome(keepVisible: true)
                                              controller.togglePlayback()
                                          },
-                                         isCompact: isCompactMobileChrome)
+                                         layout: transportStatusLayout)
+                .transition(.scale(scale: 0.92).combined(with: .opacity))
         }
     }
 
@@ -593,6 +637,9 @@ struct CustomPlayerChrome: View {
             .padding(.horizontal, topChromeHorizontalInset)
             #endif
             .padding(.top, topChromeTopInset)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                topChromeOccupiedHeight = $0
+            }
 
             Spacer()
         }
