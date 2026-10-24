@@ -121,9 +121,11 @@ layout code changed.
 - [ ] Poster/artwork requests authenticate correctly for the active backend and fail to a
       privacy-safe placeholder without logging a token-bearing URL.
 - [ ] On a physical iPhone against Emby, Recently Added TV Shows prefers a season/series Primary
-      poster when available; a Thumb-only episode uses a 16:9 card/request without warping. Also
-      regression-check one movie rail and one missing-parent episode fallback (regression
-      coverage for the fixed #245 warped-artwork defect).
+      poster when available; a Thumb-only episode keeps a 16:9 request and is cropped, not warped,
+      into the poster card. Also regression-check one movie rail and one missing-parent episode
+      fallback (regression coverage for the fixed #245 warped-artwork defect).
+- [ ] Home Continue Watching and On Deck render poster cards (episodes show season/show posters)
+      whether a movie or an episode was watched most recently, on Plex, Jellyfin, and Emby.
 
 ## 4. Shared video playback
 

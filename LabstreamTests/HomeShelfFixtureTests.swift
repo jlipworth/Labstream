@@ -17,8 +17,7 @@ struct HomeShelfFixtureTests {
                 #expect(hub.metadata[1].primaryImageAspectRatio == 2.0 / 3.0)
                 #expect(hub.metadata[1].year == nil)
                 #expect(hub.metadata[0].year != nil)
-                #expect(HomeShelfPresentationPolicy.presentation(for: hub)
-                        == (hub.type == "episode" ? .landscape : .poster))
+                #expect(HomeShelfPresentationPolicy.presentation(for: hub) == .poster)
             }
         }
     }

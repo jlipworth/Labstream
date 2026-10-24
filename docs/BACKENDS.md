@@ -154,9 +154,10 @@ cancellation fences. Other Plex request descriptors, canonical response DTOs,
 timeline, optimizer, and universal-transcode APIs remain spread across the root PMSKit
 folders rather than a `Plex/` directory.
 
-Home video shelves choose one presentation from their content type: movie/show shelves use
-2:3 portrait cards and episode shelves use 16:9 landscape cards, independently of individual
-source-image aspects. Episode shelves prefer stills, falling back to contextual artwork. Images
+Home video shelves all use 2:3 portrait cards — movie, show, episode-only (On Deck), and mixed
+(Continue Watching) shelves alike — independently of individual source-image aspects and of
+which item sorts first. Episodes show season, then show, Primary posters and fall back to a
+cropped episode still only when no poster exists; stills remain on season detail and search. Images
 are requested at their source aspect when known and cropped with aspect-preserving fill into
 the shelf frame; they are not stretched. Each shelf reserves its artwork and scaled caption
 height before lazy horizontal realization, so mixed artwork and missing years cannot overlap
