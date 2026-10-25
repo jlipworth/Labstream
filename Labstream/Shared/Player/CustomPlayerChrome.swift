@@ -29,6 +29,9 @@ struct CustomPlayerChrome: View {
     #if os(iOS)
     let mobileSystemCoordinator: MobilePlayerSystemCoordinator?
     @Binding var mobileVideoDisplayMode: MobileVideoDisplayMode
+    /// Top safe-area inset measured by `CustomPlayerView` outside this view's top-edge
+    /// `ignoresSafeArea`, latched per viewport size (`PlayerTopSafeInsetLatch`).
+    let mobileLatchedTopSafeInset: CGFloat
     #endif
     let onRetry: () -> Void
     let onClose: (() -> Void)?
@@ -87,6 +90,7 @@ struct CustomPlayerChrome: View {
         #if os(iOS)
         _mobileVideoDisplayMode = .constant(.fit)
         self.mobileSystemCoordinator = nil
+        self.mobileLatchedTopSafeInset = 0
         #endif
         self.onRetry = onRetry
         self.onClose = onClose
@@ -100,6 +104,7 @@ struct CustomPlayerChrome: View {
          trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
          mobileVideoDisplayMode: Binding<MobileVideoDisplayMode>,
          mobileSystemCoordinator: MobilePlayerSystemCoordinator?,
+         mobileLatchedTopSafeInset: CGFloat = 0,
          onRetry: @escaping () -> Void,
          onClose: (() -> Void)?) {
         self.controller = controller
@@ -108,6 +113,7 @@ struct CustomPlayerChrome: View {
         self.trickPlayProvider = trickPlayProvider
         _mobileVideoDisplayMode = mobileVideoDisplayMode
         self.mobileSystemCoordinator = mobileSystemCoordinator
+        self.mobileLatchedTopSafeInset = mobileLatchedTopSafeInset
         self.onRetry = onRetry
         self.onClose = onClose
         _menuState = State(initialValue: PlayerMenuState(selectedBitrateKbps: controller.maxVideoBitrateKbps))
@@ -347,6 +353,11 @@ struct CustomPlayerChrome: View {
         .onChange(of: selectedMenu) { _, menu in
             if menu != nil { endHoverPreview() }
         }
+        #if os(iOS)
+        .onChange(of: mobileChromeBranch) { old, new in
+            handleMobileChromeBranchChange(from: old, to: new)
+        }
+        #endif
         #if os(tvOS)
         .onChange(of: shouldShowChrome) { _, visible in
             tvEvidenceLog("shouldShowChrome -> \(visible)")
@@ -636,7 +647,7 @@ struct CustomPlayerChrome: View {
             #else
             .padding(.horizontal, topChromeHorizontalInset)
             #endif
-            .padding(.top, topChromeTopInset)
+            .padding(.top, topChromeEffectiveTopInset)
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
                 topChromeOccupiedHeight = $0
             }
@@ -656,6 +667,19 @@ struct CustomPlayerChrome: View {
         } else {
             28
         }
+        #endif
+    }
+
+    /// The top chrome ignores the top safe area on iOS (see `CustomPlayerView`), so on a viewport
+    /// whose safe area reaches deeper than the authored inset (a portrait phone-class display, or
+    /// the iPhone Duo's horizontal status bar while the player disables the vertical bar) it pads
+    /// by the latched inset instead.
+    var topChromeEffectiveTopInset: CGFloat {
+        #if os(iOS)
+        CGFloat(PlayerTopSafeInsetLatch.topChromePadding(authored: Double(topChromeTopInset),
+                                                         latchedTopInset: Double(mobileLatchedTopSafeInset)))
+        #else
+        topChromeTopInset
         #endif
     }
 
@@ -1274,9 +1298,10 @@ struct CustomPlayerChrome: View {
     #if os(macOS) || os(iOS)
     func handleTimelineHover(_ phase: HoverPhase, trackWidth: CGFloat) {
         #if os(iOS)
-        // `onContinuousHover` is also available to an attached pointer on iPhone, but #237 is
-        // intentionally an iPad pointer enhancement. Touch-only interaction remains untouched.
-        guard UIDevice.current.userInterfaceIdiom == .pad else { return }
+        // `onContinuousHover` only fires for an indirect pointer. #237 is a large-viewport pointer
+        // enhancement (iPad, the unfolded iPhone Duo with a trackpad); the compact phone chrome has
+        // no room for the hover card, so it stays touch-only.
+        guard !isCompactMobileChrome else { return }
         #endif
 
         switch phase {
@@ -1487,12 +1512,27 @@ struct CustomPlayerChrome: View {
         // Footprint outside the content: the popover's internal +36 frame and the horizontal
         // padding applied to the popover on each side.
         let chrome: CGFloat = 36 + menuHorizontalInset * 2
+        let fit = max(0, available - chrome)
+        #if os(iOS)
+        // iOS viewports range from a folded iPhone Duo to a full iPad and change mid-session, so
+        // every menu is clamped to the space it actually has in every chrome branch. A regular
+        // branch on a medium viewport (the unfolded Duo, 669 pt) is narrower than Chapters' 720 pt
+        // floor and Stats' 470 pt + insets.
         if menu == .chapters {
-            return min(1680, max(isCompactMobileChrome ? 0 : 720, available - chrome))
+            return min(1680, fit)
+        }
+        if isCompactMobileChrome || menu.popoverSize.width > fit {
+            return min(menu.popoverSize.width, fit)
+        }
+        return nil
+        #else
+        if menu == .chapters {
+            return min(1680, max(isCompactMobileChrome ? 0 : 720, fit))
         }
         guard isCompactMobileChrome else { return nil }
         // Compress the fixed-width menus to fit the phone-width bottom sheet.
-        return min(menu.popoverSize.width, max(0, available - chrome))
+        return min(menu.popoverSize.width, fit)
+        #endif
     }
 
     func openMenu(_ menu: CustomPlayerMenuKind) {

@@ -96,6 +96,23 @@ enum DebugUITestLaunchConfiguration {
     nonisolated static let playerPausedFlag = "--ui-testing-player-paused"
     nonisolated static let playerGeometryFlag = "--ui-testing-player-geometry"
     nonisolated static let playerAllMenusFlag = "--ui-testing-player-all-menus"
+    nonisolated static let playerPresentDelayFlag = "--ui-testing-player-present-delay"
+
+    /// Seconds the player fixture waits before presenting the player (default 0). A host-side
+    /// `devicectl device appResize` session can only start while the app is portrait and
+    /// frontmost, so the iPhone Duo resize proxy starts it during this window, before the player
+    /// applies its landscape lock.
+    nonisolated static func playerFixturePresentDelaySeconds(in arguments: [String]) -> Int {
+        guard fixtureKind(in: arguments) == .player,
+              let index = arguments.firstIndex(of: playerPresentDelayFlag),
+              arguments.indices.contains(index + 1),
+              let seconds = Int(arguments[index + 1]) else { return 0 }
+        return min(max(seconds, 0), 60)
+    }
+
+    static var playerFixturePresentDelaySeconds: Int {
+        playerFixturePresentDelaySeconds(in: ProcessInfo.processInfo.arguments)
+    }
 
     nonisolated static func playerFixtureAspect(in arguments: [String]) -> PlayerFixtureAspect {
         guard fixtureKind(in: arguments) == .player,

@@ -6,16 +6,52 @@ import UIKit
 
 // Target-exclusive mobile presentation leaves for the shared player chrome.
 extension CustomPlayerChrome {
+    /// Chrome composition from the measured player viewport and size classes
+    /// (`MobilePlayerChromeLayoutPolicy`). The idiom only selects the phone-landscape platter.
     var mobileChromeLayout: MobilePlayerChromeLayoutPolicy {
-        MobilePlayerChromeLayoutPolicy(horizontalSizeClass: horizontalSizeClass,
-                                       verticalSizeClass: verticalSizeClass,
-                                       idiom: UIDevice.current.userInterfaceIdiom,
-                                       viewportSize: chromeViewportSize)
+        MobilePlayerChromeLayoutPolicy(horizontalSizeClass: Self.policySizeClass(horizontalSizeClass),
+                                       verticalSizeClass: Self.policySizeClass(verticalSizeClass),
+                                       isPhoneIdiom: UIDevice.current.userInterfaceIdiom == .phone,
+                                       viewportWidth: Double(chromeViewportSize.width),
+                                       viewportHeight: Double(chromeViewportSize.height))
+    }
+
+    var mobileChromeBranch: MobilePlayerChromeLayoutPolicy.Branch {
+        mobileChromeLayout.branch
+    }
+
+    static func policySizeClass(_ sizeClass: UserInterfaceSizeClass?) -> MobilePlayerChromeLayoutPolicy.SizeClass? {
+        switch sizeClass {
+        case .compact: .compact
+        case .regular: .regular
+        case nil: nil
+        @unknown default: nil
+        }
+    }
+
+    /// A chrome branch change (rotation, window resize, iPhone Duo fold) rebuilds the scrubber in a
+    /// different composition. Abandon an open scrub draft rather than committing a seek from a
+    /// slider that no longer exists, and restart the auto-hide countdown that the drag suspended.
+    func handleMobileChromeBranchChange(from old: MobilePlayerChromeLayoutPolicy.Branch,
+                                        to new: MobilePlayerChromeLayoutPolicy.Branch) {
+        let wasDragging = scrubState.isDragging
+        if wasDragging {
+            scrubState.cancel()
+        }
+        scrubEditingSessionActive = false
+        endHoverPreview()
+        clearTrickPlayPreview()
+        scheduleChromeHideIfNeeded()
+        AppDiagnostics.record(.playback, "player.chrome_branch_change", fields: [
+            "from": .label(old.rawValue),
+            "to": .label(new.rawValue),
+            "scrub_cancelled": .bool(wasDragging),
+        ])
     }
 
     var mobileChromeGeometryDetail: String {
         let layout = mobileChromeLayout
-        return "phoneLandscape=\(layout.isPhoneLandscape) compact=\(layout.usesCompactChrome)"
+        return "branch=\(layout.branch.rawValue) phoneLandscape=\(layout.isPhoneLandscape) compact=\(layout.usesCompactChrome)"
             + " h=\(horizontalSizeClass.map { "\($0)" } ?? "nil")"
             + " v=\(verticalSizeClass.map { "\($0)" } ?? "nil")"
     }
@@ -338,37 +374,6 @@ extension View {
 /// iPhones in landscape are constrained by height even when their horizontal size class is
 /// regular, and iPad split views can be compact without being phone-like. Keep those cases
 /// explicit so we drop chrome rows based on the actual viewport instead of only one size class.
-struct MobilePlayerChromeLayoutPolicy: Equatable {
-    let horizontalSizeClass: UserInterfaceSizeClass?
-    let verticalSizeClass: UserInterfaceSizeClass?
-    let idiom: UIUserInterfaceIdiom
-    let viewportSize: CGSize
-
-    private var hasMeasuredViewport: Bool {
-        viewportSize.width > 0 && viewportSize.height > 0
-    }
-
-    private var isGeometryLandscape: Bool {
-        hasMeasuredViewport && viewportSize.width > viewportSize.height
-    }
-
-    private var shortestMeasuredSide: CGFloat? {
-        hasMeasuredViewport ? min(viewportSize.width, viewportSize.height) : nil
-    }
-
-    var isPhoneLandscape: Bool {
-        idiom == .phone
-            && (verticalSizeClass == .compact
-                || (isGeometryLandscape && (shortestMeasuredSide ?? 0) <= 500))
-    }
-
-    var usesCompactChrome: Bool {
-        idiom == .phone
-            || horizontalSizeClass == .compact
-            || verticalSizeClass == .compact
-            || (shortestMeasuredSide.map { $0 < 500 } ?? false)
-    }
-}
 struct AirPlayRoutePickerButton: UIViewRepresentable {
     func makeUIView(context: Context) -> AVRoutePickerView {
         let view = AVRoutePickerView(frame: .zero)

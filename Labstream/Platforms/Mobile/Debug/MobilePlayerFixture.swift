@@ -98,6 +98,8 @@ struct MobilePlayerFixtureView: View {
             let url = try await DebugPlayerFixtureMedia.ensureVideoFile(width: size.width,
                                                                         height: size.height)
             phase = .ready(url)
+            let delay = DebugUITestLaunchConfiguration.playerFixturePresentDelaySeconds
+            if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
             await orientationCoordinator.enterLandscapeBeforePresentationIfNeeded()
             presentingPlayer = true
         } catch {

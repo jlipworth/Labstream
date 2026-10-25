@@ -46,6 +46,7 @@ struct CustomPlayerView: View {
     @State private var mobileSystemCoordinator: MobilePlayerSystemCoordinator?
     @AppStorage(PlaybackPreferences.Keys.mobileVideoDisplayMode)
     private var mobileVideoDisplayModeRaw = MobileVideoDisplayMode.fit.rawValue
+    @State private var mobileTopSafeInsetLatch = PlayerTopSafeInsetLatch()
     #endif
     #if os(macOS)
     @State private var macSystemCoordinator: VideoNowPlayingCore?
@@ -213,17 +214,19 @@ struct CustomPlayerView: View {
                                        trickPlayProvider: trickPlayProvider,
                                        mobileVideoDisplayMode: mobileVideoDisplayModeBinding,
                                        mobileSystemCoordinator: mobileSystemCoordinator,
+                                       mobileLatchedTopSafeInset: CGFloat(mobileTopSafeInsetLatch.latchedTopInset),
                                        onRetry: { controller.retry() },
                                        onClose: onClose == nil ? nil : { requestPlayerClose() })
                         // The chrome toggles the status bar with its own visibility. On iPad that
                         // flips the top inset between 0 and the status-bar height, which would
                         // shift the envelope (and centered overlays) on every reveal/hide, so the
                         // top edge stays on the fixed full-screen origin. Leading/trailing/bottom
-                        // stay safe. The top chrome's own inset clears the status bar only on
-                        // regular-width iPad (28 + 10 pt); compact iPad widths sit closer to it.
-                        // iPhone playback is landscape-only (MobilePlayerOrientationCoordinator),
-                        // where the top inset is already 0; in portrait this would not clear the
-                        // Dynamic Island.
+                        // stay safe. The top chrome clears the top safe area itself: it pads by
+                        // the larger of its authored inset and the top inset measured below
+                        // (outside this ignore) and latched per viewport size. Phone-class
+                        // full-screen scenes are usually landscape-locked (top inset 0), but a
+                        // scene that declines the lock, a large display such as the unfolded
+                        // iPhone Duo, or an iPad window can play in portrait.
                         .ignoresSafeArea(.container, edges: .top)
                     #else
                     CustomPlayerChrome(controller: controller,
@@ -250,12 +253,35 @@ struct CustomPlayerView: View {
         // `customPlayerPresentationSafeArea()` to keep their full-bounds behavior elsewhere.
         .task(id: clockTaskID) { await runPlayer() }
         #if os(iOS)
+        // Measured in the safe-area layout frame (the chrome above ignores the top edge).
+        .onGeometryChange(for: PlayerTopSafeInsetSample.self) { proxy in
+            PlayerTopSafeInsetSample(size: proxy.size, top: proxy.safeAreaInsets.top)
+        } action: { sample in
+            mobileTopSafeInsetLatch.observe(viewportWidth: Double(sample.size.width),
+                                            viewportHeight: Double(sample.size.height),
+                                            topInset: Double(sample.top))
+        }
+        // The player's own scene drives the landscape lock and records every geometry change
+        // (rotation, window resize, iPhone Duo fold) as a layout-only event.
+        .background {
+            MobilePlayerSceneGeometryReader(coordinator: mobileOrientationCoordinator)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+        .mobilePlayerDisablesVerticalBar()
         .onAppear {
             mobileOrientationCoordinator.enterLandscapeIfNeeded()
         }
         #endif
         .onDisappear {
             #if os(iOS)
+            // A fold, rotation or resize must never reach this path: the presenter keeps the
+            // cover (and this view) mounted across geometry changes. Recording it makes a
+            // dropped presenter visible in a fold run.
+            AppDiagnostics.record(.playback, "player.view_disappear", fields: [
+                "had_controller": .bool(controller != nil),
+            ])
             mobileSystemCoordinator?.teardown()
             mobileOrientationCoordinator.restoreIfNeeded()
             #endif
@@ -402,6 +428,33 @@ struct CustomPlayerView: View {
     }
     #endif
 }
+
+#if os(iOS)
+struct PlayerTopSafeInsetSample: Equatable {
+    let size: CGSize
+    let top: CGFloat
+}
+
+private extension MobileVideoDisplayMode {
+    var videoGravity: AVLayerVideoGravity {
+        self == .fill ? .resizeAspectFill : .resizeAspect
+    }
+}
+
+private extension View {
+    /// Full-screen video opts out of the iOS 27.1 vertical bar (Apple's guidance for full-screen
+    /// players): the player has no tab bar or toolbar, and the status bar returns to the
+    /// horizontal axis, where the chrome's latched top inset clears it.
+    @ViewBuilder
+    func mobilePlayerDisablesVerticalBar() -> some View {
+        if #available(iOS 27.1, *) {
+            toolbarVerticalBehavior(.disabled)
+        } else {
+            self
+        }
+    }
+}
+#endif
 
 extension View {
     /// The presenter-side safe-area rule for `CustomPlayerView` (#258). On visionOS, tvOS, and
@@ -630,7 +683,7 @@ struct PlayerLayerView: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let view = PlayerLayerHostView()
         #if os(iOS)
-        view.playerLayer.videoGravity = displayMode == .fill ? .resizeAspectFill : .resizeAspect
+        view.applyVideoGravity(displayMode.videoGravity)
         #else
         view.playerLayer.videoGravity = .resizeAspect
         #endif
@@ -649,7 +702,7 @@ struct PlayerLayerView: UIViewRepresentable {
         captionAppearance?.attachPlayerLayer(hostView.playerLayer)
         context.coordinator.captionAppearance = captionAppearance
         #if os(iOS)
-        hostView.playerLayer.videoGravity = displayMode == .fill ? .resizeAspectFill : .resizeAspect
+        hostView.applyVideoGravity(displayMode.videoGravity)
         mobileSystemCoordinator?.attach(playerLayer: hostView.playerLayer)
         #endif
     }
@@ -668,6 +721,19 @@ private final class PlayerLayerHostView: UIView {
     var playerLayer: AVPlayerLayer {
         layer as! AVPlayerLayer
     }
+
+    #if os(iOS)
+    /// Mutates the gravity of the one live layer in place, only when it changes, and without an
+    /// implicit Core Animation action, so a Fit/Fill change or an update that coincides with a
+    /// rotation, resize or fold never animates the crop or replaces the layer.
+    func applyVideoGravity(_ gravity: AVLayerVideoGravity) {
+        guard playerLayer.videoGravity != gravity else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.videoGravity = gravity
+        CATransaction.commit()
+    }
+    #endif
 
     #if os(iOS) && DEBUG
     private var videoRectObservation: NSKeyValueObservation?
