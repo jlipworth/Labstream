@@ -3,7 +3,8 @@
 **Status (2026-10-25):** plan approved for implementation on `duo/support`, based on
 `downloads/overhaul`. The worktree Duo simulator platform is done (`c8cbbf5f`). Part 1 (toolchain,
 shell and non-player layout: Steps 1, 6, 7, 9 and the Step 8 hero sizing) is done; see the
-journal. The player steps (2 to 5), the Step 8 rail metrics, Step 10 and Step 11 are open. The physical iPhone Duo gate and the Duo App Store screenshot gate stay open until
+journal. Part 2 (the player: Steps 2 to 5) is done on the simulator; a real fold during playback
+is still a manual gate. The Step 8 rail metrics, Step 10 and Step 11 are open. The physical iPhone Duo gate and the Duo App Store screenshot gate stay open until
 a person performs them. Simulator evidence does not close either one.
 
 **Tracking:** [#419](https://github.com/jlipworth/Labstream/issues/419).
@@ -343,4 +344,44 @@ tests. App-side wiring stays thin.
   - Step 9: the compact login brand wash now ignores the horizontal safe area too, so it spans
     the folded display instead of stopping at the vertical status bar (screenshot verified).
   - Evidence (gitignored): `artifacts/duo-builds/{baseline,r2}/`, `artifacts/duo-part1/`.
-
+- 2026-10-25, Part 2 (player):
+  - Step 2: diagnostics added (`player.geometry_change` from `MobilePlayerSceneGeometryReader` with a
+    read-only `UIHingeInteraction`, `player.orientation_lock`, `player.chrome_branch_change`,
+    `player.lifecycle_pause`, `player.pip_state`/`pip_rebind`, `player.view_disappear`; the
+    controller already records `playback.session_stop`). Observed on the Duo simulator with the
+    player fixture: folded opens phone-class, the lock is honoured (678×466 landscape, leading
+    inset 84 pt, hinge `closed`). The appResize proxy (fixture
+    `--ui-testing-player-present-delay`, because appResize only starts while the app is portrait)
+    flipped 669×951 → 466×678 → 669×951 during playback. Answers, for the proxy only:
+    1. Resign-active: none was emitted by the resizes (no `player.lifecycle_pause`). A real fold is
+       untested; the deferred resign pause covers it either way.
+    2. Cover: survived every resize (no `player.view_disappear`, no `playback.session_stop`; the
+       same layer resized, `videoRect` re-fit with `resizeAspect`, chrome branch regular ↔ compact).
+    3. Orientation requests: the resizable session refuses them ("The current windowing mode does
+       not allow for programmatic changes to interface orientation"); the coordinator records the
+       refusal, widens the mask and does not ask again for that display class. Whether the real
+       inner/outer displays honour them is open (needs a real fold).
+  - Step 3: `MobilePlayerOrientationLockPolicy` (PMSKit, tests) replaces the idiom gate: lock while
+    the player's scene is phone-class and fills its screen, release on unfold without a forced
+    rotation, re-lock on fold, no repeat after a refusal. The restore policy gained
+    `action(previous:didLock:entryClass:currentClass:)` (widen the mask only after a display-class
+    change; nothing to restore when no lock was applied). The coordinator follows the player's own
+    scene and both 500 ms polls return at once when no rotation is pending.
+  - Step 4: `MobilePlayerChromeLayoutPolicy` moved to PMSKit without the idiom in
+    `usesCompactChrome` (tests for iPhone, Duo folded/unfolded both orientations, iPad). Menus are
+    clamped to the available width in every iOS branch (Chapters no longer forces 720 pt on the
+    669 pt inner display). A branch change mid-scrub cancels the scrub, clears trick-play and
+    restarts auto-hide. The hover preview keys on a non-compact viewport. The top chrome pads by a
+    per-viewport latched top inset (`PlayerTopSafeInsetLatch`). `videoGravity` changes only when
+    different, inside a `CATransaction` with actions disabled. iOS resign-active pauses after
+    400 ms unless `didBecomeActive` arrives; background pauses at once. PiP rebinds its content
+    source to a new layer while inactive and implements the restore-UI delegate.
+  - Vertical bar: the player applies `toolbarVerticalBehavior(.disabled)` (Apple's full-screen
+    video guidance). Measured folded in landscape: with the default behaviour the status-bar column
+    takes an 84 pt leading inset and the chrome sits off-centre; disabled, the strip moves to the
+    top (82 pt) and the chrome stays symmetric, with the top chrome below it via the latch.
+  - Step 5: skipped. The cover survived the resize proxy and iPad Stage Manager uses the same
+    trait path; recheck with a real fold.
+  - Verification: clean `LabstreamMobile` build (warnings identical to Part 1), install UUID match,
+    no crash; the three player fixture XCUITests pass on the folded Duo. Evidence (gitignored):
+    `artifacts/duo-part2/`, `artifacts/duo-builds/part2/`.

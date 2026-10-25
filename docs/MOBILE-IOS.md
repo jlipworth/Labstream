@@ -56,15 +56,19 @@ root, plus the shared `PMSKit` package. The public mobile support floor is iOS/i
   menu. It also registers hardware-keyboard shortcuts (Space play/pause, ←/→ skip
   30s, Shift-←/Shift-→ skip 10s, Esc close). `UIBackgroundModes = audio`
   is set on `LabstreamMobile`; playback still pauses when the app backgrounds unless it is
-  continuing through PiP or an external AirPlay route.
+  continuing through PiP or an external AirPlay route. A resign-active pauses video only if it
+  lasts 400 ms (`didBecomeActive` cancels it), so a fold, a Control Center pull or the start of
+  automatic PiP does not stall playback.
 - Player layout contract (#258): `CustomPlayerView` owns its safe-area policy. The black backdrop
   and `AVPlayerLayer` fill the whole display (Fit/Fill only change `videoGravity`), while the
   chrome is laid out inside the leading, trailing, and bottom safe-area insets, so in iPhone
   landscape it clears the rounded corners, Dynamic Island, and home indicator. The top edge stays
   on the full-screen origin, because the chrome shows and hides the status bar with itself and
   that would otherwise move the envelope by the status-bar height on every reveal/hide on iPad.
-  The top chrome's own inset clears the status bar on regular-width iPad; iPhone playback is
-  landscape-only, where the top inset is already zero. Presenters must not add
+  The top chrome pads by the larger of its authored inset and the top safe-area inset, measured
+  outside that ignore and latched per viewport size (`PlayerTopSafeInsetLatch`), so a portrait
+  phone-class or iPhone Duo viewport clears its status bar without the iPad reveal/hide jump.
+  Presenters must not add
   `.ignoresSafeArea()` to the player on iOS, because that would erase the chrome's insets. The
   Detail streaming/local covers use `customPlayerPresentationSafeArea()`, which keeps their
   previous full-bounds presentation on visionOS, tvOS, and macOS and is a no-op on iOS. The
@@ -76,6 +80,21 @@ root, plus the shared `PMSKit` package. The public mobile support floor is iOS/i
   leads the top-trailing group, so its per-item availability never moves the display-mode or
   AirPlay buttons. A hairline outline keeps the glass platter legible over letterbox/pillarbox
   black.
+- Player geometry (iPhone, iPad, iPhone Duo): the landscape lock comes from
+  `MobilePlayerOrientationLockPolicy`, not the idiom. It applies while the player's own scene is
+  phone-class (short side under 500 pt) and fills its screen, and it is re-decided on every
+  scene-geometry change: unfolding a Duo releases it (the mask widens, no rotation is forced),
+  folding re-applies it, and a scene that refuses the request (for example a resizable session) is
+  not asked again for that display class. On close the entry orientation is restored, unless the
+  display class changed in between, when only the mask is widened. The chrome branch (phone
+  landscape, compact, regular) comes from `MobilePlayerChromeLayoutPolicy`: the folded Duo gets
+  the phone chrome and the unfolded Duo the regular chrome. A branch change during a scrub
+  cancels the scrub. Menus are clamped to the available width in every branch, and the trick-play
+  hover preview follows a non-compact viewport rather than the iPad idiom. The player disables the
+  iOS 27.1 vertical bar (`toolbarVerticalBehavior(.disabled)`): folded in landscape the
+  status-bar strip then sits on top (82 pt) instead of beside the leading edge, which keeps the
+  chrome symmetric. A fold, rotation or resize never reloads or reopens the stream; see
+  [Playback architecture](PLAYBACK-ARCHITECTURE.md#ios-presentation-geometry).
 - Detail and Offline share exact-attempt local launch admission after orientation, local resume
   and rewind, observed-playing verification and the combined embedded/text-sidecar subtitle menu.
   A superseded or rejected launch must restore orientation without presenting a stale player.

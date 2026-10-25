@@ -388,6 +388,36 @@ wording for `.localFile` sessions instead of remote buffering language, while st
 mechanics and the [presentation timing](#transport-status-presentation) remain shared with
 remote playback.
 
+## iOS presentation geometry
+
+On iPhone, iPad and iPhone Duo a rotation, an iPad window resize, or a Duo fold or unfold is a
+layout event only. The same `PlaybackController` generation, `AVPlayer` and `AVPlayerLayer`
+survive it: nothing stops, reloads, reopens, changes quality, renegotiates a transcode session,
+resets a seek hold or spends restart budget. `videoGravity` is mutated in place on the one live
+layer, only when it changes and without an implicit animation. The transport-status timers stay in
+the controller, so a re-layout does not reset the staged show delay.
+
+The presenter's `.fullScreenCover` (Detail, Offline library) stays mounted across these changes;
+`player.view_disappear` is recorded if it is ever dropped. `MobilePlayerSceneGeometryReader`, an
+invisible view inside the player, reports the player's own window scene to
+`MobilePlayerOrientationCoordinator`, which re-decides the phone-class landscape lock from that
+scene's measured geometry (`MobilePlayerOrientationLockPolicy`). Releasing the lock widens the mask
+without forcing a rotation. The chrome re-derives its branch from the measured viewport
+(`MobilePlayerChromeLayoutPolicy`) and cancels an open scrub when the branch changes.
+
+Video pauses on `didEnterBackground`. On iOS a resign-active pauses only after 400 ms and is
+cancelled by `didBecomeActive`, so a transient inactive phase (a fold, Control Center, the start
+of automatic Picture in Picture) does not stall playback; PiP and external playback are honoured
+before pausing. PiP rebinds its content source if a different layer attaches while PiP is
+inactive, and restoring from PiP returns to the still-presented player.
+
+Diagnostics for judging a fold run from bounded evidence (all `.playback`): `player.geometry_change`
+(scene and screen size, size classes, orientation, display class, lock decision, scene activation,
+safe-area insets, hinge status and vertical-bar edge on iOS 27.1), `player.orientation_lock`,
+`player.orientation_request_failed`, `player.hinge_status`, `player.chrome_branch_change`,
+`player.lifecycle_pause` (reason and outcome), `player.pip_state`, `player.pip_rebind`,
+`player.view_disappear`, and the existing `playback.session_stop`.
+
 ## HDR and Dolby Vision
 
 The **Stream signal** row distinguishes observed AVFoundation signaling from unverified
