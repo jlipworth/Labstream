@@ -4,19 +4,32 @@ import SwiftUI
 enum MobileSettingsPresentationAction: Equatable {
   case unchanged
   case presentSheet(selecting: AppDestination)
+  /// Regular width brings the Settings tab back: close the compact sheet and select the tab.
+  case dismissSheet(selecting: AppDestination)
 }
 
 enum MobileSettingsPresentationPolicy {
-  static func action(selection: AppDestination, isCompact: Bool)
-    -> MobileSettingsPresentationAction
-  {
-    guard isCompact, selection == .settings else { return .unchanged }
-    return .presentSheet(selecting: .home)
+  /// Keeps Settings reachable across a horizontal size-class change (iPad multitasking resize,
+  /// iPhone Duo fold/unfold). Compact width has no Settings tab, so a selected Settings tab moves
+  /// into the sheet; regular width restores the tab, so an open sheet hands back to it.
+  static func action(
+    selection: AppDestination, isCompact: Bool, isSettingsSheetPresented: Bool = false
+  ) -> MobileSettingsPresentationAction {
+    if isCompact {
+      guard selection == .settings else { return .unchanged }
+      return .presentSheet(selecting: .home)
+    }
+    guard isSettingsSheetPresented else { return .unchanged }
+    return .dismissSheet(selecting: .settings)
   }
 }
 
-/// Adaptive iPhone/iPad shell. The system owns compact tabs, the iPad sidebar, and Search's
-/// dedicated role; the shared coordinator owns only destination transitions and paths.
+/// Adaptive iPhone/iPad shell. The system owns the tab bar (a bottom tab bar, the iPadOS
+/// sidebar or tab bar, and on the iOS 27.1 SDK the vertical bar on a foldable iPhone's
+/// trailing edge) and Search's dedicated role; the shared coordinator owns only destination
+/// transitions and paths. `.sidebarAdaptable` gives a sidebar only on iPadOS in regular
+/// width; with the phone idiom it stays a tab bar even in regular width (an unfolded iPhone
+/// Duo). Tab-set and Settings decisions key on the horizontal size class, never the idiom.
 struct PlatformRootShell: View {
   let runtime: AppRuntime
   @Bindable var navigation: RootNavigationCoordinator
@@ -73,16 +86,22 @@ struct PlatformRootShell: View {
       }
     }
     // A compact-width transition can remove the selected Settings tab. Atomically return to
-    // Home and show the compact Settings sheet so selection is never stranded.
+    // Home and show the compact Settings sheet so selection is never stranded. The reverse
+    // transition (an iPad window widening, an iPhone Duo unfolding) restores the tab, so an
+    // open compact sheet hands off to it instead of floating over a tab set that has Settings.
     .onChange(of: usesCompactTabSet) { _, isCompact in
       switch MobileSettingsPresentationPolicy.action(
-        selection: navigation.selection, isCompact: isCompact)
+        selection: navigation.selection, isCompact: isCompact,
+        isSettingsSheetPresented: showsSettingsSheet)
       {
       case .unchanged:
         break
       case .presentSheet(let selection):
         navigation.selection = selection
         showsSettingsSheet = true
+      case .dismissSheet(let selection):
+        showsSettingsSheet = false
+        navigation.selection = selection
       }
     }
     .background {

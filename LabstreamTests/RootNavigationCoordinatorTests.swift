@@ -130,5 +130,23 @@ struct RootNavigationCoordinatorTests {
         MobileSettingsPresentationPolicy.action(selection: .offline, isCompact: true)
           == .unchanged)
     }
+
+    @Test func regularResizeHandsAnOpenSettingsSheetBackToTheTab() {
+      #expect(
+        MobileSettingsPresentationPolicy.action(
+          selection: .home, isCompact: false, isSettingsSheetPresented: true)
+          == .dismissSheet(selecting: .settings))
+      #expect(
+        MobileSettingsPresentationPolicy.action(
+          selection: .music, isCompact: false, isSettingsSheetPresented: true)
+          == .dismissSheet(selecting: .settings))
+    }
+
+    @Test func compactResizeIgnoresTheSheetFlagWhenSettingsIsNotSelected() {
+      #expect(
+        MobileSettingsPresentationPolicy.action(
+          selection: .home, isCompact: true, isSettingsSheetPresented: true)
+          == .unchanged)
+    }
   }
 #endif
