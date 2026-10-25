@@ -15,6 +15,7 @@
       "mobile-build",
       "mobile-hosted",
       "mobile-ui-smoke",
+      "duo-ui-smoke",
       "tvos-build",
       "tvos-hosted",
       "tvos-ui-full",
@@ -76,6 +77,18 @@
         "-scheme", "LabstreamMobile", "-testPlan", "LabstreamTests",
         "-destination", "platform=iOS Simulator,id={iphone_sim_id}",
         "-derivedDataPath", "{output_dir}/mobile-ui-smoke",
+        "-only-testing:LabstreamMobileUITests/LabstreamMobileFixtureUITests/testFixtureHomeOpensDetailSemantically",
+        "test", "CODE_SIGNING_ALLOWED=NO", "-enableCodeCoverage", "NO"
+      ]
+    },
+    "duo-ui-smoke": {
+      "kind": "ui-smoke",
+      "simulator": "duo",
+      "command": [
+        "scripts/xcodebuild-versioned.sh", "-project", "Labstream.xcodeproj",
+        "-scheme", "LabstreamMobile", "-testPlan", "LabstreamTests",
+        "-destination", "platform=iOS Simulator,id={duo_sim_id}",
+        "-derivedDataPath", "{output_dir}/duo-ui-smoke",
         "-only-testing:LabstreamMobileUITests/LabstreamMobileFixtureUITests/testFixtureHomeOpensDetailSemantically",
         "test", "CODE_SIGNING_ALLOWED=NO", "-enableCodeCoverage", "NO"
       ]
@@ -155,8 +168,8 @@
       "patterns": ["PMSKit/**"],
       "lanes": [
         "pmskit-correctness", "visionos-build", "visionos-hosted",
-        "mobile-build", "mobile-hosted", "mobile-ui-smoke", "tvos-build", "tvos-hosted",
-        "tvos-ui-smoke", "macos-build", "macos-hosted"
+        "mobile-build", "mobile-hosted", "mobile-ui-smoke", "duo-ui-smoke", "tvos-build",
+        "tvos-hosted", "tvos-ui-smoke", "macos-build", "macos-hosted"
       ]
     },
     {
@@ -169,7 +182,7 @@
     },
     {
       "patterns": ["LabstreamMobileUITests/**"],
-      "lanes": ["mobile-build", "mobile-ui-smoke"]
+      "lanes": ["mobile-build", "mobile-ui-smoke", "duo-ui-smoke"]
     },
     {
       "patterns": ["Labstream/Capabilities/Downloads/**"],
@@ -186,7 +199,7 @@
     },
     {
       "patterns": ["Labstream/Platforms/Mobile/**"],
-      "lanes": ["mobile-build", "mobile-hosted", "mobile-ui-smoke"],
+      "lanes": ["mobile-build", "mobile-hosted", "mobile-ui-smoke", "duo-ui-smoke"],
       "exclusive": true
     },
     {
@@ -203,7 +216,8 @@
       "patterns": ["Labstream/**"],
       "lanes": [
         "visionos-build", "visionos-hosted", "mobile-build", "mobile-hosted", "mobile-ui-smoke",
-        "tvos-build", "tvos-hosted", "tvos-ui-smoke", "macos-build", "macos-hosted"
+        "duo-ui-smoke", "tvos-build", "tvos-hosted", "tvos-ui-smoke", "macos-build",
+        "macos-hosted"
       ]
     },
     {

@@ -141,6 +141,11 @@ manifest and its topology tests in the same change whenever target membership or
 root changes. Git discovery includes deleted paths and both endpoints of renames, including
 working-tree changes when requested; filenames are read with NUL delimiters.
 
+`duo-ui-smoke` runs the mobile semantic fixture smoke on this worktree's iPhone Duo simulator
+(`--duo-sim-id`, `.simid-duo`, folded outer display by default). Shared and mobile-platform paths
+select it alongside `mobile-ui-smoke`. It proves the folded layout only; a real fold/unfold remains
+a manual Device Hub or physical-device step.
+
 The bounded command and playback runners terminate their owned process group on timeout or
 cancellation. Cleanup waits for surviving descendants, not just the leader, before escalating;
 it never uses application-name or system-wide process matching.
@@ -151,7 +156,7 @@ applicable named evidence runner. A successful matrix lane alone is not runtime 
 
 Execution is deliberately lane-at-a-time. The driver never provisions or boots a simulator, and
 `--run` requires an exact `--lane`. A simulator-hosted lane additionally requires the ID recorded
-for this worktree by `worktree-sim.sh` (`.simid-iphone` or `.simid-tvos`) and
+for this worktree by `worktree-sim.sh` (`.simid-iphone`, `.simid-duo` or `.simid-tvos`) and
 `--allow-simulator`, which is an assertion that the caller has acquired the repository's
 one-simulator lease. The driver rejects an arbitrary simulator ID even when that simulator is
 Booted. It also fails unless the owned simulator is already Booted **and every other simulator is

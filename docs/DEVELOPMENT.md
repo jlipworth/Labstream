@@ -181,6 +181,15 @@ iOS 27.1 or later simulator runtime (`xcodebuild -downloadPlatform iOS`). The sc
 to a non-foldable iPhone for this platform. Simulator folding/unfolding is not proof of physical
 iPhone Duo behavior; the hardware gate stays open.
 
+Xcode 27.1 (27A9275) is the required toolchain for every target. It ships the iOS 27.1 SDK, which
+opts `LabstreamMobile` into the full iPhone Duo inner display and the vertical tab bar/toolbars on
+the trailing edge. The visionOS, tvOS and macOS SDKs bundled with it remain 27.0. Every target
+uses an unversioned `SDKROOT`, so the move is a toolchain change only; deployment targets are
+unchanged. Duo-specific SwiftUI API (for example `toolbarVerticalEdge`) is `anyAppleOS 27.1`, so
+shared code must guard it with `#if os(iOS)` and `if #available(iOS 27.1, *)` or the 27.0-SDK
+targets stop compiling. The Duo UI lane is `duo-ui-smoke` in `scripts/native-test-matrix.py`
+(`--duo-sim-id "$(scripts/worktree-sim.sh --platform duo id)"`).
+
 All four production targets use `org.labstream.Labstream` on their respective platforms; ordinary
 Mac host development is the documented exception and uses an isolated worktree identity. A
 development install can replace another Labstream build
