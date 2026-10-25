@@ -121,9 +121,9 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
     /// letterboxed 2.39:1) and whatever menu set the item offers.
     @MainActor
     func testPlayerChromeFramesAreStableAcrossSourceAspects() throws {
-        // iPhone: the player forces landscape. iPad keeps the device orientation, so audit both.
-        let orientations: [UIDeviceOrientation] = UIDevice.current.userInterfaceIdiom == .pad
-            ? [.portrait, .landscapeLeft] : [.portrait]
+        // A phone-class player scene (slab iPhone, folded iPhone Duo) is locked to landscape; a
+        // large scene (iPad, unfolded Duo) keeps the device orientation, so audit both there.
+        let orientations = playerAuditOrientations()
         defer { XCUIDevice.shared.orientation = .portrait }
         for orientation in orientations {
             XCUIDevice.shared.orientation = orientation
@@ -164,6 +164,61 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
             XCTAssertEqual(frame.minY, other.minY, accuracy: 0.5, "\(label) y for \(context)")
             XCTAssertEqual(frame.width, other.width, accuracy: 0.5, "\(label) width for \(context)")
             XCTAssertEqual(frame.height, other.height, accuracy: 0.5, "\(label) height for \(context)")
+        }
+    }
+
+    /// The player's landscape lock is decided from the measured scene (short side below 500 pt
+    /// is phone-class), never from the idiom. Started in portrait, a phone-class player scene
+    /// must come up landscape; a large scene (iPad, the unfolded iPhone Duo) must not be rotated.
+    /// On the Duo simulator this exercises whichever display it booted on (folded by default).
+    @MainActor
+    func testPlayerLandscapeLockFollowsMeasuredSceneClass() throws {
+        XCUIDevice.shared.orientation = .portrait
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let app = launchPlayerFixture(aspect: "16x9", paused: true)
+        defer { app.terminate() }
+        XCTAssertTrue(app.buttons["Close"].waitForExistence(timeout: 30), "player chrome")
+        XCTAssertTrue(app.sliders["playback.timeline"].waitForExistence(timeout: 5), "timeline")
+
+        let window = app.windows.firstMatch.frame
+        let shortSide = min(window.width, window.height)
+        if shortSide < Self.phoneShortSideLimit {
+            let landscape = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in
+                    let frame = app.windows.firstMatch.frame
+                    return frame.width > frame.height
+                }, object: nil)
+            XCTAssertEqual(XCTWaiter().wait(for: [landscape], timeout: 5), .completed,
+                           "phone-class player scene \(window.size) locks to landscape")
+        } else {
+            XCTAssertGreaterThan(window.height, window.width,
+                                 "large player scene \(window.size) keeps the portrait device orientation")
+        }
+        assertControlsInside(app.windows.firstMatch.frame, app: app, context: "lock")
+        attachScreenshot(app, name: "player-lock-\(Int(window.width))x\(Int(window.height))")
+    }
+
+    /// Mirrors `MobilePlayerOrientationLockPolicy.phoneShortSideLimit`.
+    private static let phoneShortSideLimit: CGFloat = 500
+
+    /// Orientations a player audit should cover, from the measured player scene: a large scene
+    /// keeps the device orientation (audit portrait and landscape), a phone-class one is locked.
+    @MainActor
+    private func playerAuditOrientations() -> [UIDeviceOrientation] {
+        XCUIDevice.shared.orientation = .portrait
+        let app = launchPlayerFixture(aspect: "16x9", paused: true)
+        defer { app.terminate() }
+        _ = app.buttons["Close"].waitForExistence(timeout: 30)
+        let window = app.windows.firstMatch.frame
+        return min(window.width, window.height) >= Self.phoneShortSideLimit
+            ? [.portrait, .landscapeLeft] : [.portrait]
+    }
+
+    @MainActor
+    private func assertControlsInside(_ window: CGRect, app: XCUIApplication, context: String) {
+        for element in [app.buttons["Close"], app.sliders["playback.timeline"]] where element.exists {
+            XCTAssertTrue(window.contains(element.frame),
+                          "\(element.identifier.isEmpty ? element.label : element.identifier) inside window (\(context))")
         }
     }
 
@@ -241,9 +296,8 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
     /// directly. With chrome visible each stage sits between the top bar and the scrubber.
     @MainActor
     func testBufferingStatusStagesSitBetweenChrome() throws {
-        // iPhone: the player forces landscape. iPad keeps the device orientation, so audit both.
-        let orientations: [UIDeviceOrientation] = UIDevice.current.userInterfaceIdiom == .pad
-            ? [.portrait, .landscapeLeft] : [.portrait]
+        // Phone-class player scenes are locked to landscape; large scenes are audited both ways.
+        let orientations = playerAuditOrientations()
         defer { XCUIDevice.shared.orientation = .portrait }
         for orientation in orientations {
             XCUIDevice.shared.orientation = orientation

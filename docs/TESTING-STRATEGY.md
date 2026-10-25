@@ -142,9 +142,12 @@ root changes. Git discovery includes deleted paths and both endpoints of renames
 working-tree changes when requested; filenames are read with NUL delimiters.
 
 `duo-ui-smoke` runs the mobile semantic fixture smoke on this worktree's iPhone Duo simulator
-(`--duo-sim-id`, `.simid-duo`, folded outer display by default). Shared and mobile-platform paths
-select it alongside `mobile-ui-smoke`. It proves the folded layout only; a real fold/unfold remains
-a manual Device Hub or physical-device step.
+(`--duo-sim-id`, `.simid-duo`, folded outer display by default), plus two player fixture checks:
+the landscape lock follows the measured scene class (phone-class scenes lock, large scenes keep the
+device orientation) and the chrome envelope stays put across reveal and hide. `mobile-ui-smoke`
+also runs the lock check. Shared and mobile-platform paths select it alongside `mobile-ui-smoke`.
+It proves the posture the simulator booted in only; the inner-size run and a fold/unfold during
+playback (the plan's appResize wrapper) remain open, as do Device Hub and physical-device checks.
 
 The bounded command and playback runners terminate their owned process group on timeout or
 cancellation. Cleanup waits for surviving descendants, not just the leader, before escalating;

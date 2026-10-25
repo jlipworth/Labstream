@@ -78,6 +78,7 @@
         "-destination", "platform=iOS Simulator,id={iphone_sim_id}",
         "-derivedDataPath", "{output_dir}/mobile-ui-smoke",
         "-only-testing:LabstreamMobileUITests/LabstreamMobileFixtureUITests/testFixtureHomeOpensDetailSemantically",
+        "-only-testing:LabstreamMobileUITests/LabstreamMobileFixtureUITests/testPlayerLandscapeLockFollowsMeasuredSceneClass",
         "test", "CODE_SIGNING_ALLOWED=NO", "-enableCodeCoverage", "NO"
       ]
     },
@@ -90,6 +91,8 @@
         "-destination", "platform=iOS Simulator,id={duo_sim_id}",
         "-derivedDataPath", "{output_dir}/duo-ui-smoke",
         "-only-testing:LabstreamMobileUITests/LabstreamMobileFixtureUITests/testFixtureHomeOpensDetailSemantically",
+        "-only-testing:LabstreamMobileUITests/LabstreamMobileFixtureUITests/testPlayerLandscapeLockFollowsMeasuredSceneClass",
+        "-only-testing:LabstreamMobileUITests/LabstreamMobileFixtureUITests/testPlayerChromeEnvelopeIsStableAcrossRevealAndHide",
         "test", "CODE_SIGNING_ALLOWED=NO", "-enableCodeCoverage", "NO"
       ]
     },

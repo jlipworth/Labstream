@@ -335,7 +335,8 @@ tests. App-side wiring stays thin.
   - Step 7: `DetailView` composition comes from PMSKit `MobileDetailLayoutPolicy` (measured
     viewport: phone below 500 pt or a compact viewport with a short side under 500 pt, stacked
     below 700 pt, side by side above). The compact key art is capped at 40% of the viewport
-    height. `HomeView` dense spacing keeps regular/regular with a corrected comment.
+    height, floored at half the viewport width so a slab iPhone in landscape keeps substantial art
+    (the floor needs a design check against a screenshot). `HomeView` dense spacing keeps regular/regular with a corrected comment.
   - Step 8 (partial): the Now Playing hero is bounded by the measured sheet on iOS. Rail poster
     widths stay on the size-class constants: both Duo displays already land on the authored
     values (466 pt compact → 110 pt posters, about 3.9 visible; 669 pt regular → 184 pt, about
@@ -363,7 +364,8 @@ tests. App-side wiring stays thin.
        inner/outer displays honour them is open (needs a real fold).
   - Step 3: `MobilePlayerOrientationLockPolicy` (PMSKit, tests) replaces the idiom gate: lock while
     the player's scene is phone-class and fills its screen, release on unfold without a forced
-    rotation, re-lock on fold, no repeat after a refusal. The restore policy gained
+    rotation, re-lock on fold, no repeat after a refusal while the display class is unchanged (a class change
+    clears the refusal; an error while the scene is already landscape is not treated as one). The restore policy gained
     `action(previous:didLock:entryClass:currentClass:)` (widen the mask only after a display-class
     change; nothing to restore when no lock was applied). The coordinator follows the player's own
     scene and both 500 ms polls return at once when no rotation is pending.
@@ -371,8 +373,10 @@ tests. App-side wiring stays thin.
     `usesCompactChrome` (tests for iPhone, Duo folded/unfolded both orientations, iPad). Menus are
     clamped to the available width in every iOS branch (Chapters no longer forces 720 pt on the
     669 pt inner display). A branch change mid-scrub cancels the scrub, clears trick-play and
-    restarts auto-hide. The hover preview keys on a non-compact viewport. The top chrome pads by a
-    per-viewport latched top inset (`PlayerTopSafeInsetLatch`). `videoGravity` changes only when
+    restarts auto-hide. The hover preview keeps every iPad window (as shipped) and adds non-compact viewports. The top
+    chrome pads by a latched top inset (`PlayerTopSafeInsetLatch`), keyed on the full-bounds size
+    so a status-bar toggle (which grows the safe-area frame by the inset it removes) does not
+    restart the latch. `videoGravity` changes only when
     different, inside a `CATransaction` with actions disabled. iOS resign-active pauses after
     400 ms unless `didBecomeActive` arrives; background pauses at once. PiP rebinds its content
     source to a new layer while inactive and implements the restore-UI delegate.
