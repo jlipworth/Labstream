@@ -30,12 +30,30 @@ struct NowPlayingView: View {
     /// index change cancels the pending update and re-arms it.
     @State private var followTask: Task<Void, Never>?
 
+    /// Measured sheet size on iOS (zero until the first layout). Read with
+    /// `onGeometryChange`, which observes without taking part in layout, so the sheet's
+    /// centering is unaffected (a wrapping GeometryReader broke it).
+    @State private var viewportSize: CGSize = .zero
+
     /// Hero artwork size — small enough that title, scrubber and transport all fit
-    /// in the sheet without scrolling (420 pushed the controls below the fold; a
-    /// GeometryReader-driven size broke the sheet's centering, so this stays a fixed
-    /// value rather than measuring). 300 pt overflows a 390-pt phone sheet with the
-    /// content padding, so compact width drops to the 220-pt hero.
-    private var artSize: CGFloat { DS.Poster.detailWidth(compact: compactWidth) }
+    /// in the sheet without scrolling (420 pushed the controls below the fold).
+    /// 300 pt overflows a 390-pt phone sheet with the content padding, so compact width
+    /// drops to the 220-pt hero. On iOS the authored size is additionally bounded by the
+    /// measured sheet, so short viewports (iPhone landscape, a folded or resized iPhone Duo)
+    /// shrink the art instead of pushing the transport below the fold; roomy sheets keep
+    /// the authored size exactly.
+    private var artSize: CGFloat {
+        let preferred = DS.Poster.detailWidth(compact: compactWidth)
+        #if os(iOS)
+        return CGFloat(MobileDetailLayoutPolicy.heroSide(
+            preferred: Double(preferred),
+            viewportWidth: Double(viewportSize.width),
+            viewportHeight: Double(viewportSize.height),
+            horizontalPadding: Double(compactWidth ? DS.pagePadding(compact: true) : DS.Space.xxl)))
+        #else
+        return preferred
+        #endif
+    }
 
     var body: some View {
         ZStack {
@@ -67,6 +85,15 @@ struct NowPlayingView: View {
                     .padding(.vertical, DS.Space.xxl)
                     .frame(maxWidth: .infinity)
                 }
+                #if os(iOS)
+                // Measure the scroll viewport, not the ZStack: the blurred backdrop can be
+                // larger than the sheet.
+                .onGeometryChange(for: CGSize.self) { proxy in
+                    proxy.size
+                } action: { size in
+                    viewportSize = size
+                }
+                #endif
                 .onAppear {
                     // The ☰ queue button's pre-scroll (MUSIC-DESIGN §4.1). Unanimated:
                     // an animated scroll during sheet presentation visibly fights the

@@ -36,14 +36,12 @@ struct DetailView: View {
     #endif
     @Environment(MusicPlayerController.self) private var musicPlayer
     #if os(iOS)
-    /// Drives iOS detail adaptations: compact phones use the dedicated narrow layout, while
-    /// narrow iPad split view can still stack the regular poster/metadata layout.
+    /// Fallback input for the iOS detail composition before the scroll container is measured.
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
-    /// True in ANY iOS compact-width context — iPhone AND a narrow iPad window (Split View /
-    /// Slide Over), which reports compact width but is not the phone idiom. Sizing decisions
-    /// that must also shrink for a compact iPad pane key on this rather than
-    /// `isCompactPhoneLayout`. Always false on visionOS, so its metrics stay untouched.
+    /// True in ANY iOS compact-width context (iPhone, a folded iPhone Duo, a narrow iPad
+    /// window). Coarse sizing such as page padding keys on this; the composition itself comes
+    /// from `detailLayoutMode`. Always false on visionOS, so its metrics stay untouched.
     @Environment(\.labstreamCompactWidth) private var compactWidth
     #if os(visionOS)
     @Environment(WatchTogetherCoordinator.self) private var watchTogetherCoordinator
@@ -83,6 +81,10 @@ struct DetailView: View {
     #if os(iOS)
     @State private var mobilePlayerOrientationCoordinator = MobilePlayerOrientationCoordinator()
     #endif
+    /// Measured size of the detail scroll container (iOS only; stays zero elsewhere). The
+    /// detail composition follows it so a resize or an iPhone Duo fold/unfold re-derives the
+    /// layout from the space actually available rather than from the device idiom.
+    @State private var detailViewportSize: CGSize = .zero
     @AppStorage(PlaybackPreferences.Keys.remoteQualityKbps) private var remoteMaxVideoBitrateKbps = PlaybackPreferences.defaultRemoteQualityKbps
     @AppStorage(PlaybackPreferences.Keys.homeQualityKbps) private var homeMaxVideoBitrateKbps = PlaybackPreferences.defaultHomeQualityKbps
     @AppStorage(PlaybackPreferences.Keys.resumeRewindSeconds) private var resumeRewindSeconds = 0
@@ -159,9 +161,17 @@ struct DetailView: View {
         selectedVersionRatingKey ?? item.ratingKey
     }
 
+    #if os(iOS)
+    private var detailLayoutMode: MobileDetailLayoutPolicy.Mode {
+        MobileDetailLayoutPolicy.mode(viewportWidth: Double(detailViewportSize.width),
+                                      viewportHeight: Double(detailViewportSize.height),
+                                      horizontallyCompact: horizontalSizeClass == .compact)
+    }
+    #endif
+
     private var isCompactPhoneLayout: Bool {
         #if os(iOS)
-        UIDevice.current.userInterfaceIdiom == .phone && horizontalSizeClass == .compact
+        detailLayoutMode == .phone
         #else
         false
         #endif
@@ -236,25 +246,32 @@ struct DetailView: View {
     #endif
 
     /// Poster + metadata arrangement. visionOS keeps the canonical side-by-side HStack. iOS
-    /// caps the metadata column to a readable measure in regular width, and stacks the poster
-    /// above the metadata in horizontally-compact widths (iPhone, narrow iPad split).
+    /// picks from the measured viewport (`MobileDetailLayoutPolicy`): the phone hierarchy for
+    /// phone-class viewports, the poster stacked above the metadata for medium widths (the
+    /// iPhone Duo inner display, a wide iPad Split View pane), and side by side with a
+    /// readable-measure metadata column when there is room.
     @ViewBuilder
     private var detailLayout: some View {
         #if os(tvOS)
         tvDetailLayout
         #elseif os(iOS)
-        if isCompactPhoneLayout {
+        switch detailLayoutMode {
+        case .phone:
             compactPhoneDetailLayout
-        } else if compactWidth {
-            // Compact-width iPad (Split View / Slide Over): stack like the phone layout, but
-            // the 300-pt regular hero plus page padding overflows a ~320-pt pane, so use the
-            // 220-pt compact hero, centered as in the phone branch above.
+        case .stacked:
+            // Medium width: stack the poster above the metadata. The 220-pt compact hero,
+            // bounded by the measured viewport, keeps the title and actions near the fold.
             VStack(alignment: .leading, spacing: DS.Space.xxxl) {
-                detailPoster(width: DS.Poster.detailWidth(compact: true))
+                detailPoster(width: CGFloat(MobileDetailLayoutPolicy.heroSide(
+                    preferred: Double(DS.Poster.detailWidth(compact: true)),
+                    viewportWidth: Double(detailViewportSize.width),
+                    viewportHeight: Double(detailViewportSize.height),
+                    horizontalPadding: Double(DS.Space.xxxl))))
                     .frame(maxWidth: .infinity, alignment: .center)
                 metadataColumn
+                    .frame(maxWidth: Self.readableMetadataWidth, alignment: .leading)
             }
-        } else {
+        case .sideBySide:
             HStack(alignment: .top, spacing: DS.Space.xxxl) {
                 posterHero
                 metadataColumn
@@ -411,7 +428,9 @@ struct DetailView: View {
 
     /// Full-width 16:9 key art for compact phones. The policy prefers backend landscape art,
     /// deliberately crops a poster fallback to fill the landscape frame, and preserves the
-    /// existing `PosterImage` placeholder when neither path exists.
+    /// existing `PosterImage` placeholder when neither path exists. Its height is capped at a
+    /// share of the measured viewport so short (landscape, folded) viewports keep the title
+    /// and actions in view; a capped frame stays 16:9 and centers.
     @ViewBuilder
     private var compactPhoneArtwork: some View {
         GeometryReader { geometry in
@@ -427,6 +446,16 @@ struct DetailView: View {
             }
         }
         .aspectRatio(16.0 / 9.0, contentMode: .fit)
+        .frame(maxWidth: compactPhoneArtworkMaximumWidth)
+        .frame(maxWidth: .infinity)
+    }
+
+    /// Width bound that keeps the 16:9 art within its viewport height cap. Capping the width
+    /// (not the height) lets the aspect-ratio frame size itself without overflowing.
+    private var compactPhoneArtworkMaximumWidth: CGFloat {
+        guard let height = MobileDetailLayoutPolicy.artworkMaximumHeight(
+            viewportHeight: Double(detailViewportSize.height)) else { return .infinity }
+        return CGFloat(height * 16.0 / 9.0)
     }
 
     private func compactPhoneArtworkImage(path: String?, size: CGSize) -> some View {
@@ -636,7 +665,8 @@ struct DetailView: View {
             VStack(alignment: .leading, spacing: 0) {
                 #if os(iOS)
                 detailLayout
-                    .padding(.horizontal, compactWidth ? DS.pagePadding(compact: true) : DS.Space.xxxl)
+                    .padding(.horizontal, isCompactPhoneLayout || compactWidth
+                             ? DS.pagePadding(compact: true) : DS.Space.xxxl)
                     .padding(.vertical, isCompactPhoneLayout ? DS.Space.xl : DS.Space.xxxl)
                 #elseif os(tvOS)
                 detailLayout
@@ -655,6 +685,13 @@ struct DetailView: View {
                 }
             }
         }
+        #if os(iOS)
+        .onGeometryChange(for: CGSize.self) { proxy in
+            proxy.size
+        } action: { size in
+            detailViewportSize = size
+        }
+        #endif
     }
 
     private var isMacPlayerPresentedValue: Bool {

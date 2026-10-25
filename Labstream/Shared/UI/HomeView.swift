@@ -609,10 +609,12 @@ private enum HomeLayoutMetrics {
 }
 
 private extension EnvironmentValues {
-    /// Full-size iPadOS reports regular width and regular height; macOS has the same
-    /// desktop-density problem as iPad Home. Keep this Home-only density pass off iPhone
-    /// landscape, where some devices can report regular width but should keep the compact
-    /// phone rhythm, and off visionOS so its authored window rhythm remains unchanged.
+    /// Dense spacing is for a large two-dimensional viewport: regular width AND regular height
+    /// (a full-size iPad, a wide iPad window, the unfolded iPhone Duo inner display). macOS has
+    /// the same desktop-density problem. It stays off any compact-height viewport (iPhone
+    /// landscape can report regular width but should keep the compact phone rhythm) and off
+    /// visionOS so its authored window rhythm remains unchanged. The size classes are read
+    /// from the environment, so a resize or fold re-evaluates it.
     var labstreamHomeUsesDenseSectionSpacing: Bool {
         #if os(iOS)
         horizontalSizeClass == .regular && verticalSizeClass == .regular
