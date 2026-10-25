@@ -49,10 +49,21 @@ final class MobilePlayerSystemCoordinator: NSObject, @preconcurrency AVPictureIn
                        artworkPipeline: artworkPipeline)
     }
 
+    /// Bind PiP to the presenter's live layer. Called on every presenter update, so it must be
+    /// idempotent. Geometry changes (rotation, resize, iPhone Duo fold) keep the same layer; if a
+    /// presenter ever attaches a different layer, PiP follows it while inactive, so the content
+    /// source never points at a layer that left the hierarchy.
     func attach(playerLayer: AVPlayerLayer) {
+        let previousLayer = self.playerLayer
         self.playerLayer = playerLayer
-        guard pictureInPictureController == nil,
-              AVPictureInPictureController.isPictureInPictureSupported() else {
+        if let pictureInPictureController {
+            guard previousLayer !== playerLayer,
+                  !pictureInPictureController.isPictureInPictureActive else { return }
+            pictureInPictureController.contentSource = .init(playerLayer: playerLayer)
+            AppDiagnostics.record(.playback, "player.pip_rebind", fields: [:])
+            return
+        }
+        guard AVPictureInPictureController.isPictureInPictureSupported() else {
             return
         }
         let controller = AVPictureInPictureController(playerLayer: playerLayer)
@@ -85,10 +96,29 @@ final class MobilePlayerSystemCoordinator: NSObject, @preconcurrency AVPictureIn
     func pictureInPictureControllerWillStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         isPictureInPictureActive = true
         core.updateNowPlayingInfo()
+        AppDiagnostics.record(.playback, "player.pip_state", fields: ["state": .label("will_start")])
     }
 
     func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         isPictureInPictureActive = false
         core.updateNowPlayingInfo()
+        AppDiagnostics.record(.playback, "player.pip_state", fields: ["state": .label("did_stop")])
+    }
+
+    func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController,
+                                    failedToStartPictureInPictureWithError error: any Error) {
+        isPictureInPictureActive = false
+        AppDiagnostics.record(.playback, "player.pip_state", fields: [
+            "state": .label("failed_to_start"),
+            "error": .error(error),
+        ])
+    }
+
+    /// The full-screen cover stays presented while PiP runs (this coordinator is torn down, and
+    /// PiP stopped, when the player view disappears), so the player UI is always there to
+    /// restore into, on whichever display the scene is on after a fold.
+    func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController,
+                                    restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
+        completionHandler(controller != nil)
     }
 }

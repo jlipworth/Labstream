@@ -79,6 +79,22 @@ final class AudioSessionCoordinator {
     private var routeChangeObserver: NSObjectProtocol?
     private var resignActiveObserver: NSObjectProtocol?
     private var didEnterBackgroundObserver: NSObjectProtocol?
+    private var didBecomeActiveObserver: NSObjectProtocol?
+    /// Deferred resign-active pause (iOS). Cancelled by `didBecomeActive`, superseded by
+    /// `didEnterBackground`, and dropped with the observers.
+    private var pendingResignActivePause: Task<Void, Never>?
+
+    /// How long a resign-active must last before ordinary video pauses. A transient inactive
+    /// phase is not background: an iPhone Duo fold, a Control Center or Notification Center
+    /// pull, or the start of an automatic Picture in Picture transition all resign active
+    /// briefly, and pausing immediately would stall playback that should continue (and race
+    /// PiP becoming active). `didEnterBackground` still pauses at once. tvOS and visionOS keep
+    /// their immediate resign-active pause.
+    #if os(iOS)
+    static let resignActivePauseDelay: Duration? = .milliseconds(400)
+    #else
+    static let resignActivePauseDelay: Duration? = nil
+    #endif
 
     /// True when an audio interruption paused playback while the user had it playing.
     /// Gates auto-resume after `.ended/.shouldResume`: background pauses deliberately
@@ -171,9 +187,10 @@ final class AudioSessionCoordinator {
 
         // Background-aware playback (P5): video can't decode/render in the background and a
         // live transcode session would keep churning unless the system is rendering via PiP
-        // or AirPlay. Pause on resign-active / background for ordinary video. We do NOT
-        // auto-resume on return — that's the user's choice. Music sessions opt out
-        // (`pausesOnBackground: false`): audio-only playback keeps going in the background.
+        // or AirPlay. Pause on background, and on a resign-active that outlasts
+        // `resignActivePauseDelay`, for ordinary video. We do NOT auto-resume on return —
+        // that's the user's choice. Music sessions opt out (`pausesOnBackground: false`):
+        // audio-only playback keeps going in the background.
         if pausesOnBackground {
             resignActiveObserver = center.addObserver(
                 forName: UIApplication.willResignActiveNotification,
@@ -182,7 +199,17 @@ final class AudioSessionCoordinator {
             ) { [weak self] _ in
                 Task { @MainActor in
                     guard isCurrent() else { return }
-                    self?.pauseForBackground()
+                    self?.handleResignActive(isCurrent: isCurrent)
+                }
+            }
+
+            didBecomeActiveObserver = center.addObserver(
+                forName: UIApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.cancelPendingResignActivePause(outcome: "became_active")
                 }
             }
 
@@ -193,7 +220,8 @@ final class AudioSessionCoordinator {
             ) { [weak self] _ in
                 Task { @MainActor in
                     guard isCurrent() else { return }
-                    self?.pauseForBackground()
+                    self?.cancelPendingResignActivePause(outcome: nil)
+                    self?.pauseForBackground(reason: "background")
                 }
             }
         }
@@ -233,6 +261,38 @@ final class AudioSessionCoordinator {
         if let didEnterBackgroundObserver {
             center.removeObserver(didEnterBackgroundObserver)
             self.didEnterBackgroundObserver = nil
+        }
+        if let didBecomeActiveObserver {
+            center.removeObserver(didBecomeActiveObserver)
+            self.didBecomeActiveObserver = nil
+        }
+        pendingResignActivePause?.cancel()
+        pendingResignActivePause = nil
+    }
+
+    private func handleResignActive(isCurrent: @escaping @MainActor () -> Bool) {
+        guard let delay = Self.resignActivePauseDelay else {
+            pauseForBackground(reason: "resign")
+            return
+        }
+        pendingResignActivePause?.cancel()
+        pendingResignActivePause = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self, isCurrent() else { return }
+            self.pendingResignActivePause = nil
+            self.pauseForBackground(reason: "resign")
+        }
+    }
+
+    private func cancelPendingResignActivePause(outcome: String?) {
+        guard let pending = pendingResignActivePause else { return }
+        pending.cancel()
+        pendingResignActivePause = nil
+        if let outcome {
+            AppDiagnostics.record(.playback, "player.lifecycle_pause", fields: [
+                "reason": .label("resign"),
+                "outcome": .label("cancelled_\(outcome)"),
+            ])
         }
     }
 
@@ -287,14 +347,31 @@ final class AudioSessionCoordinator {
     /// foreground: resume is the user's choice on return. Do not set the interruption-resume
     /// flag here, or a later interruption-ended notification with `.shouldResume` can restart
     /// playback.
-    private func pauseForBackground() {
+    private func pauseForBackground(reason: String) {
+        let wasPlaying = player.timeControlStatus != .paused
         #if os(iOS)
-        if player.isExternalPlaybackActive || isAirPlayRouteActive { return }
+        if player.isExternalPlaybackActive || isAirPlayRouteActive {
+            recordLifecyclePause(reason: reason, outcome: "continued_external", wasPlaying: wasPlaying)
+            return
+        }
         #endif
-        guard !shouldContinueOnBackground() else { return }
-        if player.timeControlStatus != .paused {
+        guard !shouldContinueOnBackground() else {
+            recordLifecyclePause(reason: reason, outcome: "continued_system", wasPlaying: wasPlaying)
+            return
+        }
+        if wasPlaying {
             player.pause()
         }
+        recordLifecyclePause(reason: reason, outcome: wasPlaying ? "paused" : "already_paused",
+                             wasPlaying: wasPlaying)
+    }
+
+    private func recordLifecyclePause(reason: String, outcome: String, wasPlaying: Bool) {
+        AppDiagnostics.record(.playback, "player.lifecycle_pause", fields: [
+            "reason": .label(reason),
+            "outcome": .label(outcome),
+            "was_playing": .bool(wasPlaying),
+        ])
     }
 
     #if os(iOS)
