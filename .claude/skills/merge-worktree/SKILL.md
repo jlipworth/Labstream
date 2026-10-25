@@ -162,7 +162,7 @@ scripts/worktree-sim.sh closeout "$WORKTREE"
 git worktree remove "$WORKTREE"
 git branch -d "$SOURCE_BRANCH"
 scripts/worktree-sim.sh prune
-xcrun simctl list devices | rg 'vpwt|iphonewt|ipadwt|tvwt|<branch-fragment>' || true
+xcrun simctl list devices | rg 'vpwt|iphonewt|duowt|ipadwt|tvwt|<branch-fragment>' || true
 ```
 
 Before removal, recheck the lane is clean. The Mac cleanup command is mandatory even when the lane was not primarily a macOS lane: app-code validation may have staged one or more `Labstream Dev — <identity>` builds under that worktree's `build/macos-host/`. It terminates and deletes every Mac app staged by the closing worktree, including any worktree-local production-identity staging, plus its worktree-local Mac build product. Verify that no `Labstream.app` remains below `$WORKTREE/build/macos-host/` and no process is executing from that path.

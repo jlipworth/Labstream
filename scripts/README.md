@@ -274,9 +274,9 @@ scripts/perf-compare.py compare \
 ## Simulator and worktree helpers
 
 - `worktree-sim.sh` — provisions one simulator per worktree. The default is visionOS
-  (`vpwt-*`, `.simid`); opt into iPhone, iPad, or tvOS with `--platform`,
+  (`vpwt-*`, `.simid`); opt into iPhone, iPhone Duo, iPad, or tvOS with `--platform`,
   `LABSTREAM_SIM_PLATFORM`, or a gitignored `.simplatform` file (`iphonewt-*`/`.simid-iphone`,
-  `ipadwt-*`/`.simid-ipad`, `tvwt-*`/`.simid-tvos`). Resolve a concrete ID and never
+  `duowt-*`/`.simid-duo` for the iPhone Duo foldable, `ipadwt-*`/`.simid-ipad`, `tvwt-*`/`.simid-tvos`). Resolve a concrete ID and never
   target `booted`.
 - `run-bounded-command.py` — wall-clock timeout wrapper used by the mobile and tvOS agent
   runners so a hung `xcodebuild` or simctl step cannot run unbounded.

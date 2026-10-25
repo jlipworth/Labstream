@@ -152,7 +152,7 @@ or iPad simulator without a pre-existing golden simulator. Select the platform e
 `.simplatform` file is optional convenience, not a prerequisite:
 
 ```sh
-PLATFORM=iphone                    # change to ipad for the regular-width path
+PLATFORM=iphone                    # ipad for the regular-width path; duo for the iPhone Duo foldable
 scripts/worktree-sim.sh --platform "$PLATFORM" setup
 SIMID=$(scripts/worktree-sim.sh --platform "$PLATFORM" id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
@@ -174,6 +174,12 @@ test -x "$APP/Labstream"
 If Xcode says the iOS platform/runtime is missing or warns that the deployment target is newer than
 the installed SDK, install the matching iOS Simulator runtime/platform in Xcode Settings. A newer
 simulator runtime may not be usable with an older installed iOS SDK.
+
+`PLATFORM=duo` creates a `duowt-*` simulator from the `iPhone Duo`
+(`com.apple.CoreSimulator.SimDeviceType.iPhone-Duo`) device type, which requires Xcode 27.1 and an
+iOS 27.1 or later simulator runtime (`xcodebuild -downloadPlatform iOS`). The script never falls back
+to a non-foldable iPhone for this platform. Simulator folding/unfolding is not proof of physical
+iPhone Duo behavior; the hardware gate stays open.
 
 All four production targets use `org.labstream.Labstream` on their respective platforms; ordinary
 Mac host development is the documented exception and uses an isolated worktree identity. A
@@ -332,7 +338,7 @@ and physical keyboard/headset behavior remain separate acceptance checks from fi
 
 ## Linked-worktree simulator cleanup
 
-Linked worktrees own their `vpwt-*`, `iphonewt-*`, `ipadwt-*`, and `tvwt-*` simulators. Before removing a
+Linked worktrees own their `vpwt-*`, `iphonewt-*`, `duowt-*`, `ipadwt-*`, and `tvwt-*` simulators. Before removing a
 linked worktree, delete all of its simulators and then remove the worktree:
 
 ```sh

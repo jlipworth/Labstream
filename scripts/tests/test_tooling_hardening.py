@@ -376,6 +376,15 @@ class ToolingHardeningTests(unittest.TestCase):
                 udid="IPHONE-0000-0000-0000-000000000000", allow_boot=True,
             ),
             dict(
+                platform="duo", label="iPhone Duo",
+                runtime="com.apple.CoreSimulator.SimRuntime.iOS-27-1",
+                devicetype="com.apple.CoreSimulator.SimDeviceType.iPhone-Duo",
+                devicetype_name="iPhone Duo",
+                stock_devices='{"name":"iPhone Duo","udid":"STOCK-DUO-0000-0000-000000000000","state":"Shutdown"}',
+                extra_separator=",", prefix="duowt",
+                udid="DUO-0000-0000-0000-000000000000", allow_boot=True,
+            ),
+            dict(
                 platform="tvos", label="tvOS",
                 runtime="com.apple.CoreSimulator.SimRuntime.tvOS-27-0",
                 devicetype="com.apple.CoreSimulator.SimDeviceType.Apple-TV-4K-3rd-generation-4K",
@@ -387,6 +396,41 @@ class ToolingHardeningTests(unittest.TestCase):
         for case in cases:
             with self.subTest(platform=case["platform"]):
                 self.assert_worktree_sim_platform_creates_sim_without_golden_clone(**case)
+
+    def test_worktree_sim_duo_never_falls_back_to_slab_iphone(self):
+        with self.make_repo() as root:
+            self.copy_script(root, "worktree-sim.sh")
+            (root / "Labstream" / "Existing.swift").write_text("// baseline\n")
+            self.commit_all(root)
+            (root / ".simplatform").write_text("duo\n")
+            fakebin = root / "fakebin"
+            fakebin.mkdir()
+            (fakebin / "xcrun").write_text(textwrap.dedent("""\
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [ "$1 $2 $3" = "simctl list devices" ] && [ "${4:-}" = "-j" ]; then
+                  printf '{"devices":{}}\\n'
+                  exit 0
+                fi
+                if [ "$1 $2 $3" = "simctl list runtimes" ] && [ "${4:-}" = "-j" ]; then
+                  printf '{"runtimes":[{"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-27-0","version":"27.0","isAvailable":true}]}\\n'
+                  exit 0
+                fi
+                if [ "$1 $2 $3" = "simctl list devicetypes" ] && [ "${4:-}" = "-j" ]; then
+                  printf '{"devicetypes":[{"identifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro","name":"iPhone 17 Pro","productFamily":"iPhone","isAvailable":true}]}\\n'
+                  exit 0
+                fi
+                echo "unexpected xcrun $*" >&2
+                exit 2
+                """))
+            (fakebin / "xcrun").chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{fakebin}:{env['PATH']}"
+
+            result = subprocess.run(["scripts/worktree-sim.sh", "id"], cwd=root, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("no available iPhone Duo simulator device type found", result.stderr)
+            self.assertFalse((root / ".simid-duo").exists())
 
     def test_worktree_sim_tvos_fails_cleanly_without_runtime(self):
         with self.make_repo() as root:

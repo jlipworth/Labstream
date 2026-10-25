@@ -150,7 +150,7 @@ sequence plus repository redaction and tooling tests. Any time you change app co
 a workflow / subagent — also use `scripts/native-test-matrix.py affected` to identify the
 affected targets, then headlessly verify the applicable product actually *runs* on **this
 worktree's own simulator** (or through the isolated Mac host path). Resolve the selected
-platform with `scripts/worktree-sim.sh id` or `--platform visionos|iphone|ipad|tvos`; boot it
+platform with `scripts/worktree-sim.sh id` or `--platform visionos|iphone|ipad|tvos|duo`; boot it
 first because worktree simulators are created Shutdown, and never target `booted`. The
 command below is the minimum visionOS smoke; use the exact mobile/tvOS equivalents in
 `docs/DEVELOPMENT.md` for those products. Claude self-serves this passive half of the
@@ -204,6 +204,9 @@ script backs both the git hook and these agent steps.
   visionOS golden. Use `LABSTREAM_SIM_PLATFORM=iphone` or `ipad`,
   `scripts/worktree-sim.sh --platform iphone|ipad ...`, or a gitignored `.simplatform`
   containing `iphone` or `ipad`; iPhone UDIDs live in `.simid-iphone`, iPad UDIDs in `.simid-ipad`.
+- iPhone Duo (foldable) work uses `--platform duo` / `.simplatform` `duo`: a fresh `duowt-*`
+  simulator (UDID in `.simid-duo`) that only ever selects the iPhone Duo device type (Xcode 27.1+
+  with the iOS 27.1+ runtime) and never falls back to a slab iPhone.
 - tvOS work uses a fresh Apple TV simulator rather than cloning the visionOS golden. Select it
   with `LABSTREAM_SIM_PLATFORM=tvos`, `scripts/worktree-sim.sh --platform tvos ...`, or a
   gitignored `.simplatform` containing `tvos`; its UDID lives in `.simid-tvos`.
@@ -215,10 +218,11 @@ scripts/worktree-sim.sh install-hook   # one-time: post-checkout auto-clones on 
 scripts/worktree-sim.sh setup          # provision this worktree's sim (idempotent; clone bounces the golden briefly)
 scripts/worktree-sim.sh teardown       # delete this worktree's clone + .simid (run before removing the worktree)
 scripts/worktree-sim.sh teardown --all # delete every sim owned by this linked worktree
-scripts/worktree-sim.sh closeout PATH  # teardown PATH if present, then prune orphaned vpwt-*/iphonewt-*/ipadwt-*/tvwt-* sims
+scripts/worktree-sim.sh closeout PATH  # teardown PATH if present, then prune orphaned vpwt-*/iphonewt-*/duowt-*/ipadwt-*/tvwt-* sims
 scripts/worktree-sim.sh prune          # sweep worktree sims whose worktree is gone (backstop after a bare `git worktree remove`)
 scripts/worktree-sim.sh --platform visionos id
 scripts/worktree-sim.sh --platform iphone id
+scripts/worktree-sim.sh --platform duo id
 scripts/worktree-sim.sh --platform ipad id
 scripts/worktree-sim.sh --platform tvos id
 ```
@@ -271,11 +275,11 @@ scripts/worktree-sim.sh closeout <worktree>
 
 # If the worktree was already removed or you are unsure:
 scripts/worktree-sim.sh prune
-xcrun simctl list devices | rg 'vpwt|iphonewt|ipadwt|tvwt|<branch-fragment>' || true
+xcrun simctl list devices | rg 'vpwt|iphonewt|duowt|ipadwt|tvwt|<branch-fragment>' || true
 ```
 
 Closeout invariant: only the main worktree owns the golden sim; linked-worktree closeout
-must remove the relevant `vpwt-*`, `iphonewt-*`, `ipadwt-*`, and/or `tvwt-*` simulator and must not
+must remove the relevant `vpwt-*`, `iphonewt-*`, `duowt-*`, `ipadwt-*`, and/or `tvwt-*` simulator and must not
 remove the golden sim.
 
 **Close out on merge — don't leave merged worktrees behind.** A linked worktree is finished
