@@ -73,6 +73,11 @@ public struct MobilePlayerChromeLayoutPolicy: Equatable, Sendable {
 
 /// Latches the largest top safe-area inset seen for one player viewport size.
 ///
+/// Key the latch on the full-bounds size (safe-area layout size plus the insets), never on the
+/// safe-area layout size alone: hiding the status bar grows the safe-area height by exactly the
+/// inset it removes, so a safe-area-keyed latch would restart on every chrome toggle and follow
+/// the live inset. `observe(safeAreaWidth:safeAreaHeight:top:bottom:leading:trailing:)` does this.
+///
 /// The player hides the status bar together with its chrome. On some displays that flips the top
 /// inset between zero and the status-bar height on every reveal, which would make the top chrome
 /// jump. Holding the largest value for a given viewport keeps it still; a new viewport size (a
@@ -96,6 +101,18 @@ public struct PlayerTopSafeInsetLatch: Equatable, Sendable {
             latchedTopInset = max(latchedTopInset, inset)
         }
         return latchedTopInset
+    }
+
+    /// Feed one measurement taken in the safe-area layout frame. The latch is keyed on the
+    /// full-bounds size (layout size plus all insets), which does not change when the status bar
+    /// is shown or hidden.
+    @discardableResult
+    public mutating func observe(safeAreaWidth: Double, safeAreaHeight: Double,
+                                 top: Double, bottom: Double, leading: Double, trailing: Double) -> Double {
+        func finite(_ value: Double) -> Double { value.isFinite ? max(0, value) : 0 }
+        return observe(viewportWidth: finite(safeAreaWidth) + finite(leading) + finite(trailing),
+                       viewportHeight: finite(safeAreaHeight) + finite(top) + finite(bottom),
+                       topInset: top)
     }
 
     /// Top padding for the top chrome: the authored inset, or the latched safe inset plus a small

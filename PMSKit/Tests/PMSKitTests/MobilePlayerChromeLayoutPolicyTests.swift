@@ -55,6 +55,21 @@ struct PlayerTopSafeInsetLatchTests {
         #expect(latch.observe(viewportWidth: 669, viewportHeight: 951, topInset: 30) == 30)
     }
 
+    @Test func statusBarToggleDoesNotRestartTheSafeAreaKeyedLatch() {
+        // Real call-site shape: the measured view sits inside the safe area, so hiding the status
+        // bar grows the layout height by the inset it removes. The full-bounds key stays put.
+        var latch = PlayerTopSafeInsetLatch()
+        #expect(latch.observe(safeAreaWidth: 669, safeAreaHeight: 927,
+                              top: 24, bottom: 0, leading: 0, trailing: 0) == 24)
+        #expect(latch.observe(safeAreaWidth: 669, safeAreaHeight: 951,
+                              top: 0, bottom: 0, leading: 0, trailing: 0) == 24)
+        #expect(latch.observe(safeAreaWidth: 669, safeAreaHeight: 927,
+                              top: 24, bottom: 0, leading: 0, trailing: 0) == 24)
+        // A real resize (fold/rotation/window) still starts a fresh measurement.
+        #expect(latch.observe(safeAreaWidth: 951, safeAreaHeight: 669,
+                              top: 0, bottom: 0, leading: 0, trailing: 0) == 0)
+    }
+
     @Test func aNewViewportStartsAFreshMeasurement() {
         var latch = PlayerTopSafeInsetLatch()
         latch.observe(viewportWidth: 466, viewportHeight: 678, topInset: 40)

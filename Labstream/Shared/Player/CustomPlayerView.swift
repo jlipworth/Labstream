@@ -253,13 +253,19 @@ struct CustomPlayerView: View {
         // `customPlayerPresentationSafeArea()` to keep their full-bounds behavior elsewhere.
         .task(id: clockTaskID) { await runPlayer() }
         #if os(iOS)
-        // Measured in the safe-area layout frame (the chrome above ignores the top edge).
+        // Measured in the safe-area layout frame (the chrome above ignores the top edge). The
+        // latch is keyed on the full-bounds size (layout size plus insets): hiding the status bar
+        // grows this frame by exactly the inset it removes, so keying on `proxy.size` alone would
+        // restart the latch on every chrome toggle.
         .onGeometryChange(for: PlayerTopSafeInsetSample.self) { proxy in
-            PlayerTopSafeInsetSample(size: proxy.size, top: proxy.safeAreaInsets.top)
+            PlayerTopSafeInsetSample(size: proxy.size, insets: proxy.safeAreaInsets)
         } action: { sample in
-            mobileTopSafeInsetLatch.observe(viewportWidth: Double(sample.size.width),
-                                            viewportHeight: Double(sample.size.height),
-                                            topInset: Double(sample.top))
+            mobileTopSafeInsetLatch.observe(safeAreaWidth: Double(sample.size.width),
+                                            safeAreaHeight: Double(sample.size.height),
+                                            top: Double(sample.insets.top),
+                                            bottom: Double(sample.insets.bottom),
+                                            leading: Double(sample.insets.leading),
+                                            trailing: Double(sample.insets.trailing))
         }
         // The player's own scene drives the landscape lock and records every geometry change
         // (rotation, window resize, iPhone Duo fold) as a layout-only event.
@@ -432,7 +438,7 @@ struct CustomPlayerView: View {
 #if os(iOS)
 struct PlayerTopSafeInsetSample: Equatable {
     let size: CGSize
-    let top: CGFloat
+    let insets: EdgeInsets
 }
 
 private extension MobileVideoDisplayMode {
