@@ -66,4 +66,17 @@ struct MobilePlayerOrientationLockPolicyTests {
         #expect(Policy.decision(displayClass: .phone, fillsScreen: true, isLocked: false, declinedClass: .large)
                 == .lockLandscape)
     }
+
+    @Test func declineIsForgottenWhenTheDisplayClassChanges() {
+        // Phone-class lock declined, then unfold (large), then fold back (phone): ask again.
+        var declined = Policy.retainedDeclinedClass(.phone, displayClass: .phone)
+        #expect(declined == .phone)
+        declined = Policy.retainedDeclinedClass(declined, displayClass: .large)
+        #expect(declined == nil)
+        declined = Policy.retainedDeclinedClass(declined, displayClass: .phone)
+        #expect(Policy.decision(displayClass: .phone, fillsScreen: true, isLocked: false, declinedClass: declined)
+                == .lockLandscape)
+        // An unmeasured scene keeps the memory.
+        #expect(Policy.retainedDeclinedClass(.phone, displayClass: nil) == .phone)
+    }
 }

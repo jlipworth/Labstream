@@ -53,6 +53,16 @@ public enum MobilePlayerOrientationLockPolicy {
             && abs(scene.1 - screen.1) <= fillsScreenTolerance
     }
 
+    /// The decline memory to carry into the next evaluation. A decline only suppresses the lock
+    /// while the scene stays in the class that refused it; once the measured class changes (an
+    /// iPhone Duo unfolded, then folded back) the next phone-class evaluation asks again. An
+    /// unmeasured scene keeps the memory.
+    public static func retainedDeclinedClass(_ declinedClass: MobilePlayerDisplayClass?,
+                                             displayClass: MobilePlayerDisplayClass?) -> MobilePlayerDisplayClass? {
+        guard let declinedClass, let displayClass else { return declinedClass }
+        return declinedClass == displayClass ? declinedClass : nil
+    }
+
     /// - Parameters:
     ///   - displayClass: The current class of the hosting scene; nil while unmeasured.
     ///   - fillsScreen: Whether the hosting scene covers its whole screen.

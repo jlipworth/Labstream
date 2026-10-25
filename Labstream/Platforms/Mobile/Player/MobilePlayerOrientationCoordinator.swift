@@ -103,6 +103,10 @@ final class MobilePlayerOrientationCoordinator {
                                                                         sceneHeight: Double(sceneSize.height),
                                                                         screenWidth: Double(screenSize.width),
                                                                         screenHeight: Double(screenSize.height))
+        // A decline only holds for the class that refused; a fold/unfold asks again.
+        current.declinedClass = MobilePlayerOrientationLockPolicy.retainedDeclinedClass(current.declinedClass,
+                                                                                        displayClass: displayClass)
+        session = current
         let decision = MobilePlayerOrientationLockPolicy.decision(displayClass: displayClass,
                                                                   fillsScreen: fillsScreen,
                                                                   isLocked: current.isLocked,
@@ -136,6 +140,9 @@ final class MobilePlayerOrientationCoordinator {
 
     private func lockRequestDeclined(for displayClass: MobilePlayerDisplayClass?) {
         guard var current = session, current.isLocked else { return }
+        // A spurious or transient error while the scene is already landscape is not a decline:
+        // keep the lock rather than leaving the rest of the session unlocked.
+        if current.scene?.effectiveGeometry.interfaceOrientation.isLandscape == true { return }
         // The scene will not rotate for this display class. Do not keep a landscape-only mask
         // on a portrait scene; the policy will not ask again until the class changes.
         current.isLocked = false
