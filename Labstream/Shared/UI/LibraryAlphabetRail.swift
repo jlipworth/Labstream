@@ -169,6 +169,15 @@ struct LibraryAlphabetRail: View {
         #endif
     }
 
+    /// Extra trailing room any other (regular-width) grid must reserve so its last column
+    /// clears the rail. The rail's footprint from the trailing safe edge is the compact grid's
+    /// 12-pt inset plus its reservation; a grid whose own padding already covers part of that
+    /// reserves only the remainder. The rail is laid out inside the safe area, so the iOS 27.1
+    /// vertical bar's trailing inset is already excluded and needs no extra term here.
+    static func regularGridTrailingReservation(pagePadding: CGFloat) -> CGFloat {
+        max(0, 12 + compactGridTrailingReservation - pagePadding)
+    }
+
     var body: some View {
         ViewThatFits(in: .vertical) {
             railColumn(thinning: 1)

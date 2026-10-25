@@ -567,7 +567,7 @@ struct LibraryGridView: View {
                                     }
                                     .padding(.horizontal, metrics?.horizontalPadding ?? regularGridHorizontalPadding)
                                     .padding(.vertical, metrics?.horizontalPadding ?? regularGridVerticalPadding)
-                                    .padding(.trailing, metrics?.trailingReservation ?? 0)
+                                    .padding(.trailing, metrics?.trailingReservation ?? regularGridTrailingReservation)
                                 }
                             }
                         }
@@ -651,6 +651,18 @@ struct LibraryGridView: View {
         tvPageInset
         #else
         DS.pagePadding(compact: compactWidth)
+        #endif
+    }
+
+    /// Regular-width grids reserve the A–Z rail strip too: a wide iPad pane or the unfolded
+    /// iPhone Duo inner display otherwise leaves the last poster column under the rail.
+    private var regularGridTrailingReservation: CGFloat {
+        // iOS/iPadOS only: the macOS video grid keeps its established layout.
+        #if os(iOS)
+        guard nonVisionAlphabetRailVisible else { return 0 }
+        return LibraryAlphabetRail.regularGridTrailingReservation(pagePadding: regularGridHorizontalPadding)
+        #else
+        return 0
         #endif
     }
 
