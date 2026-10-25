@@ -1298,10 +1298,13 @@ struct CustomPlayerChrome: View {
     #if os(macOS) || os(iOS)
     func handleTimelineHover(_ phase: HoverPhase, trackWidth: CGFloat) {
         #if os(iOS)
-        // `onContinuousHover` only fires for an indirect pointer. #237 is a large-viewport pointer
-        // enhancement (iPad, the unfolded iPhone Duo with a trackpad); the compact phone chrome has
-        // no room for the hover card, so it stays touch-only.
-        guard !isCompactMobileChrome else { return }
+        // `onContinuousHover` only fires for an indirect pointer. #237 shipped for every iPad
+        // window (including Slide Over, narrow Split View and small Stage Manager windows, where
+        // the card clamps to the track), so iPad keeps it regardless of the chrome branch. This is
+        // a capability gate for pointer hardware that already shipped, not a layout decision.
+        // Other iOS devices get it on the regular chrome (the unfolded iPhone Duo with a
+        // trackpad); the compact phone chrome has no room for the card and stays touch-only.
+        guard UIDevice.current.userInterfaceIdiom == .pad || !isCompactMobileChrome else { return }
         #endif
 
         switch phase {
