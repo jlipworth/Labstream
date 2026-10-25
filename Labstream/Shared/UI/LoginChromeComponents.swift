@@ -124,7 +124,11 @@ struct LoginBrandBackdrop: View {
                         Color.clear
                     ], startPoint: .top, endPoint: .bottom)
                     .frame(height: 430)
-                    .ignoresSafeArea(edges: .top)
+                    // Extend under the top AND both side insets. Top-only left the wash
+                    // stopping at the trailing safe edge, which on the folded iPhone Duo
+                    // (vertical status bar on the trailing edge) cut it off short of the
+                    // screen as a visible box.
+                    .ignoresSafeArea(edges: [.top, .horizontal])
                 }
         } else {
             DS.Brand.iconPlateGradient
