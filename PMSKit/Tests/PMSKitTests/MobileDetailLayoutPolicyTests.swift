@@ -43,6 +43,16 @@ struct MobileDetailLayoutPolicyTests {
         #expect(MobileDetailLayoutPolicy.artworkMaximumHeight(viewportHeight: .nan) == nil)
     }
 
+    @Test func artworkWidthHonorsTheCapButKeepsHalfTheViewportWidth() {
+        // Slab iPhone landscape: the 120-pt height cap alone would give ~213 pt of art.
+        #expect(MobileDetailLayoutPolicy.artworkMaximumWidth(viewportWidth: 874, viewportHeight: 300) == 437)
+        // Portrait phone: the cap is wider than the page, so the art stays full width.
+        let portrait = MobileDetailLayoutPolicy.artworkMaximumWidth(viewportWidth: 402, viewportHeight: 780)
+        #expect(portrait.map { $0 >= 402 } == true)
+        #expect(MobileDetailLayoutPolicy.artworkMaximumWidth(viewportWidth: 0, viewportHeight: 300) == nil)
+        #expect(MobileDetailLayoutPolicy.artworkMaximumWidth(viewportWidth: 874, viewportHeight: 0) == nil)
+    }
+
     @Test func heroKeepsAuthoredSizeWhenThereIsRoom() {
         // iPhone portrait sheet and iPad keep the authored 220/300-pt heroes.
         #expect(MobileDetailLayoutPolicy.heroSide(preferred: 220, viewportWidth: 402,

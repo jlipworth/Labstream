@@ -430,7 +430,8 @@ struct DetailView: View {
     /// deliberately crops a poster fallback to fill the landscape frame, and preserves the
     /// existing `PosterImage` placeholder when neither path exists. Its height is capped at a
     /// share of the measured viewport so short (landscape, folded) viewports keep the title
-    /// and actions in view; a capped frame stays 16:9 and centers.
+    /// and actions closer to the fold, but it never drops below half the viewport width; a
+    /// capped frame stays 16:9 and centers.
     @ViewBuilder
     private var compactPhoneArtwork: some View {
         GeometryReader { geometry in
@@ -450,12 +451,14 @@ struct DetailView: View {
         .frame(maxWidth: .infinity)
     }
 
-    /// Width bound that keeps the 16:9 art within its viewport height cap. Capping the width
-    /// (not the height) lets the aspect-ratio frame size itself without overflowing.
+    /// Width bound that keeps the 16:9 art within its viewport height cap, floored at half the
+    /// viewport width so wide-and-short viewports (slab iPhone landscape) keep substantial art.
+    /// Capping the width (not the height) lets the aspect-ratio frame size itself.
     private var compactPhoneArtworkMaximumWidth: CGFloat {
-        guard let height = MobileDetailLayoutPolicy.artworkMaximumHeight(
+        guard let width = MobileDetailLayoutPolicy.artworkMaximumWidth(
+            viewportWidth: Double(detailViewportSize.width),
             viewportHeight: Double(detailViewportSize.height)) else { return .infinity }
-        return CGFloat(height * 16.0 / 9.0)
+        return CGFloat(width)
     }
 
     private func compactPhoneArtworkImage(path: String?, size: CGSize) -> some View {

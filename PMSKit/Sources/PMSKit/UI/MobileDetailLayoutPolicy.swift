@@ -46,6 +46,20 @@ public enum MobileDetailLayoutPolicy {
         return .sideBySide
     }
 
+    /// Smallest share of the viewport width the capped compact key art keeps. Without this floor
+    /// the height cap shrinks the art to a thumbnail on wide-and-short phone viewports (a slab
+    /// iPhone in landscape, ~874x300 pt of scroll viewport, would get ~215 pt of art).
+    public static let artworkMinimumWidthFraction: Double = 0.5
+
+    /// Width bound for the compact 16:9 key art: the width that honors the height cap, but never
+    /// less than `artworkMinimumWidthFraction` of the viewport width. `nil` when unmeasured.
+    public static func artworkMaximumWidth(viewportWidth: Double, viewportHeight: Double,
+                                           aspectRatio: Double = 16.0 / 9.0) -> Double? {
+        let width = sanitized(viewportWidth)
+        guard width > 0, let height = artworkMaximumHeight(viewportHeight: viewportHeight) else { return nil }
+        return max(height * aspectRatio, width * artworkMinimumWidthFraction)
+    }
+
     /// Height cap for the compact 16:9 key art; `nil` when the viewport is not yet measured.
     public static func artworkMaximumHeight(viewportHeight: Double) -> Double? {
         let height = sanitized(viewportHeight)
