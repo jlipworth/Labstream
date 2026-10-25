@@ -23,6 +23,9 @@ When a plan is complete or superseded:
 
 ## Active plans
 
+- [iPhone Duo support](iphone-duo.md) — [#419](https://github.com/jlipworth/Labstream/issues/419)
+  geometry-driven layout, fold-during-playback invariants, iOS 27.1 vertical bars, Xcode 27.1
+  toolchain move and Duo XCUITest lanes; physical Duo and Duo App Store screenshot gates remain open.
 - [Downloads manager overhaul](2026-10-16-downloads-overhaul.md) — P1–P7 implementation outcomes,
   compact acceptance inventory and deferred work. P7 review integration, the final 1.8.0 source
   commit and live/device/TestFlight gates remain open; defect dispositions live in the linked
