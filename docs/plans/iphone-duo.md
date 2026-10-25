@@ -1,8 +1,9 @@
 # iPhone Duo support for LabstreamMobile
 
 **Status (2026-10-25):** plan approved for implementation on `duo/support`, based on
-`downloads/overhaul`. The worktree Duo simulator platform is done (`c8cbbf5f`). All other steps
-below are open. The physical iPhone Duo gate and the Duo App Store screenshot gate stay open until
+`downloads/overhaul`. The worktree Duo simulator platform is done (`c8cbbf5f`). Part 1 (toolchain,
+shell and non-player layout: Steps 1, 6, 7, 9 and the Step 8 hero sizing) is done; see the
+journal. The player steps (2 to 5), the Step 8 rail metrics, Step 10 and Step 11 are open. The physical iPhone Duo gate and the Duo App Store screenshot gate stay open until
 a person performs them. Simulator evidence does not close either one.
 
 **Tracking:** [#419](https://github.com/jlipworth/Labstream/issues/419).
@@ -311,3 +312,35 @@ tests. App-side wiring stays thin.
 - 2026-10-25: toolchain ready (Xcode 27.1, iOS 27.1 runtime, Duo simulator
   `.simid-duo`). Baseline build and launch are clean on unchanged source. Both audits were
   triaged into this plan.
+- 2026-10-25, Part 1 (toolchain and non-player layout):
+  - Step 1: all four schemes build clean on Xcode 27.1 with worktree-local DerivedData. The
+    warning sets are identical to the unchanged-source baseline for every scheme (mobile 16,
+    visionOS 16, tvOS 8, macOS 18 unique warnings). `duo-ui-smoke` was added to the native
+    matrix (`--duo-sim-id`, `.simid-duo`) with topology tests, and the toolchain is recorded in
+    `docs/DEVELOPMENT.md`, `docs/MACOS-CI.md` and `docs/TESTING-STRATEGY.md`.
+  - Observed on the folded Duo simulator (fixture browse): the 27.1 SDK puts the tab bar and the
+    toolbar items (Settings gear, back button) in a vertical bar on the trailing edge below the
+    vertical status bar. Content and the detail page stay inside the safe area; horizontal
+    rails scroll under the floating bar like vertical content under a bottom bar. The appResize
+    proxy at 669×951 shows the regular tab set (Settings is a tab) with a bottom bar, so the
+    proxy does not exercise the inner display's vertical bar.
+  - Step 6: compact→regular now hands an open Settings sheet back to the Settings tab
+    (`MobileSettingsPresentationPolicy`, hosted tests pass on the Duo simulator). The shell
+    comment no longer calls `.sidebarAdaptable` an iPad sidebar. The A–Z rail reserves its strip
+    in regular width (iOS video grid and iOS music grid); it is laid out inside the safe area,
+    so it clears the vertical bar without a separate inset. MiniPlayerBar stays on
+    `tabViewBottomAccessory` and minimize-on-scroll is unchanged: neither could be observed
+    beside the vertical bar without music playing, so that check stays open.
+  - Step 7: `DetailView` composition comes from PMSKit `MobileDetailLayoutPolicy` (measured
+    viewport: phone below 500 pt or a compact viewport with a short side under 500 pt, stacked
+    below 700 pt, side by side above). The compact key art is capped at 40% of the viewport
+    height. `HomeView` dense spacing keeps regular/regular with a corrected comment.
+  - Step 8 (partial): the Now Playing hero is bounded by the measured sheet on iOS. Rail poster
+    widths stay on the size-class constants: both Duo displays already land on the authored
+    values (466 pt compact → 110 pt posters, about 3.9 visible; 669 pt regular → 184 pt, about
+    3.4 visible), so plumbing measured width through every rail was deferred. Rail scroll
+    positions across a fold were not changed (no reset was observed; needs a real fold).
+  - Step 9: the compact login brand wash now ignores the horizontal safe area too, so it spans
+    the folded display instead of stopping at the vertical status bar (screenshot verified).
+  - Evidence (gitignored): `artifacts/duo-builds/{baseline,r2}/`, `artifacts/duo-part1/`.
+

@@ -24,9 +24,23 @@ root, plus the shared `PMSKit` package. The public mobile support floor is iOS/i
 ## Current mobile behavior
 
 - One adaptive shell for iPhone and iPad: compact widths use the tab-first iPhone shape;
-  regular widths use the iPad sidebar shape from `TabView` with `.sidebarAdaptable`.
+  regular widths on iPadOS use the sidebar shape from `TabView` with `.sidebarAdaptable`
+  (with the phone idiom, such as an unfolded iPhone Duo, it stays a tab bar).
   Search keeps the system `.search` tab role, the tab bar minimizes on scroll, and the
-  music mini player rides `.tabViewBottomAccessory`.
+  music mini player rides `.tabViewBottomAccessory`. Settings is a tab in regular width and a
+  toolbar sheet in compact width; a size-class change in either direction hands off between
+  the two, so a resize or fold never strands the selection or leaves a duplicate sheet open.
+- iPhone Duo (built with the iOS 27.1 SDK): the app fills either display and the system moves
+  the tab bar and toolbars to a vertical bar on the trailing edge. The folded outer display is
+  466×678 pt (compact width) and the inner display is 669×951 pt (regular width); both are about
+  1.45:1. Layout keys on measured geometry and size classes, never on the device idiom. The
+  detail page picks its composition from `MobileDetailLayoutPolicy` in PMSKit: the phone
+  hierarchy below a 500-pt width (or a compact-width viewport whose short side is under 500 pt),
+  the poster stacked over the metadata below 700 pt (the inner display), and side by side
+  above. The compact key art and the Now Playing hero are bounded by the measured viewport
+  height. The A–Z rail reserves its strip in regular width as well as compact width, and stays
+  inside the safe area, so it clears the vertical bar. Shared code that uses 27.1-only SwiftUI
+  API must guard it for the 27.0-SDK visionOS, tvOS and macOS targets.
 - Detail, player chrome, offline/download, settings, and music surfaces are shared but are
   expected to stay readable in iPhone compact width. The video detail action stack and
   player controls collapse vertically/horizontally rather than assuming an iPad canvas;
@@ -141,6 +155,10 @@ multiple-device selection, install, and launch.
   aspects, rounded-corner clearance) and iPad compact Split View/Stage Manager widths, which the
   simulator fixture does not drive. In compact or windowed iPad layouts, check that the top-leading
   Close button clears the status bar and the window controls.
+- iPhone Duo: physical-device fold/unfold, a real Device Hub fold in the simulator, the
+  `tabViewBottomAccessory` mini player and minimize-on-scroll behaviour beside the vertical
+  bar (not yet observed with music playing), and Duo App Store screenshots. See
+  [#419](https://github.com/jlipworth/Labstream/issues/419).
 - Physical iPhone/iPad validation for PiP, AirPlay, Control Center/lock-screen Now
   Playing, background interruption behavior, and App Intents/Spotlight invocation.
 - Physical-network validation for the cellular-download toggle and OS background-transfer
