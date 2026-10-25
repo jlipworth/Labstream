@@ -4,7 +4,7 @@
 `downloads/overhaul`. The worktree Duo simulator platform is done (`c8cbbf5f`). Part 1 (toolchain,
 shell and non-player layout: Steps 1, 6, 7, 9 and the Step 8 hero sizing) is done; see the
 journal. Part 2 (the player: Steps 2 to 5) is done on the simulator; a real fold during playback
-is still a manual gate. The Step 8 rail metrics, Step 10 and Step 11 are open. The physical iPhone Duo gate and the Duo App Store screenshot gate stay open until
+is still a manual gate. The Step 8 rail metrics, Step 10 and Step 11 are open. A Duo design spec (see Design) now governs layout rework and waits on HTML-mockup sign-off. The physical iPhone Duo gate and the Duo App Store screenshot gate stay open until
 a person performs them. Simulator evidence does not close either one.
 
 **Tracking:** [#419](https://github.com/jlipworth/Labstream/issues/419).
@@ -18,6 +18,574 @@ toolchain regression coverage.
 **Out of scope:** physical-device acceptance, App Store Connect screenshot upload, and any change to
 `TranscodeRequest`. The hard constraint `X-Plex-Client-Profile-Name=Generic` is untouched, and no
 stream parameter is screen-derived.
+
+## Design
+
+**Status:** design spec drafted 2026-10-25 for sign-off. **Nothing in this section is
+implemented yet.** HTML mockups of each surface go in `artifacts/duo-design/mockups/`
+(gitignored) and need the maintainer's sign-off before any code changes. Where this section
+disagrees with the implementation steps or the journal below, this section wins.
+
+**Sources.** Each rule below names the Apple app or guideline it follows:
+
+- **HIG:** "Designing for iPhone Duo".
+- **PREP:** "Preparing your app for iPhone Duo".
+- **Tech talks:** T-DESIGN (111466), T-BAR "Raise the bar" (111462), T-POSE "Strike a pose"
+  (111463), T-SCENE (111464).
+- **Apple staff forum answers:** F-HSCROLL (847821), F-QA (847644).
+
+The reference screenshots and the guidance digest are in `artifacts/duo-design/` (gitignored).
+Apple imagery is described here and never committed.
+
+### Poses and terms
+
+The inner display's hinge runs across the **short** side of the folded phone. Each half of the
+inner display is about the size of the outer display (669×951 pt ÷ 2 ≈ 669×475 pt, against
+678×466 pt for the outer display). Apple's pose names therefore map to orientation as follows:
+
+| Name in this spec | Display / orientation | Size class | Bars | Partially folded |
+| --- | --- | --- | --- | --- |
+| **Folded portrait** | outer, 466×678 | C/R | vertical column | – |
+| **Folded landscape** (also **tent**) | outer, 678×466 | C/C | vertical column; can sit on the **leading** edge (measured: an 84 pt leading column in the player before it was disabled) | – |
+| **Unfolded upright** | inner portrait, 669×951 | R/R | **horizontal** (top nav bar, floating bottom tab capsule) | **tabletop / laptop**: the hinge is horizontal at about y = 475; the top half faces the viewer |
+| **Unfolded sideways** | inner landscape, 951×669 | R/R | vertical column | **book**: the hinge is vertical at about x = 475 |
+
+The task brief called the upright pose "book". Apple's HIG puts book on the vertical division
+with vertical bars, so this spec uses *book* only for the partially folded sideways pose.
+
+Layout is driven by **size class plus the measured safe area**, never by pose name, idiom or
+`UIScreen` (HIG; T-DESIGN: "Focus on two size classes"). Two poses have their own composition:
+
+- **Tabletop:** an `OverlayArrangement`, player only.
+- **Book:** fold avoidance through `reservedRegions`.
+
+All other partially folded states follow their flat pose. Every surface **not** listed under
+Tabletop follows *unfolded upright* in tabletop. Every surface follows *unfolded sideways* in
+book, with interactive elements kept off the fold (HIG: "interactive elements move off the
+center"; T-POSE).
+
+### Global geometry rules
+
+1. **The content region.** The content region is the screen minus the horizontal safe-area
+   insets.
+   - With a vertical bar, the system supplies that inset on the bar's side (T-PREP: "Vertical bars
+     provide leading and trailing insets").
+   - Handle each edge on its own, because the bar can be leading or trailing. Never cache,
+     derive or hardcode the inset (SKILL safe-area reference).
+   - Apple's apps leave about 80–105 pt folded and about 100–110 pt unfolded between the content's
+     trailing edge and the physical edge. That is the bar capsule plus a 16–20 pt gap each side.
+     Files, Health, Contacts, Settings and Safari on the outer display all show this.
+   - These figures are for checking screenshots only. Code reads the inset.
+2. **Margins.** Each edge of the content region gets the page padding:
+   - 16 pt compact, 24 pt regular (`DS.pagePadding`);
+   - 12 pt for rails (`DS.Scroll.compactRailHorizontalMargin`).
+
+   The trailing margin is measured from the bar column's edge, not the screen edge (Health
+   "Show All" lines up with the card edge; Files' search field ends before the column).
+3. **Centering.** Centered elements (empty states, mini player, sheets, transport status) center
+   in the content region, not the screen.
+   - Music centers its title, Play row and mini player clear of the bar.
+   - Photos centers its Years/Months/All capsule over the grid.
+   - Health dims and centers sheets in the region that excludes the bar.
+4. **Full-bleed exceptions.** Only decoration and media may run under the bar:
+   - background washes, key art behind a detail header, and full-screen video;
+   - meaning `.ignoresSafeArea(edges: .horizontal)` on a *background layer* only, or
+     `backgroundExtensionEffect()`.
+
+   Text and controls on top stay in the content region (the Music folded album page, the Contacts
+   poster, the Siri hero; HIG: "letting a background image or header span the full width while
+   scrollable content stays inset"; PREP).
+5. **No custom floating controls over content** (HIG: "Use safe areas to make sure controls
+   don't cover your content").
+   - Every action is a container toolbar item with a title and an SF Symbol, so the system can
+     move it into the column (T-BAR, PREP).
+   - Text-only buttons and segmented controls stay horizontal, at the top-trailing end of the
+     content (Files "Select", Calendar "Week", Clock "Edit").
+6. **Horizontal shelves: clear at rest, fully scrollable.** This is the folded-Home defect.
+   - **Viewport:** a rail's scroll viewport is the content region, so the scroll view respects
+     the horizontal safe area. At rest, no card, title or year sits under the column, and the
+     column never covers content.
+   - **Ends of the scroll:** the trailing content margin equals the leading margin. The last card
+     scrolls fully into view and stops one margin short of the column; the first card starts at
+     the leading margin.
+   - **Overflow cue:** the cut-off card at the content edge (Settings, Files, Safari favorites,
+     MLB date strip). It is not a peek under glass.
+   - **Considered and rejected for the resting state:** Apple also lets overflow pass under the
+     glass column (World Clock cards, the Reminders board, Calendar week, Slack; F-HSCROLL: "Don't
+     clip your content manually"). Labstream follows the stricter rule above because the
+     maintainer requires that no control covers content. The mockup shows both so the choice is
+     explicit.
+   - **Shadows:** clipping at the viewport loses the vertical overflow that posters use for their
+     shadow and hover lift. Restore it with vertical content padding inside the rail, not with
+     `scrollClipDisabled(true)`.
+7. **Measured card widths** (this brings forward the deferred Step 8).
+   - Rail card width comes from the content-region width `W`: pick the whole-card count `N` so
+     that `w = (W − m − N·g) / (N + 0.3)` falls in the family's clamp, where `m` is the leading
+     margin and `g` the gutter.
+   - That shows N whole cards with titles, plus about 30% of the next card as the overflow cue.
+   - Clamps: compact posters 104–150 pt; regular posters 150–208 pt; landscape cards = poster
+     height × 16/9, using the same count rule.
+   - Worked examples for checking screenshots only, assuming a bar reserve of about 90 pt: about
+     376 pt folded portrait gives 3 + cue; about 588 pt folded landscape gives 4 + cue; 669 pt
+     upright gives 3 + cue; about 850 pt sideways gives 4 + cue.
+   - The pure math goes in PMSKit with tests at 466, 669, 678 and 951 pt.
+8. **Grids use even column counts wherever the fold can split them** (HIG; T-POSE).
+   - Unfolded sideways (book splits the width): **4** columns.
+   - Unfolded upright (the hinge is horizontal, so it never splits a column): **3**.
+   - Folded portrait: **3** (no fold).
+   - Folded landscape: **4**.
+
+   Each count is computed after the A–Z rail reservation and stays within the existing `gridMin`
+   and `gridMax`.
+9. **Continuity across fold and unfold** (HIG: "same functionality and state"; T-DESIGN; §6 of
+   the digest). Folding or unfolding is a resize plus a trait change. It is never a teardown.
+   - **Must stay stable:**
+     - the selected tab and the navigation path, including inside the Settings sheet;
+     - vertical scroll anchors and rail horizontal offsets (`scrollPosition(id:)`, the first
+       visible card);
+     - playback state;
+     - any open sheet.
+   - **Only changes:** columns, card widths, and the move from stacked to side by side.
+   - **Never:** reorder sections, change the hierarchy, or add or remove functionality.
+10. **Readable width.** Text columns (detail metadata, Settings, login, empty states) are capped
+    at about 640 pt and centered in the content region. The cap applies only to text columns;
+    shelves and grids use the full content region (HIG: "You don't want just a stretched out
+    iPhone app").
+
+### App shell and tab navigation
+
+*Modeled on:* Music, Files, Photos and MLB, which keep a tab capsule at the bottom of the column
+with Search as a separate circle; the TV app's floating bottom tab capsule in upright; T-BAR on
+bar order. Health's sidebar is **not** used, because the HIG reserves the tab-to-sidebar move for
+information-dense apps and Labstream's tabs are a few media destinations.
+
+- **Folded portrait / folded landscape:** the system column.
+  - **Top:** the status bar, then the toolbar group: Back, then the screen's actions (Settings on
+    Home).
+  - **Bottom:** the tab capsule (Home, Libraries, Music, Downloads), with Search as a separate
+    circle (`role: .search`).
+  - Compact width keeps the existing tab set without a Settings tab; Settings opens as a sheet
+    from the toolbar item.
+- **Unfolded upright:** the top nav bar plus a floating bottom tab capsule (TV app, upright). The
+  regular tab set includes Settings.
+- **Unfolded sideways:** the system column, with the tab capsule at the bottom and the toolbar at
+  the top separated by a gap (HIG: groups preserved with a spacer). Regular tab set.
+- **Tabletop / book:** follow the flat pose.
+- **Mini player:**
+  - A floating capsule centered in the content region, above the bottom safe area and never under
+    the column (the Music mini player on the folded album page).
+  - Keep `tabViewBottomAccessory` if the system places it like that beside the column. Otherwise,
+    while a vertical bar is present, host `MiniPlayerBar` via `safeAreaInset(edge: .bottom)`
+    (adoption rule above).
+  - `tabBarMinimizeBehavior(.onScrollDown)` applies only to a bottom bar.
+- **Compression:** keep the default for navigation views, which compresses the toolbar first (HIG;
+  API).
+- **Fold and unfold:**
+  - The tab set swaps between compact and regular.
+  - An open Settings sheet becomes the Settings tab **with its navigation path carried over**
+    (today the path is dropped; see Rework).
+  - The selected non-Settings tab is unchanged.
+- **Split View with another app:** the column can be leading, and every rule above is
+  edge-agnostic (HIG; the Books/Safari Split View shot).
+
+### Home
+
+*Modeled on:* the TV app in upright (shelf header "Title >"; landscape Continue Watching cards
+with progress and "S1, E5 · 23m" *inside* the art; posters below); Files, Settings and MLB
+(content ends at the column); World Clock (whole cards plus an overflow cue).
+
+- **No hero.** Home has no hero today and this pass does not add one. A TV-style key-art
+  carousel would be a separate proposal with its own mockup.
+- **Shelf header:**
+  - The title and a trailing "View All" chevron sit in the content region.
+  - "View All" right-aligns to the rail's trailing content edge: the content region minus the
+    12 pt rail margin, the same x where the last card stops. Today it uses a different edge.
+- **Shelves:** global rules 6 and 7 in every pose. Continue Watching stays a landscape-card row
+  (the existing Home presentation policy), every other video shelf a poster row (commit
+  `41f6f6dd`).
+- **Folded portrait:** one column of shelves, 3 whole posters plus a cue in about 376 pt. The
+  4th card no longer reaches the column. The Settings toolbar item sits in the column over empty
+  background (fixes the gear-over-card defect).
+- **Folded landscape:** the same stack, 4 posters plus a cue. The column can be leading, and the
+  leading margin then follows the leading inset.
+- **Unfolded upright:** horizontal bars, so the content region is the full 669 pt. Shelves end
+  one margin before the physical edge with 3 posters plus a cue (TV upright, where shelves bleed
+  to the edge because no side bar exists).
+- **Unfolded sideways:**
+  - **Kept as one stack** of full-width shelves with 4 posters plus a cue, ending one margin
+    before the column.
+  - **Not** a two-column reflow: Music reflows content that does not scroll sideways. Two columns
+    of horizontally scrolling rails would halve the cards per shelf and break the
+    one-pattern-per-level rule.
+  - Dense spacing keeps the existing regular/regular gate.
+- **Book:** scrolling content does not move away from the fold (T-POSE). No change.
+- **Fold and unfold:** the vertical anchor and each rail's first visible card persist. Card
+  widths re-fit, and the shelf order never changes.
+
+### Library grid and A–Z rail
+
+*Modeled on:* the Files grid (6 columns on the sideways display, ending before the column; even
+columns); the Photos Library grid (ends at the column, with a floating control centered over the
+grid region).
+
+- **Grid:** global rule 8: 3 folded portrait, 4 folded landscape, 3 upright, 4 sideways. Each
+  count is computed from the content width after the A–Z rail reservation.
+- **A–Z rail:**
+  - It sits at the trailing edge of the **content region**, inside the safe area (commit
+    `9743494f`), and clears the column with no extra inset.
+  - When the column is leading, the rail stays trailing. The rail belongs to the content, not the
+    bar.
+  - Letter thinning (`ViewThatFits`) is computed against the content region's height. Folded
+    landscape is about 466 pt tall minus the bars, which needs thinning (Step 6, still open).
+- **Filter and sort controls:** text menus stay horizontal at the top-trailing end of the content
+  (Calendar "Week", Files "Select"); symbol actions go to the column.
+- **Book:** the 4-column grid splits 2 + 2 at the fold. The gutter between columns 2 and 3 should
+  straddle the fold's reserved region when it is active. That is a small adjustment of
+  ≤ one gutter, never a reflow (T-POSE).
+
+### Music
+
+*Modeled on:* the Music album page on the outer display, which is the key reference:
+- full-bleed art under the column;
+- title, Shuffle/Play/+ and the description centered in the content region;
+- track-row separators ending about 30 pt short of the column;
+- the mini player centered in the content region.
+
+Also Music's inner display, described by Apple as "a vertically stacked layout that rearranges
+itself into a two-column layout" (HIG; T-DESIGN).
+
+- **Music home rails:** shelf rules 6 and 7 with square art, the same as Home.
+- **Album / playlist detail:**
+  - **Folded portrait and landscape:** art as the full-bleed background layer. The title block
+    and action row are centered in the content region, the track rows end at the content edge,
+    and Back and More are in the column.
+  - **Unfolded upright:** the same stacked layout with horizontal bars, with the art capped at
+    the readable width.
+  - **Unfolded sideways:** **reflows to two columns**.
+    - **Leading column:** art, title, actions and description.
+    - **Trailing column:** the track list.
+    - Columns are about 50/50 of the content region. In book the column gap sits on the fold
+      (Mail's list/message split follows the hinge).
+- **Now Playing sheet:** see Player, Sheets. Art comes from the measured sheet (already bounded).
+- **Fold and unfold:** the track list's scroll anchor persists through the stack-to-columns
+  reflow.
+
+### Downloads
+
+*Modeled on:* the Settings and Contacts lists on the outer display (inset rows ending one margin
+before the column); Mail's book split (list on one page).
+
+- **Folded portrait / landscape:** one column of the existing download rows (one row pattern),
+  ending at the content edge. Status context lines are 1–2 words and never wrap. Toolbar actions
+  (Edit/select, storage) go in the column with titles and symbols.
+- **Unfolded upright:** the same list, capped at the readable width and centered.
+- **Unfolded sideways:**
+  - Rows reflow into a **2-column** grid of the same row cell. The count is even, so book splits
+    it 1 + 1 at the fold.
+  - This is not a split view: a download has no detail level of its own beyond movie/show detail,
+    which pushes as today.
+- **Empty state:** centered in the content region with a body of at most 2 lines (today it wraps
+  to 4).
+- **Offline shell** (no tab column, by design): Reconnect becomes an ordinary toolbar item in the
+  same glass style as its siblings, not an amber one-off.
+
+### Search
+
+*Modeled on:* Safari, whose text field stays horizontal inside the content while icon actions go
+vertical; Search as its own circle at the bottom of the column (Music, Photos, MLB); T-BAR (text
+fields and keyboard accessory bars never go vertical).
+
+- **Folded:** Search is the separate circle at the bottom of the column. The search field stays
+  horizontal at the top of the content region and spans the content width only. It never moves
+  into the column.
+- **Results:**
+  - Section rails follow shelf rules 6 and 7.
+  - The songs list uses the Music track-row pattern, ending at the content edge.
+- **Unfolded upright:** the field sits in the top nav bar, with results full width.
+- **Unfolded sideways:** the same as folded, with 4-plus-cue rails. The keyboard's accessory bar
+  stays horizontal.
+- **Fold and unfold:** the query text, keyboard focus and results scroll position persist (digest
+  §6).
+
+### Movie detail
+
+*Modeled on:*
+- **Header:** the Music album page and the Contacts poster (key art full-bleed under the column,
+  text inset).
+- **Actions:** the TV app (a single prominent Play capsule plus circular secondary buttons).
+- **Wide layout:** Health and Contacts (detail cards ending about 16–20 pt before the column).
+- **Back button:** the system Back in the column (already true).
+
+- **Layout modes** stay on `MobileDetailLayoutPolicy`, using the measured scroll width:
+  - **phone:** folded portrait and folded landscape (the short side is under 500);
+  - **stacked:** unfolded upright, 669 pt;
+  - **side by side:** unfolded sideways, about 850 pt.
+- **Folded portrait:**
+  - **Key art:** a 16:9 background layer that may extend under the column
+    (`backgroundExtensionEffect()`).
+  - **Title:** once, as the hero title. The nav title stays hidden until the hero scrolls away,
+    which removes today's duplicate.
+  - **Context line:** 1–2 words, never wrapping (year · runtime · rating).
+  - **Action row:** **Resume/Play** as the one prominent capsule, followed by Download and Mark
+    Watched as glass **circles** with titles for accessibility. This replaces the column of
+    full-width buttons.
+  - **Overview:** a body paragraph.
+- **Folded landscape:** the phone layout. The art is capped at 40% of the viewport height, so the
+  first fold of the screen still shows the title and the action row.
+- **Unfolded upright (stacked):** a 220 pt hero above the metadata, which is capped at the
+  readable width.
+- **Unfolded sideways (side by side):**
+  - **Leading:** the poster/art column.
+  - **Trailing:** the metadata column, ending one margin before the column.
+  - In book the inter-column gap sits on the fold.
+- **Cast and metadata rail:** shelf rule 6 (`DetailMetadataComponents`).
+- **First frame:** the mode must come from the measured width before first display. There must be
+  no flash of a size-class fallback (an open review item).
+- **Fold and unfold:** the scroll anchor persists across the phone → stacked → side-by-side flip
+  (Step 7, not yet done).
+
+### Show detail, seasons and episodes
+
+*Modeled on:* Mail and Contacts (a list plus detail split on the inner display, with the split on
+the hinge in book; only the detail column gets the vertical bar); Apple's rule that the inner
+display may show **one extra level of hierarchy** (HIG; T-DESIGN).
+
+- **Folded portrait / landscape:**
+  - The show detail follows Movie detail.
+  - Seasons are a horizontal rail of posters (shelf rules) or a segmented season picker. Either
+    way it stays horizontal, because it is text.
+  - Episodes are one list using the existing episode row pattern: a 16:9 still with progress
+    inside the art, a title, and a 1–2 word context line ("S1, E5 · 23m").
+  - Tapping a season pushes the episode list.
+- **Unfolded upright:** the same hierarchy as folded, with horizontal bars and the stacked
+  header.
+- **Unfolded sideways:** a **two-column split** for the season level.
+  - **Leading list column:** the show header and season list. It keeps **horizontal** controls
+    at its top.
+  - **Trailing detail column:** the selected season's episodes. It gets the vertical bar (T-BAR;
+    PREP).
+  - The split is about 50/50, so in book it lies on the hinge (Mail).
+  - The selected season is shown with the selection color (see Color & type).
+- **Fold and unfold:**
+  - Folding collapses the split to a push stack while keeping the selected season.
+  - The path becomes show → season, and Back returns to the show (Mail collapses when closed).
+  - The episode scroll anchor persists.
+
+### Player
+
+*Modeled on:*
+- the TV app's full-screen playback on the inner display (full-bleed, no persistent bar);
+- Apple's allowance to disable the bar for a full-screen video player as a **stable per-screen
+  choice** (HIG; API `toolbarVerticalBehavior`);
+- for tabletop, the TV app and Netflix table layouts (video on the top half, the **same** controls
+  re-laid-out as a deck on the bottom half; T-DESIGN: "be sure it has all the same controls and
+  general hierarchy");
+- for tabletop top-half chrome, Photos' horizontal chrome;
+- for tent, FaceTime (camera island tolerance).
+
+**Kept in every pose:**
+- `toolbarVerticalBehavior(.disabled)` (stable, never toggled by state);
+- the latched top inset;
+- the same `AVPlayerLayer`;
+- `videoGravity` mutated in place;
+- aspect fit by default, with no embedded letterboxing (HIG Playing video);
+- the Fill preference stays per device.
+
+**Chrome control style (all poses):**
+- **One style:** glass circles with symbols and accessibility titles.
+- **Top-leading:** Close, then a context block of title (1 line) plus a 1–2 word caption
+  ("S1, E5").
+- **Top-trailing:** PiP, gravity, AirPlay.
+- **Center:** −10 / play-pause / +10.
+- **Bottom:** the scrubber with elapsed and remaining times, then one row of circles: Subtitles,
+  Audio, Chapters, Speed, Stats.
+- **Overflow:** Quality and any further items go in the single system overflow menu (T-BAR:
+  "Reserve the ellipsis for overflow only").
+- This replaces today's mix of icon circles and labelled pills, which crowds and truncates.
+
+**Poses:**
+- **Folded landscape** (the app locks landscape while the scene is phone-class, so folded
+  portrait never shows the player):
+  - Video is full-bleed.
+  - While chrome is visible, the status strip sits at the top (82 pt, measured) and the chrome is
+    symmetric.
+- **Folded portrait:** none, because of the lock.
+- **Tent:**
+  - The same as folded landscape.
+  - The bottom control row must clear the outer camera island, an always-active reserved region
+    (FaceTime and Calendar tent shots show the island at the lower corner). Read
+    `reservedRegions`; never hardcode it.
+- **Unfolded upright:**
+  - No lock.
+  - Video is aspect-fit in the full screen: 16:9 leaves bands above and below.
+  - The chrome overlays the video rectangle, not the bands. The scrubber sits at the bottom of
+    the video rectangle plus margin, within the safe area.
+- **Unfolded sideways:**
+  - Video is full-bleed or aspect-fit, with no persistent bar (the TV app's full-screen still).
+  - Regular chrome with the hover preview.
+  - Menus are clamped to the content width (done).
+- **Book** (sideways, partially folded): the center transport cluster would sit on the fold. It
+  moves as a unit to the center of the **trailing** half (HIG: interactive elements move off
+  the center; alerts go to the trailing side). Everything else is unchanged.
+- **Tabletop** (upright, partially folded), the optional "table layout":
+  - **Top half (secondary):** video only, aspect-fit in about 669×475 pt. No chrome except an
+    optional horizontal top row (Close at leading, AirPlay at trailing) in Photos' tabletop style.
+  - **Bottom half (primary):** a stable control deck that does not auto-hide, laid out like the
+    TV app:
+    - **Row 1:** Close and PiP/gravity at leading; AirPlay at trailing.
+    - **Row 2:** −10 / play-pause / +10, centered.
+    - **Row 3:** Subtitles, Audio, Chapters, Speed, Stats.
+    - **Bottom edge:** a full-width scrubber with elapsed time at left and remaining time at
+      right.
+  - It has the same controls and hierarchy as the overlay, and nothing is tabletop-only.
+  - **Mechanism:** `OverlayArrangement` / `UIOverlayArrangement`, with the controls as primary
+    and the video as secondary. Read `overlayArrangementZIndex` to restyle the controls from
+    overlay to deck (PREP; T-SCENE: "For layout, use the arrangement and region APIs").
+    `UIHinge.Status` stays diagnostics-only.
+  - **Book with the same arrangement:** the system would put the video leading and the controls
+    trailing. Use that only if the book mockup is signed off. Otherwise keep the overlay with the
+    book adjustment above. The mockup must settle this.
+  - Prime Video's split (transport over the video, secondary info below) is **rejected** because
+    it breaks "same hierarchy".
+- **Transport status** (staged show delay, minimum hold and escalation):
+  - Centered in the **video rectangle**: the top half in tabletop, the video rect in upright.
+  - Sized by size class as today.
+  - Timers stay in the controller, so a fold never restarts the staging.
+- **Track, subtitle, chapter and speed menus:**
+  - System menus and popovers clamped to the content width.
+  - They avoid the fold automatically (digest §2).
+  - In tabletop they anchor to the deck's buttons in the bottom half.
+- **PiP:**
+  - System behavior only: it pins to the top in open landscape and fills half the screen when
+    folded.
+  - Moves to the outer display only when closed.
+  - Audio-only content cannot pin.
+  - The layer rebind is kept.
+- **Fold and unfold:**
+  - No stop, reload or seek (Fold-during-playback invariants).
+  - The chrome branch re-derives from geometry, and a fold mid-scrub cancels the scrub.
+
+### Sheets (Settings sheet, Now Playing, track pickers, stats)
+
+*Modeled on:* the digest's sheet rules (§4):
+- the Health sheet is centered in the region that excludes the column, which stays visible and
+  dims;
+- the outer display's sheet toolbar is vertical by default.
+
+Rules:
+- **Folded:** the sheet toolbar is vertical by default, with Done/Close at the top. Sheets with a
+  single button use `toolbarVerticalBehavior(.disabled)` so they "stop just short of the
+  front-facing camera".
+- **Unfolded:** sheets are centered with horizontal bars.
+- **Layout source:** sheet content lays out from the sheet's own safe area, never the window's.
+- **Stats sheet:** values must not truncate (today Bitrate shows "58.2 Mb…"). The tiles use one
+  column width per row: a 2-column grid folded and a 4-column grid unfolded.
+
+### Settings
+
+*Modeled on:* Settings on the outer display (inset grouped cards ending about 16 pt before the
+column; Search at the bottom of the column); the digest's sheet rules (§4).
+
+- **Folded:** a sheet from the Settings toolbar item (existing). Grouped Form, ending one margin
+  before the sheet's own inset.
+- **Unfolded upright and sideways:** the Settings tab. A grouped Form capped at the readable width
+  and centered in the content region.
+  - A list-plus-pane split for sideways is **deferred**: it would be a new hierarchy level for
+    every section, and it needs its own mockup.
+- **Fold and unfold:** the sheet becomes the tab, or the tab becomes the sheet, at the same
+  navigation depth and scroll position.
+
+### Login
+
+*Modeled on:* Calculator and the TV app's full-bleed key art, for full-bleed decoration only;
+Settings and Files, for inset content.
+
+- **All poses:** the brand wash is a background layer under the column (commit `efd1e2b5`, kept).
+- **Content column:** the backend segmented control, the sign-in button and pairing-code blocks.
+  - Capped at about 420 pt and centered in the content region.
+  - The segmented control stays horizontal (T-BAR).
+- **Folded landscape:** the content scrolls if it does not fit in the height.
+- **Unfolded:** the same column, centered.
+- **Fold and unfold:** the selected backend, typed text and a pairing code in progress all
+  persist.
+
+### Color & type
+
+Reuse the existing palette: AccentColor amber (1.0, 0.69, 0.0), `DS.Brand.amber`, `DS.Brand.blue`,
+the system green and red, and neutral glass. Each color has exactly one meaning (modeled on Apple's
+Duo apps: tint fill only for selection, Clock's green for go and red for destructive, neutral glass
+capsules):
+
+| Color | Single meaning | Used for | No longer used for |
+| --- | --- | --- | --- |
+| **Amber** (accent) | **Where you are:** the current selection or the current position | the selected tab, the selected season/row in a split, the selected segment or menu item, the played portion of the scrubber and card progress bars | View All links, the primary action button, star ratings, Reconnect, the sign-in button |
+| **Green** (system) | **Healthy / plays as-is** | the Direct-play status and badge, ready states | anything else |
+| **Red** (system) | **Destructive or failed** | delete download, error states | – |
+| **Brand blue** | **Identity only** | the welcome/icon art | any control |
+| **Neutral glass / label** | **Everything else** | all buttons: the prominent Play/Resume capsule uses label color on glass (the TV app's white Play capsule), and View All is the secondary label with a chevron | – |
+
+Type uses **three styles**:
+- **Title:** `.title3` semibold, for section headers and the detail hero title.
+- **Body:** `.subheadline`, for card titles, rows, buttons and the overview, in place of the
+  italic tagline.
+- **Caption:** `.caption`, secondary, for context lines, times and counts.
+
+System nav titles are system-owned. Siblings are formatted the same way: every card in a shelf
+shows the same fields, either all with a year or none. Card titles truncate with one shared rule
+(1 line), so "The Long O…" is truncated like its siblings rather than being a one-off.
+
+These color and type fixes are not Duo-specific. They apply on every iOS size, ride on the same
+mockup sign-off, and land as their own commits.
+
+### Rework of existing implementation
+
+| Item (commit) | Decision | Reason |
+| --- | --- | --- |
+| Duo sim platform, 27.1 toolchain, `duo-ui-smoke` (`c8cbbf5f`, `1538aa4d`, `b12b2373`) | **Keep** | They are infrastructure. Extend the lane (below). |
+| Shell: compact↔regular tab-set swap, Settings sheet → tab hand-off, comment fix (`a81de143`) | **Keep, change one part** | The policy is right. Carry the Settings `NavigationPath` and scroll position into the tab instead of dropping navigation inside the sheet (global rule 9). |
+| Shell: `tabViewBottomAccessory` mini player beside the vertical bar | **Change if needed** | Verify it against the shell's mini-player rule. If it is not centered in the content region, use `safeAreaInset(edge: .bottom)` while a vertical bar is present. |
+| `mediaRailScrollStyle` default `scrollClipDisabled(true)`, used by Home, Search, Music, the Home grouped rail and the Detail metadata rail | **Change** | It is the root cause of the folded-Home defect. Clip at the content-region viewport, keep the trailing content margin equal to the leading one, and add vertical padding for shadows (global rule 6). |
+| Part 1 journal: "rails scroll under the floating bar like vertical content under a bottom bar" | **Revert the conclusion** | It breaks the rule that no control covers content at rest. The journal line stays as history, superseded here. |
+| Home dense-spacing comment (`6f39bf7c`) | **Keep** | – |
+| Rail poster widths on size-class constants (Step 8 deferred) | **Change** | Use measured widths with whole cards plus a cue (global rule 7). The constants leave the 4th folded card straddling the bar. |
+| Rail offsets across a fold (not preserved) | **Change** | Use `scrollPosition(id:)` per rail (global rule 9). |
+| A–Z rail regular-width reservation (`9743494f`) | **Keep, finish** | It sits inside the safe area. Add letter thinning against the content height, and verify on iPad (it changes regular-width iPad without a mockup, so it needs sign-off). |
+| Detail measured layout policy, phone/stacked/side-by-side (`6f39bf7c`) | **Keep, change** | Add measured-before-first-frame, the scroll anchor across a flip, a single title and the action row (Movie detail). |
+| Detail key-art 40% cap plus half-width floor (`f4a379e1`) | **Keep pending mockup; revert the floor if rejected** | It changes slab-iPhone landscape too. Review finding #4's design sign-off is still open. |
+| Player orientation lock, restore, decline reset (`23cd9d1a`, `c7a8106d`) | **Keep** | It follows geometry, as the invariants require. |
+| Player `toolbarVerticalBehavior(.disabled)` (`d63b6527`) | **Keep** | Apple-sanctioned and stable per screen. |
+| Top-inset latch on full bounds (`a53e94e7`) | **Keep** | – |
+| Measured chrome branch, menu clamp, scrub cancel, hover preview (`d63b6527`, `ac346eb4`) | **Keep** | – |
+| Chrome button styling (circles mixed with labelled pills) | **Change** | One glass-circle style plus the overflow menu (Player). |
+| Deferred 400 ms resign pause, PiP rebind and restore delegate (`d3a5d5f6`) | **Keep, gated** | Shared player code: needs recorded passes on Plex, Jellyfin and Emby (Open gates). |
+| No tabletop composition | **Change (new)** | Add the `OverlayArrangement` table layout (Player). |
+| Login wash ignores horizontal safe area (`efd1e2b5`) | **Keep** | It is decoration only. Cap the content column (Login). |
+| Offline Reconnect (amber, alone in the column) | **Change** | Make it a neutral toolbar item in the same style as its siblings. |
+
+**Open review findings to fix in implementation:**
+1. **#4:** sign-off on the detail key-art floor (mockup).
+2. **#5:** the Duo lane still lacks an inner-size player run and a resize-during-playback proxy,
+   which are blocked on `scripts/duo-appresize.sh`. It also lacks capture tests for Library + A–Z,
+   Music, Search, show/season and Settings: add `LabstreamMobileDuoUITests.swift` with semantic
+   navigation, since nothing deep-links to those screens.
+3. **`isPhoneLandscape` at 951×669:** confirm UIKit never reports compact height there. If it
+   does, the inner display gets phone-landscape chrome.
+4. **First frame:** remove the one-frame side-by-side detail flash before measurement.
+5. **Settings navigation:** unfolding with the Settings sheet open drops navigation inside it
+   (Shell row above).
+6. **Defects from the folded captures:**
+   - the 4th card and its title under the column, and the gear over a card (rule 6);
+   - View All misaligned with the rail end;
+   - amber with several meanings;
+   - a duplicate detail title;
+   - four text styles on detail;
+   - the offline empty state wrapping to 4 lines;
+   - mixed player button styles;
+   - stats Bitrate truncation and mixed tile widths;
+   - inconsistent sibling fields in shelves (check against fixture data first).
+7. **Never observed:** the inner display in either orientation, folded landscape browse, book,
+   tabletop and a real fold. All of them need Device Hub frames from the user before visual
+   sign-off. Simulator captures of the folded state do not stand in for them.
 
 ## Platform facts verified on Xcode 27.1 (27A9275)
 
@@ -389,3 +957,8 @@ tests. App-side wiring stays thin.
   - Verification: clean `LabstreamMobile` build (warnings identical to Part 1), install UUID match,
     no crash; the three player fixture XCUITests pass on the folded Duo. Evidence (gitignored):
     `artifacts/duo-part2/`, `artifacts/duo-builds/part2/`.
+- 2026-10-25, design pass: wrote the Design section from Apple's Duo HIG, the tech talks, the
+  Apple-staff forum answers and first-party screenshots (gitignored in `artifacts/duo-design/`).
+  It supersedes the Part 1 conclusion that rails may rest under the vertical bar, brings the
+  Step 8 measured rail widths forward, and adds a tabletop table layout for the player. No app
+  code changed; implementation waits on mockup sign-off.
