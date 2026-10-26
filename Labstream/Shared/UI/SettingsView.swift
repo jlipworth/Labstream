@@ -1289,9 +1289,11 @@ private struct MobileSettingsFormLayout: ViewModifier {
 /// green, which is reserved for the Direct-play status.
 struct LabstreamSwitchToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
+        // The asset, not `Color.accentColor`: the latter resolves to the environment tint, and
+        // the Settings form tints its rows `.primary`, which turned every switch black.
         Toggle(configuration)
             .toggleStyle(.switch)
-            .tint(Color.accentColor)
+            .tint(Color("AccentColor"))
     }
 }
 
