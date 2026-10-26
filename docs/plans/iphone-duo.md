@@ -1,7 +1,7 @@
 # iPhone Duo support for LabstreamMobile
 
-**Status (2026-10-25):** plan approved for implementation on `duo/support`, based on
-`downloads/overhaul`. The worktree Duo simulator platform is done (`c8cbbf5f`). Part 1 (toolchain,
+**Status (2026-10-26):** implemented on `duo/support` and merged into `downloads/overhaul`
+(2026-10-26). The worktree Duo simulator platform is done (`c8cbbf5f`). Part 1 (toolchain,
 shell and non-player layout: Steps 1, 6, 7, 9 and the Step 8 hero sizing) is done; see the
 journal. Part 2 (the player: Steps 2 to 5) is done on the simulator; a real fold during playback
 is still a manual gate. A Duo design spec (see Design) now governs layout rework; the maintainer approved its mockups and decisions on 2026-10-25, and the rework (Steps 12 to 16) is done on the simulator with the gaps
@@ -1175,8 +1175,8 @@ re-lays out the same layer and deck from the pose value (deviation pending sign-
 - **Cross-backend playback:** if Step 4 touches shared player behaviour, Plex, Jellyfin and Emby
   each need a recorded pass. The Duo simulator is Plex-only once signed in. The other backends
   stay blocked or untested until they are configured.
-- **Merge:** the user merges `duo/support` into `downloads/overhaul`. Agents do not push, open a PR
-  or merge.
+- **Merge to `main`:** `duo/support` landed on `downloads/overhaul` on 2026-10-26 and ships with
+  that branch's PR. The user decides that merge.
 
 ## Journal
 
@@ -1502,3 +1502,6 @@ re-lays out the same layer and deck from the pose value (deviation pending sign-
   - Still open: a music fixture (Music shows only its error state in captures); unfolding while a
     folded Downloads detail is pushed keeps the pushed detail full width instead of showing the
     list + detail split; plus every gate listed above.
+- 2026-10-26: merged into `downloads/overhaul` (rebased onto its tip, fast-forward) and pushed.
+  The Downloads detail page is gone, so the "pushed detail on unfold" item above no longer
+  applies. The music fixture and every gate in Open gates remain.
