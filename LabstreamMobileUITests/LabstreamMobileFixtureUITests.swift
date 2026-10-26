@@ -45,7 +45,7 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
                     : "\(backend)-fixture-shapes-\(kind)"
                 let first = app.buttons["labstream.home.\(railID).\(backend)-shapes-\(kind)-0"]
                 let rail = app.scrollViews["labstream.home.rail.\(railID)"]
-                let viewport = app.windows.firstMatch.frame.insetBy(dx: 0, dy: 90)
+                let viewport = app.sceneFrame.insetBy(dx: 0, dy: 90)
                 for _ in 0..<12 {
                     // A partially visible row can report a hittable first card while its
                     // scroll view's gesture center remains under the bottom tab bar.
@@ -180,12 +180,12 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Close"].waitForExistence(timeout: 30), "player chrome")
         XCTAssertTrue(app.sliders["playback.timeline"].waitForExistence(timeout: 5), "timeline")
 
-        let window = app.windows.firstMatch.frame
+        let window = app.sceneFrame
         let shortSide = min(window.width, window.height)
         if shortSide < Self.phoneShortSideLimit {
             let landscape = XCTNSPredicateExpectation(
                 predicate: NSPredicate { _, _ in
-                    let frame = app.windows.firstMatch.frame
+                    let frame = app.sceneFrame
                     return frame.width > frame.height
                 }, object: nil)
             XCTAssertEqual(XCTWaiter().wait(for: [landscape], timeout: 5), .completed,
@@ -194,7 +194,7 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
             XCTAssertGreaterThan(window.height, window.width,
                                  "large player scene \(window.size) keeps the portrait device orientation")
         }
-        assertControlsInside(app.windows.firstMatch.frame, app: app, context: "lock")
+        assertControlsInside(app.sceneFrame, app: app, context: "lock")
         attachScreenshot(app, name: "player-lock-\(Int(window.width))x\(Int(window.height))")
     }
 
@@ -209,7 +209,7 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
         let app = launchPlayerFixture(aspect: "16x9", paused: true)
         defer { app.terminate() }
         _ = app.buttons["Close"].waitForExistence(timeout: 30)
-        let window = app.windows.firstMatch.frame
+        let window = app.sceneFrame
         return min(window.width, window.height) >= Self.phoneShortSideLimit
             ? [.portrait, .landscapeLeft] : [.portrait]
     }
@@ -269,7 +269,7 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
         XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label == %@", "Quality")).firstMatch.exists,
                        "Quality is not a top-level control for \(aspect)")
 
-        let window = app.windows.firstMatch.frame
+        let window = app.sceneFrame
         let followsVideoRect = window.height > window.width
             && min(window.width, window.height) >= Self.phoneShortSideLimit
         var skips: [String: CGRect] = [:]
@@ -365,7 +365,7 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
         XCTAssertTrue(close.waitForExistence(timeout: 30), "player chrome")
         let timeline = app.sliders["playback.timeline"]
         XCTAssertTrue(timeline.waitForExistence(timeout: 5))
-        let window = app.windows.firstMatch.frame
+        let window = app.sceneFrame
         try XCTSkipUnless(window.width > window.height, "book needs a sideways player scene")
         let play = app.buttons["Play"]
         XCTAssertTrue(play.waitForExistence(timeout: 15))
@@ -388,7 +388,7 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
         defer { app.terminate() }
         let close = app.buttons["Close"]
         XCTAssertTrue(close.waitForExistence(timeout: 30), "player chrome")
-        let window = app.windows.firstMatch.frame
+        let window = app.sceneFrame
         try XCTSkipUnless(window.height > window.width
                           && min(window.width, window.height) >= Self.phoneShortSideLimit,
                           "needs a large portrait player scene")
@@ -411,7 +411,7 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
         defer { app.terminate() }
         let close = app.buttons["Close"]
         XCTAssertTrue(close.waitForExistence(timeout: 30), "player chrome")
-        let window = app.windows.firstMatch.frame
+        let window = app.sceneFrame
         try XCTSkipUnless(window.height > window.width
                           && min(window.width, window.height) >= Self.phoneShortSideLimit,
                           "tabletop needs a large upright player scene")

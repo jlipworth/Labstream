@@ -50,7 +50,7 @@ final class LabstreamMobileDuoUITests: XCTestCase {
         let card = app.buttons["labstream.home.fixture-resume.plex-orbit"]
         XCTAssertTrue(card.waitForExistence(timeout: 15), "Home card (\(label))")
         try waitForWindow(app, landscape: expectLandscape, context: label)
-        let window = app.windows.firstMatch.frame
+        let window = app.sceneFrame
         let column = try XCTUnwrap(systemColumn(in: app, window: window), "vertical bar (\(label))")
         XCTAssertLessThan(column.width, 100, "a vertical column, not a bottom bar (\(label))")
 
@@ -122,7 +122,7 @@ final class LabstreamMobileDuoUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 4)
         let second = try remainingSeconds(app, context: context)
         XCTAssertLessThan(second, first, "playhead advances (\(context)): \(first)s → \(second)s")
-        let window = app.windows.firstMatch.frame
+        let window = app.sceneFrame
         for element in [app.buttons["Close"], app.sliders["playback.timeline"]] where element.exists {
             XCTAssertTrue(window.contains(element.frame), "\(element.label) inside window (\(context))")
             XCTAssertTrue(element.isHittable, "\(element.label) hittable (\(context))")
@@ -158,11 +158,11 @@ final class LabstreamMobileDuoUITests: XCTestCase {
     @MainActor
     private func waitForWindow(_ app: XCUIApplication, landscape: Bool, context: String) throws {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            let frame = app.windows.firstMatch.frame
+            let frame = app.sceneFrame
             return landscape ? frame.width > frame.height : frame.height > frame.width
         }, object: nil)
         XCTAssertEqual(XCTWaiter().wait(for: [expectation], timeout: 10), .completed,
-                       "\(landscape ? "landscape" : "portrait") scene (\(context)): \(app.windows.firstMatch.frame.size)")
+                       "\(landscape ? "landscape" : "portrait") scene (\(context)): \(app.sceneFrame.size)")
     }
 
     /// The vertical bar's frame, measured from the tab buttons and the Settings toolbar item,
