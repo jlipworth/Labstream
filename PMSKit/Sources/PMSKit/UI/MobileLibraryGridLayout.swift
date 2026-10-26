@@ -1,6 +1,17 @@
 import Foundation
 
-/// Deterministic three-column geometry for compact mobile library grids.
+/// Deterministic poster-grid geometry for iPhone/iPad library grids (iPhone Duo design spec,
+/// "Library grid and A–Z rail" and global rule 8).
+///
+/// The column count is the largest count whose posters stay at or above the family minimum
+/// once the page padding, gutters and A–Z rail reservation are removed from the measured width;
+/// posters then fill the row. That yields 3 columns folded portrait, 4 folded landscape, 3
+/// unfolded upright and 4 unfolded sideways on iPhone Duo without reading the pose or idiom.
+/// Compact grids never drop below three columns.
+///
+/// Book: the count is rounded down to an even number and split around the hinge. Both outer
+/// margins stay put, the narrower half sets the poster width, and only the gutter at the hinge
+/// widens (T-POSE's Fitness example; Resolved decision 2).
 public enum MobileLibraryGridLayout {
     public struct Metrics: Equatable, Sendable {
         public let columnCount: Int
@@ -9,33 +20,122 @@ public enum MobileLibraryGridLayout {
         public let rowSpacing: Double
         public let horizontalPadding: Double
         public let trailingReservation: Double
+        /// Book only: the column after which the hinge gutter sits (0-based), and its width.
+        public let hingeAfterColumn: Int?
+        public let hingeGutter: Double?
+
+        /// Spacing after each column, in order (the last is 0).
+        public var columnSpacings: [Double] {
+            (0..<columnCount).map { index in
+                if index == columnCount - 1 { return 0 }
+                if index == hingeAfterColumn, let hingeGutter { return hingeGutter }
+                return gutter
+            }
+        }
 
         public var requiredWidth: Double {
             (posterWidth * Double(columnCount))
-                + (gutter * Double(max(columnCount - 1, 0)))
+                + columnSpacings.reduce(0, +)
                 + (horizontalPadding * 2)
                 + trailingReservation
         }
     }
 
+    public struct Style: Equatable, Sendable {
+        public let minimumPosterWidth: Double
+        public let gutter: Double
+        public let rowSpacing: Double
+        public let horizontalPadding: Double
+        public let minimumColumns: Int
+
+        public init(minimumPosterWidth: Double, gutter: Double, rowSpacing: Double,
+                    horizontalPadding: Double, minimumColumns: Int) {
+            self.minimumPosterWidth = minimumPosterWidth
+            self.gutter = gutter
+            self.rowSpacing = rowSpacing
+            self.horizontalPadding = horizontalPadding
+            self.minimumColumns = max(minimumColumns, 1)
+        }
+
+        /// Phone-class grids: 104 pt minimum (`DS.Poster.Compact.gridMin`), 8 pt gutters,
+        /// 12 pt edges, never fewer than three columns.
+        public static let compact = Style(minimumPosterWidth: 104, gutter: 8, rowSpacing: 12,
+                                          horizontalPadding: 12, minimumColumns: 3)
+        /// Regular-width grids: 168 pt minimum (`DS.Poster.gridMin`), 24 pt gutters and edges.
+        public static let regular = Style(minimumPosterWidth: 168, gutter: 24, rowSpacing: 32,
+                                          horizontalPadding: 24, minimumColumns: 1)
+    }
+
+    /// A book hinge in the grid's own horizontal coordinate space (0 = the grid's leading edge).
+    public struct Hinge: Equatable, Sendable {
+        public let minX: Double
+        public let maxX: Double
+
+        public init(minX: Double, maxX: Double) {
+            self.minX = min(minX, maxX)
+            self.maxX = max(minX, maxX)
+        }
+    }
+
+    /// Compact phone grid (kept for callers that predate the measured style).
     public static func metrics(availableWidth: Double, trailingReservation: Double = 0) -> Metrics {
+        metrics(availableWidth: availableWidth, trailingReservation: trailingReservation, style: .compact)
+    }
+
+    public static func metrics(availableWidth: Double,
+                               trailingReservation: Double = 0,
+                               style: Style,
+                               bookHinge: Hinge? = nil) -> Metrics {
         let width = availableWidth.isFinite ? max(availableWidth, 0) : 0
         let reservation = trailingReservation.isFinite ? max(trailingReservation, 0) : 0
-        let columnCount = 3
-        let gutter = 8.0
-        let horizontalPadding = 12.0
-        let fixedWidth = horizontalPadding * 2 + gutter * Double(columnCount - 1) + reservation
-        let computed = max((width - fixedWidth) / Double(columnCount), 0)
-        let posterWidth = min(max(computed, 88), 112)
-        let fittingPosterWidth = posterWidth * Double(columnCount) + fixedWidth <= width
-            ? posterWidth
-            : computed
+        let padding = style.horizontalPadding
+        let gutter = style.gutter
+        let usable = max(width - padding * 2 - reservation, 0)
 
-        return Metrics(columnCount: columnCount,
-                       posterWidth: fittingPosterWidth,
+        let fitting = Int(((usable + gutter) / (style.minimumPosterWidth + gutter)).rounded(.down))
+        let columns = max(fitting, style.minimumColumns)
+
+        if let bookHinge, let book = bookMetrics(width: width, reservation: reservation,
+                                                 style: style, columns: columns, hinge: bookHinge) {
+            return book
+        }
+
+        let posterWidth = max((usable - gutter * Double(columns - 1)) / Double(columns), 0)
+        return Metrics(columnCount: columns,
+                       posterWidth: posterWidth,
                        gutter: gutter,
-                       rowSpacing: 12,
-                       horizontalPadding: horizontalPadding,
-                       trailingReservation: reservation)
+                       rowSpacing: style.rowSpacing,
+                       horizontalPadding: padding,
+                       trailingReservation: reservation,
+                       hingeAfterColumn: nil,
+                       hingeGutter: nil)
+    }
+
+    private static func bookMetrics(width: Double, reservation: Double, style: Style,
+                                    columns: Int, hinge: Hinge) -> Metrics? {
+        let padding = style.horizontalPadding
+        let gutter = style.gutter
+        let leadingEdge = padding
+        let trailingEdge = width - padding - reservation
+        // The hinge must cross the grid's content, with room on both sides.
+        guard hinge.minX > leadingEdge, hinge.maxX < trailingEdge else { return nil }
+        let even = max(columns - columns % 2, 2)
+        let perHalf = even / 2
+        let firstSpan = hinge.minX - gutter / 2 - leadingEdge
+        let secondSpan = trailingEdge - (hinge.maxX + gutter / 2)
+        let fixedGutters = gutter * Double(perHalf - 1)
+        let posterWidth = min((firstSpan - fixedGutters) / Double(perHalf),
+                              (secondSpan - fixedGutters) / Double(perHalf))
+        guard posterWidth > 0 else { return nil }
+        let blocks = posterWidth * Double(even) + fixedGutters * 2
+        let hingeGutter = (trailingEdge - leadingEdge) - blocks
+        return Metrics(columnCount: even,
+                       posterWidth: posterWidth,
+                       gutter: gutter,
+                       rowSpacing: style.rowSpacing,
+                       horizontalPadding: padding,
+                       trailingReservation: reservation,
+                       hingeAfterColumn: perHalf - 1,
+                       hingeGutter: hingeGutter)
     }
 }

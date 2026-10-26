@@ -8,7 +8,7 @@ struct MobileLibraryGridLayoutTests {
         let metrics = MobileLibraryGridLayout.metrics(availableWidth: width,
                                                       trailingReservation: reservation)
         #expect(metrics.columnCount == 3)
-        #expect(metrics.posterWidth <= 112)
+        #expect(metrics.posterWidth <= 150)
         #expect(metrics.posterWidth >= 0)
         #expect(metrics.requiredWidth <= width + 0.001)
         if width >= 334 || reservation == 0 {
@@ -23,5 +23,58 @@ struct MobileLibraryGridLayoutTests {
         #expect(metrics.posterWidth.isFinite)
         #expect(metrics.posterWidth >= 0)
         #expect(metrics.requiredWidth.isFinite)
+    }
+
+    /// Approximate content-region widths: the vertical bar's inset is already removed.
+    @Test(arguments: [
+        (382.0, MobileLibraryGridLayout.Style.compact, 30.0, 3),   // folded portrait
+        (594.0, MobileLibraryGridLayout.Style.compact, 30.0, 4),   // folded landscape
+        (669.0, MobileLibraryGridLayout.Style.regular, 18.0, 3),   // unfolded upright
+        (867.0, MobileLibraryGridLayout.Style.regular, 18.0, 4),   // unfolded sideways
+    ])
+    func duoPosesUseTheDesignColumnCounts(width: Double, style: MobileLibraryGridLayout.Style,
+                                          reservation: Double, columns: Int) {
+        let metrics = MobileLibraryGridLayout.metrics(availableWidth: width,
+                                                      trailingReservation: reservation,
+                                                      style: style)
+        #expect(metrics.columnCount == columns)
+        #expect(metrics.posterWidth >= style.minimumPosterWidth)
+        #expect(abs(metrics.requiredWidth - width) < 0.001)
+        #expect(metrics.hingeGutter == nil)
+    }
+
+    @Test func bookSplitsTwoPlusTwoAndKeepsBothOuterMargins() {
+        // Sideways inner display with a trailing bar: content 0..867, hinge at 465.5...485.5.
+        let width = 867.0
+        let metrics = MobileLibraryGridLayout.metrics(availableWidth: width,
+                                                      trailingReservation: 18,
+                                                      style: .regular,
+                                                      bookHinge: .init(minX: 465.5, maxX: 485.5))
+        #expect(metrics.columnCount == 4)
+        #expect(metrics.hingeAfterColumn == 1)
+        let hingeGutter = try! #require(metrics.hingeGutter)
+        // The trailing half is narrower (bar reserve), so it sets the width and the hinge gutter
+        // is wider than an ordinary gutter.
+        #expect(hingeGutter > metrics.gutter)
+        #expect(abs(metrics.requiredWidth - width) < 0.001)
+        // Second-half columns start at or after the hinge plus half a gutter.
+        let secondStart = metrics.horizontalPadding + metrics.posterWidth * 2 + metrics.gutter + hingeGutter
+        #expect(secondStart >= 485.5 + metrics.gutter / 2 - 0.001)
+        let firstEnd = metrics.horizontalPadding + metrics.posterWidth * 2 + metrics.gutter
+        #expect(firstEnd <= 465.5 - metrics.gutter / 2 + 0.001)
+    }
+
+    @Test func bookRoundsAnOddCountDownToEven() {
+        let metrics = MobileLibraryGridLayout.metrics(availableWidth: 1100,
+                                                      style: .regular,
+                                                      bookHinge: .init(minX: 540, maxX: 560))
+        #expect(metrics.columnCount % 2 == 0)
+    }
+
+    @Test func aHingeOutsideTheGridIsIgnored() {
+        let metrics = MobileLibraryGridLayout.metrics(availableWidth: 669, style: .regular,
+                                                      bookHinge: .init(minX: 700, maxX: 720))
+        #expect(metrics.hingeGutter == nil)
+        #expect(metrics.columnCount == 3)
     }
 }
