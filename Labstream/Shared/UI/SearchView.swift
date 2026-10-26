@@ -21,7 +21,11 @@ struct SearchView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismissSearch) private var dismissSearch
 
+    #if DEBUG
+    @State private var internalQuery = DebugUITestLaunchConfiguration.initialSearchQuery ?? ""
+    #else
     @State private var internalQuery = ""
+    #endif
     @State private var display = SearchDisplayState()
     @State private var loadState: BrowseLoadState = .idle
     /// Drives programmatic focus of the `.searchable` field for ⌘F (RootView).

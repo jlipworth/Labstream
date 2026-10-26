@@ -18,6 +18,33 @@ enum DebugUITestLaunchConfiguration {
         isEnabled(in: ProcessInfo.processInfo.arguments)
     }
 
+    /// Browse-fixture capture routes for headless layout evidence (iPhone/iPad shell): select a
+    /// tab at launch (`home`, `libraries`, `search`, `music`, `offline`), push the fixture's
+    /// first library grid, or seed the Search query. Nothing deep-links to these screens and
+    /// simulator taps are not scriptable, so these make folded/appResize captures possible.
+    nonisolated static let initialTabFlag = "--ui-testing-initial-tab"
+    nonisolated static let openFirstLibraryFlag = "--ui-testing-open-first-library"
+    nonisolated static let searchQueryFlag = "--ui-testing-search-query"
+
+    nonisolated static func argumentValue(_ flag: String, in arguments: [String]) -> String? {
+        guard isEnabled(in: arguments),
+              let index = arguments.firstIndex(of: flag),
+              arguments.indices.contains(index + 1) else { return nil }
+        return arguments[index + 1]
+    }
+
+    static var initialTab: String? {
+        argumentValue(initialTabFlag, in: ProcessInfo.processInfo.arguments)
+    }
+
+    static var opensFirstLibrary: Bool {
+        usesBrowseFixture && ProcessInfo.processInfo.arguments.contains(openFirstLibraryFlag)
+    }
+
+    static var initialSearchQuery: String? {
+        usesBrowseFixture ? argumentValue(searchQueryFlag, in: ProcessInfo.processInfo.arguments) : nil
+    }
+
     static var initialBackend: MediaBackendKind? {
         initialBackend(in: ProcessInfo.processInfo.arguments)
     }

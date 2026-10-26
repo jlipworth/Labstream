@@ -6,6 +6,33 @@ extension LibraryPagingSource {
     init(gridSource source: LibraryGridSource,
          query: LibraryBrowseQuery = .default,
          appModel: AppModel) {
+        #if DEBUG
+        if case .plex(let section) = source,
+           let items = DebugUIFixtureCatalog.libraryGridItems(for: section) {
+            self = LibraryPagingSource(
+                title: section.title,
+                identity: "fixture-grid-\(section.key)",
+                backendLabel: "Plex",
+                cacheEmptyFirstPage: false,
+                fetchPage: { start, limit in
+                    let slice = Array(items.dropFirst(start).prefix(limit))
+                    return LibraryPagingPage(items: slice, reportedTotal: items.count)
+                },
+                fetchAlphabetCounts: {
+                    var counts: [(display: String, count: Int)] = []
+                    for item in items {
+                        let letter = String(item.title.prefix(1)).uppercased()
+                        if let last = counts.last, last.display == letter {
+                            counts[counts.count - 1].count += 1
+                        } else {
+                            counts.append((letter, 1))
+                        }
+                    }
+                    return counts
+                })
+            return
+        }
+        #endif
         switch source {
         case .plex(let section):
             self = .plex(section: section, query: query, appModel: appModel)

@@ -160,6 +160,24 @@ enum DebugUIFixtureCatalog {
         }
     }
 
+    /// Alphabetical Plex movie-section items so agent runs can capture the real library grid and
+    /// its A–Z rail (column counts, rail placement, book split) without a server.
+    static func libraryGridItems(for section: PlexSection) -> [MediaItem]? {
+        guard isBrowseEnabled, section.key == "1" else { return nil }
+        let words = ["Atlas", "Beacon", "Cinder", "Delta", "Ember", "Fable", "Glacier", "Harbor",
+                     "Iris", "Juniper", "Kestrel", "Lantern", "Meridian", "Nimbus", "Orbit",
+                     "Prism", "Quarry", "Riverside", "Summit", "Tidal", "Umbra", "Vesper",
+                     "Willow", "Xenon", "Yarrow", "Zephyr"]
+        return words.enumerated().flatMap { letterIndex, word in
+            (0..<3).map { copy in
+                MediaItem(ratingKey: "plex-grid-\(letterIndex)-\(copy)",
+                          title: copy == 0 ? word : "\(word) \(copy + 1)",
+                          type: "movie", duration: 6_000_000,
+                          year: 2018 + (letterIndex + copy) % 8)
+            }
+        }
+    }
+
     /// Title-substring matches over the fixture rows, so agent runs can drive the real Search
     /// root and its pushed detail without a server.
     static func searchResults(query: String, backend: MediaBackendKind) -> SearchResults? {

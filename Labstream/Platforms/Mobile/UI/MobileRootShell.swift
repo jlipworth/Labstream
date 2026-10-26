@@ -123,6 +123,9 @@ struct PlatformRootShell: View {
         navigation.selection = selection
       }
     }
+    #if DEBUG
+    .task { applyDebugCaptureRoute() }
+    #endif
     .background {
       Button("Search") { navigation.focusSearchFromCommand() }
         .keyboardShortcut("f", modifiers: .command)
@@ -133,6 +136,23 @@ struct PlatformRootShell: View {
   }
 
   private var usesCompactTabSet: Bool { horizontalSizeClass == .compact }
+
+  #if DEBUG
+  /// Browse-fixture capture routes (`DebugUITestLaunchConfiguration`), applied once at launch.
+  private func applyDebugCaptureRoute() {
+    guard DebugUITestLaunchConfiguration.usesBrowseFixture else { return }
+    if let raw = DebugUITestLaunchConfiguration.initialTab,
+      let destination = AppDestination.allCases.first(where: { "\($0)" == raw })
+    {
+      navigation.selection = destination
+    }
+    if DebugUITestLaunchConfiguration.opensFirstLibrary, navigation.librariesPath.isEmpty {
+      navigation.selection = .libraries
+      navigation.librariesPath.append(
+        LibraryRootItem.Destination.plex(PlexSection(key: "1", title: "Movies", type: "movie")))
+    }
+  }
+  #endif
 
   private var miniPlayerPlacement: MobileShellLayoutPolicy.MiniPlayerPlacement {
     MobileShellLayoutPolicy.miniPlayerPlacement(verticalBarEdge: verticalBarEdge)
