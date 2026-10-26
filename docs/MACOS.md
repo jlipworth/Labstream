@@ -1,7 +1,8 @@
 # macOS target
 
 Labstream includes a native macOS target on `main` for local source builds. The target and
-scheme are named `LabstreamMac` and require macOS 26. It compiles `Labstream/Shared/`,
+scheme are named `LabstreamMac` and require macOS 26.0 or later (built with Xcode 27.1 against its
+bundled macOS 27.0 SDK). It compiles `Labstream/Shared/`,
 `Labstream/Capabilities/Downloads/`, and its exclusive `Labstream/Platforms/macOS/` owner
 root, plus the shared `PMSKit` package.
 

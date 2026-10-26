@@ -4,11 +4,17 @@ This page is the shortest path from a clean checkout to a running Labstream buil
 
 ## Requirements
 
-- macOS with Xcode and the visionOS SDK installed for the `Labstream` target.
-- The iOS/iPadOS 26.1+ SDK/runtime for the `LabstreamMobile` target.
-- The tvOS 26+ SDK and an installed tvOS simulator runtime for the `LabstreamTV` target.
-- macOS 26 on an Apple-silicon host when testing the `LabstreamMac` target.
-- A visionOS 26 or newer Apple Vision Pro simulator runtime compatible with the active Xcode.
+- macOS with Xcode 27.1 (27A9275). It ships the iOS 27.1 SDK and the visionOS, tvOS, and macOS
+  27.0 SDKs; see [the toolchain note](#build-for-an-iphone-or-ipad-simulator) below.
+- Deployment targets (from `Labstream.xcodeproj`, not changed by the toolchain): visionOS 26.0,
+  iOS/iPadOS 26.1, tvOS 26.0, and macOS 26.0. `PMSKit` declares the same iOS, tvOS, and visionOS
+  floors; its own macOS floor is 15, below the Mac app target.
+- An iOS Simulator runtime for the `LabstreamMobile` target; the iPhone Duo device type needs the
+  iOS 27.1 runtime.
+- An installed tvOS simulator runtime (27.0 with Xcode 27.1) for the `LabstreamTV` target.
+- macOS 26 or later on an Apple-silicon host when testing the `LabstreamMac` target.
+- A visionOS 26 or newer Apple Vision Pro simulator runtime compatible with the active Xcode
+  (visionOS 27.0 with Xcode 27.1).
 - Swift Package Manager for `PMSKit` tests (included with Xcode).
 - Python 3.11+ and [`uv`](https://docs.astral.sh/uv/getting-started/installation/) for the repository's
   documentation and Python tooling checks.

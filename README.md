@@ -7,7 +7,7 @@
 [![tvOS 26](https://img.shields.io/badge/tvOS-26-black.svg)](docs/TVOS.md)
 [![macOS 26](https://img.shields.io/badge/macOS-26-black.svg)](docs/MACOS.md)
 [![Swift 6](https://img.shields.io/badge/Swift-6-orange.svg)](https://www.swift.org/)
-[![Xcode 27](https://img.shields.io/badge/Xcode-27-blue.svg)](https://developer.apple.com/xcode/)
+[![Xcode 27.1](https://img.shields.io/badge/Xcode-27.1-blue.svg)](https://developer.apple.com/xcode/)
 
 **Labstream is a native Apple-platform media client for your own Plex, Jellyfin, or Emby server.**
 
@@ -107,7 +107,7 @@ Labstream is unofficial and independent. It is not affiliated with, endorsed by,
 | Platform | Target / scheme | Current status |
 | --- | --- | --- |
 | Apple Vision Pro / visionOS 26 | `Labstream` | Spatial release candidate with the app-owned immersive Cinema surface. Physical-headset and release acceptance remain open. |
-| iPhone / iOS 26.1+ | `LabstreamMobile` | Native compact-width release candidate. Local simulator and signed-device builds are supported; physical/TestFlight acceptance remains open. |
+| iPhone / iOS 26.1+ | `LabstreamMobile` | Native compact-width release candidate, including the iPhone Duo foldable (outer and inner displays, vertical bars, book and tabletop poses). Local simulator and signed-device builds are supported; physical/TestFlight acceptance remains open. |
 | iPad / iPadOS 26.1+ | `LabstreamMobile` | The same universal release-candidate binary, using the regular-width sidebar layout. Physical/TestFlight acceptance remains open. |
 | Apple TV / tvOS 26+ | `LabstreamTV` | Native streaming-only release candidate with a ten-foot shell and custom Siri Remote player interactions. Downloads and Offline are absent; physical-device, accessibility, system-integration, and release acceptance remain open. |
 | Mac / macOS 26 | `LabstreamMac` | Native release candidate with shared sign-in, playback, media-key, and background-download code. App Store signing, sandbox behavior, and live Mac acceptance remain open release gates. |
@@ -125,8 +125,8 @@ Labstream is unofficial and independent. It is not affiliated with, endorsed by,
 
 ### Requirements
 
-- macOS with Xcode 27 plus the SDK/runtime for each target being built: visionOS 26, iOS/iPadOS 26.1+, or tvOS 26+.
-- A compatible simulator runtime for visionOS, iPhone/iPad, or Apple TV work, or paired physical hardware for the device acceptance being performed.
+- macOS with Xcode 27.1, which ships the iOS 27.1 SDK and the visionOS, tvOS, and macOS 27.0 SDKs. Deployment targets are visionOS 26.0, iOS/iPadOS 26.1, tvOS 26.0, and macOS 26.0.
+- A compatible simulator runtime for visionOS, iPhone/iPad, or Apple TV work (the iPhone Duo simulator needs the iOS 27.1 runtime), or paired physical hardware for the device acceptance being performed.
 - Python 3.11+ and [`uv`](https://docs.astral.sh/uv/getting-started/installation/) for documentation and repository tooling checks.
 - A Plex, Jellyfin, or Emby server you control or have permission to access.
 

@@ -62,7 +62,7 @@ The mobile app target/scheme is `LabstreamMobile`; its product/display name is
 `Labstream` and it shares the bundle id `org.labstream.Labstream`.
 
 ```sh
-PLATFORM=iphone                    # change to ipad for the regular-width path
+PLATFORM=iphone                    # ipad for the regular-width path; duo for the iPhone Duo foldable
 printf '%s\n' "$PLATFORM" > .simplatform # gitignored per-worktree default
 SIMID=$(scripts/worktree-sim.sh --platform "$PLATFORM" id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
@@ -79,9 +79,11 @@ xcrun simctl terminate "$SIMID" org.labstream.Labstream 2>/dev/null || true
 xcrun simctl launch "$SIMID" org.labstream.Labstream
 ```
 
-Mobile simulator builds require an iOS Simulator runtime compatible with the installed
-iOS SDK. If Xcode reports the iOS platform/runtime is missing, install the matching
-runtime in Xcode Settings before treating `LabstreamMobile` as broken.
+The required toolchain is Xcode 27.1 (iOS 27.1 SDK; its visionOS, tvOS and macOS SDKs are
+27.0). Deployment targets are iOS/iPadOS 26.1 and visionOS/tvOS/macOS 26.0. Mobile simulator
+builds require an iOS Simulator runtime compatible with the installed iOS SDK; the iPhone Duo
+device type needs the iOS 27.1 runtime. If Xcode reports the iOS platform/runtime is missing,
+install the matching runtime in Xcode Settings before treating `LabstreamMobile` as broken.
 
 ### Building the native Apple TV target
 
@@ -236,15 +238,15 @@ prefer `scripts/worktree-sim.sh closeout PATH` from any repo worktree, or run
 `git worktree remove`. Use `prune` immediately afterward if removal already happened.
 visionOS `setup` clones from the golden sim, which `simctl` can only do while the golden
 is **shut down**, so it briefly bounces your booted main sim — expect a ~10s blip in the
-main worktree's simulator when a new visionOS worktree sim is provisioned. iPhone/iPad and tvOS
-setup create fresh simulators from the newest compatible installed runtime instead.
+main worktree's simulator when a new visionOS worktree sim is provisioned. iPhone/iPhone Duo/iPad
+and tvOS setup create fresh simulators from the newest compatible installed runtime instead.
 
 **Booted sims are NOT free — use a strict one-at-a-time queue.** Never run multiple
 simulators simultaneously. This is especially important when parallel agents are working
 in separate worktrees: source work and unit tests may proceed in parallel, but simulator
 build/install/launch/visual-verification turns must be serialized by the lead agent. An
-agent must obtain the current simulator lease before booting any visionOS, iPhone, iPad, or tvOS
-simulator; all other agents wait with their simulators shut down. A leased agent may use
+agent must obtain the current simulator lease before booting any visionOS, iPhone, iPhone Duo,
+iPad, or tvOS simulator; all other agents wait with their simulators shut down. A leased agent may use
 only one simulator at a time, must shut it down before switching platforms, and must release
 the lease before another agent boots a simulator. Do not leave the golden simulator booted
 while a linked-worktree simulator is running.
@@ -263,7 +265,7 @@ clone anyway.
 Never call worktree cleanup done until the linked simulator is gone. Preferred flow:
 
 ```sh
-# Before removing a linked worktree that may own both visionOS and iPad simulators:
+# Before removing a linked worktree that may own visionOS plus iPhone/Duo/iPad/tvOS simulators:
 cd <worktree>
 scripts/worktree-sim.sh teardown --all
 cd <main>
