@@ -301,10 +301,25 @@ private struct AlphabetRailColumn: View {
         #endif
     }
 
-    /// Letters are the secondary label on every platform: on iPhone/iPad amber means
-    /// "selected" only, which here is the active (tapped or scrubbed) letter's highlight.
+    /// Letters are the secondary label on visionOS and iPhone/iPad (where amber means
+    /// "selected" only, which here is the active letter's highlight). macOS keeps its authored
+    /// accent letters.
     private var labelForeground: AnyShapeStyle {
+        #if os(macOS)
+        AnyShapeStyle(.tint)
+        #else
         AnyShapeStyle(.secondary)
+        #endif
+    }
+
+    /// Callout and backdrop outlines: neutral on iPhone/iPad (amber = selected only), the
+    /// authored accent outline elsewhere.
+    fileprivate static var outlineStyle: AnyShapeStyle {
+        #if os(iOS)
+        AnyShapeStyle(.secondary)
+        #else
+        AnyShapeStyle(.tint)
+        #endif
     }
 
     private var activeCornerRadius: CGFloat {
@@ -364,7 +379,7 @@ private struct AlphabetRailColumn: View {
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: calloutSize / 3, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: calloutSize / 3, style: .continuous)
-                    .strokeBorder(.secondary.opacity(0.32), lineWidth: 1)
+                    .strokeBorder(Self.outlineStyle.opacity(0.32), lineWidth: 1)
             }
             .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
     }
@@ -405,7 +420,7 @@ private extension View {
         background(.thinMaterial, in: Capsule())
             .overlay {
                 Capsule()
-                    .strokeBorder(.secondary.opacity(0.24), lineWidth: 0.75)
+                    .strokeBorder(AlphabetRailColumn.outlineStyle.opacity(0.24), lineWidth: 0.75)
             }
             .contentShape(Rectangle())
         #endif

@@ -30,10 +30,10 @@ struct LibrarySectionCard: View {
             ZStack {
                 RoundedRectangle(cornerRadius: compactWidth ? DS.Radius.chip + 4 : DS.Radius.card,
                                  style: .continuous)
-                    .fill(.tint.opacity(0.18))
+                    .fill(tileFill)
                 Image(systemName: kind.systemImage)
                     .font(.system(size: iconSize, weight: .semibold))
-                    .foregroundStyle(.tint)
+                    .foregroundStyle(glyphStyle)
             }
             .frame(width: tileSide, height: tileSide)
 
@@ -61,6 +61,24 @@ struct LibrarySectionCard: View {
         )
         .posterHover()
         .tvFocusHighlight(cornerRadius: DS.Radius.card)
+    }
+
+    /// iPhone/iPad: amber means "selected" only (iPhone Duo design spec, Color & type), so the
+    /// icon tile is a neutral fill with a secondary glyph. Other platforms keep the accent tile.
+    private var tileFill: AnyShapeStyle {
+        #if os(iOS)
+        AnyShapeStyle(.quaternary)
+        #else
+        AnyShapeStyle(.tint.opacity(0.18))
+        #endif
+    }
+
+    private var glyphStyle: AnyShapeStyle {
+        #if os(iOS)
+        AnyShapeStyle(.secondary)
+        #else
+        AnyShapeStyle(.tint)
+        #endif
     }
 
     private var cardSpacing: CGFloat {

@@ -341,9 +341,15 @@ struct PlaybackStatsView: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// The path hue, deepened on light glass so converted values keep text contrast.
+    /// The path hue, deepened on light glass so converted values keep text contrast. On
+    /// iPhone/iPad only Direct keeps a hue (green = plays as-is); copy and encode are neutral
+    /// gray and are told apart by their path title and link label (iPhone Duo design spec,
+    /// Color & type: no cyan or orange, which reads as the amber "selected" color).
     private func pathColor(_ path: PlaybackStatsSummary.Path) -> Color {
-        path.color(for: colorScheme)
+        #if os(iOS)
+        if path != .direct { return Color(uiColor: .systemGray) }
+        #endif
+        return path.color(for: colorScheme)
     }
 
     private func copy(_ text: String) {
