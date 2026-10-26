@@ -184,14 +184,13 @@ struct BackendSelectionPicker: View {
     let onSelect: (MediaBackendKind) -> Void
 
     var body: some View {
-        Picker("Media Server", selection: Binding(
-            get: { selection },
-            set: { backend in onSelect(backend) })) {
-                ForEach(MediaBackendKind.allCases) { backend in
-                    Text(backend.displayName).tag(backend)
-                }
-            }
-            .pickerStyle(.segmented)
+        LabstreamSegmentedPicker(
+            title: "Media Server",
+            selection: Binding(
+                get: { selection },
+                set: { backend in onSelect(backend) }),
+            options: MediaBackendKind.allCases,
+            label: \.displayName)
             #if os(tvOS)
             .accessibilityIdentifier("tv.login.backendPicker")
             #endif

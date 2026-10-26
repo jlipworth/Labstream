@@ -132,7 +132,7 @@ enum DebugUIFixtureCatalog {
         let rows = fixtureItems(backend: backend)
         if backend == .plex {
             var hubs = [
-                Hub(title: "Continue Watching", hubIdentifier: "fixture-resume", metadata: Array(rows.prefix(4))),
+                Hub(title: "Continue Watching", hubIdentifier: "fixture-resume", metadata: resumeItems(backend: backend)),
                 // A recently-added key makes this rail View All–eligible, so fixture
                 // tests exercise the tvOS trailing View All card in the lazy rail.
                 Hub(key: "/library/sections/1/recentlyAdded", title: "Recently Added",
@@ -159,7 +159,7 @@ enum DebugUIFixtureCatalog {
             mediaBrowserLibraries: libraries,
             mediaBrowserRails: [
                 MediaBrowserHomeRail(id: "fixture-resume", title: "Continue Watching",
-                                     items: Array(rows.prefix(4)), destination: nil),
+                                     items: resumeItems(backend: backend), destination: nil),
                 MediaBrowserHomeRail(id: "fixture-latest", title: "Recently Added Movies",
                                      items: rows, destination: nil),
             ] + mixedShapeHubs(backend: backend).map {
@@ -330,6 +330,23 @@ enum DebugUIFixtureCatalog {
                       type: "movie",
                       duration: 5_400_000, year: 2020 + (index % 6))
         }
+    }
+
+    /// Continue Watching: every card is started and has a duration, like a real resume shelf, so
+    /// the shelf reads "Nm left" (`HomeShelfCaptionPolicy`) instead of falling back to years
+    /// because a show without a runtime sat among the movies. The Long Orbit stays first.
+    private static func resumeItems(backend: MediaBackendKind) -> [MediaItem] {
+        let prefix = backend.rawValue
+        let rows = fixtureItems(backend: backend)
+        let orbit = rows[0]
+        let startedEpisode = fixtureEpisodes(showKey: "\(prefix)-atlas", showTitle: "Atlas Station", season: 1)
+            .first { $0.viewOffset != nil }
+        let harbor = MediaItem(ratingKey: "\(prefix)-harbor", title: "Harbor Lights", type: "movie",
+                               duration: 6_540_000, viewOffset: 3_600_000, year: 2025,
+                               summary: "A family returns to the island where their story began.")
+        let quiet = MediaItem(ratingKey: "\(prefix)-quiet", title: "A Quiet Current", type: "movie",
+                              duration: 5_820_000, viewOffset: 5_100_000, year: 2024)
+        return [orbit] + (startedEpisode.map { [$0] } ?? []) + [harbor, quiet]
     }
 
     private static func fixtureItems(backend: MediaBackendKind) -> [MediaItem] {

@@ -55,7 +55,9 @@ struct SearchView: View {
         .navigationDestination(for: RailViewAllDestination.self) { destination in
             RailViewAllView(destination: destination)
         }
-        #if !os(tvOS)
+        // iPhone/iPad have no toolbar Clear: the field's own clear button and Cancel already do it
+        // (a third control read as three clear buttons in regular width).
+        #if os(macOS) || os(visionOS)
         .toolbar {
             if externalQuery == nil, showsClearSearchButton {
                 #if os(macOS)
@@ -142,7 +144,8 @@ struct SearchView: View {
         Group {
             if externalQuery == nil {
                 searchResultsContent
-                    .searchable(text: queryBinding, prompt: "Movies, shows, music…")
+                    .searchable(text: queryBinding, placement: Self.searchFieldPlacement,
+                                prompt: "Movies, shows, music…")
                     .searchFocused($searchFieldFocused)
             } else {
                 searchResultsContent
@@ -203,6 +206,17 @@ struct SearchView: View {
 
     private var searchTaskID: SearchLoadIdentity {
         SearchLoadIdentity(appModel: appModel, query: queryText)
+    }
+
+    /// iPhone/iPad keep the field under the large title in every width. The automatic placement
+    /// moved it into the regular-width navigation bar, which then showed an inline "Search" title
+    /// beside the large one.
+    private static var searchFieldPlacement: SearchFieldPlacement {
+        #if os(iOS)
+        .navigationBarDrawer(displayMode: .always)
+        #else
+        .automatic
+        #endif
     }
 
     private var showsClearSearchButton: Bool {

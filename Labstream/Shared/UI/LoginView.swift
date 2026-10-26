@@ -626,7 +626,7 @@ private struct MacLoginHeader: View {
                 HStack(spacing: 0) {
                     Text("Lab")
                     Text("stream")
-                        .foregroundStyle(DS.Brand.amber)
+                        .foregroundStyle(DS.Brand.wordmarkAccent)
                 }
                 .font(.title2.weight(.semibold))
                 .lineLimit(1)

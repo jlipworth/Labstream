@@ -274,12 +274,11 @@ struct PlaybackStatsView: View {
     @ViewBuilder
     private func expanded(_ summary: PlaybackStatsSummary,
                           section: PlaybackStatsSummary.Section) -> some View {
-        Picker("Section", selection: Binding(
-            get: { section },
-            set: { storedSection = $0.rawValue })) {
-            ForEach(PlaybackStatsSummary.Section.allCases) { Text($0.title).tag($0) }
-        }
-        .pickerStyle(.segmented)
+        LabstreamSegmentedPicker(
+            title: "Section",
+            selection: Binding(get: { section }, set: { storedSection = $0.rawValue }),
+            options: PlaybackStatsSummary.Section.allCases,
+            label: \.title)
         .labelsHidden()
         .accessibilityIdentifier("playback.stats.sections")
 

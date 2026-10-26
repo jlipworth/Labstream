@@ -19,6 +19,16 @@ enum DS {
         static let amber = Color(red: 1.00, green: 0.72, blue: 0.20)
         static let deepTeal = Color(red: 0.03, green: 0.28, blue: 0.34)
         static let midnight = Color(red: 0.02, green: 0.09, blue: 0.13)
+        /// The "stream" half of the wordmark. iPhone/iPad keep it in the label color because amber
+        /// means "selected" there (iPhone Duo design, global color rule); the other platforms keep
+        /// the two-tone brand wordmark.
+        static var wordmarkAccent: Color {
+            #if os(iOS)
+            .primary
+            #else
+            amber
+            #endif
+        }
 
         static var iconPlateGradient: LinearGradient {
             LinearGradient(colors: [

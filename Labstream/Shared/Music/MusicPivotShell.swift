@@ -24,12 +24,8 @@ struct MusicPivotShell<Content: View>: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Browse", selection: $pivot) {
-                ForEach(MusicPivot.allCases) { pivot in
-                    Text(pivot.rawValue).tag(pivot)
-                }
-            }
-            .pickerStyle(.segmented)
+            LabstreamSegmentedPicker(title: "Browse", selection: $pivot,
+                                     options: MusicPivot.allCases, label: \.rawValue)
             .frame(maxWidth: pickerWidth)
             // Breathing room on compact, where the bar would otherwise run
             // edge-to-edge; regular width is already capped at 460 and centered.

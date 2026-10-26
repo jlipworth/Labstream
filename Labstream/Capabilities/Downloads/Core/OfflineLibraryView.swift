@@ -503,9 +503,12 @@ public struct OfflineLibraryView: View {
         }
     }
 
+    /// iPhone/iPad keep one row pattern in every width: Delete is the swipe action, the context
+    /// menu and the detail pane's red button, never an extra red circle that appears only when the
+    /// window is wide (iPhone Duo design, "Downloads").
     private var showsInlineDeleteControl: Bool {
         #if os(iOS)
-        return !compactWidth
+        return false
         #else
         return true
         #endif

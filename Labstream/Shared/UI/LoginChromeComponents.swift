@@ -29,7 +29,7 @@ struct LoginBrandHeader: View {
             HStack(spacing: 0) {
                 Text("Lab")
                 Text("stream")
-                    .foregroundStyle(DS.Brand.amber)
+                    .foregroundStyle(DS.Brand.wordmarkAccent)
             }
             #if os(tvOS)
             .font(.system(size: 58, weight: .bold, design: .rounded))

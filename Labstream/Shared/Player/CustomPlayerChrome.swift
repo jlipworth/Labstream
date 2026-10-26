@@ -962,6 +962,16 @@ struct CustomPlayerChrome: View {
             Slider(value: scrubberBinding, in: 0...1) { editing in
                 handleScrubEditingChanged(editing)
             }
+            #if os(iOS)
+            // The system track's unplayed part nearly vanishes over dark video; a neutral backing
+            // capsule keeps the whole duration readable (white = played, never amber).
+            .background {
+                Capsule()
+                    .fill(.white.opacity(0.32))
+                    .frame(height: 6)
+                    .allowsHitTesting(false)
+            }
+            #endif
             .disabled(scrubState.durationMs <= 0)
             .accessibilityIdentifier("playback.timeline")
             .accessibilityLabel("Playback position")

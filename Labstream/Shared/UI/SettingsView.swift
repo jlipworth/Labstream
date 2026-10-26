@@ -389,16 +389,15 @@ struct SettingsView: View {
 
     private var backendSection: some View {
         SwiftUI.Section {
-            Picker("Media Backend", selection: Binding(
-                get: { appModel.activeBackend },
-                set: { backend in
-                    switchToBackend(backend)
-                })) {
-                    ForEach(MediaBackendKind.allCases) { backend in
-                        Text(backend.displayName).tag(backend)
-                    }
-                }
-                .pickerStyle(.segmented)
+            LabstreamSegmentedPicker(
+                title: "Media Backend",
+                selection: Binding(
+                    get: { appModel.activeBackend },
+                    set: { backend in
+                        switchToBackend(backend)
+                    }),
+                options: MediaBackendKind.allCases,
+                label: \.displayName)
                 .disabled(switchingBackend != nil)
 
             if let switchingBackend {
