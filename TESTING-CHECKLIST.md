@@ -130,7 +130,7 @@ layout code changed.
       shelves, View All, detail titles and actions clear of the vertical bar's column (rails clip
       at the content region and a tap on the column over a clipped card does nothing); grids are
       3 folded portrait / 4 folded landscape / 3 upright / 4 sideways; unfolded sideways shows the
-      Downloads and show | season splits; book keeps the grid's outer margins with a wide hinge
+      show | season split and Downloads stays one list; book keeps the grid's outer margins with a wide hinge
       gutter. Simulator evidence (2026-10-26): `LabstreamMobileDuoUITests` folded runs and the
       gallery in `artifacts/duo-final/gallery/` (gitignored) cover every surface; inner sizes
       come from the appResize proxy, which has horizontal bars. Open: the inner display with its

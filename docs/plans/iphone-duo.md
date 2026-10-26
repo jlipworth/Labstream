@@ -53,7 +53,7 @@ describe the chosen option.
 | 2 | Library grid in book | Keep both outer margins and accept the wide, off-centre hinge gutter | 2026-10-25 |
 | 3 | Switch (`Toggle`) on color | **Amber** (= selected/chosen); never system green | 2026-10-25 |
 | 4 | Mini player and scrolling content | A **bottom inset**: the scroll viewport ends above it | 2026-10-25 |
-| 5 | Downloads, unfolded sideways | Mail-style **list + detail** | 2026-10-25 |
+| 5 | Downloads, unfolded sideways | **Revised 2026-10-26:** one list in every width, a tap pushes the detail. The Mail-style list + detail was built and dropped after review: the detail repeated the row and halved the list | 2026-10-26 |
 | 6 | Settings, unfolded (and iPad regular width) | **Revised 2026-10-26:** two columns like iPad Settings (category list + the selected category's form; split on the hinge in book), after the centred 560 pt form left ~200 pt empty on each side in the sideways capture | 2026-10-26 |
 | 7 | Player in book | Keep the overlay; the whole control group (transport, title, scrubber, bottom circles) moves into the trailing half. The `OverlayArrangement` video-leading/controls-trailing book layout is not used. | 2026-10-25 |
 | 8 | Show resume line | "Resume S1, E3" plus "23m left" | 2026-10-25 |
@@ -327,9 +327,11 @@ hinge in book.
 - **Folded portrait / landscape:** one column of the existing download rows (one row pattern),
   ending at the content edge. Status context lines are 1–2 words and never wrap. Toolbar actions
   (Edit/select, storage) go in the column with titles and symbols.
-- **Unfolded upright:** the same row cell at its regular size (60×90 pt art), capped at 560 pt
-  and centered.
-- **Unfolded sideways:** a Mail-style **list + detail** (Apple's "one extra level").
+- **Unfolded upright and sideways (revised 2026-10-26, decision 5):** the same list at the
+  regular row size (60×90 pt art), full content width; a tap pushes the detail, as folded. The
+  list + detail below was built, reviewed on the simulator and dropped: the detail column
+  repeated the row's art, title and status, and the list lost half the width.
+- **Superseded: unfolded sideways as a Mail-style list + detail** (Apple's "one extra level").
   - **List column:** the download rows, with the selected row in the selection color and
     horizontal controls (title, Select, Storage) at its top.
   - **Detail column:** the movie/show detail that a tap pushes when folded (Play, Delete in red,
@@ -1067,11 +1069,9 @@ are in PMSKit: `RailCardMetrics`, `MobileLibraryGridLayout` (measured columns pl
   rows ending at the content edge; unfolded sideways reflows to two ~50/50 columns (art, title,
   actions and description leading; tracks trailing) with the gap on the hinge in book; the track
   anchor persists across the reflow.
-- **Downloads (decision 5):** one row pattern ending at the content edge, 1–2 word status lines;
-  upright capped at 560 pt and centred; unfolded sideways becomes a Mail-style list + detail
-  (selected row in amber, horizontal Select/Storage at the list top, detail with Play, red Delete,
-  size and overview hosting the bar), 50/50 on the hinge in book, collapsing to push on fold with
-  the selection kept. The empty state is centred with at most 2 lines.
+- **Downloads (decision 5, revised 2026-10-26):** one row pattern ending at the content edge,
+  1–2 word status lines, one list in every width; a tap pushes the detail (Play, red Delete,
+  size, overview). The empty state is centred with at most 2 lines.
 - **Search:** the field stays horizontal at the top of the content region; result rails follow the
   rail rules and songs use the Music track row; the query, focus and results scroll position
   persist across a fold.

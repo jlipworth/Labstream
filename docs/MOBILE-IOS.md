@@ -173,8 +173,8 @@ of the inner display is about the size of the outer display.
   content region; regular-width Settings (unfolded Duo, iPad) is two columns like iPad Settings: a category list
   (the selected row is the only amber) beside the selected category's form, with the split on the
   hinge in book pose. Folded and in compact width it stays one form in the toolbar sheet; a
-  fold/unfold selects the category the form was showing and back. Downloads unfolded
-  sideways is a list plus detail.
+  fold/unfold selects the category the form was showing and back. Downloads is one list in
+  every width (no unfolded list + detail); a tap pushes the row's detail.
 - Folding or unfolding is a resize plus a trait change, never a teardown: the selected tab,
   navigation path (including Settings sheet to tab), scroll anchors, rail offsets, open sheets and
   playback all survive. The player disables its vertical bar (`toolbarVerticalBehavior(.disabled)`).

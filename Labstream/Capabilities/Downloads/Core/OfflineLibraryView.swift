@@ -20,12 +20,7 @@ public struct OfflineLibraryView: View {
     @AppStorage(PlaybackPreferences.Keys.resumeRewindSeconds) private var resumeRewindSeconds = 0
     #if os(iOS)
     @State private var mobilePlayerOrientationCoordinator = MobilePlayerOrientationCoordinator()
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @Environment(\.duoPose) private var duoPose
-    /// The rows' content region in global space, measured for `DownloadsLayoutPolicy`.
-    @State private var downloadsRegion: CGRect = .zero
-    /// The row the user chose: highlighted in the list + detail split, pushed as a detail page
-    /// in the single-column list, and kept across a fold or unfold.
+    /// The row the user chose, pushed as its detail page.
     #if DEBUG
     @State private var selectedRowID: String? = DebugUITestLaunchConfiguration.opensFirstDownload
         ? DebugUIFixtureCatalog.downloadRowsSnapshot?.rows.first?.id : nil
@@ -199,9 +194,6 @@ public struct OfflineLibraryView: View {
         #if os(iOS)
         row(for: rowSnapshot)
             .id(rowSnapshot.id)
-            .listRowBackground(isHighlightedInSplit(rowSnapshot.id)
-                ? AnyView(Color.accentColor.opacity(0.18))
-                : nil)
             .deleteDisabled(manager.startupRecoveryState != .ready)
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                 Button(role: .destructive) { confirmDelete(rowSnapshot) } label: {
@@ -583,9 +575,8 @@ public struct OfflineLibraryView: View {
         .contentShape(Rectangle())
         .onTapGesture {
             #if os(iOS)
-            // iPhone/iPad: a tap chooses the row, which shows it in the detail column of the
-            // split or pushes the same detail in the single-column list (Mail model). The row's
-            // own Play/Pause/Retry controls keep their one-tap actions.
+            // iPhone/iPad: a tap pushes the row's detail. The row's own Play/Pause/Retry
+            // controls keep their one-tap actions.
             selectedRowID = rowSnapshot.id
             #else
             if presentation.actions.contains(.play) {
@@ -608,95 +599,24 @@ public struct OfflineLibraryView: View {
     }
 
     #if os(iOS)
-    private var downloadsLayout: DownloadsLayoutPolicy.Layout {
-        var hinge: (minX: Double, maxX: Double)?
-        if case .book(let rect) = duoPose {
-            hinge = (Double(rect.minX - downloadsRegion.minX), Double(rect.maxX - downloadsRegion.minX))
-        }
-        return DownloadsLayoutPolicy.layout(width: Double(downloadsRegion.width),
-                                            height: Double(downloadsRegion.height),
-                                            regularWidth: horizontalSizeClass == .regular,
-                                            pagePadding: Double(DS.pagePadding(compact: compactWidth)),
-                                            hinge: hinge)
-    }
-
-    private var isSplit: Bool {
-        if case .split = downloadsLayout { return true }
-        return false
-    }
-
-    private func isHighlightedInSplit(_ id: String) -> Bool {
-        isSplit && displayedRowID(in: currentSnapshot) == id
-    }
-
-    /// The split always shows a detail: the chosen row, else the first row.
-    private func displayedRowID(in snapshot: OfflineLibrarySnapshot) -> String? {
-        if let selectedRowID, snapshot.rows.contains(where: { $0.id == selectedRowID }) {
-            return selectedRowID
-        }
-        return snapshot.rows.first?.id
-    }
-
-    /// iPhone/iPad Downloads composition (iPhone Duo design spec, Downloads): one capped column
-    /// of rows, or a Mail-style list + detail when the content region is wide and landscape. A
-    /// chosen row stays chosen across a fold: the split highlights it, the column pushes it.
-    @ViewBuilder
+    /// iPhone/iPad Downloads (iPhone Duo design spec, Downloads, decision 5 revised): one list of
+    /// rows in every width, the same as folded; a tap pushes the row's detail. The unfolded
+    /// list + detail split was dropped: the detail repeated the row and halved the list.
     private func mobileRows(snapshot: OfflineLibrarySnapshot) -> some View {
-        Group {
-            switch downloadsLayout {
-            case .list(let inset):
-                if horizontalSizeClass == .regular {
-                    // Regular width caps the row column at 560 pt, centred.
-                    offlineList(snapshot: snapshot)
-                        .contentMargins(.horizontal, CGFloat(inset), for: .scrollContent)
-                } else {
-                    // Compact keeps the list's own safe-area margins, so rows end one margin
-                    // before the vertical bar.
-                    offlineList(snapshot: snapshot)
-                }
-            case .split(let listWidth, let detailStart):
-                HStack(spacing: 0) {
-                    offlineList(snapshot: snapshot)
-                        .frame(width: CGFloat(listWidth))
-                    Rectangle()
-                        .fill(.separator)
-                        .frame(width: 0.5)
-                        .accessibilityHidden(true)
-                    Color.clear
-                        .frame(width: max(CGFloat(detailStart - listWidth) - 0.5, 0))
-                        .accessibilityHidden(true)
-                    if let id = displayedRowID(in: snapshot),
-                       let rowSnapshot = snapshot.rows.first(where: { $0.id == id }) {
-                        offlineDetail(for: rowSnapshot)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        Spacer(minLength: 0)
-                    }
+        offlineList(snapshot: snapshot)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .navigationDestination(isPresented: Binding(
+                get: { selectedRowID.map { id in snapshot.rows.contains { $0.id == id } } == true },
+                set: { presented in
+                    if !presented { selectedRowID = nil }
+                })) {
+                if let selectedRowID,
+                   let rowSnapshot = currentSnapshot.rows.first(where: { $0.id == selectedRowID }) {
+                    offlineDetail(for: rowSnapshot)
+                        .navigationTitle(rowSnapshot.title)
+                        .navigationBarTitleDisplayMode(.inline)
                 }
             }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onGeometryChange(for: CGRect.self) { proxy in
-            proxy.frame(in: .global)
-        } action: { region in
-            if downloadsRegion != region { downloadsRegion = region }
-        }
-        .navigationDestination(isPresented: Binding(
-            get: {
-                !isSplit && selectedRowID.map { id in snapshot.rows.contains { $0.id == id } } == true
-            },
-            set: { presented in
-                // Only a pop in the single column clears the choice; unfolding into the split
-                // dismisses the pushed page but keeps the row chosen.
-                if !presented, !isSplit { selectedRowID = nil }
-            })) {
-            if let selectedRowID,
-               let rowSnapshot = currentSnapshot.rows.first(where: { $0.id == selectedRowID }) {
-                offlineDetail(for: rowSnapshot)
-                    .navigationTitle(rowSnapshot.title)
-                    .navigationBarTitleDisplayMode(.inline)
-            }
-        }
     }
 
     /// The detail for one download (iPhone Duo design spec, Downloads, decision 5): art, title,
