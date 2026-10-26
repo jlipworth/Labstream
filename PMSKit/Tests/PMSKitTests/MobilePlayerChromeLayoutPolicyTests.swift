@@ -32,6 +32,15 @@ struct MobilePlayerChromeLayoutPolicyTests {
         #expect(policy(951, 669, h: .regular, v: .regular).branch == .regular)
     }
 
+    @Test func unfoldedDuoIgnoresAVerticalCompactClassFromThePhoneIdiom() {
+        // If UIKit ever reports compact height for the 951×669 inner display, the measured
+        // 669 pt short side still gives the regular chrome, never the phone-landscape platter.
+        #expect(policy(951, 669, h: .regular, v: .compact).isPhoneLandscape == false)
+        #expect(policy(951, 669, h: .regular, v: .compact).branch == .regular)
+        // A slab iPhone in landscape keeps the phone-landscape branch.
+        #expect(policy(874, 402, h: .regular, v: .compact).branch == .phoneLandscape)
+    }
+
     @Test func iPadFollowsGeometry() {
         #expect(policy(1032, 1376, h: .regular, v: .regular, phone: false).branch == .regular)
         #expect(policy(420, 1376, h: .compact, v: .regular, phone: false).branch == .compact)

@@ -53,15 +53,22 @@ public struct MobilePlayerChromeLayoutPolicy: Equatable, Sendable {
         hasMeasuredViewport ? min(viewportWidth, viewportHeight) : nil
     }
 
+    /// True when the measured viewport is roomier than a phone-class display in both axes (the
+    /// unfolded iPhone Duo, an iPad). A phone-idiom device can report vertical-compact there, so a
+    /// measured viewport overrides that class (open review finding: `isPhoneLandscape` at 951×669).
+    private var isMeasuredLarge: Bool {
+        (shortestMeasuredSide.map { $0 > Self.compactShortSideLimit } ?? false)
+    }
+
     public var isPhoneLandscape: Bool {
-        isPhoneIdiom
-            && (verticalSizeClass == .compact
-                || (isGeometryLandscape && (shortestMeasuredSide ?? 0) <= Self.compactShortSideLimit))
+        guard isPhoneIdiom, !isMeasuredLarge else { return false }
+        return verticalSizeClass == .compact
+            || (isGeometryLandscape && (shortestMeasuredSide ?? 0) <= Self.compactShortSideLimit)
     }
 
     public var usesCompactChrome: Bool {
         horizontalSizeClass == .compact
-            || verticalSizeClass == .compact
+            || (verticalSizeClass == .compact && !isMeasuredLarge)
             || (shortestMeasuredSide.map { $0 < Self.compactShortSideLimit } ?? false)
     }
 
