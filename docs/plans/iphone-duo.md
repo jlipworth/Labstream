@@ -931,6 +931,12 @@ Steps 10 and 11 run after Step 16.
 
 ### Step 12: DEBUG pose-override seam (book and tabletop evidence)
 
+**Status (2026-10-25):** done. `DuoPoseInput`/`DuoPoseLayout`/`DuoPoseOverride` (PMSKit, tests),
+the `\.duoPose` environment value (shared, `.flat` off iOS), the shell's single live source
+(`providesDuoPose()`, fed from the active `reservedRegions(kind: .division)` region) and
+`scripts/duo-appresize.sh --pose`. No surface consumes the pose yet (Steps 14 to 16). The live
+source has never seen a real division region (decision 9).
+
 Folding cannot be driven headlessly, so book and tabletop layouts get screenshot evidence
 through one seam:
 
@@ -958,6 +964,13 @@ through one seam:
   layout against the seam only; Resolved decision 9 (real Device Hub frames) stays open.
 
 ### Step 13: shell, sheets, Settings and colors
+
+**Status (2026-10-25):** done except the stats sheet and the type pass (see the journal). The
+vertical bar is detected from the iOS 27.1 `verticalBarEdge` trait (bridged into
+`\.labstreamVerticalBarEdge`), not `reservedRegions`. The Settings hand-off state stays app-side
+(`MobileSettingsNavigationState`, tested in `LabstreamTests`) because `AppDestination` and
+`SettingsRoute` are app types; the pure mini-player and readable-width rules are in PMSKit
+(`MobileShellLayoutPolicy`).
 
 - **Mini player (decision 4):** in `Labstream/Platforms/Mobile/UI/MobileRootShell.swift`, host
   `MiniPlayerBar` with `safeAreaInset(edge: .bottom)` while a vertical bar is present (detected
@@ -1193,3 +1206,30 @@ through one seam:
 - 2026-10-25, design sign-off: the maintainer approved the mockups and accepted all nine
   recommendations (Resolved decisions); decision 9, real Device Hub captures, stays an open gate.
   Added the DEBUG pose-override seam (Step 12) and the rework Steps 13 to 16.
+- 2026-10-25, Steps 12 and 13 (shell area):
+  - Step 12: `DuoPoseInput`, `DuoPoseLayout` and the DEBUG-only `DuoPoseOverride` parser in PMSKit
+    (tests: 951×669 book with a leading and a trailing bar, 669×951 tabletop, flat, unknown values
+    fall back to flat). The mobile root installs one source (`providesDuoPose()`): the active
+    `reservedRegions(kind: .division)` region, or in DEBUG `LABSTREAM_DEBUG_DUO_POSE` with a 20 pt
+    strip at the centre of the current bounds (records `duo.pose_override`). `scripts/duo-appresize.sh`
+    wraps `devicectl appResize` and `--pose`. No surface reads the pose yet.
+  - Step 13: the vertical bar comes from the `verticalBarEdge` trait. Beside it the mini player is a
+    per-tab `safeAreaInset(edge: .bottom)` glass capsule (capped 560 pt, centred in the tab's safe
+    area); with horizontal bars it stays the tab accessory. The Now Playing sheet moved to the
+    shell so only one node owns it. `tabBarMinimizeBehavior(.onScrollDown)` only without a vertical
+    bar. The Settings sheet and tab share one `[SettingsRoute]` path and scroll offset; the toolbar
+    gear starts a fresh visit. Every screen in the Settings sheet disables the vertical bar, with Done
+    in the horizontal header (also the offline Settings sheet). Settings: symbols on every picker
+    row, label-color icons and actions, regular-width cap 560 pt. Colors on iOS: one amber switch
+    style app-wide, label-color prominent capsule (Play/Resume, sign-in, Reconnect), white card
+    progress, label-color mini-player progress, label-color login links and caret; offline Reconnect
+    is a neutral toolbar item in the Sign In/Settings group. Compact login column capped at 420 pt.
+  - Not done here: the stats sheet (it is the player's stats popover, left to Step 16 to avoid
+    colliding with the player rework); the three-style type pass, View All, the scrubber, star
+    ratings and the detail/music/download amber uses (Steps 14 to 16, per surface). Settings
+    scroll-offset carry uses `ScrollPosition` on a `Form` and is unverified; the mini-player inset and
+    the sheet's vertical-bar behaviour need a music session and a fold to observe.
+  - Verification: clean `LabstreamMobile` Duo build (no new warnings), visionOS/tvOS/macOS compile,
+    hermetic PMSKit tests, the Settings suites in `LabstreamTests`, and a folded Duo smoke with the
+    browse fixture (UUID match, alive, also with `--pose tabletop`). Evidence (gitignored):
+    `artifacts/duo-shell/`.
