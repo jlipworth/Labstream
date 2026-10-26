@@ -47,6 +47,16 @@ struct CustomPlayerView: View {
     @AppStorage(PlaybackPreferences.Keys.mobileVideoDisplayMode)
     private var mobileVideoDisplayModeRaw = MobileVideoDisplayMode.fit.rawValue
     @State private var mobileTopSafeInsetLatch = PlayerTopSafeInsetLatch()
+    /// The foldable pose from the shell's single source (division region or DEBUG override).
+    @Environment(\.duoPose) private var duoPose
+    /// The player's measured safe-area layout frame and insets (global space).
+    @State private var mobileGeometry: PlayerTopSafeInsetSample?
+    /// Width ÷ height of the decoded picture, reported by the player layer's `videoRect`.
+    @State private var mobileVideoAspect: Double?
+    /// The read-only hinge interaction's status (`MobilePlayerSceneGeometryReader`).
+    @State private var mobileHingeStatus: MobilePlayerPoseResolver.HingeStatus = .unavailable
+    /// Active occlusion regions (the outer camera island), global space.
+    @State private var mobileOcclusions: [CGRect] = []
     #endif
     #if os(macOS)
     @State private var macSystemCoordinator: VideoNowPlayingCore?
@@ -189,7 +199,13 @@ struct CustomPlayerView: View {
                 PlayerLayerView(player: controller?.player,
                                 captionAppearance: controller?.captionAppearance,
                                 displayMode: mobileVideoDisplayMode,
-                                mobileSystemCoordinator: mobileSystemCoordinator)
+                                mobileSystemCoordinator: mobileSystemCoordinator,
+                                onVideoAspectChange: { aspect in
+                                    if mobileVideoAspect != aspect { mobileVideoAspect = aspect }
+                                })
+                    // Tabletop: the same layer (never a second one) shrinks to the half above
+                    // the hinge; every other arrangement keeps it full-bleed.
+                    .padding(.bottom, mobileVideoBottomInset)
                     .ignoresSafeArea()
                     // The AVPlayerLayer itself has no tappable affordances. Keep it out of
                     // hit-testing so the player-surface tap catcher and chrome controls have
@@ -215,6 +231,8 @@ struct CustomPlayerView: View {
                                        mobileVideoDisplayMode: mobileVideoDisplayModeBinding,
                                        mobileSystemCoordinator: mobileSystemCoordinator,
                                        mobileLatchedTopSafeInset: CGFloat(mobileTopSafeInsetLatch.latchedTopInset),
+                                       mobileArrangement: mobileArrangement,
+                                       mobileCaption: mobileCaption,
                                        onRetry: { controller.retry() },
                                        onClose: onClose == nil ? nil : { requestPlayerClose() })
                         // The chrome toggles the status bar with its own visibility. On iPad that
@@ -258,8 +276,10 @@ struct CustomPlayerView: View {
         // grows this frame by exactly the inset it removes, so keying on `proxy.size` alone would
         // restart the latch on every chrome toggle.
         .onGeometryChange(for: PlayerTopSafeInsetSample.self) { proxy in
-            PlayerTopSafeInsetSample(size: proxy.size, insets: proxy.safeAreaInsets)
+            PlayerTopSafeInsetSample(size: proxy.size, insets: proxy.safeAreaInsets,
+                                     frame: proxy.frame(in: .global))
         } action: { sample in
+            mobileGeometry = sample
             mobileTopSafeInsetLatch.observe(safeAreaWidth: Double(sample.size.width),
                                             safeAreaHeight: Double(sample.size.height),
                                             top: Double(sample.insets.top),
@@ -270,10 +290,16 @@ struct CustomPlayerView: View {
         // The player's own scene drives the landscape lock and records every geometry change
         // (rotation, window resize, iPhone Duo fold) as a layout-only event.
         .background {
-            MobilePlayerSceneGeometryReader(coordinator: mobileOrientationCoordinator)
+            MobilePlayerSceneGeometryReader(coordinator: mobileOrientationCoordinator,
+                                            onHingeStatusChange: { status in
+                                                if mobileHingeStatus != status { mobileHingeStatus = status }
+                                            })
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
+        }
+        .background {
+            MobilePlayerOcclusionReader(occlusions: $mobileOcclusions)
         }
         .mobilePlayerDisablesVerticalBar()
         .onAppear {
@@ -327,6 +353,37 @@ struct CustomPlayerView: View {
     private var mobileVideoDisplayModeBinding: Binding<MobileVideoDisplayMode> {
         Binding(get: { mobileVideoDisplayMode },
                 set: { mobileVideoDisplayModeRaw = $0.rawValue })
+    }
+
+    /// Where the picture and the control group go, from measured geometry and the pose only
+    /// (global space). The pose changes layout; playback never hears about it.
+    private var mobileArrangement: MobilePlayerArrangement? {
+        guard let geometry = mobileGeometry else { return nil }
+        let frame = geometry.frame
+        let insets = geometry.insets
+        let bounds = CGRect(x: frame.minX - insets.leading, y: frame.minY - insets.top,
+                            width: frame.width + insets.leading + insets.trailing,
+                            height: frame.height + insets.top + insets.bottom)
+        // The top edge sits at the latched inset, so a status-bar toggle never moves the group.
+        let top = bounds.minY + max(CGFloat(mobileTopSafeInsetLatch.latchedTopInset), insets.top)
+        let safe = CGRect(x: frame.minX, y: top, width: frame.width, height: max(0, frame.maxY - top))
+        let pose = MobilePlayerPoseResolver.resolve(shellPose: duoPose, hingeStatus: mobileHingeStatus,
+                                                    bounds: bounds)
+        return MobilePlayerArrangement.resolve(bounds: bounds, safeFrame: safe, pose: pose,
+                                               videoAspect: mobileVideoAspect,
+                                               fillsScreen: mobileVideoDisplayMode == .fill,
+                                               occlusions: mobileOcclusions)
+    }
+
+    private var mobileVideoBottomInset: CGFloat {
+        guard let arrangement = mobileArrangement, arrangement.mode == .tabletop else { return 0 }
+        let fullHeight = mobileGeometry.map { $0.frame.height + $0.insets.top + $0.insets.bottom } ?? 0
+        return max(0, fullHeight - arrangement.videoFrame.height)
+    }
+
+    /// "S1, E5" for an episode, the year for anything else.
+    private var mobileCaption: String? {
+        MediaDetailCaptions.episodeReference(item) ?? item.year.map(String.init)
     }
     #endif
 
@@ -439,6 +496,34 @@ struct CustomPlayerView: View {
 struct PlayerTopSafeInsetSample: Equatable {
     let size: CGSize
     let insets: EdgeInsets
+    var frame: CGRect = .zero
+}
+
+/// Reads the active occlusion regions (the outer display's camera island) for the player, in the
+/// global space, so the bottom control group can end before the island in tent and folded
+/// landscape. Never hardcoded: the regions come from `reservedRegions(kind: .occlusion)`.
+private struct MobilePlayerOcclusionReader: View {
+    @Binding var occlusions: [CGRect]
+
+    var body: some View {
+        GeometryReader { proxy in
+            Color.clear
+                .onChange(of: Self.regions(in: proxy), initial: true) { _, regions in
+                    if occlusions != regions { occlusions = regions }
+                }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private static func regions(in proxy: GeometryProxy) -> [CGRect] {
+        guard #available(iOS 27.1, *) else { return [] }
+        let origin = proxy.frame(in: .global).origin
+        return proxy.reservedRegions(kind: .occlusion)
+            .filter(\.isActive)
+            .map { $0.frame.offsetBy(dx: origin.x, dy: origin.y) }
+    }
 }
 
 private extension MobileVideoDisplayMode {
@@ -678,6 +763,8 @@ struct PlayerLayerView: UIViewRepresentable {
     #if os(iOS)
     var displayMode: MobileVideoDisplayMode = .fit
     var mobileSystemCoordinator: MobilePlayerSystemCoordinator?
+    /// Reports the decoded picture's aspect (width ÷ height) from the layer's `videoRect`.
+    var onVideoAspectChange: ((Double) -> Void)?
     #endif
 
     final class Coordinator {
@@ -698,6 +785,7 @@ struct PlayerLayerView: UIViewRepresentable {
         context.coordinator.captionAppearance = captionAppearance
         #if os(iOS)
         mobileSystemCoordinator?.attach(playerLayer: view.playerLayer)
+        view.onVideoAspectChange = onVideoAspectChange
         #endif
         return view
     }
@@ -710,6 +798,7 @@ struct PlayerLayerView: UIViewRepresentable {
         #if os(iOS)
         hostView.applyVideoGravity(displayMode.videoGravity)
         mobileSystemCoordinator?.attach(playerLayer: hostView.playerLayer)
+        hostView.onVideoAspectChange = onVideoAspectChange
         #endif
     }
 
@@ -741,19 +830,32 @@ private final class PlayerLayerHostView: UIView {
     }
     #endif
 
-    #if os(iOS) && DEBUG
+    #if os(iOS)
+    var onVideoAspectChange: ((Double) -> Void)?
     private var videoRectObservation: NSKeyValueObservation?
+    private var lastReportedAspect: Double?
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        guard PlayerGeometryProbe.isEnabled else { return }
         videoRectObservation = window == nil ? nil : playerLayer.observe(\.videoRect,
                                                                          options: [.initial, .new]) { [weak self] _, _ in
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                PlayerGeometryProbe.recordVideoRect(self.playerLayer)
+                self?.videoRectDidChange()
             }
         }
+    }
+
+    private func videoRectDidChange() {
+        #if DEBUG
+        if PlayerGeometryProbe.isEnabled { PlayerGeometryProbe.recordVideoRect(playerLayer) }
+        #endif
+        let rect = playerLayer.videoRect
+        guard rect.width > 0, rect.height > 0 else { return }
+        // Rounded so layer resizes (a fold, a rotation) never re-report the same picture.
+        let aspect = (Double(rect.width / rect.height) * 100).rounded() / 100
+        guard aspect != lastReportedAspect else { return }
+        lastReportedAspect = aspect
+        onVideoAspectChange?(aspect)
     }
     #endif
 }

@@ -93,6 +93,7 @@
         "-only-testing:LabstreamMobileUITests/LabstreamMobileFixtureUITests/testFixtureHomeOpensDetailSemantically",
         "-only-testing:LabstreamMobileUITests/LabstreamMobileFixtureUITests/testPlayerLandscapeLockFollowsMeasuredSceneClass",
         "-only-testing:LabstreamMobileUITests/LabstreamMobileFixtureUITests/testPlayerChromeEnvelopeIsStableAcrossRevealAndHide",
+        "-only-testing:LabstreamMobileUITests/LabstreamMobileFixtureUITests/testBookPoseMovesTheControlGroupIntoTheTrailingHalf",
         "test", "CODE_SIGNING_ALLOWED=NO", "-enableCodeCoverage", "NO"
       ]
     },

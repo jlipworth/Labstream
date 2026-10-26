@@ -32,6 +32,11 @@ struct CustomPlayerChrome: View {
     /// Top safe-area inset measured by `CustomPlayerView` outside this view's top-edge
     /// `ignoresSafeArea`, latched per viewport size (`PlayerTopSafeInsetLatch`).
     let mobileLatchedTopSafeInset: CGFloat
+    /// Where the picture and the one control group sit (`MobilePlayerArrangement`), in the global
+    /// coordinate space; `nil` until `CustomPlayerView` has measured the player.
+    let mobileArrangement: MobilePlayerArrangement?
+    /// The 1–2 word caption under the title ("S1, E5", or the year).
+    let mobileCaption: String?
     #endif
     let onRetry: () -> Void
     let onClose: (() -> Void)?
@@ -67,6 +72,14 @@ struct CustomPlayerChrome: View {
     #endif
     #if os(iOS)
     @State var chromeViewportSize: CGSize = .zero
+    /// This view's global origin, to bring the global `mobileArrangement` into local space.
+    @State var mobileChromeGlobalOrigin: CGPoint?
+    /// Measured frames (local space) of the top row and the bottom group, so the transport and the
+    /// transport status centre between them.
+    @State var mobileTopRowFrame: CGRect = .zero
+    @State var mobileBottomGroupFrame: CGRect = .zero
+    /// The overflow (More) popover keeps the chrome up while it is open.
+    @State var mobileOverflowPresented = false
     #endif
     #if os(macOS)
     @State var macWindowBridge = MacPlayerWindowBridge()
@@ -91,6 +104,8 @@ struct CustomPlayerChrome: View {
         _mobileVideoDisplayMode = .constant(.fit)
         self.mobileSystemCoordinator = nil
         self.mobileLatchedTopSafeInset = 0
+        self.mobileArrangement = nil
+        self.mobileCaption = nil
         #endif
         self.onRetry = onRetry
         self.onClose = onClose
@@ -105,6 +120,8 @@ struct CustomPlayerChrome: View {
          mobileVideoDisplayMode: Binding<MobileVideoDisplayMode>,
          mobileSystemCoordinator: MobilePlayerSystemCoordinator?,
          mobileLatchedTopSafeInset: CGFloat = 0,
+         mobileArrangement: MobilePlayerArrangement? = nil,
+         mobileCaption: String? = nil,
          onRetry: @escaping () -> Void,
          onClose: (() -> Void)?) {
         self.controller = controller
@@ -114,6 +131,8 @@ struct CustomPlayerChrome: View {
         _mobileVideoDisplayMode = mobileVideoDisplayMode
         self.mobileSystemCoordinator = mobileSystemCoordinator
         self.mobileLatchedTopSafeInset = mobileLatchedTopSafeInset
+        self.mobileArrangement = mobileArrangement
+        self.mobileCaption = mobileCaption
         self.onRetry = onRetry
         self.onClose = onClose
         _menuState = State(initialValue: PlayerMenuState(selectedBitrateKbps: controller.maxVideoBitrateKbps))
@@ -152,40 +171,21 @@ struct CustomPlayerChrome: View {
             }
             #endif
 
+            #if os(iOS)
+            // One control arrangement in every pose (top row, transport, title, scrubber,
+            // circles), placed from `MobilePlayerArrangement` (MobilePlayerChrome.swift).
+            mobileChromeLayers
+            #else
             if shouldShowChrome, !tvSubmenuHidesTopChrome {
                 topChrome
                     .transition(.opacity)
             }
-
-            #if os(iOS)
-            // The status platter owns the primary transport action while buffering/reconnecting.
-            // Do not leave the ordinary center play/pause button visible through its translucent
-            // material, where it reads as a second action directly behind the dialog.
-            if shouldShowChrome, selectedMenu == nil, !isTransportStatusPresented {
-                iosCenterPlayPauseButton
-                    .playerGeometryProbe("centerPlayPause")
-                    .transition(.scale(scale: 0.92).combined(with: .opacity))
-            }
-            #endif
 
             transientStatusOverlay
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 .padding(.top, statusOverlayTopClearance)
                 .padding(.bottom, statusOverlayBottomClearance)
                 .padding(.horizontal, statusOverlayMargin)
-
-            #if os(iOS)
-            if let mobileDisplayStatus {
-                Text(mobileDisplayStatus)
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
-                    .background(.black.opacity(0.68), in: Capsule())
-                    .allowsHitTesting(false)
-                    .transition(.opacity)
-            }
-            #endif
 
             offlineSubtitleOverlay
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -252,6 +252,7 @@ struct CustomPlayerChrome: View {
                 .onExitCommand { closeMenu() }
                 #endif
             }
+            #endif
 
             #if os(iOS) || os(macOS)
             // Hardware-keyboard transport. These zero-size buttons stay in the hierarchy
@@ -261,11 +262,13 @@ struct CustomPlayerChrome: View {
             #endif
         }
         #if os(iOS)
-        .onGeometryChange(for: CGSize.self) { proxy in
-            proxy.size
-        } action: { newSize in
-            chromeViewportSize = newSize
+        .onGeometryChange(for: CGRect.self) { proxy in
+            proxy.frame(in: .global)
+        } action: { frame in
+            chromeViewportSize = frame.size
+            mobileChromeGlobalOrigin = frame.origin
         }
+        .coordinateSpace(.named(Self.mobileChromeSpace))
         .playerGeometryProbe("chromeViewport", detail: mobileChromeGeometryDetail)
         .playerChromeEnvelopeMarker()
         #endif
@@ -357,6 +360,9 @@ struct CustomPlayerChrome: View {
         .onChange(of: mobileChromeBranch) { old, new in
             handleMobileChromeBranchChange(from: old, to: new)
         }
+        .onChange(of: mobileLocalArrangement.mode) { old, new in
+            handleMobileArrangementModeChange(from: old, to: new)
+        }
         #endif
         #if os(tvOS)
         .onChange(of: shouldShowChrome) { _, visible in
@@ -395,7 +401,17 @@ struct CustomPlayerChrome: View {
     }
 
     var shouldShowChrome: Bool {
-        chromeVisible || controller.transport.showsPausedControl || controller.transportStatus.keepsChromeVisible || selectedMenu != nil
+        chromeVisible || controller.transport.showsPausedControl || controller.transportStatus.keepsChromeVisible
+            || selectedMenu != nil || mobileChromeIsPinned
+    }
+
+    /// The tabletop deck never auto-hides, and an open overflow popover holds the chrome up.
+    var mobileChromeIsPinned: Bool {
+        #if os(iOS)
+        mobileLocalArrangement.pinsControls || mobileOverflowPresented
+        #else
+        false
+        #endif
     }
 
     /// tvOS treats an open submenu as modal: the top Close button leaves the hierarchy so remote
@@ -577,25 +593,6 @@ struct CustomPlayerChrome: View {
                     .buttonStyle(.bordered)
                     #elseif os(macOS)
                     EmptyView()
-                    #elseif os(iOS)
-                    // iOS system players use a subdued monochrome glass circle for
-                    // dismiss, not a large accent-tinted platter.
-                    Button(action: {
-                        revealChrome()
-                        onClose()
-                    }) {
-                        Label("Close", systemImage: "xmark")
-                            .labelStyle(.iconOnly)
-                            .font(.body.weight(.semibold))
-                            .frame(width: topUtilityButtonVisualSide, height: topUtilityButtonVisualSide)
-                            .frame(width: topUtilityButtonHitSide, height: topUtilityButtonHitSide)
-                    }
-                    .buttonStyle(.plain)
-                    .iosPlayerTopUtilityButtonStyle(isPhoneLandscape: isPhoneLandscapeChrome)
-                    .playerGeometryProbe("topClose")
-                    // Sit a touch lower than the visionOS chrome so the circle clears
-                    // the status-bar corner radius comfortably.
-                    .padding(.top, topUtilityButtonExtraTopPadding)
                     #else
                     Button(action: {
                         revealChrome()
@@ -613,29 +610,6 @@ struct CustomPlayerChrome: View {
                 }
 
                 Spacer()
-
-                #if os(iOS)
-                // System-player parity: Picture in Picture + AirPlay sit as monochrome glass
-                // circles at the top-trailing corner, opposite the close button. Backgrounding
-                // pauses ordinary video, but active AirPlay/PiP routes keep playing. PiP leads
-                // the trailing group because its availability changes per item/route (#258):
-                // appearing at the leading end never moves the always-present buttons.
-                if mobileSystemCoordinator?.isPictureInPicturePossible == true {
-                    pipButton
-                        .playerGeometryProbe("topPiP")
-                        .padding(.top, topUtilityButtonExtraTopPadding)
-                }
-
-                displayModeButton
-                    .playerGeometryProbe("topDisplayMode")
-                    .padding(.top, topUtilityButtonExtraTopPadding)
-
-                if mobileSystemCoordinator != nil {
-                    airPlayButton
-                        .playerGeometryProbe("topAirPlay")
-                        .padding(.top, topUtilityButtonExtraTopPadding)
-                }
-                #endif
 
                 #if os(macOS)
                 macTopTrailingControls
@@ -670,10 +644,10 @@ struct CustomPlayerChrome: View {
         #endif
     }
 
-    /// The top chrome ignores the top safe area on iOS (see `CustomPlayerView`), so on a viewport
-    /// whose safe area reaches deeper than the authored inset (a portrait phone-class display, or
-    /// the iPhone Duo's horizontal status bar while the player disables the vertical bar) it pads
-    /// by the latched inset instead.
+    /// The chrome ignores the top safe area on iOS (see `CustomPlayerView`), so on a viewport whose
+    /// safe area reaches deeper than the authored inset (a portrait phone-class display, or the
+    /// iPhone Duo's horizontal status bar while the player disables the vertical bar) the top row
+    /// pads by the latched inset instead.
     var topChromeEffectiveTopInset: CGFloat {
         #if os(iOS)
         CGFloat(PlayerTopSafeInsetLatch.topChromePadding(authored: Double(topChromeTopInset),
@@ -765,32 +739,6 @@ struct CustomPlayerChrome: View {
             .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
             .foregroundStyle(.white)
             .colorScheme(.dark)
-        #elseif os(iOS)
-        if isPhoneLandscapeChrome {
-            phoneLandscapeControls
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .background(.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .iosPlayerPlatterOutline(cornerRadius: 18)
-                .foregroundStyle(.white)
-                .colorScheme(.dark)
-                .playerGeometryProbe("bottomPlatter", detail: "branch=phoneLandscape menus=\(availableMenus.count)")
-        } else if isCompactMobileChrome {
-            compactControls
-                .padding(.horizontal, 14)
-                .padding(.vertical, 14)
-                .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-                .iosPlayerPlatterOutline(cornerRadius: 22)
-                .playerGeometryProbe("bottomPlatter", detail: "branch=compact menus=\(availableMenus.count)")
-        } else {
-            regularControls
-                .padding(.horizontal, 18)
-                .padding(.vertical, 16)
-                .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-                .iosPlayerPlatterOutline(cornerRadius: 24)
-                .playerGeometryProbe("bottomPlatter", detail: "branch=regular menus=\(availableMenus.count)")
-        }
         #else
         if isCompactMobileChrome {
             compactControls
@@ -842,15 +790,6 @@ struct CustomPlayerChrome: View {
 
     @ViewBuilder
     var regularControlsHeader: some View {
-        #if os(iOS)
-        // On iPad, the full labeled menu strip is more important than reserving a wide title
-        // column. Try the one-row system-player shape first, then fall back to a two-row header
-        // before letting the pills clip off the right edge.
-        ViewThatFits(in: .horizontal) {
-            regularIOSHeaderInline
-            regularIOSHeaderStacked
-        }
-        #else
         HStack(alignment: .center, spacing: 10) {
             regularTitleLabel
 
@@ -865,7 +804,6 @@ struct CustomPlayerChrome: View {
             menuStrip
                 .fixedSize(horizontal: true, vertical: false)
         }
-        #endif
     }
 
     var regularTitleLabel: some View {
@@ -1161,18 +1099,6 @@ struct CustomPlayerChrome: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-            }
-        }
-        #elseif os(iOS)
-        if isPhoneLandscapeChrome {
-            phoneLandscapeMenuButtons
-                .frame(maxWidth: .infinity, alignment: .trailing)
-        } else {
-            // Flat menus, no "…" overflow on portrait phone/iPad: every width keeps
-            // the LABELED pills and scrolls them rather than degrading to icons.
-            ViewThatFits(in: .horizontal) {
-                labeledMenuStrip
-                scrollableLabeledMenuStrip
             }
         }
         #else
@@ -1523,6 +1449,11 @@ struct CustomPlayerChrome: View {
         // floor and Stats' 470 pt + insets.
         if menu == .chapters {
             return min(1680, fit)
+        }
+        // The Stats summary seats its tiles in four equal columns when the panel is wide enough
+        // (unfolded iPhone Duo, iPad); the compact panel keeps two.
+        if menu == .stats, !isCompactMobileChrome {
+            return min(Self.mobileWideStatsWidth, fit)
         }
         if isCompactMobileChrome || menu.popoverSize.width > fit {
             return min(menu.popoverSize.width, fit)

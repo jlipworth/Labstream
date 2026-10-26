@@ -133,25 +133,23 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
 
     @MainActor
     private func assertStableChrome(orientationLabel: String) throws {
-        var reference: [String: CGRect]?
-        // Skip-button slots legitimately differ between menu sets (the six-pill streaming set can
-        // drop to the -10/+30 pair on a phone), so compare those only within one menu set.
-        var skipReference: [Bool: [String: CGRect]] = [:]
+        // One arrangement everywhere: the circles row and the ±10 transport never change with the
+        // item's menu set (Quality lives in More). On a large portrait scene (unfolded Duo upright,
+        // iPad portrait) the chrome overlays the aspect-fit video rectangle, so frames follow the
+        // source aspect there and are compared only across menu sets of one aspect.
+        var references: [String: [String: CGRect]] = [:]
         for (aspect, allMenus) in [("16x9", false), ("239x100", false), ("4x3", false),
                                    ("16x9", true), ("239x100", true)] {
-            let (frames, skips) = try chromeFrames(aspect: aspect, allMenus: allMenus,
-                                                   orientationLabel: orientationLabel)
-            if let reference {
-                try assertSameFrames(reference, frames, context: "\(orientationLabel) \(aspect)")
-            } else {
-                reference = frames
-            }
-            if let skipFrames = skipReference[allMenus] {
-                try assertSameFrames(skipFrames, skips,
+            let (frames, skips, followsVideoRect) = try chromeFrames(aspect: aspect, allMenus: allMenus,
+                                                                     orientationLabel: orientationLabel)
+            XCTAssertEqual(skips.count, 2, "−10 / +10 transport for \(aspect)")
+            let merged = frames.merging(skips) { first, _ in first }
+            let key = followsVideoRect ? aspect : "all"
+            if let reference = references[key] {
+                try assertSameFrames(reference, merged,
                                      context: "\(orientationLabel) \(aspect) all-menus=\(allMenus)")
             } else {
-                XCTAssertFalse(skips.isEmpty, "skip buttons for \(aspect)")
-                skipReference[allMenus] = skips
+                references[key] = merged
             }
         }
     }
@@ -223,9 +221,11 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
     }
 
     @MainActor
-    private func launchPlayerFixture(aspect: String, paused: Bool, allMenus: Bool = false) -> XCUIApplication {
+    private func launchPlayerFixture(aspect: String, paused: Bool, allMenus: Bool = false,
+                                     pose: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
+        if let pose { app.launchEnvironment["LABSTREAM_DEBUG_DUO_POSE"] = pose }
         app.launchArguments = ["--ui-testing", "--ui-testing-fixture", "player",
                                "--ui-testing-player-aspect", aspect, "--ui-testing-player-geometry"]
             + (paused ? ["--ui-testing-player-paused"] : [])
@@ -236,7 +236,7 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
 
     @MainActor
     private func chromeFrames(aspect: String, allMenus: Bool,
-                              orientationLabel: String) throws -> ([String: CGRect], [String: CGRect]) {
+                              orientationLabel: String) throws -> ([String: CGRect], [String: CGRect], Bool) {
         let app = launchPlayerFixture(aspect: aspect, paused: true, allMenus: allMenus)
         defer { app.terminate() }
 
@@ -257,21 +257,21 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
             assertHitTarget(control, "\(control.label) for \(aspect)")
         }
 
-        // iPhone pills expose the full menu title; iPad's labeled strip exposes the short title.
-        let pills = [("Quality", "Quality"), ("Subtitles", "Subs"), ("Audio", "Audio"),
-                     ("Chapters", "Chapters"), ("Speed", "Speed"), ("Stats", "Stats")]
-            .filter { allMenus || $0.0 != "Quality" }
-        for (pill, shortTitle) in pills {
-            let element = app.buttons.matching(NSPredicate(format: "label == %@ OR label == %@",
-                                                           pill, shortTitle)).firstMatch
-            XCTAssertTrue(element.waitForExistence(timeout: 5), "\(pill) pill for \(aspect)")
-            assertHitTarget(element, "\(pill) pill for \(aspect)")
-            frames["pill.\(pill)"] = element.frame
+        // One fixed row of glass circles; Quality is in the More overflow.
+        for circle in ["Subtitles", "Audio", "Chapters", "Speed", "Stats", "More"] {
+            let element = app.buttons.matching(NSPredicate(format: "label == %@", circle)).firstMatch
+            XCTAssertTrue(element.waitForExistence(timeout: 5), "\(circle) circle for \(aspect)")
+            assertHitTarget(element, "\(circle) circle for \(aspect)")
+            frames["circle.\(circle)"] = element.frame
         }
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label == %@", "Quality")).firstMatch.exists,
+                       "Quality is not a top-level control for \(aspect)")
 
+        let window = app.windows.firstMatch.frame
+        let followsVideoRect = window.height > window.width
+            && min(window.width, window.height) >= Self.phoneShortSideLimit
         var skips: [String: CGRect] = [:]
-        for label in ["Skip back 30 seconds", "Skip back 10 seconds",
-                      "Skip forward 10 seconds", "Skip forward 30 seconds"] {
+        for label in ["Skip back 10 seconds", "Skip forward 10 seconds"] {
             // The zero-size hardware-keyboard shortcut buttons share these labels; skip them.
             guard let element = app.buttons.matching(identifier: label).allElementsBoundByIndex
                 .first(where: { $0.frame.width > 0 && $0.isHittable }) else { continue }
@@ -283,7 +283,7 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
         attachment.name = "player-chrome-\(orientationLabel)-\(aspect)\(allMenus ? "-all-menus" : "")"
         attachment.lifetime = .keepAlways
         add(attachment)
-        return (frames, skips)
+        return (frames, skips, followsVideoRect)
     }
 
     private func assertHitTarget(_ element: XCUIElement, _ context: String) {
@@ -349,6 +349,78 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    /// Book (Resolved decision 7), through the DEBUG pose override on a sideways player scene:
+    /// the transport, title, scrubber and circles move together into the trailing half; the top
+    /// row stays where it is. Runs on any landscape player scene (the folded Duo, a slab iPhone,
+    /// iPad landscape); real-fold evidence stays a manual gate.
+    @MainActor
+    func testBookPoseMovesTheControlGroupIntoTheTrailingHalf() throws {
+        let app = launchPlayerFixture(aspect: "16x9", paused: true, pose: "book")
+        defer { app.terminate() }
+        let close = app.buttons["Close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 30), "player chrome")
+        let timeline = app.sliders["playback.timeline"]
+        XCTAssertTrue(timeline.waitForExistence(timeout: 5))
+        let window = app.windows.firstMatch.frame
+        try XCTSkipUnless(window.width > window.height, "book needs a sideways player scene")
+        let play = app.buttons["Play"]
+        XCTAssertTrue(play.waitForExistence(timeout: 15))
+        let stats = app.buttons.matching(NSPredicate(format: "label == %@", "Stats")).firstMatch
+        XCTAssertTrue(stats.waitForExistence(timeout: 5))
+        for element in [timeline, play, stats] {
+            XCTAssertGreaterThan(element.frame.minX, window.midX,
+                                 "\(element.label) sits after the hinge")
+        }
+        XCTAssertLessThan(close.frame.maxX, window.midX, "the top row does not move")
+        attachScreenshot(app, name: "player-book-\(Int(window.width))x\(Int(window.height))")
+    }
+
+    /// Unfolded upright (and any large portrait scene): no lock, and the chrome overlays the
+    /// aspect-fit video rectangle rather than the black bands.
+    @MainActor
+    func testLargePortraitChromeOverlaysTheVideoRect() throws {
+        XCUIDevice.shared.orientation = .portrait
+        let app = launchPlayerFixture(aspect: "16x9", paused: true)
+        defer { app.terminate() }
+        let close = app.buttons["Close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 30), "player chrome")
+        let window = app.windows.firstMatch.frame
+        try XCTSkipUnless(window.height > window.width
+                          && min(window.width, window.height) >= Self.phoneShortSideLimit,
+                          "needs a large portrait player scene")
+        let videoHeight = max(window.width * 9 / 16, 300)
+        let band = CGRect(x: window.minX, y: window.midY - videoHeight / 2,
+                          width: window.width, height: videoHeight).insetBy(dx: 0, dy: -1)
+        let timeline = app.sliders["playback.timeline"]
+        XCTAssertTrue(timeline.waitForExistence(timeout: 5))
+        XCTAssertTrue(band.contains(close.frame), "Close inside the video rectangle")
+        XCTAssertTrue(band.contains(timeline.frame), "scrubber inside the video rectangle")
+        attachScreenshot(app, name: "player-upright-\(Int(window.width))x\(Int(window.height))")
+    }
+
+    /// Tabletop through the DEBUG override on a large portrait scene: the picture takes the top
+    /// half and the same controls form a deck below the hinge that does not auto-hide.
+    @MainActor
+    func testTabletopPoseBuildsAControlDeckBelowTheHinge() throws {
+        XCUIDevice.shared.orientation = .portrait
+        let app = launchPlayerFixture(aspect: "16x9", paused: false, pose: "tabletop")
+        defer { app.terminate() }
+        let close = app.buttons["Close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 30), "player chrome")
+        let window = app.windows.firstMatch.frame
+        try XCTSkipUnless(window.height > window.width
+                          && min(window.width, window.height) >= Self.phoneShortSideLimit,
+                          "tabletop needs a large upright player scene")
+        let timeline = app.sliders["playback.timeline"]
+        XCTAssertTrue(timeline.waitForExistence(timeout: 5))
+        XCTAssertGreaterThan(close.frame.minY, window.midY, "top row in the deck")
+        XCTAssertGreaterThan(timeline.frame.minY, close.frame.maxY, "scrubber below the top row")
+        // Playing chrome would auto-hide after 5 s; the deck stays.
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: close)
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 8), .timedOut, "the deck does not auto-hide")
+        attachScreenshot(app, name: "player-tabletop-\(Int(window.width))x\(Int(window.height))")
     }
 
     /// #258 on iPad: the chrome shows/hides the status bar with itself. Hiding and revealing the
