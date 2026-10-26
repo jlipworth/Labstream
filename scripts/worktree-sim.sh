@@ -244,21 +244,29 @@ clone_golden() {
   printf '%s' "$udid"
 }
 
+# Newest available iOS runtime, optionally only one that supports the given device type
+# (Xcode 27.1's iOS 27.1 runtime supports only the iPhone Duo, so slab iPhones and iPads
+# fall back to the newest runtime that lists them).
 available_ios_runtime() {
   xcrun simctl list runtimes -j | python3 -c '
 import json, re, sys
 runtimes = json.load(sys.stdin).get("runtimes", [])
+device = sys.argv[1] if len(sys.argv) > 1 else ""
 def version_tuple(r):
     text = r.get("version") or r.get("name", "")
     nums = [int(x) for x in re.findall(r"\d+", text)]
     return tuple(nums)
+def supports(r):
+    types = r.get("supportedDeviceTypes")
+    return not device or types is None or any(t.get("identifier") == device for t in types)
 choices = [r for r in runtimes
            if r.get("isAvailable", True)
-           and ".SimRuntime.iOS-" in r.get("identifier", "")]
+           and ".SimRuntime.iOS-" in r.get("identifier", "")
+           and supports(r)]
 choices.sort(key=version_tuple, reverse=True)
 if choices:
     print(choices[0]["identifier"])
-'
+' "${1:-}"
 }
 
 available_tvos_runtime() {
@@ -320,8 +328,6 @@ for d in json.load(sys.stdin).get("devicetypes", []):
 
 create_ios_sim() {
   local family="$1" name="$2" runtime device udid label
-  runtime=$(available_ios_runtime)
-  [ -n "$runtime" ] || die "no available iOS simulator runtime found"
   device=$(available_device_type "$family")
   case "$family" in
     ipad) label="iPad" ;;
@@ -329,6 +335,8 @@ create_ios_sim() {
     *) label="iPhone" ;;
   esac
   [ -n "$device" ] || die "no available ${label} simulator device type found$([ "$family" = "duo" ] && printf ' (requires Xcode 27.1+ with the iOS 27.1+ runtime)')"
+  runtime=$(available_ios_runtime "$device")
+  [ -n "$runtime" ] || die "no available iOS simulator runtime supports ${device}"
   udid=$(xcrun simctl create "$name" "$device" "$runtime") || die "create ${label} simulator failed"
   printf '%s' "$udid"
 }
