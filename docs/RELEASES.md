@@ -8,6 +8,17 @@ query; verify them in App Store Connect again before any upload or submission.
 
 ## Current status
 
+On 2026-10-26, the next internal TestFlight run built **1.8.0 (build 1639)** for all four
+platforms from clean commit `484db0fb` on `downloads/overhaul`, using `--allow-unpublished`. It
+adds iPhone Duo (foldable) support (#419): the Xcode 27.1 / iOS 27.1 SDK toolchain, a fold-aware
+mobile shell and player, two-column Settings in regular width (unfolded Duo and iPad), and one
+Downloads list in every width with no detail page. All four archives passed validation and
+processed to **VALID**, **IN_BETA_TESTING**, in **Labstream Internal**. No App Store build was
+selected or submitted for review. Hermetic PMSKit tests (including Linux CI), docs hygiene,
+four-platform builds, mobile hosted and UI smoke, the Duo UI smoke lane, and tvOS hosted and UI
+smoke passed. A physical iPhone Duo, real Device Hub folds, cross-backend playback and Duo App
+Store screenshots remain open.
+
 On 2026-10-26, the next internal TestFlight run built **1.8.0 (build 1569)** for all four
 platforms from clean commit `81ece411` on `downloads/overhaul`, using `--allow-unpublished`. It
 fixes Emby audio cutting in and out on 4K video-copy playback (#420): the fragmented-MP4 copy lane
