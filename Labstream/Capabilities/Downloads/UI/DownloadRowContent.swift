@@ -39,6 +39,7 @@ struct DownloadRowContent: View {
             case .indeterminate: ProgressView().controlSize(.small)
             case .fraction(let value, let estimated):
                 ProgressView(value: value)
+                    .modifier(DownloadTransferBarTint())
                     .accessibilityValue((estimated ? "Approximately " : "") + "\(Int(value * 100))%. "
                         + presentation.row.statusCaption)
             }
@@ -66,6 +67,18 @@ struct DownloadRowContent: View {
             .lineLimit(1)
             .truncationMode(.tail)
             .accessibilityValue(value)
+    }
+}
+
+/// iPhone/iPad: the transfer bar uses the label color like all progress (amber means
+/// "selected" only; iPhone Duo design spec, Color & type). Other platforms keep the accent.
+private struct DownloadTransferBarTint: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content.tint(.primary)
+        #else
+        content
+        #endif
     }
 }
 

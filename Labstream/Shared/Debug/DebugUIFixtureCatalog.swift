@@ -178,6 +178,33 @@ enum DebugUIFixtureCatalog {
         }
     }
 
+    /// Synthetic Downloads rows (`--ui-testing-download-rows`, browse fixture) so agent runs
+    /// can capture the real Downloads list and list + detail compositions. Rows are display
+    /// values only; no record exists, so actions are inert.
+    static var downloadRowsSnapshot: OfflineLibrarySnapshot? {
+        guard isBrowseEnabled,
+              ProcessInfo.processInfo.arguments.contains("--ui-testing-download-rows") else { return nil }
+        let rows: [(String, DownloadStatus, Double?, String)] = [
+            ("Harbor Lights", .complete, nil, "Ready"),
+            ("Atlas Station", .downloading, 0.42, "42%"),
+            ("Quiet Current", .queued, nil, "Queued"),
+            ("Paper Moons", .failed, nil, "Failed"),
+            ("Glass River", .complete, nil, "Ready"),
+            ("Low Tide", .complete, nil, "Ready"),
+        ]
+        return OfflineLibrarySnapshot(
+            rows: rows.enumerated().map { index, row in
+                OfflineDownloadRowSnapshot(id: "fixture-download-\(index)", attemptID: nil,
+                                           title: row.0, subtitle: "2026 · 1h 59m",
+                                           qualityText: "Original", status: row.1,
+                                           routeBadge: .original, artwork: nil,
+                                           showBackendBadge: false, backendName: "Plex",
+                                           errorMessage: nil, displayProgress: row.2,
+                                           statusCaption: row.3, isRetrying: false)
+            },
+            queueToolbarAction: nil, isQueuePaused: false, aggregateStats: .empty)
+    }
+
     /// Title-substring matches over the fixture rows, so agent runs can drive the real Search
     /// root and its pushed detail without a server.
     static func searchResults(query: String, backend: MediaBackendKind) -> SearchResults? {

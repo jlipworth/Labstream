@@ -20,6 +20,13 @@ public struct OfflineLibraryView: View {
     @AppStorage(PlaybackPreferences.Keys.resumeRewindSeconds) private var resumeRewindSeconds = 0
     #if os(iOS)
     @State private var mobilePlayerOrientationCoordinator = MobilePlayerOrientationCoordinator()
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.duoPose) private var duoPose
+    /// The rows' content region in global space, measured for `DownloadsLayoutPolicy`.
+    @State private var downloadsRegion: CGRect = .zero
+    /// The row the user chose: highlighted in the list + detail split, pushed as a detail page
+    /// in the single-column list, and kept across a fold or unfold.
+    @State private var selectedRowID: String?
     #endif
     #if os(visionOS)
     @Binding private var focusedRatingKey: String?
@@ -75,8 +82,16 @@ public struct OfflineLibraryView: View {
             }
     }
 
+    /// The manager's snapshot, or in DEBUG browse-fixture runs the synthetic capture rows.
+    private var currentSnapshot: OfflineLibrarySnapshot {
+        #if DEBUG
+        if let fixture = DebugUIFixtureCatalog.downloadRowsSnapshot { return fixture }
+        #endif
+        return manager.offlineLibrarySnapshot
+    }
+
     private var offlineNavigationContent: some View {
-        let snapshot = manager.offlineLibrarySnapshot
+        let snapshot = currentSnapshot
 
         // No NavigationStack here: RootView already wraps the Offline tab in one on every
         // platform, so opening a second stack nested large-title collapse and toolbar merging.
@@ -133,13 +148,31 @@ public struct OfflineLibraryView: View {
             ProgressView("Restoring downloads…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if snapshot.rows.isEmpty {
+            #if os(iOS)
+            // Centred in the content region with a body of at most two lines.
+            ContentUnavailableView(
+                "No Offline Downloads",
+                systemImage: "arrow.down.circle",
+                description: Text("Download a movie or episode to watch it offline.")
+            )
+            #else
             ContentUnavailableView(
                 "No Offline Downloads",
                 systemImage: "arrow.down.circle",
                 description: Text("Download a movie or episode to watch it offline. "
                                   + "Transfers may pause while the app is backgrounded or the device sleeps.")
             )
+            #endif
         } else {
+            #if os(iOS)
+            mobileRows(snapshot: snapshot)
+            #else
+            offlineList(snapshot: snapshot)
+            #endif
+        }
+    }
+
+    private func offlineList(snapshot: OfflineLibrarySnapshot) -> some View {
             List {
                 SwiftUI.Section {
                     ForEach(snapshot.rows) { rowSnapshot in
@@ -154,7 +187,6 @@ public struct OfflineLibraryView: View {
                     Text(snapshot.footerText)
                 }
             }
-        }
     }
 
     @ViewBuilder
@@ -162,6 +194,9 @@ public struct OfflineLibraryView: View {
         #if os(iOS)
         row(for: rowSnapshot)
             .id(rowSnapshot.id)
+            .listRowBackground(isHighlightedInSplit(rowSnapshot.id)
+                ? AnyView(Color.accentColor.opacity(0.18))
+                : nil)
             .deleteDisabled(manager.startupRecoveryState != .ready)
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                 Button(role: .destructive) { confirmDelete(rowSnapshot) } label: {
@@ -520,7 +555,7 @@ public struct OfflineLibraryView: View {
                     }
                     .buttonStyle(.plain)
                     .offlineRowActionControl()
-                    .foregroundStyle(action == .delete ? Color.red : Color.accentColor)
+                    .foregroundStyle(action == .delete ? Color.red : Self.rowActionColor)
                     .accessibilityLabel(presentation.actionLabel(action))
                     .accessibilityIdentifier("download.\(action.rawValue)")
                     .disabled(action != .play && manager.startupRecoveryState != .ready)
@@ -539,13 +574,216 @@ public struct OfflineLibraryView: View {
         #endif
         .contentShape(Rectangle())
         .onTapGesture {
+            #if os(iOS)
+            // iPhone/iPad: a tap chooses the row, which shows it in the detail column of the
+            // split or pushes the same detail in the single-column list (Mail model). The row's
+            // own Play/Pause/Retry controls keep their one-tap actions.
+            selectedRowID = rowSnapshot.id
+            #else
             if presentation.actions.contains(.play) {
                 presentOfflinePlayer(presentation.actionIdentity)
             } else if presentation.actions.contains(.resume) || presentation.actions.contains(.retry) {
                 manager.retry(presentation.actionIdentity)
             }
+            #endif
         }
     }
+
+    /// iPhone/iPad row actions use the label color (amber means "selected" only); other
+    /// platforms keep the accent.
+    private static var rowActionColor: Color {
+        #if os(iOS)
+        Color.primary
+        #else
+        Color.accentColor
+        #endif
+    }
+
+    #if os(iOS)
+    private var downloadsLayout: DownloadsLayoutPolicy.Layout {
+        var hinge: (minX: Double, maxX: Double)?
+        if case .book(let rect) = duoPose {
+            hinge = (Double(rect.minX - downloadsRegion.minX), Double(rect.maxX - downloadsRegion.minX))
+        }
+        return DownloadsLayoutPolicy.layout(width: Double(downloadsRegion.width),
+                                            height: Double(downloadsRegion.height),
+                                            regularWidth: horizontalSizeClass == .regular,
+                                            pagePadding: Double(DS.pagePadding(compact: compactWidth)),
+                                            hinge: hinge)
+    }
+
+    private var isSplit: Bool {
+        if case .split = downloadsLayout { return true }
+        return false
+    }
+
+    private func isHighlightedInSplit(_ id: String) -> Bool {
+        isSplit && displayedRowID(in: currentSnapshot) == id
+    }
+
+    /// The split always shows a detail: the chosen row, else the first row.
+    private func displayedRowID(in snapshot: OfflineLibrarySnapshot) -> String? {
+        if let selectedRowID, snapshot.rows.contains(where: { $0.id == selectedRowID }) {
+            return selectedRowID
+        }
+        return snapshot.rows.first?.id
+    }
+
+    /// iPhone/iPad Downloads composition (iPhone Duo design spec, Downloads): one capped column
+    /// of rows, or a Mail-style list + detail when the content region is wide and landscape. A
+    /// chosen row stays chosen across a fold: the split highlights it, the column pushes it.
+    @ViewBuilder
+    private func mobileRows(snapshot: OfflineLibrarySnapshot) -> some View {
+        Group {
+            switch downloadsLayout {
+            case .list(let inset):
+                if horizontalSizeClass == .regular {
+                    // Regular width caps the row column at 560 pt, centred.
+                    offlineList(snapshot: snapshot)
+                        .contentMargins(.horizontal, CGFloat(inset), for: .scrollContent)
+                } else {
+                    // Compact keeps the list's own safe-area margins, so rows end one margin
+                    // before the vertical bar.
+                    offlineList(snapshot: snapshot)
+                }
+            case .split(let listWidth, let detailStart):
+                HStack(spacing: 0) {
+                    offlineList(snapshot: snapshot)
+                        .frame(width: CGFloat(listWidth))
+                    Rectangle()
+                        .fill(.separator)
+                        .frame(width: 0.5)
+                        .accessibilityHidden(true)
+                    Color.clear
+                        .frame(width: max(CGFloat(detailStart - listWidth) - 0.5, 0))
+                        .accessibilityHidden(true)
+                    if let id = displayedRowID(in: snapshot),
+                       let rowSnapshot = snapshot.rows.first(where: { $0.id == id }) {
+                        offlineDetail(for: rowSnapshot)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onGeometryChange(for: CGRect.self) { proxy in
+            proxy.frame(in: .global)
+        } action: { region in
+            if downloadsRegion != region { downloadsRegion = region }
+        }
+        .navigationDestination(isPresented: Binding(
+            get: {
+                !isSplit && selectedRowID.map { id in snapshot.rows.contains { $0.id == id } } == true
+            },
+            set: { presented in
+                // Only a pop in the single column clears the choice; unfolding into the split
+                // dismisses the pushed page but keeps the row chosen.
+                if !presented, !isSplit { selectedRowID = nil }
+            })) {
+            if let selectedRowID,
+               let rowSnapshot = currentSnapshot.rows.first(where: { $0.id == selectedRowID }) {
+                offlineDetail(for: rowSnapshot)
+                    .navigationTitle(rowSnapshot.title)
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+        }
+    }
+
+    /// The detail for one download: art, title, context, status, and the row's actions as
+    /// labelled controls (Play prominent, Delete in red).
+    private func offlineDetail(for rowSnapshot: OfflineDownloadRowSnapshot) -> some View {
+        let presentation = Self.rowPresentation(rowSnapshot)
+        return ScrollView {
+            VStack(alignment: .leading, spacing: DS.Space.md) {
+                OfflinePosterTile(source: rowSnapshot.artwork.flatMap(OfflineArtworkSource.init),
+                                  isComplete: rowSnapshot.isComplete,
+                                  isFailed: presentation.tone == .failure,
+                                  isUnverified: rowSnapshot.isUnverified,
+                                  size: CGSize(width: 120, height: 180))
+                    .padding(.bottom, DS.Space.sm)
+                Text(rowSnapshot.title)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(2)
+                if let subtitle = rowSnapshot.subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Text(presentation.statusText)
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(presentation.tone == .failure ? Color.red
+                                     : presentation.tone == .verified ? Color.green : Color.secondary)
+                    .lineLimit(1)
+                HStack(spacing: DS.Space.md) {
+                    ForEach(presentation.actions.filter { $0 != .delete }, id: \.rawValue) { action in
+                        Button {
+                            perform(action, presentation: presentation, row: rowSnapshot)
+                        } label: {
+                            Label(Self.detailTitle(action), systemImage: Self.detailSymbol(action))
+                                .font(.subheadline.weight(.semibold))
+                                .lineLimit(1)
+                        }
+                        .accessibilityLabel(presentation.actionLabel(action))
+                        .modifier(OfflineDetailActionStyle(prominent: action == .play))
+                        .disabled(action != .play && manager.startupRecoveryState != .ready)
+                    }
+                    if presentation.actions.contains(.delete) {
+                        Button(role: .destructive) {
+                            confirmDelete(rowSnapshot)
+                        } label: {
+                            Label("Delete Download", systemImage: "trash")
+                                .labelStyle(.iconOnly)
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        .labstreamGlassButtonStyle()
+                        .tint(.red)
+                        .foregroundStyle(.red)
+                        .accessibilityLabel("Delete Download")
+                        .disabled(manager.startupRecoveryState != .ready)
+                    }
+                }
+                .padding(.top, DS.Space.sm)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(DS.pagePadding(compact: compactWidth))
+        }
+        .accessibilityIdentifier("download.detail")
+    }
+
+    private func perform(_ action: DownloadRowPresentation.Action,
+                         presentation: DownloadRowPresentation,
+                         row rowSnapshot: OfflineDownloadRowSnapshot) {
+        switch action {
+        case .play: presentOfflinePlayer(presentation.actionIdentity)
+        case .pause: manager.pause(presentation.actionIdentity)
+        case .resume, .retry: manager.retry(presentation.actionIdentity)
+        case .delete: confirmDelete(rowSnapshot)
+        }
+    }
+
+    private static func detailTitle(_ action: DownloadRowPresentation.Action) -> String {
+        switch action {
+        case .play: "Play"
+        case .pause: "Pause"
+        case .resume: "Resume"
+        case .retry: "Retry"
+        case .delete: "Delete"
+        }
+    }
+
+    private static func detailSymbol(_ action: DownloadRowPresentation.Action) -> String {
+        switch action {
+        case .play, .resume: "play.fill"
+        case .pause: "pause.fill"
+        case .retry: "arrow.clockwise"
+        case .delete: "trash"
+        }
+    }
+    #endif
 
     static func rowPresentation(_ row: OfflineDownloadRowSnapshot,
                                 phase: DownloadJobPhase? = nil) -> DownloadRowPresentation {
@@ -597,6 +835,20 @@ private struct OfflinePosterTile: View {
     let isComplete: Bool
     let isFailed: Bool
     let isUnverified: Bool
+    /// Explicit size (detail pane); nil uses the row size: 44×66 compact, 60×90 regular on
+    /// iPhone/iPad (iPhone Duo design spec, Downloads), 44×66 elsewhere.
+    var size: CGSize? = nil
+
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
+    private var tileSize: CGSize {
+        if let size { return size }
+        #if os(iOS)
+        return compactWidth ? CGSize(width: 44, height: 66) : CGSize(width: 60, height: 90)
+        #else
+        return CGSize(width: 44, height: 66)
+        #endif
+    }
 
     @Environment(\.artworkPipeline) private var artworkPipeline
     @Environment(\.displayScale) private var displayScale
@@ -604,8 +856,8 @@ private struct OfflinePosterTile: View {
     @State private var loadedIdentity: ArtworkTaskIdentity?
 
     private var descriptor: ArtworkRequestDescriptor? {
-        let pixels = MediaArtwork.pixelDimensions(width: 44,
-                                                  height: 66,
+        let pixels = MediaArtwork.pixelDimensions(width: tileSize.width,
+                                                  height: tileSize.height,
                                                   displayScale: displayScale,
                                                   requestScale: nil)
         return source?.descriptor(pixelWidth: pixels.width, pixelHeight: pixels.height)
@@ -621,7 +873,7 @@ private struct OfflinePosterTile: View {
                 placeholder
             }
         }
-        .frame(width: 44, height: 66)
+        .frame(width: tileSize.width, height: tileSize.height)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .task(id: descriptor?.taskIdentity) {
             await loadPoster()
@@ -663,6 +915,21 @@ private struct OfflinePosterTile: View {
         }
     }
 }
+
+#if os(iOS)
+/// Detail-pane action style: Play is the prominent label-on-glass capsule, other actions glass.
+private struct OfflineDetailActionStyle: ViewModifier {
+    let prominent: Bool
+
+    func body(content: Content) -> some View {
+        if prominent {
+            content.labstreamGlassProminentButtonStyle()
+        } else {
+            content.labstreamGlassButtonStyle()
+        }
+    }
+}
+#endif
 
 private struct OfflineRowActionControlModifier: ViewModifier {
     // visionOS/iPad ride the gaze-sized 56×56 / 34-pt glyph; compact width (iPhone) shrinks to
