@@ -570,6 +570,11 @@ private struct MediaRailScrollStyleModifier: ViewModifier {
         margined
             .scrollClipDisabled(true)
             .clipShape(RailViewportClip(verticalOverflow: clipDisabled ? DS.Space.xxxl : 0))
+            // A clip shape does not clip hit testing: the clipped cue card stayed tappable
+            // through the empty stretch of the vertical bar's column. Hit-test the rail's own
+            // layout frame (the content region) only, without the shadow overflow, so the
+            // overflow never steals taps from the header above or the next shelf.
+            .contentShape(Rectangle())
         #else
         margined
             .scrollClipDisabled(clipDisabled)
