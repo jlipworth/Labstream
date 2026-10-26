@@ -97,6 +97,7 @@
         "-only-testing:LabstreamMobileUITests/LabstreamMobileDuoUITests/testFoldedPortraitBrowseDetailPlayback",
         "-only-testing:LabstreamMobileUITests/LabstreamMobileDuoUITests/testFoldedLandscapeLeftBrowseDetailPlayback",
         "-only-testing:LabstreamMobileUITests/LabstreamMobileDuoUITests/testFoldedLandscapeRightBrowseDetailPlayback",
+        "-only-testing:LabstreamMobileUITests/LabstreamMobileDuoUITests/testFoldedSettingsSheetKeepsTheVerticalBar",
         "test", "CODE_SIGNING_ALLOWED=NO", "-enableCodeCoverage", "NO"
       ]
     },

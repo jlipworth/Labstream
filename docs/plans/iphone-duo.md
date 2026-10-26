@@ -552,12 +552,14 @@ There is no inline season picker in any pose.
 - the outer display's sheet toolbar is vertical by default.
 
 Rules:
-- **Folded:** the sheet toolbar is vertical by default, with Done/Close at the top. Sheets with a
-  single button use `toolbarVerticalBehavior(.disabled)` so they "stop just short of the
-  front-facing camera".
-  - The Settings sheet has a single Done button, so it disables its bar. Done then sits inside a
-    horizontal sheet header, like the Health sheet, and the window's column stays visible and
-    dimmed. The sheet's exact extent beside the camera needs a capture.
+- **Folded:** the sheet toolbar is vertical by default, with Done/Close at the top. Keep it.
+  - Revised 2026-10-26: the Settings sheet first disabled its bar (single Done button). The
+    capture showed the status bar moving onto the dimmed presenter's large title. Apple's own
+    single-button sheet (Settings ▸ Apple Account sign-in, captured on the folded Duo simulator)
+    keeps the column with the clock, Wi-Fi and a neutral close button. The Settings sheet now does
+    the same with `Button(role: .close)` in `.topBarTrailing` (not `.confirmationAction`, which
+    fills it amber). Guarded by
+    `LabstreamMobileDuoUITests.testFoldedSettingsSheetKeepsTheVerticalBar`.
 - **Unfolded:** sheets are centered with horizontal bars.
 - **Layout source:** sheet content lays out from the sheet's own safe area, never the window's.
 - **Stats sheet:** values must not truncate (today Bitrate shows "58.2 Mb…"). The tiles use one
@@ -1005,8 +1007,8 @@ vertical bar is detected from the iOS 27.1 `verticalBarEdge` trait (bridged into
 - **Settings hand-off (global rule 9, finding 5):** carry the Settings sheet's `NavigationPath`
   and scroll position into the Settings tab on compact→regular, and back on regular→compact.
   Extend `MobileSettingsPresentationPolicy` and its tests in PMSKit.
-- **Sheets:** the Settings sheet uses `toolbarVerticalBehavior(.disabled)` with Done in a
-  horizontal header; sheet content lays out from the sheet's own safe area. Stats sheet
+- **Sheets:** the Settings sheet keeps its vertical bar with a neutral close button in the
+  column (revised 2026-10-26, see "Sheets"); sheet content lays out from the sheet's own safe area. Stats sheet
   (`PlaybackStatsView`): no truncated values ("58.2 Mb…"), one column width per row, 2 columns
   folded and 4 unfolded.
 - **Settings (decision 6):** grouped Form, regular row height, one symbol per row in label color,

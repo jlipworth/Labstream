@@ -37,9 +37,6 @@ struct OfflineLaunchView: View {
                         .mobileSettingsSheetChrome { showingSettings = false }
                         #endif
                 }
-                #if os(iOS)
-                .environment(\.mobileSettingsIsSheet, true)
-                #endif
                 .environment(appModel)
                 .environment(downloadManager)
                 .environment(runtime.musicPlayer)

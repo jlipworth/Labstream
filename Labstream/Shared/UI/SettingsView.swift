@@ -101,9 +101,6 @@ struct SettingsView: View {
             switch route {
             case .libraryVisibility:
                 LibraryVisibilityEditor(catalogRepository: catalogRepository)
-                    #if os(iOS)
-                    .mobileSettingsSheetBarBehavior()
-                    #endif
             }
         }
         .labstreamTopLevelNavigationTitle("Settings")
@@ -1298,40 +1295,16 @@ struct LabstreamSwitchToggleStyle: ToggleStyle {
 }
 
 extension View {
-    /// The Settings sheet has a single Done button, so it disables its vertical bar (HIG: sheets
-    /// with one button "stop just short of the front-facing camera"): Done sits in a horizontal
-    /// sheet header while the window's column stays visible and dimmed. Applied to every screen
-    /// in the sheet's stack, because the navigation stack forwards the preference to its top view.
-    @ViewBuilder
-    func mobileSettingsSheetBarBehavior() -> some View {
-        modifier(MobileSettingsSheetBarBehavior())
-    }
-
-    /// The iPhone/iPad Settings sheet chrome: a horizontal header with Done.
+    /// The iPhone/iPad Settings sheet chrome: the system close button. On the folded iPhone Duo
+    /// the sheet keeps its vertical bar (Apple's own single-button sheets, such as Settings'
+    /// Apple Account sign-in, keep the status bar and close button in the column).
     func mobileSettingsSheetChrome(onDone: @escaping () -> Void) -> some View {
-        self
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done", action: onDone)
-                }
+        toolbar {
+            // Not `.confirmationAction`: that slot fills the button with the amber accent, and
+            // amber means "selected" only. Apple's close button is neutral glass.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(role: .close, action: onDone)
             }
-            .mobileSettingsSheetBarBehavior()
-    }
-}
-
-extension EnvironmentValues {
-    /// True inside the compact Settings sheet, whose screens all disable the vertical bar.
-    @Entry var mobileSettingsIsSheet = false
-}
-
-private struct MobileSettingsSheetBarBehavior: ViewModifier {
-    @Environment(\.mobileSettingsIsSheet) private var isSheet
-
-    func body(content: Content) -> some View {
-        if isSheet, #available(iOS 27.1, *) {
-            content.toolbarVerticalBehavior(.disabled)
-        } else {
-            content
         }
     }
 }

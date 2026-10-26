@@ -130,6 +130,35 @@ final class LabstreamMobileDuoUITests: XCTestCase {
         attachScreenshot(app, name: "duo-player-\(context)")
     }
 
+    // MARK: - Folded Settings sheet
+
+    /// The folded Settings sheet keeps its vertical bar, like Apple's single-button sheets
+    /// (Settings ▸ Apple Account sign-in): the close button sits in a narrow trailing column, not
+    /// in a horizontal header that pushes the status bar onto the presenter's title.
+    @MainActor
+    func testFoldedSettingsSheetKeepsTheVerticalBar() throws {
+        let app = launchBrowse(orientation: nil)
+        defer { app.terminate() }
+        let settings = app.buttons["Settings"].firstMatch
+        XCTAssertTrue(settings.waitForExistence(timeout: 15), "Settings toolbar item")
+        settings.tap()
+        let backend = app.staticTexts["Backend"].firstMatch
+        XCTAssertTrue(backend.waitForExistence(timeout: 10), "Settings sheet")
+        let close = app.buttons["Close"].firstMatch
+        XCTAssertTrue(close.waitForExistence(timeout: 5) && close.isHittable, "sheet close button")
+        let window = app.sceneFrame
+        XCTAssertGreaterThan(close.frame.midX, window.midX, "close button on the trailing side")
+        // In a horizontal header the form spans the full sheet width under the close button; in
+        // the vertical bar the form ends before the column.
+        let segment = app.buttons["Emby"].firstMatch
+        XCTAssertTrue(segment.exists, "backend picker")
+        XCTAssertLessThanOrEqual(segment.frame.maxX, close.frame.minX + 0.5,
+                                 "form \(segment.frame) clears the sheet's column (close \(close.frame))")
+        attachScreenshot(app, name: "duo-settings-sheet-portrait")
+        close.tap()
+        XCTAssertTrue(app.staticTexts["Continue Watching"].waitForExistence(timeout: 5), "back on Home")
+    }
+
     // MARK: - Helpers
 
     @MainActor

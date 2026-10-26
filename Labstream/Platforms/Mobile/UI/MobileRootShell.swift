@@ -95,7 +95,6 @@ struct PlatformRootShell: View {
         settingsView
           .mobileSettingsSheetChrome { showsSettingsSheet = false }
       }
-      .environment(\.mobileSettingsIsSheet, true)
     }
     .onChange(of: navigation.selection) { _, destination in
       if destination == .search {

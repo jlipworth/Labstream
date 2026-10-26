@@ -174,8 +174,10 @@ of the inner display is about the size of the outer display.
   sideways is a list plus detail.
 - Folding or unfolding is a resize plus a trait change, never a teardown: the selected tab,
   navigation path (including Settings sheet to tab), scroll anchors, rail offsets, open sheets and
-  playback all survive. The player disables its vertical bar (`toolbarVerticalBehavior(.disabled)`);
-  single-button sheets do the same so Done sits in a horizontal header.
+  playback all survive. The player disables its vertical bar (`toolbarVerticalBehavior(.disabled)`).
+  Sheets keep theirs: folded, the Settings sheet's neutral close button sits in the sheet's
+  column under the status items, as in Apple's own single-button sheets (Settings ▸ Apple Account
+  sign-in). Disabling a sheet's bar moves the status bar onto the presenter's title.
 - Color has one meaning each: amber is selected (including switch on state), green is plays-as-is
   status only, red is destructive or failed, and everything else is neutral glass or label color.
 
