@@ -27,12 +27,27 @@ struct PlaybackStatsView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.colorScheme) private var colorScheme
     @State private var copied = false
+    #if os(iOS)
+    /// Measured width of the tile area: two equal columns when narrow, four when wide.
+    @State private var tileAreaWidth: CGFloat = 0
+    /// Measured panel width: a wide panel stacks the chain over a four-column tile grid.
+    @State private var panelWidth: CGFloat = 0
+    #endif
 
     nonisolated static let sectionDefaultsKey = "playback.stats.expandedSection"
 
     private var summary: PlaybackStatsSummary { .make(diagnostics, tracks: tracks) }
     private var section: PlaybackStatsSummary.Section? { .init(rawValue: storedSection) }
     private var stacksCells: Bool { dynamicTypeSize.isAccessibilitySize }
+
+    /// iPhone/iPad only: a panel wide enough for four tile columns stacks the chain above them.
+    private var isWideIOSPanel: Bool {
+        #if os(iOS)
+        panelWidth >= Metrics.fourColumnMinimumWidth
+        #else
+        false
+        #endif
+    }
 
     var body: some View {
         let summary = summary
@@ -45,6 +60,9 @@ struct PlaybackStatsView: View {
             }
         }
         .animation(.smooth(duration: 0.2), value: storedSection)
+        #if os(iOS)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { panelWidth = $0 }
+        #endif
     }
 
     // MARK: Header
@@ -74,6 +92,12 @@ struct PlaybackStatsView: View {
         if stacksCells {
             VStack(alignment: .leading, spacing: Metrics.cellGap) {
                 chain(summary, vertical: true)
+                tiles(summary)
+                expandButton
+            }
+        } else if isWideIOSPanel {
+            VStack(alignment: .leading, spacing: Metrics.cellGap) {
+                chain(summary, vertical: false)
                 tiles(summary)
                 expandButton
             }
@@ -167,6 +191,13 @@ struct PlaybackStatsView: View {
                          summary.audioTrack, summary.subtitles], id: \.label) { tile($0) }
             }
         } else {
+            #if os(iOS)
+            // iPhone/iPad (iPhone Duo design spec, stats sheet): one column width for every row,
+            // two columns on a narrow panel (folded) and four on a wide one (unfolded), so no
+            // value ("58.2 Mb/s") truncates and no tile is wider than its siblings.
+            equalTileGrid(summary, columns: tileAreaWidth >= Metrics.fourColumnMinimumWidth ? 4 : 2)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { tileAreaWidth = $0 }
+            #else
             // Health facts in thirds, then the two tracks in halves: track names are the
             // longest values in the summary.
             VStack(spacing: Metrics.cellGap) {
@@ -182,8 +213,23 @@ struct PlaybackStatsView: View {
                 }
                 .fixedSize(horizontal: false, vertical: true)
             }
+            #endif
         }
     }
+
+    #if os(iOS)
+    private func equalTileGrid(_ summary: PlaybackStatsSummary, columns: Int) -> some View {
+        let tiles = [summary.buffer, summary.bitrate, summary.connection,
+                     summary.audioTrack, summary.subtitles]
+        return LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Metrics.cellGap,
+                                                            alignment: .top),
+                                        count: columns),
+                         alignment: .leading,
+                         spacing: Metrics.cellGap) {
+            ForEach(tiles, id: \.label) { tile($0).fixedSize(horizontal: false, vertical: true) }
+        }
+    }
+    #endif
 
     private func tile(_ tile: PlaybackStatsSummary.Tile) -> some View {
         let layout = stacksCells
@@ -336,6 +382,8 @@ private enum Metrics {
     static let linkLength: CGFloat = 44
     static let wideColumn: CGFloat = 260
     static let rowLabelWidth: CGFloat = 104
+    /// The tile area at which the iOS summary switches from two equal columns to four.
+    static let fourColumnMinimumWidth: CGFloat = 520
     #endif
 }
 
