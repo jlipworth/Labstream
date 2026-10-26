@@ -251,7 +251,13 @@ struct DetailMediaInfoSummary: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     chips
                 }
+                #if os(iOS)
+                // The chip row sits inside the metadata block's page padding, so a rail margin
+                // on top would indent it past the title, context line and overview.
+                .mediaRailScrollStyle(horizontalMargin: 0)
+                #else
                 .mediaRailScrollStyle()
+                #endif
             } else {
                 chips
             }

@@ -377,7 +377,6 @@ struct DetailView: View {
                     DetailRelatedMediaShelf(items: relatedShelf,
                                             isBusy: isResolvingPlayback || presentingPlayer,
                                             onPlay: playRelated)
-                        .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
                         .padding(.top, DS.Space.xxl)
                         .id("detail.extras")
                 }
@@ -793,9 +792,12 @@ struct DetailView: View {
             #if os(iOS)
             // The rails and the side-by-side placement measure the content region (the scroll
             // content's own frame, which excludes the vertical bar's inset on either edge).
+            // Only the horizontal extent is observed: the global minY/maxY move with every
+            // scroll offset, and re-evaluating the page body per scroll frame is wasted work.
             detailLayout
                 .onGeometryChange(for: CGRect.self) { proxy in
-                    proxy.frame(in: .global)
+                    let frame = proxy.frame(in: .global)
+                    return CGRect(x: frame.minX, y: 0, width: frame.width, height: 0)
                 } action: { region in
                     if detailContentRegion != region { detailContentRegion = region }
                 }

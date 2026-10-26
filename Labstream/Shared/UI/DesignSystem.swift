@@ -530,6 +530,19 @@ extension DS.Poster {
         return railWidth(compact: compact)
         #endif
     }
+
+    /// 16:9 landscape rail card width from the measured viewport (global rule 7, landscape
+    /// family). `fallback` is the authored width used before the first measurement.
+    static func measuredLandscapeRailWidth(viewport: CGFloat?, compact: Bool,
+                                           margin: CGFloat, gutter: CGFloat,
+                                           fallback: CGFloat) -> CGFloat {
+        guard let viewport, viewport > 0 else { return fallback }
+        let metrics = RailCardMetrics.metrics(viewportWidth: Double(viewport),
+                                              margin: Double(margin),
+                                              gutter: Double(gutter),
+                                              family: .landscape(compact: compact))
+        return CGFloat(metrics.cardWidth)
+    }
 }
 
 /// Clips a rail at its layout frame horizontally while letting it draw `verticalOverflow`

@@ -34,6 +34,16 @@ public enum RailCardMetrics {
         public static func poster(compact: Bool) -> Family {
             compact ? .compactPoster : .regularPoster
         }
+
+        /// 16:9 landscape cards (detail "Trailers & Extras") at compact width (160–240 pt,
+        /// authored 200 pt).
+        public static let compactLandscape = Family(minimum: 160, maximum: 240, nominal: 200)
+        /// 16:9 landscape cards at regular width (220–320 pt, authored 280 pt).
+        public static let regularLandscape = Family(minimum: 220, maximum: 320, nominal: 280)
+
+        public static func landscape(compact: Bool) -> Family {
+            compact ? .compactLandscape : .regularLandscape
+        }
     }
 
     public struct Metrics: Equatable, Sendable {

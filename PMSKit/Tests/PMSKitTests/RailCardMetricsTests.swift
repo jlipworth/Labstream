@@ -53,6 +53,24 @@ struct RailCardMetricsTests {
         #expect(abs(metrics.cardWidth - 184) < 20)
     }
 
+    /// Landscape (16:9) extras cards follow the same whole-cards-plus-cue rule.
+    @Test(arguments: [
+        (376.0, 12.0, 12.0, RailCardMetrics.Family.compactLandscape),  // folded portrait
+        (588.0, 12.0, 12.0, RailCardMetrics.Family.compactLandscape),  // folded landscape
+        (669.0, 32.0, 24.0, RailCardMetrics.Family.regularLandscape),  // unfolded upright
+        (850.0, 32.0, 24.0, RailCardMetrics.Family.regularLandscape),  // unfolded sideways
+    ])
+    func landscapeCardsShowWholeCardsPlusACue(width: Double, margin: Double, gutter: Double,
+                                              family: RailCardMetrics.Family) {
+        let metrics = RailCardMetrics.metrics(viewportWidth: width, margin: margin, gutter: gutter,
+                                              family: family)
+        #expect(metrics.cardWidth >= family.minimum)
+        #expect(metrics.cardWidth <= family.maximum)
+        #expect(metrics.wholeCards >= 1)
+        #expect(margin + Double(metrics.wholeCards) * (metrics.cardWidth + gutter) <= width + 0.001)
+        #expect(metrics.cueWidth > 0)
+    }
+
     @Test(arguments: [0.0, -10.0, Double.nan, Double.infinity])
     func degenerateWidthsStayFinite(width: Double) {
         let metrics = RailCardMetrics.metrics(viewportWidth: width, margin: 12, gutter: 12,
