@@ -26,7 +26,12 @@ public struct OfflineLibraryView: View {
     @State private var downloadsRegion: CGRect = .zero
     /// The row the user chose: highlighted in the list + detail split, pushed as a detail page
     /// in the single-column list, and kept across a fold or unfold.
+    #if DEBUG
+    @State private var selectedRowID: String? = DebugUITestLaunchConfiguration.opensFirstDownload
+        ? DebugUIFixtureCatalog.downloadRowsSnapshot?.rows.first?.id : nil
+    #else
     @State private var selectedRowID: String?
+    #endif
     #endif
     #if os(visionOS)
     @Binding private var focusedRatingKey: String?

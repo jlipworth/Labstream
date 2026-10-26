@@ -33,6 +33,8 @@ struct LabstreamMobile: App {
                     // The single foldable-pose and vertical-bar-edge source for every surface.
                     .providesDuoPose()
                     .reportsAppSceneActivity(runtime.sceneActivity, role: .mainWindow)
+                    // DEBUG-only capture route for folded-landscape evidence (no-op otherwise).
+                    .debugCaptureOrientation()
             } else {
                 SecureStorageUnavailableView()
             }

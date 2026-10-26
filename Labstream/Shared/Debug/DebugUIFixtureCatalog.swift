@@ -118,6 +118,11 @@ enum DebugUIFixtureCatalog {
         for show in items where isFixtureShow(show) {
             let seasons = fixtureSeasons(showKey: show.ratingKey, showTitle: show.title)
             if let season = seasons.first(where: { $0.ratingKey == ratingKey }) { return season }
+            // A fixture episode ("<backend>-atlas-s1e3") opens the episode detail directly.
+            for season in 1...seasons.count {
+                if let episode = fixtureEpisodes(showKey: show.ratingKey, showTitle: show.title, season: season)
+                    .first(where: { $0.ratingKey == ratingKey }) { return episode }
+            }
         }
         return nil
     }

@@ -144,7 +144,12 @@ struct PlatformRootShell: View {
     if let raw = DebugUITestLaunchConfiguration.initialTab,
       let destination = AppDestination.allCases.first(where: { "\($0)" == raw })
     {
-      navigation.selection = destination
+      if destination == .settings, usesCompactTabSet {
+        // Compact width has no Settings tab: the toolbar gear's sheet is the Settings surface.
+        showsSettingsSheet = true
+      } else {
+        navigation.selection = destination
+      }
     }
     if DebugUITestLaunchConfiguration.opensFirstLibrary, navigation.librariesPath.isEmpty {
       navigation.selection = .libraries

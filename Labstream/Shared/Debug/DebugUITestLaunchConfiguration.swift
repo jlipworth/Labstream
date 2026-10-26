@@ -25,8 +25,15 @@ enum DebugUITestLaunchConfiguration {
     nonisolated static let initialTabFlag = "--ui-testing-initial-tab"
     nonisolated static let openFirstLibraryFlag = "--ui-testing-open-first-library"
     nonisolated static let searchQueryFlag = "--ui-testing-search-query"
-    /// Push a fixture item (movie, show or fixture season, by rating key) onto Home at launch.
+    /// Push a fixture item (movie, show, fixture season or episode, by rating key) onto Home at launch.
     nonisolated static let openItemFlag = "--ui-testing-open-item"
+    /// Choose the first synthetic Downloads row at launch (with `--ui-testing-download-rows`), so
+    /// the single column pushes its detail and the split highlights it.
+    nonisolated static let openFirstDownloadFlag = "--ui-testing-open-first-download"
+
+    static var opensFirstDownload: Bool {
+        usesBrowseFixture && ProcessInfo.processInfo.arguments.contains(openFirstDownloadFlag)
+    }
 
     nonisolated static func argumentValue(_ flag: String, in arguments: [String]) -> String? {
         guard isEnabled(in: arguments),
