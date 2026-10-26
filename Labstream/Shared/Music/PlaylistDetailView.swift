@@ -33,53 +33,105 @@ struct PlaylistDetailView: View {
     private static let readableContentWidth: CGFloat = 800
     #endif
 
+    #if os(iOS)
+    /// First visible track position, kept across the stack-to-columns reflow.
+    @State private var trackAnchor: Int?
+    #endif
+
     var body: some View {
         ZStack {
             artBackdrop
 
+            #if os(iOS)
+            MusicDetailScaffold(trackAnchor: $trackAnchor) { mode in
+                MusicDetailCenteredHeader(mode: mode,
+                                          art: playlist.musicArtPath,
+                                          title: playlist.title,
+                                          caption: credits,
+                                          description: playlist.summary) {
+                    EmptyView()
+                } actions: {
+                    playActions
+                }
+            } tracks: {
+                trackSection
+            }
+            #else
             ScrollView {
                 VStack(alignment: .leading, spacing: DS.Space.xxl) {
                     header
-
-                    switch model.loadState {
-                    case .idle, .loading:
-                        trackSkeleton
-                    case .failed(let message):
-                        ContentUnavailableView {
-                            Label("Couldn’t load \(playlist.title)",
-                                  systemImage: "exclamationmark.triangle")
-                        } description: {
-                            Text(message)
-                        } actions: {
-                            Button("Retry") { Task { await load(force: true) } }
-                        }
-                            .frame(maxWidth: .infinity, minHeight: 240)
-                    case .loaded:
-                        if tracks.isEmpty {
-                            ContentUnavailableView("No tracks",
-                                                   systemImage: "music.note.list",
-                                                   description: Text("Nothing to show for \(playlist.title)."))
-                                .frame(maxWidth: .infinity, minHeight: 240)
-                        } else {
-                            trackList
-                            pagingStatus
-                        }
-                    }
+                    trackSection
                 }
                 .padding(.horizontal, DS.pagePadding(compact: compactWidth))
                 .padding(.vertical, DS.Space.xl)
-                #if os(iOS)
-                // Cap the header + track list to a readable measure on regular-width iOS
-                // (13" landscape iPad would otherwise stretch rows edge-to-edge, floating the
-                // duration far from the title) and center it. Compact and visionOS stay full width.
-                .frame(maxWidth: compactWidth ? .infinity : Self.readableContentWidth)
-                .frame(maxWidth: .infinity)
-                #endif
             }
+            #endif
         }
         .navigationTitle(playlist.title)
         .task(id: source.identity) { await load() }
         .refreshable { await load(force: true) }
+    }
+
+    @ViewBuilder
+    private var trackSection: some View {
+        switch model.loadState {
+        case .idle, .loading:
+            trackSkeleton
+        case .failed(let message):
+            ContentUnavailableView {
+                Label("Couldn’t load \(playlist.title)",
+                      systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(message)
+            } actions: {
+                Button("Retry") { Task { await load(force: true) } }
+            }
+                .frame(maxWidth: .infinity, minHeight: 240)
+        case .loaded:
+            if tracks.isEmpty {
+                ContentUnavailableView("No tracks",
+                                       systemImage: "music.note.list",
+                                       description: Text("Nothing to show for \(playlist.title)."))
+                    .frame(maxWidth: .infinity, minHeight: 240)
+            } else {
+                VStack(spacing: DS.Space.xxl) {
+                    trackList
+                    pagingStatus
+                }
+            }
+        }
+    }
+
+    private var playActions: some View {
+        HStack(spacing: DS.Space.lg) {
+            Button {
+                player.play(tracks: tracks, startingAt: 0)
+            } label: {
+                Label("Play", systemImage: "play.fill")
+                    .font(actionFont.weight(.semibold))
+            }
+            .labstreamGlassProminentButtonStyle()
+
+            Button {
+                player.playAlbumShuffled(tracks: tracks)
+            } label: {
+                Label("Shuffle", systemImage: "shuffle")
+                    .font(actionFont)
+            }
+            .labstreamGlassButtonStyle()
+        }
+        // The old unpaged loader always produced a complete queue. Keep that semantic:
+        // page zero may render early, but transport controls stay disabled until every
+        // positional row (including duplicates) is present.
+        .disabled(tracks.isEmpty || !model.isComplete)
+    }
+
+    private var actionFont: Font {
+        #if os(iOS)
+        .subheadline
+        #else
+        .title3
+        #endif
     }
 
     // MARK: - Backdrop
@@ -154,27 +206,7 @@ struct PlaylistDetailView: View {
                     .foregroundStyle(.secondary)
             }
 
-            HStack(spacing: DS.Space.lg) {
-                Button {
-                    player.play(tracks: tracks, startingAt: 0)
-                } label: {
-                    Label("Play", systemImage: "play.fill")
-                        .font(.title3.weight(.semibold))
-                }
-                .labstreamGlassProminentButtonStyle()
-
-                Button {
-                    player.playAlbumShuffled(tracks: tracks)
-                } label: {
-                    Label("Shuffle", systemImage: "shuffle")
-                        .font(.title3)
-                }
-                .labstreamGlassButtonStyle()
-            }
-            // The old unpaged loader always produced a complete queue. Keep that semantic:
-            // page zero may render early, but transport controls stay disabled until every
-            // positional row (including duplicates) is present.
-            .disabled(tracks.isEmpty || !model.isComplete)
+            playActions
             .padding(.top, DS.Space.md)
         }
     }
@@ -222,6 +254,9 @@ struct PlaylistDetailView: View {
                 }
             }
         }
+        #if os(iOS)
+        .scrollTargetLayout()
+        #endif
         .padding(.vertical, DS.Space.sm)
         .background(.regularMaterial,
                     in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
@@ -284,7 +319,7 @@ private struct PlaylistTrackRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
-                    .font(.body)
+                    .font(trackTitleFont)
                     .foregroundStyle(isCurrent ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
                     .lineLimit(1)
                 if !subtitle.isEmpty {
@@ -299,7 +334,7 @@ private struct PlaylistTrackRow: View {
 
             if let duration = track.duration {
                 Text(formatTrackDuration(milliseconds: duration))
-                    .font(.subheadline.monospacedDigit())
+                    .font(trackDurationFont)
                     .foregroundStyle(.secondary)
             }
 
@@ -316,6 +351,23 @@ private struct PlaylistTrackRow: View {
         // a custom ButtonStyle misroutes pinches to neighboring rows (DEVELOPMENT.md).
         // The outer inset keeps the row highlight clear of the card's corner curve.
         .padding(.horizontal, DS.Space.sm)
+    }
+
+    /// iPhone/iPad: Body title and Caption duration (three-style type pass).
+    private var trackTitleFont: Font {
+        #if os(iOS)
+        .subheadline
+        #else
+        .body
+        #endif
+    }
+
+    private var trackDurationFont: Font {
+        #if os(iOS)
+        .caption.monospacedDigit()
+        #else
+        .subheadline.monospacedDigit()
+        #endif
     }
 
     /// "artist · album" — `originalTitle` (compilation performer) wins over
