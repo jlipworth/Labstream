@@ -691,10 +691,19 @@ public struct OfflineLibraryView: View {
         }
     }
 
-    /// The detail for one download: art, title, context, status, and the row's actions as
-    /// labelled controls (Play prominent, Delete in red).
+    /// The detail for one download (iPhone Duo design spec, Downloads, decision 5): art, title,
+    /// context, the route and size, the full status, the row's actions as labelled controls
+    /// (Play prominent, Delete in red), then the overview.
     private func offlineDetail(for rowSnapshot: OfflineDownloadRowSnapshot) -> some View {
         let presentation = Self.rowPresentation(rowSnapshot)
+        let record = manager.records.first { $0.ratingKey == rowSnapshot.id }
+        let sizeBytes = record.map { max(0, $0.bytes) + max(0, $0.sideAssetBytes) } ?? 0
+        let routeAndSize = [rowSnapshot.routeBadge.rawValue,
+                            sizeBytes > 0 ? DownloadRowDisplayPolicy.byteString(sizeBytes) : nil,
+                            rowSnapshot.showBackendBadge ? rowSnapshot.backendName : nil]
+            .compactMap { $0 }
+            .joined(separator: " • ")
+        let overview = record?.metadata?.summary?.trimmingCharacters(in: .whitespacesAndNewlines)
         return ScrollView {
             VStack(alignment: .leading, spacing: DS.Space.md) {
                 OfflinePosterTile(source: rowSnapshot.artwork.flatMap(OfflineArtworkSource.init),
@@ -712,12 +721,25 @@ public struct OfflineLibraryView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
+                Text(routeAndSize)
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .accessibilityIdentifier("download.detail.size")
+                if let quality = rowSnapshot.qualityText, !quality.isEmpty {
+                    Text(quality)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                // The pane has room for the full status (bytes, rate, ETA) the row abbreviates.
                 Text(presentation.statusText)
                     .font(.caption)
                     .monospacedDigit()
                     .foregroundStyle(presentation.tone == .failure ? Color.red
                                      : presentation.tone == .verified ? Color.green : Color.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
                 HStack(spacing: DS.Space.md) {
                     ForEach(presentation.actions.filter { $0 != .delete }, id: \.rawValue) { action in
                         Button {
@@ -747,6 +769,14 @@ public struct OfflineLibraryView: View {
                     }
                 }
                 .padding(.top, DS.Space.sm)
+                if let overview, !overview.isEmpty {
+                    Text(overview)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, DS.Space.sm)
+                        .accessibilityIdentifier("download.detail.overview")
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(DS.pagePadding(compact: compactWidth))
@@ -886,8 +916,23 @@ private struct OfflinePosterTile: View {
             .overlay {
                 Image(systemName: tileGlyph)
                     .font(.title3)
-                    .foregroundStyle(isUnverified ? .orange : (isComplete ? .green : (isFailed ? .red : .secondary)))
+                    .foregroundStyle(glyphColor)
             }
+    }
+
+    /// Unverified is the secondary label with its own glyph on iPhone/iPad (no orange, which
+    /// reads as amber "selected"); other platforms keep the orange caution hue.
+    private var glyphColor: Color {
+        if isUnverified {
+            #if os(iOS)
+            return .secondary
+            #else
+            return .orange
+            #endif
+        }
+        if isComplete { return .green }
+        if isFailed { return .red }
+        return .secondary
     }
 
     private var tileGlyph: String {

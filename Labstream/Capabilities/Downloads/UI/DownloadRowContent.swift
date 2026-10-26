@@ -10,12 +10,86 @@ struct DownloadRowContent: View {
         switch presentation.tone {
         case .neutral: .secondary
         case .verified: .green
+        #if os(iOS)
+        // iPhone/iPad palette (iPhone Duo design spec, Color & type): caution is the secondary
+        // label plus a symbol, never an orange that reads as amber ("selected").
+        case .caution: .secondary
+        #else
         case .caution: .orange
+        #endif
         case .failure: .red
         }
     }
 
     var body: some View {
+        #if os(iOS)
+        mobileBody
+        #else
+        standardBody
+        #endif
+    }
+
+    #if os(iOS)
+    /// iPhone/iPad: one row pattern with the three text styles (Body title on one line, one
+    /// Caption context line, a 1–2 word Caption status). The route badge and requested quality
+    /// live in the detail pane, so nothing prints twice.
+    private var mobileBody: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(presentation.row.title)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .accessibilityLabel(presentation.row.title)
+            if let context = mobileContextText { contextLine(context) }
+            progressBar
+            HStack(spacing: 4) {
+                if presentation.tone == .caution {
+                    Image(systemName: "exclamationmark.triangle")
+                        .accessibilityHidden(true)
+                }
+                Text(presentation.compactStatusText)
+                    .lineLimit(1)
+            }
+            .font(.caption)
+            .monospacedDigit()
+            .foregroundStyle(statusColor)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Download status")
+            .accessibilityValue(presentation.accessibleStatus)
+            .accessibilityIdentifier("download.status")
+            if let error = presentation.row.errorMessage, !error.isEmpty {
+                DownloadRowReason(reason: error, color: statusColor)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The single context line: the source (only when backends are mixed), then the year,
+    /// runtime and rating; the requested quality only when there is no metadata line.
+    private var mobileContextText: String? {
+        let detail = presentation.row.subtitle ?? presentation.row.qualityText
+        let parts = [presentation.row.showBackendBadge ? presentation.row.backendName : nil, detail]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: " • ")
+    }
+    #endif
+
+    @ViewBuilder
+    private var progressBar: some View {
+        switch presentation.progress {
+        case .none: EmptyView()
+        case .indeterminate: ProgressView().controlSize(.small)
+        case .fraction(let value, let estimated):
+            ProgressView(value: value)
+                .modifier(DownloadTransferBarTint())
+                .accessibilityValue((estimated ? "Approximately " : "") + "\(Int(value * 100))%. "
+                    + presentation.row.statusCaption)
+        }
+    }
+
+    #if !os(iOS)
+    private var standardBody: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(presentation.row.title)
                 .font(.headline)
@@ -34,15 +108,7 @@ struct DownloadRowContent: View {
             .lineLimit(1)
             if let subtitle = presentation.row.subtitle { contextLine(subtitle) }
             if let quality = presentation.row.qualityText { contextLine(quality) }
-            switch presentation.progress {
-            case .none: EmptyView()
-            case .indeterminate: ProgressView().controlSize(.small)
-            case .fraction(let value, let estimated):
-                ProgressView(value: value)
-                    .modifier(DownloadTransferBarTint())
-                    .accessibilityValue((estimated ? "Approximately " : "") + "\(Int(value * 100))%. "
-                        + presentation.row.statusCaption)
-            }
+            progressBar
             Text(presentation.statusText)
                 .font(.caption)
                 .monospacedDigit()
@@ -59,6 +125,7 @@ struct DownloadRowContent: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+    #endif
 
     private func contextLine(_ value: String) -> some View {
         Text(value)
@@ -116,7 +183,7 @@ struct DownloadOptionContent: View {
         HStack(spacing: 12) {
             Image(systemName: systemImage)
                 .frame(width: 28)
-                .foregroundStyle(disabled ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
+                .foregroundStyle(iconStyle)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).foregroundStyle(disabled ? .secondary : .primary).lineLimit(2)
                 if let detail, !detail.isEmpty {
@@ -139,6 +206,17 @@ struct DownloadOptionContent: View {
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("download.option.\(title)")
+    }
+
+    /// iPhone/iPad: amber means "selected" only, so the route icon is the label color and the
+    /// checkmark alone carries the selection. Other platforms keep the tinted icon.
+    private var iconStyle: AnyShapeStyle {
+        if disabled { return AnyShapeStyle(.secondary) }
+        #if os(iOS)
+        return AnyShapeStyle(.primary)
+        #else
+        return AnyShapeStyle(.tint)
+        #endif
     }
 }
 #endif

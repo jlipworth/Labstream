@@ -32,6 +32,39 @@ struct P7DownloadPresentationTests {
         for action in presentation.actions { #expect(presentation.actionLabel(action).contains("Fixture")) }
     }
 
+    /// iPhone Duo design spec, Downloads: row status lines are 1–2 words and never wrap.
+    @Test(arguments: DownloadLifecycle.allCases)
+    func compactStatusIsOneOrTwoWords(lifecycle: DownloadLifecycle) {
+        let text = row(lifecycle, fraction: 0.42).presentation.compactStatusText
+        #expect(text.split(separator: " ").count <= 2)
+        #expect(!text.contains("…"))
+        #expect(!text.isEmpty)
+    }
+
+    @Test func compactStatusVocabularyFollowsThePhase() {
+        let phases: [(DownloadJobPhase, String)] = [
+            (.failed(isRetrying: false), "Failed"),
+            (.paused, "Paused"),
+            (.complete(isUnverified: false), "Ready"),
+            (.complete(isUnverified: true), "Unverified"),
+            (.serverPrepProgressing, "Preparing 42%"),
+            (.serverPrepQueued, "Preparing"),
+            (.serverPrepReady, "Queued"),
+            (.queued, "Queued"),
+            (.waitingForBackend, "Waiting"),
+            (.activeTransfer, "Downloading 42%"),
+            (.transferFinalizing, "Verifying"),
+        ]
+        for (phase, expected) in phases {
+            let presentation = DownloadRowPresentation(row: row(.transferring, fraction: 0.42), phase: phase)
+            #expect(presentation.compactStatusText == expected)
+        }
+        #expect(row(.planned).presentation.compactStatusText == "Queued")
+        #expect(row(.failed, admission: .retryRequested).presentation.compactStatusText == "Queued")
+        // The full caption is still exposed to accessibility.
+        #expect(row(.transferring, fraction: 0.42).presentation.accessibleStatus.contains("Full fixture status"))
+    }
+
     @Test func waitingAndPausedHaveNoTransferSpinner() {
         for lifecycle in [DownloadLifecycle.planned, .admitted, .paused] {
             #expect(row(lifecycle).presentation.progress == .none)

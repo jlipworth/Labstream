@@ -187,9 +187,14 @@ public enum DownloadRowStatusCaptionPolicy {
         let waiting = lifecycle == .planned
             || ((lifecycle == .paused || lifecycle == .failed) && intent == .retryRequested)
         guard waiting else { return nil }
-        if isQueuePaused && !isExempt { return "Waiting — downloads paused" }
-        return "Waiting for a download slot…"
+        if isQueuePaused && !isExempt { return queuePausedWaitingCaption }
+        return slotWaitingCaption
     }
+
+    /// The two admission-waiting captions, exposed so the compact row vocabulary can tell them
+    /// apart without re-deriving the queue state.
+    public static let queuePausedWaitingCaption = "Waiting — downloads paused"
+    public static let slotWaitingCaption = "Waiting for a download slot…"
 
     public static func caption(_ context: Context) -> String {
         switch phase(context) {

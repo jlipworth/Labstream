@@ -60,6 +60,45 @@ public struct DownloadRowPresentation: Sendable, Equatable {
         row.statusCaption
     }
 
+    /// iPhone/iPad row status (iPhone Duo design spec, Downloads: "Status context lines are 1–2
+    /// words and never wrap"). The full `statusText` (bytes, rate, ETA, reason) stays in the
+    /// accessibility value and the detail pane.
+    public var compactStatusText: String {
+        if row.isRetrying { return "Retrying" }
+        if row.isWaitingForAdmission {
+            return row.statusCaption == DownloadRowStatusCaptionPolicy.queuePausedWaitingCaption
+                ? "Paused" : "Queued"
+        }
+        let percent: String? = row.displayProgress.flatMap { value in
+            guard value.isFinite, value > 0, value < 0.999 else { return nil }
+            return "\(Int(min(0.99, value) * 100))%"
+        }
+        switch phase {
+        case .failed?: return "Failed"
+        case .paused?: return "Paused"
+        case .complete(let isUnverified)?: return isUnverified ? "Unverified" : "Ready"
+        case .transferFinalizing?: return "Verifying"
+        case .serverPrepFinalizing?: return "Finalizing"
+        case .serverPrepProgressing?: return percent.map { "Preparing \($0)" } ?? "Preparing"
+        case .serverPrepQueued?, .activeServerPrep?: return "Preparing"
+        case .serverPrepReady?, .queued?, .inactiveTransfer?: return "Queued"
+        case .waitingForBackend?: return "Waiting"
+        case .activeTransfer?, .activeStaticZeroByteTransfer?:
+            return percent.map { "Downloading \($0)" } ?? "Downloading"
+        case nil:
+            switch lifecycle {
+            case .planned, .admitted: return "Queued"
+            case .serverPrep: return percent.map { "Preparing \($0)" } ?? "Preparing"
+            case .transferring: return percent.map { "Downloading \($0)" } ?? "Downloading"
+            case .finalizing: return "Verifying"
+            case .complete: return "Ready"
+            case .unverified: return "Unverified"
+            case .paused: return "Paused"
+            case .failed: return "Failed"
+            }
+        }
+    }
+
     public var actionIdentity: OfflineDownloadRowActionIdentity { row.actionIdentity }
     public var accessibleStatus: String {
         let phase: String = switch lifecycle {
