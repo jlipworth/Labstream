@@ -1481,3 +1481,22 @@ re-lays out the same layer and deck from the pose value (deviation pending sign-
     bar, which landscape rotation is camera-leading and the camera-island trim, the
     `OverlayArrangement` deviation sign-off, cross-backend playback passes, and the physical
     iPhone Duo.
+- **2026-10-26, Settings and remaining defects (`107fa0f7`, `5e381ce3`, `b28c2ca5`):**
+  - Folded Settings sheet: keeps its vertical bar with a neutral close button, matching Apple's
+    one-button sheet (Settings ▸ Apple Account sign-in, captured on the folded Duo simulator).
+    Disabling the bar had moved the status bar onto the dimmed presenter's title.
+  - Regular-width Settings (decision 6 revised): two columns on the unfolded Duo and iPad, split
+    on the hinge in book; fold/unfold keeps the place in both directions (appResize captures of
+    restore→unfold, scroll→unfold and unfold→fold; `testRegularWidthSettingsShowsCategoriesBesideTheDetail`
+    on iPad).
+  - Fixed: amber selected segments (own iOS segmented control), visible scrubber track, Search
+    title/clear duplication, the regular-only red Delete in Downloads rows, the amber wordmark on
+    iOS, and the Continue Watching fixture ("Nm left").
+  - Matrix: PMSKit 1798, visionOS/iOS/tvOS/macOS builds, mobile hosted 963, mobile and Duo UI
+    smokes (Duo 8 tests including the sheet test), tvOS hosted and UI smoke, `ci-hygiene`, and a
+    visionOS launch smoke all pass. macOS hosted had one failure in
+    `P5SessionTransportTests` ("pin 12", downloads transport, untouched here) that passed 3/3 when
+    rerun alone: flaky under full-suite load.
+  - Still open: a music fixture (Music shows only its error state in captures); unfolding while a
+    folded Downloads detail is pushed keeps the pushed detail full width instead of showing the
+    list + detail split; plus every gate listed above.
