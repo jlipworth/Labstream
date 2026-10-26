@@ -146,8 +146,11 @@ working-tree changes when requested; filenames are read with NUL delimiters.
 the landscape lock follows the measured scene class (phone-class scenes lock, large scenes keep the
 device orientation) and the chrome envelope stays put across reveal and hide. `mobile-ui-smoke`
 also runs the lock check. Shared and mobile-platform paths select it alongside `mobile-ui-smoke`.
-It proves the posture the simulator booted in only; the inner-size run and a fold/unfold during
-playback (the plan's appResize wrapper) remain open, as do Device Hub and physical-device checks.
+It proves the posture the simulator booted in only. `scripts/duo-appresize.sh` drives the
+inner-size proxy by hand (`launch [--pose book|tabletop]`, `start`, `set WxH`, `shot`, `stop`):
+`--pose` sets the DEBUG-only `LABSTREAM_DEBUG_DUO_POSE` override so book and tabletop layouts can
+be captured against the pose seam. Those captures prove layout against the seam only; an automated
+inner-size lane, a fold/unfold during playback, Device Hub and physical-device checks remain open.
 
 The bounded command and playback runners terminate their owned process group on timeout or
 cancellation. Cleanup waits for surviving descendants, not just the leader, before escalating;
