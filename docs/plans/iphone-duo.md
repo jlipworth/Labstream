@@ -335,6 +335,11 @@ hinge in book.
   - A grid of list rows is rejected: it has no Apple precedent and its reading order is unclear.
 - **Empty state:** centered in the content region with a body of at most 2 lines (today it wraps
   to 4).
+- **Accepted gap (2026-10-26):** the list column's own horizontal controls (title, Select,
+  Storage) are not built. The storage and queue controls stay in the page toolbar, and there is
+  no Select mode on this surface to move (adding multi-select is a new feature that needs its
+  own mockup). The detail column has Play, Delete in red, route and size, the full status and the
+  overview.
 - **Offline shell** (no tab column, by design): Reconnect becomes an ordinary toolbar item in the
   same glass style as its siblings, not an amber one-off.
 
@@ -506,6 +511,13 @@ There is no inline season picker in any pose.
     and the video as secondary. Read `overlayArrangementZIndex` to restyle the controls from
     overlay to deck (PREP; T-SCENE: "For layout, use the arrangement and region APIs").
     `UIHinge.Status` stays diagnostics-only.
+  - **Implementation deviation (2026-10-26, pending maintainer sign-off):** Step 16 does not use
+    `OverlayArrangement`/`ArrangementView`. The player re-lays out the same `AVPlayerLayer` and
+    deck from the shell's `\.duoPose` tabletop value (the `reservedRegions` division region, or
+    the DEBUG override). Reasons: `ArrangementView` is driven only by the real hinge, so the DEBUG
+    override cannot produce headless evidence; and it would re-parent the video into a
+    system-managed container, which risks the one-`AVPlayerLayer` invariant. Controls, hierarchy
+    and order are unchanged. The pose never comes from `UIHinge.Status`.
   - **Book with the same arrangement:** the system would put the video leading and the controls
     trailing. **Not used** (Resolved decision 7): book keeps the overlay with the trailing-half
     control group above.
@@ -1078,10 +1090,12 @@ items).
 ### Step 16: player
 
 **Status (2026-10-26):** done, with the gaps listed in the journal. The pure rules are in PMSKit:
-`MobilePlayerArrangement` (overlay, video rectangle, book, tabletop, camera-island trim) and
-`MobilePlayerPoseResolver` (the shell pose, or a centre strip from a partially open hinge on the
-unfolded display). Tabletop does not use `OverlayArrangement`/`ArrangementView`; the player
-re-lays out the same layer and deck from the pose value (see the journal for why).
+`MobilePlayerArrangement` (overlay, video rectangle, book, tabletop, camera-island trim). The pose
+comes only from the shell's `\.duoPose` (the `reservedRegions` division region, or the DEBUG
+override); `UIHingeInteraction` is diagnostics-only (the hinge-status fallback was removed in
+the review round). Tabletop does not use `OverlayArrangement`/`ArrangementView`; the player
+re-lays out the same layer and deck from the pose value (deviation pending sign-off, see Player
+→ Tabletop → Mechanism).
 
 - **Chrome style:** one glass-circle style with symbols and accessibility titles in every branch
   (`CustomPlayerChrome.swift`, `MobilePlayerChrome.swift`): top row Close, PiP and gravity leading
@@ -1097,8 +1111,8 @@ re-lays out the same layer and deck from the pose value (see the journal for why
   centres in the video rectangle.
 - **Book (decision 7):** keep the overlay; the transport, title, scrubber and bottom circles move
   together into the trailing half from `DuoPoseLayout`; the top row does not move.
-- **Tabletop:** the table layout through `OverlayArrangement`/`UIOverlayArrangement`, controls as
-  primary and video as secondary, restyled from `overlayArrangementZIndex`: video aspect-fit in the
+- **Tabletop:** the table layout (implemented from the pose value, not `OverlayArrangement`;
+  see the Player section's mechanism deviation): video aspect-fit in the
   top half (optional Close/AirPlay row), a non-auto-hiding dark deck in the bottom half with the
   same four rows, controls and order as the overlay; menus anchor to the deck; the transport status
   centres in the top half. The DEBUG override drives the same layout path for captures.
@@ -1375,3 +1389,29 @@ re-lays out the same layer and deck from the pose value (see the journal for why
     region appears in the simulator); iPhone 18 Pro and iPad were not run, so the upright and
     tabletop XCUITests have not executed; the shared player change still needs the Plex,
     Jellyfin and Emby passes (Open gates); real folds stay open (decision 9).
+- 2026-10-26, Step 13–16 review round:
+  - Pose: the player's `UIHingeInteraction` fallback (`MobilePlayerPoseResolver`) is removed; the
+    pose comes only from `\.duoPose`, and the hinge status is recorded for diagnostics only. The
+    `OverlayArrangement` non-use is recorded in the Design section as a deviation pending sign-off.
+  - Library grid: compact grids above three columns round the fitted count down to even (rule 8),
+    unless posters would exceed `gridMax` (150 pt), so folded landscape is 4 with or without the
+    A–Z reservation (no 5 → 4 jump while loading). Tests at 594 and 598 pt, reservation 0 and 30.
+  - Downloads: iPhone/iPad rows read title (Body, 1 line) / one Caption context line / a 1–2 word
+    status (`DownloadRowPresentation.compactStatusText`: Ready, Queued, Paused, Preparing 42%,
+    Downloading 42%, Verifying, Failed…); the full caption stays in the accessibility value and the
+    detail pane. The route badge and requested quality moved to the detail pane, which also gains
+    the size and overview. The list-column controls are an accepted gap (Downloads section).
+  - Colors (iOS only): library tiles neutral; download route icons neutral (checkmark carries the
+    selection); unverified downloads and the Stats copy/encode paths are neutral gray instead of
+    orange/cyan. The A–Z rail letters are secondary on iOS but keep `.tint` letters and outlines on
+    macOS (the earlier change had leaked to the Mac).
+  - Detail: the content region observes only minX and width (no body re-evaluation per scroll
+    frame); Trailers & Extras uses `RailSectionHeader`, `mediaRailScrollStyle`, measured 16:9 cards
+    (`RailCardMetrics.Family.landscape`) and Body/Caption; the compact spec-chip row has no extra
+    rail margin, so it lines up with the text column.
+  - Home: time left is one minutes token ("83m left"); a resume shelf with a card lacking a
+    duration falls back to a field every card shares rather than leaving one line empty.
+  - Verification: hermetic PMSKit (1793 + 109), clean `LabstreamMobile` Duo build (15 unique
+    pre-existing warnings, none in touched files), Labstream/LabstreamTV/LabstreamMac compile,
+    install UUID match, browse and offline fixture launches alive with no faults. The Downloads
+    fixture has no rows, so the new row and detail pane were not captured.
