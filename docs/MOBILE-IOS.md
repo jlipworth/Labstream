@@ -36,9 +36,18 @@ root, plus the shared `PMSKit` package. The public mobile support floor is iOS/i
   1.45:1. Layout keys on measured geometry and size classes, never on the device idiom. The
   detail page picks its composition from `MobileDetailLayoutPolicy` in PMSKit: the phone
   hierarchy below a 500-pt width (or a compact-width viewport whose short side is under 500 pt),
-  the poster stacked over the metadata below 700 pt (the inner display), and side by side
-  above. The compact key art and the Now Playing hero are bounded by the measured viewport
-  height. The A–Z rail reserves its strip in regular width as well as compact width, and stays
+  a 220-pt key-art hero over the metadata below 700 pt (the inner display), and side by side
+  above (in book the poster centres before the hinge and the metadata starts after it). The
+  page draws nothing until the viewport is measured, so no fallback composition flashes. The
+  phone key art spans the full width as a background layer and crops to 16:9, capped at 40% of
+  the viewport height; the Now Playing hero is bounded by the measured viewport height. Every
+  composition has the same sections: the title once (the navigation title appears only after it
+  scrolls away), a Caption context line, one Play/Resume capsule with Download and Mark Watched
+  as glass circles, then Cast and More Like This rails across the content region. A show page
+  has its own header with "Resume S1, E3" and "23m left" above the season posters; selecting a
+  season pushes its episode list ("E1 · 38m" rows), except on a wide regular landscape region
+  (the unfolded-sideways inner display), where the show page and the chosen season sit side by
+  side about 50/50, with the divider on the hinge in book. The A–Z rail reserves its strip in regular width as well as compact width, and stays
   inside the safe area, so it clears the vertical bar. Shared code that uses 27.1-only SwiftUI
   API must guard it for the 27.0-SDK visionOS, tvOS and macOS targets.
 - Detail, player chrome, offline/download, settings, and music surfaces are shared but are

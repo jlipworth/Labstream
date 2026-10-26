@@ -1043,6 +1043,16 @@ are in PMSKit: `RailCardMetrics`, `MobileLibraryGridLayout` (measured columns pl
 
 ### Step 15: detail pages (movie, show, season, episode)
 
+**Status (2026-10-25):** done, with the gaps listed in the journal. The pure rules are in PMSKit:
+`MobileDetailLayoutPolicy` (`resolvedMode`, full-width `artworkHeight`, `sideBySidePlacement`
+with the book hinge), `ShowDetailLayoutPolicy` (the show | season split, same rule as Music),
+`MediaDetailCaptions` and `ShowResumePlan`. Finding 4 is closed by the design: the phone key art
+is a full-width background layer cropped to its 40% height cap, so the half-width floor
+(`f4a379e1`) is removed. More Like This is a new read on every backend (Plex
+`/library/metadata/{id}/similar`, Jellyfin/Emby `/Items/{id}/Similar`); the show's resume
+episode comes from all of its episodes (Plex `allLeaves`, Jellyfin/Emby recursive `Episode`
+items).
+
 - **Layout policy:** keep `MobileDetailLayoutPolicy` (phone, stacked, side by side), resolve the
   mode from the measured width before first display (no size-class flash, finding 4), and keep
   the scroll anchor across the flip.
@@ -1275,3 +1285,41 @@ are in PMSKit: `RailCardMetrics`, `MobileLibraryGridLayout` (measured columns pl
     Music grids keep their adaptive columns without a book split; folded-landscape and leading-bar
     captures, iPhone 18 Pro and iPad captures, and the music pages need a later sim turn or real
     data; real-fold frames stay open (decision 9).
+- 2026-10-25, Step 15 (detail area):
+  - Movie and episode detail (iPhone/iPad): nothing draws until the scroll viewport is measured
+    (no fallback flash). Phone: full-width 16:9 key art via `backgroundExtensionEffect()` (it
+    runs under the vertical bar; the text stays in the content region), capped at 40% of the
+    viewport height. Stacked: a 220-pt key-art band over metadata capped at 640 pt and centred.
+    Side by side: a 220-pt poster leading and the metadata trailing; in book the poster centres
+    before the hinge and the metadata starts one margin after it (captured with `--pose book`).
+    One `.title3` semibold hero title (the inline navigation title appears only after it scrolls
+    away), a Caption context line that drops trailing fields instead of wrapping, the
+    label-on-glass Resume/Play capsule plus Download and Mark Watched as glass circles, "1h 23m
+    left", a Body overview in place of the italic tagline, Caption credits, then Cast (monogram
+    circles with names) and More Like This (measured posters) across the content region. Section
+    ids keep the scroll anchor across a mode flip. Episode codes in the header use the secondary
+    label instead of amber. visionOS, tvOS and macOS keep their detail compositions.
+  - Show → season → episode: the iOS show page has a header (key art, title, "3 seasons ·
+    TV-14", "Resume S1, E3" with "23m left", overview) above season posters with measured
+    columns ("Season 1" / "8 episodes"). Resume arms the existing one-shot autoplay handshake and
+    pushes the episode, so playback goes through the episode page's own Play admission. The
+    season level is one list of `MobileEpisodeRow` (16:9 still with on-art progress, Body title,
+    "E1 · 38m" or "E3 · 23m left"); the season is the navigation title only. On a wide regular
+    landscape region the show page and the chosen season (ringed in amber) split about 50/50,
+    with the divider on the hinge in book; elsewhere the season pushes (state-driven, like
+    Downloads). Folding keeps the chosen season and pushes it; unfolding pops a season page that
+    is on top, but keeps it while an episode sits above it. The split column and the pushed page
+    share the episode scroll anchor.
+  - DEBUG capture route `--ui-testing-open-item <ratingKey>` (browse fixture) pushes a fixture
+    movie, the fixture show (`<backend>-atlas`, 3 × 8 episodes with S1 E3 started) or a fixture
+    season (`<backend>-atlas-s1`) onto Home. Evidence (gitignored): `artifacts/duo-detail/`
+    (movie folded, upright, sideways, book; show folded, upright, sideways, book; season folded).
+    The appResize session has horizontal bars, as in Step 14.
+  - Not done: cast headshots (backends' `Tag` carries no image, so the circles show initials);
+    per-column bars in the split (the list column cannot keep its own horizontal controls; the
+    system bar hosts Back and Download Season); More Like This for shows; folding while an
+    episode pushed from the split is on top keeps show → episode (the season appears after that
+    episode is popped). The More Like This and Cast rails below the first screen, folded
+    landscape, iPhone 18 Pro and iPad were not captured (no headless scroll), and the new
+    similar/all-episodes reads are untested against live Plex, Jellyfin and Emby. A real fold
+    (scroll anchor, split collapse) stays open (decision 9).

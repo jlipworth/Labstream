@@ -129,7 +129,9 @@ not necessarily the backend currently visible in the UI.
 - `Labstream/Shared/UI/LibraryGridView.swift` owns library roots and the shared sparse grid;
   `LibraryAlphabetRail.swift` owns the A–Z interaction.
 - `Labstream/Shared/UI/ContainerBrowserView.swift` handles show/season child navigation and
-  normalizes duplicate visible episode rows.
+  normalizes duplicate visible episode rows; on iPhone/iPad it hands shows and seasons to
+  `MobileShowBrowser.swift` (show header, resume action, show | season split) and the shared
+  detail pieces live in `MobileDetailComponents.swift`.
 - `Labstream/Shared/UI/SearchView.swift` owns the shared search surface and music-result queue
   actions.
 - `Labstream/Shared/UI/MediaArtwork.swift` resolves backend-authenticated, exact-authority artwork
