@@ -21,7 +21,10 @@ public enum HomeShelfCaptionPolicy {
     ///   - shelfIdentifier: the Plex `hubIdentifier` or the Jellyfin/Emby rail id.
     public static func kind(for items: [MediaItem], shelfIdentifier: String?) -> Kind {
         guard !items.isEmpty else { return .none }
-        if isResumeShelf(identifier: shelfIdentifier) { return .timeLeft }
+        // Time left only when every card can show it, so no sibling has an empty line among
+        // "Nm left" captions; otherwise the shelf falls back to a field every card shares.
+        if isResumeShelf(identifier: shelfIdentifier),
+           items.allSatisfy({ ($0.duration ?? 0) > 0 }) { return .timeLeft }
         if items.allSatisfy({ $0.kind == .episode }) { return .episode }
         if items.allSatisfy({ $0.year != nil }) { return .year }
         return .none
@@ -45,15 +48,12 @@ public enum HomeShelfCaptionPolicy {
         }
     }
 
-    /// "23m left", "1h 2m left", "1h left"; anything under a minute reads "1m left" so the
-    /// caption stays two short words.
+    /// One minutes token plus "left" ("23m left", "83m left"), so the caption is always two
+    /// words (iPhone Duo design spec: captions are 1–2 words); anything under a minute reads
+    /// "1m left".
     public static func timeLeft(milliseconds: Int) -> String {
         let minutes = max(Int((Double(max(milliseconds, 0)) / 60_000).rounded()), 1)
-        let hours = minutes / 60
-        let rest = minutes % 60
-        if hours == 0 { return "\(rest)m left" }
-        if rest == 0 { return "\(hours)h left" }
-        return "\(hours)h \(rest)m left"
+        return "\(minutes)m left"
     }
 
     /// Resume shelves by identifier: Plex `home.continue` / `home.ondeck`, Jellyfin/Emby

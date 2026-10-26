@@ -20,7 +20,7 @@ struct HomeShelfCaptionPolicyTests {
         #expect(kind == .timeLeft)
         #expect(HomeShelfCaptionPolicy.caption(for: items[0], kind: kind) == "23m left")
         // An unstarted sibling still reads as time left, never as a bare runtime.
-        #expect(HomeShelfCaptionPolicy.caption(for: items[1], kind: kind) == "1h 40m left")
+        #expect(HomeShelfCaptionPolicy.caption(for: items[1], kind: kind) == "100m left")
         #expect(HomeShelfCaptionPolicy.caption(for: items[2], kind: kind) == "45m left")
     }
 
@@ -43,6 +43,21 @@ struct HomeShelfCaptionPolicyTests {
         #expect(HomeShelfCaptionPolicy.isResumeShelf(identifier: identifier))
     }
 
+    /// A resume shelf where one card has no duration falls back to a shared field instead of
+    /// leaving that card's line empty among "Nm left" siblings.
+    @Test func aResumeShelfWithAMissingDurationFallsBack() {
+        let items = [movie("a", offset: 600_000), movie("b", duration: nil)]
+        let kind = HomeShelfCaptionPolicy.kind(for: items, shelfIdentifier: "home.continue")
+        #expect(kind == .year)
+        #expect(items.allSatisfy { HomeShelfCaptionPolicy.caption(for: $0, kind: kind) != nil })
+    }
+
+    @Test func timeLeftIsAlwaysTwoWords() {
+        for ms in [0, 1_380_000, 4_980_000, 9_000_000] {
+            #expect(HomeShelfCaptionPolicy.timeLeft(milliseconds: ms).split(separator: " ").count == 2)
+        }
+    }
+
     @Test func aStartedItemInRecentlyAddedKeepsTheShelfField() {
         let items = [movie("a", offset: 600_000), movie("b")]
         #expect(HomeShelfCaptionPolicy.kind(for: items, shelfIdentifier: "home.movies.recent") == .year)
@@ -52,8 +67,8 @@ struct HomeShelfCaptionPolicyTests {
         (0, "1m left"),
         (29_000, "1m left"),
         (1_380_000, "23m left"),
-        (3_600_000, "1h left"),
-        (3_720_000, "1h 2m left"),
+        (3_600_000, "60m left"),
+        (4_980_000, "83m left"),
     ])
     func timeLeftFormat(milliseconds: Int, expected: String) {
         #expect(HomeShelfCaptionPolicy.timeLeft(milliseconds: milliseconds) == expected)
