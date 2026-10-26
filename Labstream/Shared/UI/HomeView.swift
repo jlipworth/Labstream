@@ -425,18 +425,33 @@ private struct HubRail: View {
 
     #if os(tvOS)
     @ScaledMetric(relativeTo: .body) private var shelfLabelHeight: CGFloat = 100
+    #elseif os(iOS)
+    // Body (`.subheadline` semibold) title plus a Caption context line.
+    @ScaledMetric(relativeTo: .subheadline) private var shelfLabelHeight: CGFloat = 38
     #else
     @ScaledMetric(relativeTo: .headline) private var shelfLabelHeight: CGFloat = 46
     #endif
+
+    /// The rail viewport (content region) width, measured so posters show whole cards plus a cue.
+    @State private var railViewportWidth: CGFloat?
+    /// First visible card, kept across a fold or resize.
+    @State private var firstVisibleItemID: String?
 
     private var presentation: HomeRailArtworkPolicy.Presentation? {
         HomeShelfPresentationPolicy.presentation(for: hub)
     }
 
+    private var captionKind: HomeShelfCaptionPolicy.Kind {
+        HomeShelfCaptionPolicy.kind(for: hub.metadata, shelfIdentifier: hub.id)
+    }
+
     private var shelfWidth: CGFloat {
         presentation == .landscape
             ? HomeRailCellMetrics.episodeWidth(compact: compactWidth)
-            : DS.Poster.railWidth(compact: compactWidth)
+            : DS.Poster.measuredRailWidth(viewport: railViewportWidth,
+                                          compact: compactWidth,
+                                          margin: DS.Scroll.railHorizontalMargin(compact: compactWidth),
+                                          gutter: HomeLayoutMetrics.itemSpacing(compact: compactWidth))
     }
 
     private var shelfImageHeight: CGFloat {
@@ -448,7 +463,7 @@ private struct HubRail: View {
         let contentHeight = shelfImageHeight + DS.Space.sm + shelfLabelHeight
         if presentation == .landscape,
            HomeLayoutMetrics.reservePosterHeightForEpisodeRails(denseSections: denseSectionSpacing) {
-            return max(contentHeight, DS.Poster.height(for: DS.Poster.railWidth(compact: compactWidth))
+            return max(contentHeight, DS.Poster.height(for: shelfWidth)
                        + DS.Space.sm + shelfLabelHeight)
         }
         return contentHeight
@@ -467,7 +482,8 @@ private struct HubRail: View {
                             if let presentation {
                                 HomeShelfMediaCell(item: item, presentation: presentation,
                                                    width: shelfWidth, imageHeight: shelfImageHeight,
-                                                   labelHeight: shelfLabelHeight)
+                                                   labelHeight: shelfLabelHeight,
+                                                   captionKind: captionKind)
                             } else {
                                 RailMediaCell(item: item)
                             }
@@ -492,6 +508,7 @@ private struct HubRail: View {
                     }
                     #endif
                 }
+                .railScrollTargetLayout()
                 // LazyHStack must not infer the shelf height from its currently realized cards.
                 .frame(height: shelfHeight, alignment: .top)
                 .padding(.vertical,
@@ -501,6 +518,8 @@ private struct HubRail: View {
             // keeps the inset out of the cards' own geometry (see the gaze-routing
             // gotcha in docs/DEVELOPMENT.md).
             .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth))
+            .railScrollAnchor($firstVisibleItemID)
+            .railViewportWidth($railViewportWidth)
             .accessibilityIdentifier("labstream.home.rail.\(hub.id)")
             #if os(tvOS)
             // Declared focus row: vertical moves treat the whole rail as a target, so a
@@ -526,6 +545,7 @@ private struct HomeShelfMediaCell: View {
     let width: CGFloat
     let imageHeight: CGFloat
     let labelHeight: CGFloat
+    var captionKind: HomeShelfCaptionPolicy.Kind = .none
 
     var body: some View {
         let artwork = HomeShelfPresentationPolicy.artwork(for: item, presentation: presentation)
@@ -542,10 +562,23 @@ private struct HomeShelfMediaCell: View {
                     #if os(tvOS)
                     .font(.body.weight(.medium))
                     .lineLimit(2)
+                    #elseif os(iOS)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
                     #else
                     .font(.headline)
                     .lineLimit(1)
                     #endif
+                #if os(iOS)
+                // Every sibling shows the same field (HomeShelfCaptionPolicy); an empty line
+                // keeps the reserved label height so rows stay aligned.
+                if let caption = HomeShelfCaptionPolicy.caption(for: item, kind: captionKind) {
+                    Text(caption)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                #else
                 if item.kind == .episode {
                     Text([item.seasonEpisodeCode, item.title].compactMap { $0 }.joined(separator: " · "))
                         .font(subtitleFont)
@@ -557,6 +590,7 @@ private struct HomeShelfMediaCell: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
+                #endif
             }
             .frame(width: width, height: labelHeight, alignment: .topLeading)
         }
@@ -825,6 +859,7 @@ struct PosterCell: View {
                         Text(String(year))
                             .font(secondaryLabelFont)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
             }
@@ -852,13 +887,17 @@ struct PosterCell: View {
         // headline (38pt) overwhelms a 236-pt poster at TV sizes; body-medium (29pt)
         // matches the caption weight of Apple's own TV shelves.
         .body.weight(.medium)
+        #elseif os(iOS)
+        // iPhone/iPad type pass: card titles are Body, context lines Caption, in every
+        // grid and rail (iPhone Duo design spec, Color & type).
+        .subheadline.weight(.semibold)
         #else
         labelStyle == .denseLibrary ? .subheadline.weight(.semibold) : .headline
         #endif
     }
 
     private var secondaryLabelFont: Font {
-        #if os(tvOS)
+        #if os(tvOS) || os(iOS)
         .caption
         #else
         labelStyle == .denseLibrary ? .caption : .subheadline

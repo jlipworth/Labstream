@@ -6,7 +6,7 @@ import Foundation
 /// could be misread as the runtime.
 public enum HomeShelfCaptionPolicy {
     public enum Kind: Equatable, Sendable {
-        /// A resume shelf (any card has progress): every card shows the time left.
+        /// A resume shelf (Continue Watching, On Deck, Next Up): every card shows the time left.
         case timeLeft
         /// Every card is an episode: "S1E3 · Title".
         case episode
@@ -16,9 +16,12 @@ public enum HomeShelfCaptionPolicy {
         case none
     }
 
-    public static func kind(for items: [MediaItem]) -> Kind {
+    /// - Parameters:
+    ///   - items: the shelf's cards.
+    ///   - shelfIdentifier: the Plex `hubIdentifier` or the Jellyfin/Emby rail id.
+    public static func kind(for items: [MediaItem], shelfIdentifier: String?) -> Kind {
         guard !items.isEmpty else { return .none }
-        if items.contains(where: { hasProgress($0) }) { return .timeLeft }
+        if isResumeShelf(identifier: shelfIdentifier) { return .timeLeft }
         if items.allSatisfy({ $0.kind == .episode }) { return .episode }
         if items.allSatisfy({ $0.year != nil }) { return .year }
         return .none
@@ -53,9 +56,13 @@ public enum HomeShelfCaptionPolicy {
         return "\(hours)h \(rest)m left"
     }
 
-    private static func hasProgress(_ item: MediaItem) -> Bool {
-        guard let offset = item.viewOffset, offset > 0,
-              let duration = item.duration, duration > 0 else { return false }
-        return offset < duration
+    /// Resume shelves by identifier: Plex `home.continue` / `home.ondeck`, Jellyfin/Emby
+    /// `continue-watching` / `next-up` (optionally backend-prefixed), the DEBUG fixture's
+    /// `fixture-resume`. A Recently Added shelf that happens to hold one started item keeps its
+    /// own field; that card still shows its progress bar on the art.
+    public static func isResumeShelf(identifier: String?) -> Bool {
+        guard let identifier = identifier?.lowercased() else { return false }
+        return ["continue", "ondeck", "on-deck", "next-up", "nextup", "resume"]
+            .contains { identifier.contains($0) }
     }
 }

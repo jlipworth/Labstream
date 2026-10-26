@@ -13,7 +13,25 @@ struct RailSectionHeader: View {
             // tvOS renders View All as the rail's trailing card (`RailViewAllCard`)
             // instead of a header link: a lone focusable in the header row is a detour
             // for the focus engine, and it reads better in the row it pages.
-            #if !os(tvOS)
+            #if os(iOS)
+            // View All is the secondary label with a chevron (amber means "selected" only). The
+            // header shares the rail's margin inside the same content region, so the link's
+            // trailing edge lines up with where the last card stops.
+            if let destination {
+                NavigationLink(value: destination) {
+                    HStack(spacing: 2) {
+                        Text("View All")
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .font(viewAllFont)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("View all \(title)")
+            }
+            #elseif !os(tvOS)
             if let destination {
                 NavigationLink("View All", value: destination)
                     .font(viewAllFont)
@@ -28,6 +46,9 @@ struct RailSectionHeader: View {
         #if os(tvOS)
         // TV type sizes run big: title3 (48pt) dwarfs the cards beneath it.
         .headline
+        #elseif os(iOS)
+        // Title style of the three-style iPhone/iPad type pass.
+        .title3.weight(.semibold)
         #else
         compactWidth ? .title3.bold() : .title2.bold()
         #endif
@@ -36,6 +57,8 @@ struct RailSectionHeader: View {
     private var viewAllFont: Font {
         #if os(tvOS)
         .body.weight(.semibold)
+        #elseif os(iOS)
+        .subheadline
         #else
         .subheadline.weight(.semibold)
         #endif

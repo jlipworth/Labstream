@@ -14,9 +14,9 @@ struct HomeShelfCaptionPolicyTests {
                   grandparentTitle: "Show", parentIndex: season, index: number)
     }
 
-    @Test func anyProgressMakesEveryCardShowTimeLeft() {
+    @Test func resumeShelvesShowTimeLeftOnEveryCard() {
         let items = [movie("a", offset: 4_620_000), movie("b"), episode("c")]
-        let kind = HomeShelfCaptionPolicy.kind(for: items)
+        let kind = HomeShelfCaptionPolicy.kind(for: items, shelfIdentifier: "home.continue")
         #expect(kind == .timeLeft)
         #expect(HomeShelfCaptionPolicy.caption(for: items[0], kind: kind) == "23m left")
         // An unstarted sibling still reads as time left, never as a bare runtime.
@@ -26,15 +26,26 @@ struct HomeShelfCaptionPolicyTests {
 
     @Test func episodeOnlyShelvesUseTheEpisodeCode() {
         let items = [episode("a"), episode("b", season: 2, number: 1)]
-        let kind = HomeShelfCaptionPolicy.kind(for: items)
+        let kind = HomeShelfCaptionPolicy.kind(for: items, shelfIdentifier: "home.recentlyadded")
         #expect(kind == .episode)
         #expect(HomeShelfCaptionPolicy.caption(for: items[1], kind: kind) == "S2E1 · Pilot")
     }
 
     @Test func yearOnlyWhenEverySiblingHasOne() {
-        #expect(HomeShelfCaptionPolicy.kind(for: [movie("a"), movie("b")]) == .year)
-        #expect(HomeShelfCaptionPolicy.kind(for: [movie("a"), movie("b", year: nil)]) == .none)
-        #expect(HomeShelfCaptionPolicy.kind(for: []) == .none)
+        #expect(HomeShelfCaptionPolicy.kind(for: [movie("a"), movie("b")], shelfIdentifier: nil) == .year)
+        #expect(HomeShelfCaptionPolicy.kind(for: [movie("a"), movie("b", year: nil)], shelfIdentifier: nil) == .none)
+        #expect(HomeShelfCaptionPolicy.kind(for: [], shelfIdentifier: "home.continue") == .none)
+    }
+
+    @Test(arguments: ["home.continue", "home.ondeck", "jellyfin-continue-watching", "emby-next-up",
+                      "fixture-resume"])
+    func resumeIdentifiers(identifier: String) {
+        #expect(HomeShelfCaptionPolicy.isResumeShelf(identifier: identifier))
+    }
+
+    @Test func aStartedItemInRecentlyAddedKeepsTheShelfField() {
+        let items = [movie("a", offset: 600_000), movie("b")]
+        #expect(HomeShelfCaptionPolicy.kind(for: items, shelfIdentifier: "home.movies.recent") == .year)
     }
 
     @Test(arguments: [
