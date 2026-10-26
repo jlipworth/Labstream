@@ -258,7 +258,9 @@ struct MobileShowBrowser: View {
             gutter: compactStyle ? Double(DS.Space.md) : Double(DS.Space.xl),
             rowSpacing: Double(DS.Space.lg),
             horizontalPadding: Double(padding),
-            minimumColumns: compactStyle ? 3 : 1)
+            minimumColumns: compactStyle ? 3 : 1,
+            maximumPosterWidth: compactStyle ? 150 : nil,
+            prefersEvenColumnsAboveMinimum: compactStyle)
         let metrics = MobileLibraryGridLayout.metrics(availableWidth: Double(columnWidth), style: style)
         let posterWidth = CGFloat(metrics.posterWidth)
         let columns = Array(repeating: GridItem(.fixed(posterWidth), spacing: CGFloat(metrics.gutter),

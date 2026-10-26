@@ -43,6 +43,37 @@ struct MobileLibraryGridLayoutTests {
         #expect(metrics.hingeGutter == nil)
     }
 
+    /// Folded landscape is 4 columns whether or not the A–Z rail is reserved yet (it is hidden
+    /// while loading and for libraries with one bucket), so the grid never jumps 5 → 4.
+    @Test(arguments: [594.0, 598.0], [0.0, 30.0])
+    func foldedLandscapeStaysFourWithOrWithoutTheRail(width: Double, reservation: Double) {
+        let metrics = MobileLibraryGridLayout.metrics(availableWidth: width,
+                                                      trailingReservation: reservation,
+                                                      style: .compact)
+        #expect(metrics.columnCount == 4)
+        #expect(metrics.posterWidth >= 104)
+        #expect(metrics.posterWidth <= 150)
+        #expect(abs(metrics.requiredWidth - width) < 0.001)
+    }
+
+    @Test func compactOddCountsAboveThreeRoundDownToEven() {
+        // 7 would fit at the minimum; 6 is used.
+        let metrics = MobileLibraryGridLayout.metrics(availableWidth: 800, style: .compact)
+        #expect(metrics.columnCount == 6)
+    }
+
+    @Test func evenRoundingNeverExceedsTheFamilyMaximum() {
+        // 643 pt (a slab phone in landscape): 5 fit; 4 would make 154.75 pt posters (> 150).
+        let metrics = MobileLibraryGridLayout.metrics(availableWidth: 667, style: .compact)
+        #expect(metrics.columnCount == 5)
+        #expect(metrics.posterWidth <= 150)
+    }
+
+    @Test func regularGridsKeepTheirFittedCount() {
+        let metrics = MobileLibraryGridLayout.metrics(availableWidth: 1100, style: .regular)
+        #expect(metrics.columnCount == 5)
+    }
+
     @Test func bookSplitsTwoPlusTwoAndKeepsBothOuterMargins() {
         // Sideways inner display with a trailing bar: content 0..867, hinge at 465.5...485.5.
         let width = 867.0
