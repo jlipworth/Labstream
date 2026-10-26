@@ -72,6 +72,7 @@ IPAD_DEVICE_TYPE_CANDIDATES=(
 # These iPhone device types are ordered newest/preferred first. If a local Xcode does not
 # have one, setup falls back to the first available iPhone device type reported by simctl.
 IPHONE_DEVICE_TYPE_CANDIDATES=(
+  "com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro"
   "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"
   "com.apple.CoreSimulator.SimDeviceType.iPhone-17"
   "com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro"
