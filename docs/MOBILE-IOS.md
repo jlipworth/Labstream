@@ -19,7 +19,10 @@ here.
 
 `LabstreamMobile` is the universal iPhone/iPad target. It compiles `Labstream/Shared/`,
 `Labstream/Capabilities/Downloads/`, and its exclusive `Labstream/Platforms/Mobile/` owner
-root, plus the shared `PMSKit` package. The public mobile support floor is iOS/iPadOS 26.1+.
+root, plus the shared `PMSKit` package. The public mobile support floor is iOS/iPadOS 26.1+
+(`IPHONEOS_DEPLOYMENT_TARGET = 26.1`). It is built with Xcode 27.1 and the iOS 27.1 SDK, which
+opts the app into the full iPhone Duo inner display and the vertical bars; supported devices are
+iPhone, iPad and the iPhone Duo foldable.
 
 ## Current mobile behavior
 
@@ -27,7 +30,8 @@ root, plus the shared `PMSKit` package. The public mobile support floor is iOS/i
   regular widths on iPadOS use the sidebar shape from `TabView` with `.sidebarAdaptable`
   (with the phone idiom, such as an unfolded iPhone Duo, it stays a tab bar).
   Search keeps the system `.search` tab role, the tab bar minimizes on scroll, and the
-  music mini player rides `.tabViewBottomAccessory`. Settings is a tab in regular width and a
+  music mini player rides `.tabViewBottomAccessory` with horizontal bars and becomes a bottom
+  safe-area inset beside a vertical bar (see [iPhone Duo design contract](#iphone-duo-design-contract)). Settings is a tab in regular width and a
   toolbar sheet in compact width; a size-class change in either direction hands off between
   the two, so a resize or fold never strands the selection or leaves a duplicate sheet open.
 - iPhone Duo (built with the iOS 27.1 SDK): the app fills either display and the system moves
@@ -86,9 +90,9 @@ root, plus the shared `PMSKit` package. The public mobile support floor is iOS/i
   places the control group: the whole safe frame; the aspect-fit video rectangle on a large
   portrait scene (unfolded Duo upright, iPad portrait; at least 300 pt tall); the trailing half
   after a book hinge (the top row stays); or a deck below a tabletop hinge, where the same layer
-  shrinks to the top half and the deck never auto-hides. The pose comes from the shell's pose
-  value, or from the player's read-only hinge interaction when it reports a partially open hinge
-  on the unfolded display. The bottom group ends before an active occlusion region (the outer
+  shrinks to the top half and the deck never auto-hides. The pose comes only from the shell's pose
+  value (the active `reservedRegions(kind: .division)` region, or the DEBUG override); the
+  player's read-only hinge interaction is diagnostics-only and never synthesises a pose. The bottom group ends before an active occlusion region (the outer
   camera island). For a fixed device, orientation and source the controls keep the same frames
   whatever the item's menu set, landscape frames do not depend on the source aspect, and hiding
   the chrome does not move the envelope. The PiP slot is always present (dimmed when PiP is
@@ -126,15 +130,81 @@ root, plus the shared `PMSKit` package. The public mobile support floor is iOS/i
 - The Plex client identity reports `X-Plex-Platform=iOS` and `X-Plex-Device` as `iPad` or
   `iPhone`; visionOS continues to report `visionOS` / `Apple Vision Pro`.
 
+## iPhone Duo design contract
+
+The full rationale, mockup sign-off and Apple sources live in the
+Design section of `docs/plans/iphone-duo.md`. These are the rules current code
+holds to; layout keys on size class and measured safe area, never on pose name, idiom or
+`UIScreen`.
+
+**Poses.** The inner display's hinge runs across the short side of the folded phone, so each half
+of the inner display is about the size of the outer display.
+
+| Pose | Display / orientation | Size class | Bars |
+| --- | --- | --- | --- |
+| Folded portrait | outer, 466×678 pt | compact width | vertical system column |
+| Folded landscape (tent) | outer, 678×466 pt | compact / compact | vertical column on the outer camera's edge (trailing or leading by rotation) |
+| Unfolded upright | inner, 669×951 pt | regular / regular | horizontal: top row plus floating bottom tab capsule |
+| Unfolded sideways | inner, 951×669 pt | regular / regular | vertical system column |
+| Tabletop | unfolded upright, partially folded (horizontal hinge) | as upright | as upright |
+| Book | unfolded sideways, partially folded (vertical hinge) | as sideways | as sideways |
+
+**Bars and safe area.**
+
+- The content region is the screen minus the horizontal safe-area insets. A vertical bar supplies
+  its inset on whichever edge carries it; handle each edge on its own and never cache, derive or
+  hardcode the inset. Margins (16 pt compact, 24 pt regular, 12 pt for rails) are measured from the
+  content region's edge, not the screen edge.
+- Only decoration and media run under the bar (background washes, detail key art, full-screen
+  video), via a background-layer `.ignoresSafeArea(edges: .horizontal)`. Text and controls stay in
+  the content region, and centred elements (empty states, mini player, sheets) centre in it.
+- Every action is a container toolbar item with a title and an SF Symbol so the system can move it
+  into the column; no custom controls float over content.
+- Horizontal shelves and rails **clip** at the content region: at rest nothing sits under the
+  column, and the last card still scrolls fully into view one margin short of it. Shadows get
+  vertical padding inside the rail, not `scrollClipDisabled(true)`. Card widths come from the
+  measured content-region width (whole cards plus about 30% of the next as the overflow cue).
+- Grids use even column counts wherever a fold can split them: 4 unfolded sideways (split 2 + 2
+  around a book hinge), 3 upright, 3 folded portrait, 4 folded landscape.
+- The mini player is a **bottom inset**: beside a vertical bar the shell hosts `MiniPlayerBar` with
+  `safeAreaInset(edge: .bottom)`, centred in the content region; with horizontal bars it stays the
+  `tabViewBottomAccessory`. Either way, scroll viewports end above it.
+- Text columns (detail metadata, Settings, login, empty states) are capped and centred in the
+  content region; unfolded Settings stays a centred form capped at 560 pt (no split). Downloads unfolded
+  sideways is a list plus detail.
+- Folding or unfolding is a resize plus a trait change, never a teardown: the selected tab,
+  navigation path (including Settings sheet to tab), scroll anchors, rail offsets, open sheets and
+  playback all survive. The player disables its vertical bar (`toolbarVerticalBehavior(.disabled)`);
+  single-button sheets do the same so Done sits in a horizontal header.
+- Color has one meaning each: amber is selected (including switch on state), green is plays-as-is
+  status only, red is destructive or failed, and everything else is neutral glass or label color.
+
+**Pose source and DEBUG override.** `providesDuoPose()` on the mobile shell installs the single
+`\.duoPose` value (always `.flat` on visionOS, tvOS and macOS). It comes only from the active
+`reservedRegions(kind: .division)` region (iOS 27.1); `UIHingeInteraction` is diagnostics-only.
+Book keeps the player overlay and moves the whole control group (transport, title, scrubber,
+bottom circles) into the trailing half; tabletop shows the video in the top half and a
+non-auto-hiding deck with the same controls in the bottom half. Because folding cannot be driven
+headlessly, Debug builds accept `LABSTREAM_DEBUG_DUO_POSE=book|tabletop` (launch environment, or
+`--labstream-debug-duo-pose <value>`): it synthesises a 20 pt hinge strip at the centre of the
+current bounds, applies only while the bounds match the pose's orientation (sideways for book,
+upright for tabletop), reports `flat` for unknown values, and records `duo.pose_override` in
+`AppDiagnostics`. Release never compiles the override. `scripts/duo-appresize.sh launch --pose
+book|tabletop` combines it with the `appResize` inner-size proxy; those captures prove layout
+against the seam only, and real Device Hub and hardware fold frames remain an open gate.
+
 ## Build and smoke on an iPhone or iPad simulator
 
 Use the canonical [iPhone/iPad simulator build](DEVELOPMENT.md#build-for-an-iphone-or-ipad-simulator)
 and [observable smoke](DEVELOPMENT.md#install-and-observe-a-simulator-smoke) procedures. Select
-`PLATFORM=iphone` for the compact-width path or `PLATFORM=ipad` for the regular-width path. The
+`PLATFORM=iphone` for the compact-width path, `PLATFORM=ipad` for the regular-width path, or
+`PLATFORM=duo` for the iPhone Duo foldable (`duowt-*`, `.simid-duo`; the `iPhone Duo` device type
+needs the iOS 27.1 simulator runtime and never falls back to a slab iPhone). The
 simulator helper creates independent mobile simulators, so neither path clones or mutates the
 visionOS golden simulator.
 
-A compatible installed iOS Simulator runtime is required. The mobile target is iOS/iPadOS 26.1+,
+A compatible installed iOS Simulator runtime is required (Xcode 27.1 ships the iOS 27.1 SDK; the
+newest installed iOS runtime is selected). The mobile target is iOS/iPadOS 26.1+,
 so older local Xcode/SDK installations may report deployment-target warnings or fail before app
 code compiles; install the matching platform/runtime in Xcode Settings before treating the mobile
 target as broken. Shut the selected simulator down when the smoke finishes, as described in the
@@ -188,9 +258,10 @@ multiple-device selection, install, and launch.
   aspects, rounded-corner clearance) and iPad compact Split View/Stage Manager widths, which the
   simulator fixture does not drive. In compact or windowed iPad layouts, check that the top-leading
   Close button clears the status bar and the window controls.
-- iPhone Duo: physical-device fold/unfold, a real Device Hub fold in the simulator, the
-  `tabViewBottomAccessory` mini player and minimize-on-scroll behaviour beside the vertical
-  bar (not yet observed with music playing), and Duo App Store screenshots. See
+- iPhone Duo: physical-device fold/unfold, real Device Hub inner-display, folded-landscape (both
+  rotations), book, tabletop and fold frames (the DEBUG pose override proves layout against the
+  seam only), the bottom-inset mini player beside the vertical bar and minimize-on-scroll with
+  horizontal bars (not yet observed with music playing), and Duo App Store screenshots. See
   [#419](https://github.com/jlipworth/Labstream/issues/419).
 - Physical iPhone/iPad validation for PiP, AirPlay, Control Center/lock-screen Now
   Playing, background interruption behavior, and App Intents/Spotlight invocation.
