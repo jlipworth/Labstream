@@ -4,8 +4,9 @@
 `downloads/overhaul`. The worktree Duo simulator platform is done (`c8cbbf5f`). Part 1 (toolchain,
 shell and non-player layout: Steps 1, 6, 7, 9 and the Step 8 hero sizing) is done; see the
 journal. Part 2 (the player: Steps 2 to 5) is done on the simulator; a real fold during playback
-is still a manual gate. The Step 8 rail metrics, Step 10 and Step 11 are open. A Duo design spec (see Design) now governs layout rework; the maintainer approved its mockups and decisions on 2026-10-25, and the rework (Steps 12 to 16) is done on the simulator with the gaps
-listed in the journal. The physical iPhone Duo gate and the Duo App Store screenshot gate stay open until
+is still a manual gate. A Duo design spec (see Design) now governs layout rework; the maintainer approved its mockups and decisions on 2026-10-25, and the rework (Steps 12 to 16) is done on the simulator with the gaps
+listed in the journal. The final simulator verification gate (Steps 10 and 11, 2026-10-26) passed
+with the remaining defects and gates listed in the journal. The physical iPhone Duo gate and the Duo App Store screenshot gate stay open until
 a person performs them. Simulator evidence does not close either one.
 
 **Tracking:** [#419](https://github.com/jlipworth/Labstream/issues/419).
@@ -891,6 +892,13 @@ tests. App-side wiring stays thin.
 
 ### Step 10: Duo XCUITest smoke and regression lanes
 
+**Status (2026-10-26):** done for the folded state. `LabstreamMobileDuoUITests` runs folded
+portrait and both folded-landscape rotations (through the DEBUG orientation route; the Duo
+simulator ignores `XCUIDevice.orientation`) and joins the `duo-ui-smoke` lane. The inner-size and
+transition-proxy XCUITests below were not viable: XCUITest keeps reporting the outer-display
+window during an `appResize` session, so those runs are judged from screenshots and
+`AppDiagnostics` (see the journal).
+
 - New `LabstreamMobileUITests/LabstreamMobileDuoUITests.swift`. It skips unless the device is a Duo,
   detected from `ProcessInfo` `SIMULATOR_MODEL_IDENTIFIER` or measured window size, not idiom.
   - **Folded (default boot):** fixture browse → detail → player. Assert the same `playback.surface`
@@ -920,6 +928,9 @@ tests. App-side wiring stays thin.
   turn.
 
 ### Step 11: verification sweep and docs
+
+**Status (2026-10-26):** simulator sweep, gallery and docs done; the manual Device Hub pass below
+is still the user's open gate.
 
 - Manual Device Hub pass (user): sign in to Plex on the Duo simulator. Do browse → detail →
   playback folded, unfold mid-playback, fold back, open PiP, close the player in the other state.
@@ -1130,8 +1141,8 @@ re-lays out the same layer and deck from the pose value (deviation pending sign-
 | --- | --- | --- |
 | PMSKit unit | Orientation-lock, restore, chrome-layout and rail-metric policies at Duo/iPhone/iPad viewports | Hermetic, headless |
 | Duo XCUITest, folded | Browse → detail → playback on the outer display, safe area, vertical status bar | Headless, `.simid-duo` |
-| Duo XCUITest, inner size | The same flow at 669×951 via appResize | Headless (host wrapper) |
-| Duo XCUITest, transition proxy | Resize during playback and with Settings open: no stop, no restart, advancing playhead | Headless proxy. **Not** a real fold |
+| Duo inner size | The same surfaces at 669×951 / 951×669 via appResize, plus DEBUG book/tabletop | Headless screenshots (XCUITest cannot observe the appResize session) |
+| Duo transition proxy | Resize during playback: no stop, no restart, advancing playhead | Headless proxy judged from `AppDiagnostics`. **Not** a real fold |
 | iPad Stage Manager resize | Compact↔regular trait path, cover survival | Headless |
 | Real fold/unfold | Display switch, scene phase, hinge status, PiP | Manual Device Hub (user) |
 | Regression | iPhone 18 Pro, iPad, visionOS, tvOS, macOS lanes; docs checks | Per `scripts/native-test-matrix.py affected` |
@@ -1417,3 +1428,46 @@ re-lays out the same layer and deck from the pose value (deviation pending sign-
     pre-existing warnings, none in touched files), Labstream/LabstreamTV/LabstreamMac compile,
     install UUID match, browse and offline fixture launches alive with no faults. The Downloads
     fixture has no rows, so the new row and detail pane were not captured.
+- 2026-10-26, final verification gate (Steps 10 and 11):
+  - Lanes: `native-test-matrix.py affected` (12 lanes), hermetic PMSKit (1793 + 109 tests) and
+    `scripts/ci-hygiene.sh` pass. Clean `LabstreamMobile` Duo build (warnings only in files that
+    already had them), install UUID match, browse fixture alive with only placeholder-server
+    network errors in the log.
+  - Duo UI smoke: `LabstreamMobileDuoUITests` folded portrait, landscape-left and
+    landscape-right (browse → detail → fixture playback; headers, View All, whole cards and detail
+    actions clear the measured column; a tap on the column over the clipped cue card stays on
+    Home; the playhead advances) plus the lane's fixture tests, the book override and both Stats
+    tests pass on the folded Duo. The upright and tabletop player tests skip there (no large
+    portrait scene); on iPad they now run and pass, after the UI tests measure the scene from
+    the largest window (`windows.firstMatch` is a zero-size window on iPadOS 27, which had
+    failed the lock test and skipped both). The host-resize XCUITests were dropped:
+    XCUITest still reports 466×678 while `appResize` has moved the app.
+  - Resize proxy during playback (player fixture, 669×951 → 466×678 → 669×951 → 951×669 →
+    669×951): one `playback.session_start`, no `playback.session_stop`, no
+    `player.view_disappear`, no `player.lifecycle_pause`; chrome branch and arrangement changes
+    only; the buffered-ahead time fell 15 s per 15 s snapshot (advancing playhead). The resizable
+    session refused the orientation request as before.
+  - Gallery: 105 captures (15 surfaces × folded portrait, both folded-landscape rotations,
+    upright, sideways, book, tabletop; login landscape via `--ui-testing`) with a verdict per
+    image in `artifacts/duo-final/gallery/index.md` (gitignored). New DEBUG routes:
+    `--ui-testing-orientation`, Settings via `--ui-testing-initial-tab settings`, fixture
+    episodes in `--ui-testing-open-item`, `--ui-testing-open-first-download`.
+  - Fixed: black Settings switches (the form tint hijacked `Color.accentColor`), the repeated
+    Search hub title and its fourth text style, clipped rail cards taking taps through the
+    column, and iPhone/iPad worktree simulator creation on Xcode 27.1 (the iOS 27.1 runtime
+    supports only the Duo).
+  - Remaining defects: the selected segment is the system white thumb, not amber (a global
+    appearance tint turned the tab selection blue and was reverted); the player scrubber's
+    unfilled track is nearly invisible over dark video; Search at regular width shows an inline
+    plus a large "Search" title and three clear-like controls; regular-width Settings' large
+    title sits at the page edge; regular-width download rows add an inline Delete that compact
+    rows lack; the login wordmark's amber "stream"; no music fixture (only the error state).
+  - Regression smokes (clean build, install UUID match, launch, log with no faults, screenshot):
+    iPhone 18 Pro and iPad on the iOS 27.0 runtime (plus their fixture UI tests), Apple TV
+    (browse fixture), the visionOS clone (signed-in Plex browse) and the macOS host app
+    (`--launch`, then `--delete-all-staged`); evidence in `artifacts/duo-final/regression/`
+    (gitignored).
+  - Still open: real Device Hub unfold captures (decision 9), the inner display's own vertical
+    bar, which landscape rotation is camera-leading and the camera-island trim, the
+    `OverlayArrangement` deviation sign-off, cross-backend playback passes, and the physical
+    iPhone Duo.

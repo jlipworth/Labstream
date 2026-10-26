@@ -187,6 +187,25 @@ iOS 27.1 or later simulator runtime (`xcodebuild -downloadPlatform iOS`). The sc
 to a non-foldable iPhone for this platform. Simulator folding/unfolding is not proof of physical
 iPhone Duo behavior; the hardware gate stays open.
 
+Verified on Xcode 27.1 with the Duo simulator (2026-10-26):
+
+- The iOS 27.1 simulator runtime supports only the iPhone Duo device type. iPhone and iPad
+  worktree simulators are created on the newest runtime that lists their device type (iOS 27.0),
+  which `scripts/worktree-sim.sh` selects automatically.
+- `XCUIDevice.shared.orientation` changes the reported device orientation but never rotates the
+  folded Duo app. Folded-landscape evidence uses the DEBUG `--ui-testing-orientation
+  landscape-left|landscape-right` capture route (a scene geometry request).
+- A plain `simctl io screenshot` targets the inner `LCD-1` display, which is black while folded.
+  Capture the outer display by its UUID (`simctl io <id> enumerate`, the 1398x2034 port) and an
+  `appResize` session with `--display=Resizable`.
+- While `devicectl device appResize` has moved the app to the Resizable display, XCUITest still
+  reports the outer-display window (466x678), so inner-size and resize-during-playback runs are
+  judged from screenshots and `AppDiagnostics`, not XCUITest. The `appResize` session also uses
+  horizontal bars, so the inner display's vertical bar is not reproduced.
+- Setting `UISegmentedControl.appearance().selectedSegmentTintColor` turns the iOS 27.1 tab
+  bar's selected item system blue (the accent is lost), so do not tint segmented pickers through
+  the appearance proxy.
+
 Xcode 27.1 (27A9275) is the required toolchain for every target. It ships the iOS 27.1 SDK, which
 opts `LabstreamMobile` into the full iPhone Duo inner display and the vertical tab bar/toolbars on
 the trailing edge. The visionOS, tvOS and macOS SDKs bundled with it remain 27.0. Every target

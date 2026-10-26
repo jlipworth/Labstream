@@ -142,15 +142,21 @@ root changes. Git discovery includes deleted paths and both endpoints of renames
 working-tree changes when requested; filenames are read with NUL delimiters.
 
 `duo-ui-smoke` runs the mobile semantic fixture smoke on this worktree's iPhone Duo simulator
-(`--duo-sim-id`, `.simid-duo`, folded outer display by default), plus two player fixture checks:
+(`--duo-sim-id`, `.simid-duo`, folded outer display by default), plus player fixture checks:
 the landscape lock follows the measured scene class (phone-class scenes lock, large scenes keep the
-device orientation) and the chrome envelope stays put across reveal and hide. `mobile-ui-smoke`
-also runs the lock check. Shared and mobile-platform paths select it alongside `mobile-ui-smoke`.
+device orientation), the chrome envelope stays put across reveal and hide, and the DEBUG book pose
+moves the control group into the trailing half. `LabstreamMobileDuoUITests` adds browse → detail
+→ playback in folded portrait and both folded-landscape rotations (the DEBUG
+`--ui-testing-orientation` route, because the Duo simulator ignores `XCUIDevice.orientation`),
+asserting that content clears the measured vertical-bar column and the playhead advances.
+`mobile-ui-smoke` also runs the lock check. Shared and mobile-platform paths select it alongside `mobile-ui-smoke`.
 It proves the posture the simulator booted in only. `scripts/duo-appresize.sh` drives the
 inner-size proxy by hand (`launch [--pose book|tabletop]`, `start`, `set WxH`, `shot`, `stop`):
 `--pose` sets the DEBUG-only `LABSTREAM_DEBUG_DUO_POSE` override so book and tabletop layouts can
-be captured against the pose seam. Those captures prove layout against the seam only; an automated
-inner-size lane, a fold/unfold during playback, Device Hub and physical-device checks remain open.
+be captured against the pose seam. Those captures prove layout against the seam only. XCUITest
+cannot observe an `appResize` session (it keeps reporting the outer-display window), so inner-size
+and resize-during-playback runs are judged from screenshots and `AppDiagnostics`; a real
+fold/unfold, Device Hub and physical-device checks remain open.
 
 The bounded command and playback runners terminate their owned process group on timeout or
 cancellation. Cleanup waits for surviving descendants, not just the leader, before escalating;

@@ -126,6 +126,15 @@ layout code changed.
       poster when available; a Thumb-only episode keeps a 16:9 request and is cropped, not warped,
       into the poster card. Also regression-check one movie rail and one missing-parent episode
       fallback (regression coverage for the fixed #245 warped-artwork defect).
+- [ ] **iPhone Duo browse (#419):** Folded portrait and both folded-landscape rotations keep
+      shelves, View All, detail titles and actions clear of the vertical bar's column (rails clip
+      at the content region and a tap on the column over a clipped card does nothing); grids are
+      3 folded portrait / 4 folded landscape / 3 upright / 4 sideways; unfolded sideways shows the
+      Downloads and show | season splits; book keeps the grid's outer margins with a wide hinge
+      gutter. Simulator evidence (2026-10-26): `LabstreamMobileDuoUITests` folded runs and the
+      gallery in `artifacts/duo-final/gallery/` (gitignored) cover every surface; inner sizes
+      come from the appResize proxy, which has horizontal bars. Open: the inner display with its
+      own vertical bar, real Device Hub folds (Resolved decision 9) and the physical iPhone Duo.
 - [ ] Home Continue Watching and On Deck render poster cards (episodes show season/show posters)
       whether a movie or an episode was watched most recently, on Plex, Jellyfin, and Emby.
 
@@ -235,8 +244,14 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
       the video rectangle; sideways shows the hover preview with a trackpad. Book moves the
       transport, title, scrubber and circles into the trailing half; tabletop shows the picture
       above the hinge and a deck below that does not auto-hide. Folding or unfolding mid-playback
-      never stops, reloads or seeks. DEBUG pose-override and appResize captures exist; real
-      Device Hub and hardware folds are open.
+      never stops, reloads or seeks. Simulator evidence (2026-10-26): the folded Duo UI smoke
+      (`LabstreamMobileDuoUITests`, both folded-landscape rotations through the DEBUG orientation
+      route) and the book-override test pass; the appResize proxy flipped 669x951 / 466x678 /
+      951x669 during playback with one `playback.session_start`, no stop, no view disappear and
+      an advancing playhead; DEBUG book and tabletop captures match the design. Open: the
+      camera-island trim and which rotation is camera-leading (no occlusion region in the
+      simulator), the inner display's own vertical bar, a real Device Hub unfold, and the
+      physical iPhone Duo.
 - [ ] **iPadOS:** Player layout and menus work in regular and compact multitasking widths;
       PiP, AirPlay, keyboard controls, and the adaptive sidebar do not strand presentation.
 - [ ] **iPad pointer preview:** Continuous pointer movement over the timeline advances the
