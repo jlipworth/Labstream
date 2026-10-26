@@ -164,6 +164,17 @@ unknown facts, transforms, and HDR are excluded. This avoids the reproduced visu
 on the offset-primed quality-reopen path, without asserting a shared cause with the H.264
 starvation issue ([evidence and limits](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/audits/2026-09-13-emby-hevc-sdr-timeline.md)).
 
+The fragmented-MP4 copy lane requests `SegmentLength=2` (#420). Emby muxes each fMP4 segment as one
+fragment, with every video sample ahead of the segment's audio. At the 6-second default, a 4K
+segment is about 30 MB. Labstream's HDR render path back-pressures the video, so AVPlayer reaches
+that audio seconds after its presentation time, discards it, and resyncs. The result is audible
+dropouts every few seconds, with copied AC-3 or converted DTS/TrueHD alike, worst after Emby's
+`-ss` transcode restarts. Two-second segments bound how far audio trails its video. Mac acceptance
+recorded zero audio-queue resyncs for converted audio (DTS→AAC; shipping AC-3 also converts via the
+workaround above) across start, deep seek, resume and restarts. An intermediate AC-3-copy build was
+also clean. With 6-second segments, the same scenario produced dozens of resyncs per few
+minutes. The MPEG-TS static-recovery lane keeps its existing segmenting.
+
 Verified Emby copy HLS reopens retain their 12-second buffer target but keep automatic
 waiting enabled, so buffer exhaustion does not strand AVPlayer at rate zero. Verified
 Jellyfin copy reopens use the same exception; approved video-encode settings remain unchanged. AC-3 copy
@@ -503,6 +514,10 @@ titles. The player never shows the server host, only Local / Remote / Downloaded
 The reason line and the expanded Decision rows come from `PlaybackExplanation`: one lane
 headline and at most two useful reasons, with provenance (backend-reported, app-requested, or
 inferred).
+A MediaBrowser server can name only a container reason while still converting audio (Emby
+reports `ContainerNotSupported` for DTS converted to AAC). When the rendered audio codec family
+differs from the source, the explanation is refined to "Video is copied; audio is converted"
+(an inferred audio-transcode fact), so the device card no longer repeats the source codec.
 The normal player must not show raw backend reason arrays, IDs, or URLs. Emby Profile 5 is
 blocked rather than forced through a tone-map, so an Emby no-fallback DV open should refuse; it
 is not a requested tone-map explanation.

@@ -16,6 +16,18 @@ import Testing
         #expect(EmbyVideoCopyPolicy.copyURL(duplicate) == url)
     }
 
+    @Test func fragmentedMP4CopyLaneRequestsShortSegments() throws {
+        // #420: a 6 s muxed fragment puts every video sample before its audio; behind a
+        // back-pressured video renderer AVPlayer reaches that audio late and discards it.
+        let url = try #require(EmbyVideoCopyPolicy.copyURL(base.appending(queryItems: [
+            URLQueryItem(name: "segmentlength", value: "6")])))
+        let query = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
+        #expect(query.filter { $0.name.lowercased() == "segmentlength" }.map(\.value) == ["2"])
+        let ts = try #require(EmbyVideoCopyPolicy.copyURL(base, useMPEGTS: true))
+        let tsQuery = try #require(URLComponents(url: ts, resolvingAgainstBaseURL: false)?.queryItems)
+        #expect(!tsQuery.contains { $0.name.lowercased() == "segmentlength" })
+    }
+
     @Test func transportStreamTimelineIsScopedToH264StaticRecovery() {
         #expect(EmbyVideoCopyPolicy.usesTransportStreamRecovery(videoCodec: "H264", prefersStaticRecovery: true))
         #expect(!EmbyVideoCopyPolicy.usesTransportStreamRecovery(videoCodec: "h264", prefersStaticRecovery: false))

@@ -354,6 +354,11 @@ final class PlaybackDiagnostics {
         if let audioFourCC = result.audioCodecFourCC {
             runtimeAudioCodecFourCC = audioFourCC
             runtimeAudioChannels = result.audioChannels
+            if isMediaBrowserLane,
+               PlaybackAudioCodecFamily.runtimeDiffersFromSource(sourceCodec: audioCodec,
+                                                                 runtimeFourCC: audioFourCC) == true {
+                playbackExplanation = playbackExplanation.refinedWithRuntimeAudioConversion()
+            }
         }
         guard result.sawVideoFormatDescriptions else { return }
         runtimeContainsHDR = result.containsHDRVideo

@@ -61,7 +61,11 @@ enum PlaybackHDRProbe {
 
         var audioFourCC: String?
         var audioChannels: Int?
-        let audioTracks = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
+        var audioTracks = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
+        if audioTracks.isEmpty {
+            // HLS assets expose no tracks; the rendered renditions live on the player item.
+            audioTracks = playerItem.tracks.compactMap(\.assetTrack).filter { $0.mediaType == .audio }
+        }
         for track in audioTracks {
             guard let format = (try? await track.load(.formatDescriptions))?.first else { continue }
             audioFourCC = fourCCString(CMFormatDescriptionGetMediaSubType(format))

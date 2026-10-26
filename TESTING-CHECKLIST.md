@@ -163,6 +163,9 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
       sessions/encoders, and does not create a hidden retry or transcode loop.
 - [ ] Jellyfin/Emby reopen sends the selected quality, audio, subtitle, play-session, and
       media-source state; progress start/update/stop reaches the correct backend.
+- [ ] Emby Original 4K video-copy title with DTS/TrueHD (converted) and with AC-3 audio: audio plays
+      continuously from start, after a deep seek, and after resume (#420). The Stats panel says
+      "audio is converted" and shows the delivered codec under "This device" when Emby converts.
 - [ ] Plex timeline updates on play/pause/stop and near-end watched state. Jellyfin/Emby
       video progress likewise updates Continue Watching after reopen.
 - [ ] Skip Intro/Credits appears only inside valid marker ranges and automatic/manual

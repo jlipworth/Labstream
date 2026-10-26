@@ -294,6 +294,16 @@ public struct PlaybackExplanation: Sendable, Equatable {
                                    evidence: facts)
     }
 
+    /// A media-browser server can report a container-only reason while still converting the
+    /// selected audio (Emby lists `ContainerNotSupported` for DTS converted to AAC). When the
+    /// rendered audio codec family differs from the source, the audio is not being copied.
+    public func refinedWithRuntimeAudioConversion() -> PlaybackExplanation {
+        guard lane == .directStream else { return self }
+        var facts = evidence
+        facts.append(.init(reason: .audioTranscode, provenance: .inferred))
+        return PlaybackExplanation(lane: .audioOnlyTranscode, evidence: facts)
+    }
+
     private static func plexLane(_ decision: DecisionResponse?,
                                  decisionUnavailableMeansTranscode: Bool) -> PlaybackExplanationLane {
         guard let decision else {
@@ -386,6 +396,46 @@ private extension PlaybackExplanationReason {
             true
         default:
             false
+        }
+    }
+}
+
+/// Compares a backend source audio codec name with the codec AVFoundation actually rendered.
+public enum PlaybackAudioCodecFamily {
+    /// nil when either side is unknown or outside the families this comparison understands.
+    public static func runtimeDiffersFromSource(sourceCodec: String?, runtimeFourCC: String?) -> Bool? {
+        guard let source = family(sourceCodec: sourceCodec),
+              let runtime = family(fourCC: runtimeFourCC) else { return nil }
+        return source != runtime
+    }
+
+    static func family(sourceCodec: String?) -> String? {
+        switch sourceCodec?.lowercased() {
+        case "aac": "aac"
+        case "ac3": "ac3"
+        case "eac3", "ec3", "ec-3": "eac3"
+        case "dts", "dca": "dts"
+        case "truehd", "mlp": "truehd"
+        case "flac": "flac"
+        case "alac": "alac"
+        case "opus": "opus"
+        case "mp3": "mp3"
+        case let codec? where codec.hasPrefix("pcm"): "pcm"
+        default: nil
+        }
+    }
+
+    static func family(fourCC: String?) -> String? {
+        switch fourCC?.lowercased() {
+        case "aac ", "mp4a", "aach", "aacp": "aac"
+        case "ac-3": "ac3"
+        case "ec-3": "eac3"
+        case "flac": "flac"
+        case "alac": "alac"
+        case "opus": "opus"
+        case ".mp3": "mp3"
+        case "lpcm": "pcm"
+        default: nil
         }
     }
 }
