@@ -12,6 +12,10 @@ import PMSKit
 struct SettingsView: View {
     let authManager: AuthManager
     let catalogRepository: LibraryCatalogRepository
+    /// Optional shared vertical scroll offset, so the iPhone/iPad shell can carry the scroll
+    /// position between the compact Settings sheet and the regular-width Settings tab when the
+    /// size class changes (iPhone Duo fold/unfold, iPad resize).
+    var scrollOffset: Binding<CGFloat?>? = nil
 
     @Environment(AppModel.self) private var appModel
     @Environment(\.artworkPipeline) private var artworkPipeline
@@ -89,6 +93,18 @@ struct SettingsView: View {
             diagnosticsSection
             aboutSection
             accountSection
+        }
+        #if os(iOS)
+        .modifier(MobileSettingsFormLayout(scrollOffset: scrollOffset))
+        #endif
+        .navigationDestination(for: SettingsRoute.self) { route in
+            switch route {
+            case .libraryVisibility:
+                LibraryVisibilityEditor(catalogRepository: catalogRepository)
+                    #if os(iOS)
+                    .mobileSettingsSheetBarBehavior()
+                    #endif
+            }
         }
         .labstreamTopLevelNavigationTitle("Settings")
         .onAppear {
@@ -172,25 +188,33 @@ struct SettingsView: View {
                 Label("Auto Play Up Next", systemImage: "forward.end")
             }
 
-            Picker("Up Next Countdown", selection: $upNextCountdownSeconds) {
+            Picker(selection: $upNextCountdownSeconds) {
                 ForEach([0, 5, 10, 15, 30, 60], id: \.self) { seconds in
                     Text(seconds == 0 ? "Immediate" : "\(seconds)s").tag(seconds)
                 }
+            } label: {
+                Label("Up Next Countdown", systemImage: "timer")
             }
             .disabled(!autoPlayUpNext)
 
-            Picker("Rewind on Resume", selection: $resumeRewindSeconds) {
+            Picker(selection: $resumeRewindSeconds) {
                 ForEach([0, 5, 10, 15, 30, 60], id: \.self) { seconds in
                     Text(seconds == 0 ? "None" : "\(seconds)s").tag(seconds)
                 }
+            } label: {
+                Label("Rewind on Resume", systemImage: "gobackward")
             }
 
-            Picker("Skip Intro", selection: skipIntroModeBinding) {
+            Picker(selection: skipIntroModeBinding) {
                 skipModeRows
+            } label: {
+                Label("Skip Intro", systemImage: "forward.frame")
             }
 
-            Picker("Skip Credits", selection: skipCreditsModeBinding) {
+            Picker(selection: skipCreditsModeBinding) {
                 skipModeRows
+            } label: {
+                Label("Skip Credits", systemImage: "forward.end.alt")
             }
 
             Toggle(isOn: $adaptiveBitrateEnabled) {
@@ -239,22 +263,26 @@ struct SettingsView: View {
                 Label("Preferred Subtitles", systemImage: "captions.bubble")
             }
 
-            Picker("Auto-select Subtitles", selection: Binding(
+            Picker(selection: Binding(
                 get: { SubtitleAutoSelectMode(rawValue: subtitleAutoSelectModeRaw) ?? .manual },
                 set: { subtitleAutoSelectModeRaw = $0.rawValue }
             )) {
                 ForEach(SubtitleAutoSelectMode.allCases) { mode in
                     Text(mode.label).tag(mode)
                 }
+            } label: {
+                Label("Auto-select Subtitles", systemImage: "text.bubble")
             }
 
-            Picker("Burn Subtitles", selection: Binding(
+            Picker(selection: Binding(
                 get: { SubtitleBurnMode(rawValue: subtitleBurnModeRaw) ?? .automatic },
                 set: { subtitleBurnModeRaw = $0.rawValue }
             )) {
                 ForEach(SubtitleBurnMode.allCases) { mode in
                     Text(mode.label).tag(mode)
                 }
+            } label: {
+                Label("Burn Subtitles", systemImage: "square.bottomhalf.filled")
             }
         } header: {
             Text("Playback")
@@ -361,7 +389,7 @@ struct SettingsView: View {
                     Text("No Plex servers discovered.")
                         .foregroundStyle(.secondary)
                 } else {
-                    Picker("Plex Server", selection: Binding(
+                    Picker(selection: Binding(
                         get: { appModel.selectedServer?.clientIdentifier ?? "" },
                         set: { serverID in
                             guard !serverID.isEmpty,
@@ -387,6 +415,8 @@ struct SettingsView: View {
                                 Text(serverPickerLabel(server))
                                     .tag(server.clientIdentifier)
                             }
+                        } label: {
+                            Label("Plex Server", systemImage: "server.rack")
                         }
                         .disabled(selectingPlexServerID != nil || rediscovering || checkingPlexServers)
                     if let selectingPlexServerID,
@@ -575,9 +605,7 @@ struct SettingsView: View {
 
     private var librariesSection: some View {
         SwiftUI.Section {
-            NavigationLink {
-                LibraryVisibilityEditor(catalogRepository: catalogRepository)
-            } label: {
+            NavigationLink(value: SettingsRoute.libraryVisibility) {
                 Label("Choose Libraries", systemImage: "rectangle.stack.badge.person.crop")
             }
         } header: {
@@ -1205,6 +1233,104 @@ private enum MacSettingsSignInHandoff {
     @MainActor
     static func focusMainWindow() {
         MacMainWindowController.shared.activateMainWindow()
+    }
+}
+#endif
+
+/// Value-based Settings navigation, so the iPhone/iPad shell can carry the Settings path between
+/// the compact sheet and the regular-width tab across a size-class change.
+enum SettingsRoute: Hashable {
+    case libraryVisibility
+}
+
+#if os(iOS)
+/// iPhone/iPad Settings form layout (iPhone Duo design spec, "Settings"):
+/// - row symbols and action rows use the label color; amber means "selected" only, and switches
+///   keep their amber on state through `LabstreamSwitchToggleStyle`;
+/// - in regular width the grouped form is capped at 560 pt and centred in the content region
+///   (the measured width already excludes the vertical bar's safe-area inset);
+/// - the vertical scroll offset is published to and restored from the shell's shared value.
+private struct MobileSettingsFormLayout: ViewModifier {
+    let scrollOffset: Binding<CGFloat?>?
+
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @State private var containerWidth: CGFloat = 0
+    @State private var position = ScrollPosition()
+    @State private var restoredOffset = false
+
+    func body(content: Content) -> some View {
+        content
+            .tint(.primary)
+            .contentMargins(.horizontal, capMargin, for: .scrollContent)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { containerWidth = $0 }
+            .scrollPosition($position)
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentOffset.y + geometry.contentInsets.top
+            } action: { _, offset in
+                guard restoredOffset else { return }
+                scrollOffset?.wrappedValue = offset
+            }
+            .onAppear {
+                defer { restoredOffset = true }
+                guard !restoredOffset, let offset = scrollOffset?.wrappedValue, offset > 0 else { return }
+                position.scrollTo(y: offset)
+            }
+    }
+
+    private var capMargin: CGFloat {
+        guard horizontalSizeClass == .regular else { return 0 }
+        return CGFloat(MobileShellLayoutPolicy.readableColumnMargin(
+            containerWidth: Double(containerWidth),
+            maximumWidth: MobileShellLayoutPolicy.settingsFormMaximumWidth))
+    }
+}
+
+/// The one switch style: the on state is the amber accent (= selected/chosen), never the system
+/// green, which is reserved for the Direct-play status.
+struct LabstreamSwitchToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Toggle(configuration)
+            .toggleStyle(.switch)
+            .tint(Color.accentColor)
+    }
+}
+
+extension View {
+    /// The Settings sheet has a single Done button, so it disables its vertical bar (HIG: sheets
+    /// with one button "stop just short of the front-facing camera"): Done sits in a horizontal
+    /// sheet header while the window's column stays visible and dimmed. Applied to every screen
+    /// in the sheet's stack, because the navigation stack forwards the preference to its top view.
+    @ViewBuilder
+    func mobileSettingsSheetBarBehavior() -> some View {
+        modifier(MobileSettingsSheetBarBehavior())
+    }
+
+    /// The iPhone/iPad Settings sheet chrome: a horizontal header with Done.
+    func mobileSettingsSheetChrome(onDone: @escaping () -> Void) -> some View {
+        self
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done", action: onDone)
+                }
+            }
+            .mobileSettingsSheetBarBehavior()
+    }
+}
+
+extension EnvironmentValues {
+    /// True inside the compact Settings sheet, whose screens all disable the vertical bar.
+    @Entry var mobileSettingsIsSheet = false
+}
+
+private struct MobileSettingsSheetBarBehavior: ViewModifier {
+    @Environment(\.mobileSettingsIsSheet) private var isSheet
+
+    func body(content: Content) -> some View {
+        if isSheet, #available(iOS 27.1, *) {
+            content.toolbarVerticalBehavior(.disabled)
+        } else {
+            content
+        }
     }
 }
 #endif

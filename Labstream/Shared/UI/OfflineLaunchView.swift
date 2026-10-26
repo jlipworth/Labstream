@@ -33,7 +33,13 @@ struct OfflineLaunchView: View {
                 NavigationStack {
                     SettingsView(authManager: authManager,
                                  catalogRepository: runtime.libraryCatalogRepository)
+                        #if os(iOS)
+                        .mobileSettingsSheetChrome { showingSettings = false }
+                        #endif
                 }
+                #if os(iOS)
+                .environment(\.mobileSettingsIsSheet, true)
+                #endif
                 .environment(appModel)
                 .environment(downloadManager)
                 .environment(runtime.musicPlayer)
@@ -106,21 +112,27 @@ struct OfflineLaunchView: View {
                 .accessibilityLabel("Offline. \(Self.offlineExplanation)")
         }
         #endif
-        ToolbarItem(placement: .primaryAction) {
+        #if os(iOS)
+        // iPhone/iPad: Reconnect is an ordinary neutral toolbar item in the same group and style
+        // as its siblings, so the system can move the group into the vertical bar (amber means
+        // "selected" only).
+        ToolbarItemGroup {
+            reconnectButton
             Button {
-                reconnect()
+                showingSignIn = true
             } label: {
-                if reconnecting {
-                    ProgressView()
-                } else {
-                    Label("Reconnect", systemImage: "arrow.clockwise")
-                }
+                Label("Sign In", systemImage: "person.crop.circle")
             }
-            .labstreamGlassProminentButtonStyle()
-            .disabled(reconnecting)
-            .accessibilityLabel(reconnecting ? "Connecting" : "Reconnect")
-            .accessibilityHint(Self.offlineExplanation)
-            .accessibilityIdentifier("labstream.offline-launch.reconnect")
+            Button {
+                showingSettings = true
+            } label: {
+                Label("Settings", systemImage: "gearshape")
+            }
+        }
+        #else
+        ToolbarItem(placement: .primaryAction) {
+            reconnectButton
+                .labstreamGlassProminentButtonStyle()
         }
         ToolbarItemGroup {
             Button {
@@ -134,6 +146,23 @@ struct OfflineLaunchView: View {
                 Label("Settings", systemImage: "gearshape")
             }
         }
+        #endif
+    }
+
+    private var reconnectButton: some View {
+        Button {
+            reconnect()
+        } label: {
+            if reconnecting {
+                ProgressView()
+            } else {
+                Label("Reconnect", systemImage: "arrow.clockwise")
+            }
+        }
+        .disabled(reconnecting)
+        .accessibilityLabel(reconnecting ? "Connecting" : "Reconnect")
+        .accessibilityHint(Self.offlineExplanation)
+        .accessibilityIdentifier("labstream.offline-launch.reconnect")
     }
 
     private func reconnect() {

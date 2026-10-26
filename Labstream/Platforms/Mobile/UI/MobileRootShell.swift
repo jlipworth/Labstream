@@ -8,6 +8,20 @@ enum MobileSettingsPresentationAction: Equatable {
   case dismissSheet(selecting: AppDestination)
 }
 
+/// Settings navigation shared by the compact sheet and the regular-width tab, so a size-class
+/// change (iPhone Duo fold/unfold, iPad resize) moves Settings between them at the same depth and
+/// scroll position (design spec global rule 9).
+struct MobileSettingsNavigationState: Equatable {
+  var path: [SettingsRoute] = []
+  var scrollOffset: CGFloat?
+
+  /// Opening the sheet from the toolbar is a fresh visit: start at the Settings root.
+  mutating func beginFreshVisit() {
+    path = []
+    scrollOffset = nil
+  }
+}
+
 enum MobileSettingsPresentationPolicy {
   /// Keeps Settings reachable across a horizontal size-class change (iPad multitasking resize,
   /// iPhone Duo fold/unfold). Compact width has no Settings tab, so a selected Settings tab moves
@@ -35,7 +49,9 @@ struct PlatformRootShell: View {
   @Bindable var navigation: RootNavigationCoordinator
 
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+  @Environment(\.labstreamVerticalBarEdge) private var verticalBarEdge
   @State private var showsSettingsSheet = false
+  @State private var settingsNavigation = MobileSettingsNavigationState()
 
   private var appModel: AppModel { runtime.appModel }
   private var authManager: AuthManager { runtime.authManager }
@@ -63,22 +79,23 @@ struct PlatformRootShell: View {
       }
     }
     .tabViewStyle(.sidebarAdaptable)
-    .tabBarMinimizeBehavior(.onScrollDown)
-    .tabViewBottomAccessory(isEnabled: musicPlayer.current != nil) {
+    .tabBarMinimizeBehavior(
+      MobileShellLayoutPolicy.minimizesTabBarOnScroll(verticalBarEdge: verticalBarEdge)
+        ? .onScrollDown : .automatic)
+    // With horizontal bars the system places the accessory above the bottom tab capsule. Beside
+    // a vertical bar each tab hosts the bar as a bottom inset instead (`miniPlayerInset`).
+    .tabViewBottomAccessory(
+      isEnabled: musicPlayer.current != nil && miniPlayerPlacement == .tabBottomAccessory
+    ) {
       MiniPlayerBar(presentation: $navigation.nowPlayingPresentation)
     }
+    .nowPlayingSheet(presentation: $navigation.nowPlayingPresentation)
     .sheet(isPresented: $showsSettingsSheet) {
-      NavigationStack {
-        SettingsView(
-          authManager: authManager,
-          catalogRepository: runtime.libraryCatalogRepository
-        )
-        .toolbar {
-          ToolbarItem(placement: .confirmationAction) {
-            Button("Done") { showsSettingsSheet = false }
-          }
-        }
+      NavigationStack(path: $settingsNavigation.path) {
+        settingsView
+          .mobileSettingsSheetChrome { showsSettingsSheet = false }
       }
+      .environment(\.mobileSettingsIsSheet, true)
     }
     .onChange(of: navigation.selection) { _, destination in
       if destination == .search {
@@ -97,9 +114,11 @@ struct PlatformRootShell: View {
       case .unchanged:
         break
       case .presentSheet(let selection):
+        // Same visit: the tab's path and scroll offset carry into the sheet unchanged.
         navigation.selection = selection
         showsSettingsSheet = true
       case .dismissSheet(let selection):
+        // Same visit: the sheet's path and scroll offset carry into the tab unchanged.
         showsSettingsSheet = false
         navigation.selection = selection
       }
@@ -115,6 +134,18 @@ struct PlatformRootShell: View {
 
   private var usesCompactTabSet: Bool { horizontalSizeClass == .compact }
 
+  private var miniPlayerPlacement: MobileShellLayoutPolicy.MiniPlayerPlacement {
+    MobileShellLayoutPolicy.miniPlayerPlacement(verticalBarEdge: verticalBarEdge)
+  }
+
+  /// One Settings view for both the sheet and the tab, sharing the scroll offset.
+  private var settingsView: some View {
+    SettingsView(
+      authManager: authManager,
+      catalogRepository: runtime.libraryCatalogRepository,
+      scrollOffset: $settingsNavigation.scrollOffset)
+  }
+
   private var mobileTabs: [AppDestination] {
     AppDestination.allCases.filter { destination in
       if destination == .search { return false }
@@ -128,6 +159,7 @@ struct PlatformRootShell: View {
     if usesCompactTabSet {
       ToolbarItem(placement: .topBarTrailing) {
         Button {
+          settingsNavigation.beginFreshVisit()
           showsSettingsSheet = true
         } label: {
           Label("Settings", systemImage: "gearshape")
@@ -166,12 +198,14 @@ struct PlatformRootShell: View {
         OfflineLibraryView(manager: downloadManager)
           .toolbar { compactSettingsToolbar }
       }
+      .miniPlayerInset(placement: miniPlayerPlacement,
+                       presentation: $navigation.nowPlayingPresentation)
     case .settings:
-      NavigationStack {
-        SettingsView(
-          authManager: authManager,
-          catalogRepository: runtime.libraryCatalogRepository)
+      NavigationStack(path: $settingsNavigation.path) {
+        settingsView
       }
+      .miniPlayerInset(placement: miniPlayerPlacement,
+                       presentation: $navigation.nowPlayingPresentation)
     }
   }
 
@@ -185,5 +219,41 @@ struct PlatformRootShell: View {
       sessionKey: appModel.activeBrowseSessionKey,
       onPush: { navigation.push($0, on: destination) },
       content: content)
+    .miniPlayerInset(placement: miniPlayerPlacement,
+                     presentation: $navigation.nowPlayingPresentation)
+  }
+}
+
+extension View {
+  /// Beside a vertical bar, hosts the mini player as a bottom safe-area inset of a tab: it is
+  /// centred in the content region (the tab's safe area already excludes the column), never sits
+  /// under the column, and every scroll viewport in the tab ends above it (Resolved decision 4).
+  /// With horizontal bars the shell's `tabViewBottomAccessory` hosts it instead.
+  fileprivate func miniPlayerInset(
+    placement: MobileShellLayoutPolicy.MiniPlayerPlacement,
+    presentation: Binding<NowPlayingPresentationState>
+  ) -> some View {
+    modifier(MiniPlayerInsetModifier(placement: placement, presentation: presentation))
+  }
+}
+
+private struct MiniPlayerInsetModifier: ViewModifier {
+  let placement: MobileShellLayoutPolicy.MiniPlayerPlacement
+  @Binding var presentation: NowPlayingPresentationState
+
+  @Environment(MusicPlayerController.self) private var musicPlayer
+  @Environment(\.labstreamCompactWidth) private var compactWidth
+
+  func body(content: Content) -> some View {
+    content.safeAreaInset(edge: .bottom, spacing: 0) {
+      if placement == .bottomSafeAreaInset, musicPlayer.current != nil,
+        !presentation.isPresented
+      {
+        MiniPlayerBar(presentation: $presentation, hostsPlatter: true)
+          .frame(maxWidth: 560)
+          .padding(.horizontal, DS.pagePadding(compact: compactWidth))
+          .padding(.bottom, DS.Space.sm)
+      }
+    }
   }
 }

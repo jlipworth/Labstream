@@ -149,4 +149,31 @@ struct RootNavigationCoordinatorTests {
           == .unchanged)
     }
   }
+
+  /// Global rule 9: a fold/unfold moves Settings between the sheet and the tab at the same
+  /// navigation depth and scroll position; only an explicit toolbar open starts fresh.
+  @MainActor
+  struct MobileSettingsNavigationStateTests {
+    @Test func aSizeClassHandOffKeepsTheSharedPathAndOffset() {
+      var state = MobileSettingsNavigationState()
+      state.path.append(.libraryVisibility)
+      state.scrollOffset = 412
+      // The sheet and the tab bind the same state, so neither hand-off direction touches it.
+      for action in [
+        MobileSettingsPresentationPolicy.action(
+          selection: .home, isCompact: false, isSettingsSheetPresented: true),
+        MobileSettingsPresentationPolicy.action(selection: .settings, isCompact: true),
+      ] {
+        #expect(action != .unchanged)
+        #expect(state.path == [.libraryVisibility])
+        #expect(state.scrollOffset == 412)
+      }
+    }
+
+    @Test func aToolbarOpenStartsAtTheSettingsRoot() {
+      var state = MobileSettingsNavigationState(path: [.libraryVisibility], scrollOffset: 300)
+      state.beginFreshVisit()
+      #expect(state == MobileSettingsNavigationState())
+    }
+  }
 #endif

@@ -28,6 +28,10 @@ struct LabstreamMobile: App {
         WindowGroup {
             if let runtime {
                 ContentView(runtime: runtime)
+                    // One switch style app-wide: amber on state, never system green.
+                    .toggleStyle(LabstreamSwitchToggleStyle())
+                    // The single foldable-pose and vertical-bar-edge source for every surface.
+                    .providesDuoPose()
                     .reportsAppSceneActivity(runtime.sceneActivity, role: .mainWindow)
             } else {
                 SecureStorageUnavailableView()
