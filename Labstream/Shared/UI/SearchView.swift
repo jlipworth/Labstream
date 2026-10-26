@@ -489,6 +489,15 @@ private struct SearchHubSection: View {
     let destination: RailViewAllDestination?
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
+    @State private var railViewportWidth: CGFloat?
+    @State private var firstVisibleItemID: String?
+
+    private var posterWidth: CGFloat {
+        DS.Poster.measuredRailWidth(viewport: railViewportWidth,
+                                    compact: compactWidth,
+                                    margin: DS.Scroll.railHorizontalMargin(compact: compactWidth),
+                                    gutter: compactWidth ? DS.Space.md : DS.Space.xl)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: compactWidth ? DS.Space.sm : DS.Space.lg) {
@@ -498,7 +507,7 @@ private struct SearchHubSection: View {
                 LazyHStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
                     ForEach(section.items) { item in
                         NavigationLink(value: item) {
-                            RailMediaCell(item: item)
+                            RailMediaCell(item: item, posterWidth: posterWidth)
                         }
                         .cardLink()
                         .videoCardContextMenu(for: item)
@@ -513,11 +522,14 @@ private struct SearchHubSection: View {
                     }
                     #endif
                 }
+                .railScrollTargetLayout()
                 .padding(.vertical, DS.Space.sm)
             }
             // contentMargins, not .padding on the lazy content — see the hit-region
             // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes left).
             .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth))
+            .railScrollAnchor($firstVisibleItemID)
+            .railViewportWidth($railViewportWidth)
             #if os(tvOS)
             // Declared focus row (see HubRail): whole-rail target for vertical moves.
             .focusSection()
@@ -545,11 +557,20 @@ private struct SearchMusicRail: View {
     let libraryID: String?
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
+    @State private var railViewportWidth: CGFloat?
+    @State private var firstVisibleItemID: String?
+
+    private var posterWidth: CGFloat {
+        DS.Poster.measuredRailWidth(viewport: railViewportWidth,
+                                    compact: compactWidth,
+                                    margin: DS.Scroll.railHorizontalMargin(compact: compactWidth),
+                                    gutter: compactWidth ? DS.Space.md : DS.Space.xl)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: compactWidth ? DS.Space.sm : DS.Space.lg) {
             Text(section.title)
-                .font(compactWidth ? .title3.bold() : .title2.bold())
+                .font(DS.railSectionTitleFont(compact: compactWidth))
                 .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -557,14 +578,17 @@ private struct SearchMusicRail: View {
                     ForEach(section.items) { item in
                         NavigationLink(value: SearchMusicDestination(item: item,
                                                                      libraryID: libraryID)) {
-                            RailMediaCell(item: item)
+                            RailMediaCell(item: item, posterWidth: posterWidth)
                         }
                         .cardLink()
                     }
                 }
+                .railScrollTargetLayout()
                 .padding(.vertical, DS.Space.sm)
             }
             .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth))
+            .railScrollAnchor($firstVisibleItemID)
+            .railViewportWidth($railViewportWidth)
             #if os(tvOS)
             // Declared focus row (see HubRail): whole-rail target for vertical moves.
             .focusSection()
@@ -602,7 +626,7 @@ private struct SearchSongsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.lg) {
             Text("Songs")
-                .font(compactWidth ? .title3.bold() : .title2.bold())
+                .font(DS.railSectionTitleFont(compact: compactWidth))
                 .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
 
             VStack(spacing: 0) {
@@ -752,7 +776,7 @@ private struct SearchTrackRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
-                    .font(.body)
+                    .font(songTitleFont)
                     .foregroundStyle(isCurrent ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
                     .lineLimit(1)
                 // On a *track*, `grandparentTitle` is the artist and `parentTitle`
@@ -769,7 +793,7 @@ private struct SearchTrackRow: View {
 
             if let duration = track.duration {
                 Text(formatTrackDuration(milliseconds: duration))
-                    .font(.subheadline.monospacedDigit())
+                    .font(songDurationFont)
                     .foregroundStyle(.secondary)
             }
 
@@ -784,6 +808,23 @@ private struct SearchTrackRow: View {
         // a custom ButtonStyle misroutes pinches to neighboring rows (DEVELOPMENT.md).
         // The outer inset keeps the row highlight clear of the card's corner curve.
         .padding(.horizontal, DS.Space.sm)
+    }
+
+    /// iPhone/iPad: Body title and Caption duration (three-style type pass).
+    private var songTitleFont: Font {
+        #if os(iOS)
+        .subheadline
+        #else
+        .body
+        #endif
+    }
+
+    private var songDurationFont: Font {
+        #if os(iOS)
+        .caption.monospacedDigit()
+        #else
+        .subheadline.monospacedDigit()
+        #endif
     }
 
     private var subtitle: String {

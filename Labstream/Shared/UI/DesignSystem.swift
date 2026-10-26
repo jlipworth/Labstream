@@ -145,6 +145,20 @@ enum DS {
         #endif
     }
 
+    /// Section title over a rail, a song list or a result group. iPhone/iPad use the single
+    /// Title style of the three-style type pass (`.title3` semibold, iPhone Duo design spec,
+    /// Color & type); tvOS and visionOS/macOS keep their authored sizes.
+    static func railSectionTitleFont(compact: Bool) -> Font {
+        #if os(tvOS)
+        // TV type sizes run big: title3 (48pt) dwarfs the cards beneath it.
+        .headline
+        #elseif os(iOS)
+        .title3.weight(.semibold)
+        #else
+        compact ? .title3.bold() : .title2.bold()
+        #endif
+    }
+
     /// Soft, layered shadow used under posters and cards to lift them off the glass
     /// without looking heavy. visionOS already has real depth; this is a gentle hint.
     static func posterShadow<S: Shape>(_ shape: S) -> some View {

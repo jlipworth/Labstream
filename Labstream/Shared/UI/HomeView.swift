@@ -663,13 +663,15 @@ private extension EnvironmentValues {
 /// Search/standard rails retain item-specific artwork; Home uses HomeShelfMediaCell.
 struct RailMediaCell: View {
     let item: MediaItem
+    /// Measured rail poster width (`DS.Poster.measuredRailWidth`); nil keeps the authored width.
+    var posterWidth: CGFloat? = nil
 
     @ViewBuilder
     var body: some View {
         if item.kind == .episode {
             EpisodeRailCell(item: item)
         } else {
-            PosterCell(item: item)
+            PosterCell(item: item, width: posterWidth)
         }
     }
 }

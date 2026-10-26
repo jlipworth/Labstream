@@ -43,15 +43,7 @@ struct RailSectionHeader: View {
     }
 
     private var sectionTitleFont: Font {
-        #if os(tvOS)
-        // TV type sizes run big: title3 (48pt) dwarfs the cards beneath it.
-        .headline
-        #elseif os(iOS)
-        // Title style of the three-style iPhone/iPad type pass.
-        .title3.weight(.semibold)
-        #else
-        compactWidth ? .title3.bold() : .title2.bold()
-        #endif
+        DS.railSectionTitleFont(compact: compactWidth)
     }
 
     private var viewAllFont: Font {
