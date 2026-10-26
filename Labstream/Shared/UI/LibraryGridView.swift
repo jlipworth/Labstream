@@ -424,6 +424,7 @@ struct LibraryGridView: View {
 
     @Environment(AppModel.self) private var appModel
     @Environment(\.labstreamCompactWidth) private var compactWidth
+    @Environment(\.duoPose) private var duoPose
 
     @State private var paging = LibraryPagingModel()
     @State private var sort: LibraryBrowseSort = .titleAscending
@@ -546,7 +547,8 @@ struct LibraryGridView: View {
                                 if paging.slots.isEmpty {
                                     emptyState
                                 } else {
-                                    let metrics = compactGridMetrics(availableWidth: geometry.size.width)
+                                    let metrics = gridMetrics(availableWidth: geometry.size.width,
+                                                              globalMinX: geometry.frame(in: .global).minX)
                                     LazyVGrid(columns: gridColumns(metrics: metrics),
                                               spacing: metrics?.rowSpacing ?? regularGridRowSpacing) {
                                         ForEach(Array(paging.slots.enumerated()), id: \.offset) { index, slot in
@@ -625,17 +627,42 @@ struct LibraryGridView: View {
         }
     }
 
-    private func compactGridMetrics(availableWidth: CGFloat) -> MobileLibraryGridLayout.Metrics? {
+    /// iPhone/iPad grids come from the measured width (iPhone Duo design spec, global rule 8):
+    /// the count is the most columns that keep posters at the family minimum after the page
+    /// padding and the A–Z reservation, and a book hinge splits the grid 2 + 2 with both outer
+    /// margins kept (Resolved decision 2). The width is the content region, so the vertical
+    /// bar's inset is already excluded. visionOS, tvOS and macOS keep their adaptive grids.
+    private func gridMetrics(availableWidth: CGFloat, globalMinX: CGFloat) -> MobileLibraryGridLayout.Metrics? {
+        #if os(iOS)
+        let reservation: CGFloat
+        if nonVisionAlphabetRailVisible {
+            reservation = compactWidth
+                ? LibraryAlphabetRail.compactGridTrailingReservation
+                : LibraryAlphabetRail.regularGridTrailingReservation(pagePadding: regularGridHorizontalPadding)
+        } else {
+            reservation = 0
+        }
+        var hinge: MobileLibraryGridLayout.Hinge?
+        if case .book(let rect) = duoPose {
+            hinge = .init(minX: Double(rect.minX - globalMinX), maxX: Double(rect.maxX - globalMinX))
+        }
+        return MobileLibraryGridLayout.metrics(availableWidth: Double(availableWidth),
+                                               trailingReservation: Double(reservation),
+                                               style: compactWidth ? .compact : .regular,
+                                               bookHinge: hinge)
+        #else
         guard compactWidth else { return nil }
         let reservation = nonVisionAlphabetRailVisible ? LibraryAlphabetRail.compactGridTrailingReservation : 0
         return MobileLibraryGridLayout.metrics(availableWidth: Double(availableWidth),
                                                trailingReservation: Double(reservation))
+        #endif
     }
 
     private func gridColumns(metrics: MobileLibraryGridLayout.Metrics?) -> [GridItem] {
         guard let metrics else { return regularColumns }
-        return Array(repeating: GridItem(.fixed(CGFloat(metrics.posterWidth)), spacing: CGFloat(metrics.gutter)),
-                     count: metrics.columnCount)
+        return metrics.columnSpacings.map { spacing in
+            GridItem(.fixed(CGFloat(metrics.posterWidth)), spacing: CGFloat(spacing))
+        }
     }
 
     private var regularPosterWidth: CGFloat {
@@ -1140,9 +1167,15 @@ private struct SkeletonGrid: View {
         let verticalPadding: CGFloat = DS.Space.lg
         let rowSpacing: CGFloat = DS.Space.xl
         #else
+        #if os(iOS)
+        let metrics: MobileLibraryGridLayout.Metrics? = MobileLibraryGridLayout.metrics(
+            availableWidth: Double(availableWidth),
+            style: compactWidth ? .compact : .regular)
+        #else
         let metrics = compactWidth
             ? MobileLibraryGridLayout.metrics(availableWidth: Double(availableWidth))
             : nil
+        #endif
         let columns = metrics.map {
             Array(repeating: GridItem(.fixed($0.posterWidth), spacing: $0.gutter), count: $0.columnCount)
         } ?? [GridItem(.adaptive(minimum: DS.Poster.gridMin(compact: false),

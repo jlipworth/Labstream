@@ -148,7 +148,7 @@ struct LibraryAlphabetJumpButton: View {
 /// long-term ideal for `List`/`Section` content, but these browse surfaces are paged
 /// `LazyVGrid`s. Until the grids move to a native sectioned container, keep this custom
 /// control visually close to UIKit's section index on iOS/iPadOS: a compact trailing
-/// stack of tinted glyphs with just enough backing/outline to read over posters. visionOS
+/// stack of secondary glyphs with just enough backing/outline to read over posters. visionOS
 /// keeps a material backing because gaze needs a stronger acquisition target in space.
 ///
 /// A full A–Z+# rail is taller than iPhone landscape or a short iPad Split View pane,
@@ -301,12 +301,10 @@ private struct AlphabetRailColumn: View {
         #endif
     }
 
+    /// Letters are the secondary label on every platform: on iPhone/iPad amber means
+    /// "selected" only, which here is the active (tapped or scrubbed) letter's highlight.
     private var labelForeground: AnyShapeStyle {
-        #if os(visionOS)
         AnyShapeStyle(.secondary)
-        #else
-        AnyShapeStyle(.tint)
-        #endif
     }
 
     private var activeCornerRadius: CGFloat {
@@ -366,7 +364,7 @@ private struct AlphabetRailColumn: View {
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: calloutSize / 3, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: calloutSize / 3, style: .continuous)
-                    .strokeBorder(.tint.opacity(0.32), lineWidth: 1)
+                    .strokeBorder(.secondary.opacity(0.32), lineWidth: 1)
             }
             .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
     }
@@ -407,7 +405,7 @@ private extension View {
         background(.thinMaterial, in: Capsule())
             .overlay {
                 Capsule()
-                    .strokeBorder(.tint.opacity(0.24), lineWidth: 0.75)
+                    .strokeBorder(.secondary.opacity(0.24), lineWidth: 0.75)
             }
             .contentShape(Rectangle())
         #endif
