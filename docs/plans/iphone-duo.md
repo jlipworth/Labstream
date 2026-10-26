@@ -1077,6 +1077,12 @@ items).
 
 ### Step 16: player
 
+**Status (2026-10-26):** done, with the gaps listed in the journal. The pure rules are in PMSKit:
+`MobilePlayerArrangement` (overlay, video rectangle, book, tabletop, camera-island trim) and
+`MobilePlayerPoseResolver` (the shell pose, or a centre strip from a partially open hinge on the
+unfolded display). Tabletop does not use `OverlayArrangement`/`ArrangementView`; the player
+re-lays out the same layer and deck from the pose value (see the journal for why).
+
 - **Chrome style:** one glass-circle style with symbols and accessibility titles in every branch
   (`CustomPlayerChrome.swift`, `MobilePlayerChrome.swift`): top row Close, PiP and gravity leading
   and AirPlay trailing; centre −10 / play-pause / +10; above the scrubber the title (1 line) and a
@@ -1323,3 +1329,49 @@ items).
     landscape, iPhone 18 Pro and iPad were not captured (no headless scroll), and the new
     similar/all-episodes reads are untested against live Plex, Jellyfin and Emby. A real fold
     (scroll anchor, split collapse) stays open (decision 9).
+- 2026-10-26, Step 16 (player area):
+  - One arrangement on iPhone and iPad (`MobilePlayerChrome.swift`): glass circles with
+    accessibility titles; Close, PiP and Fit/Fill leading, AirPlay trailing; −10 / play-pause /
+    +10; a Body title with a Caption ("S1, E5" or the year); the scrubber in label color with
+    elapsed and "−remaining"; Subtitles, Audio, Chapters, Speed, Stats and More, with Quality in
+    the More popover. A gradient scrim replaces the platters, labelled pills and four-skip rows.
+    The PiP slot is always present (dimmed when unavailable). visionOS, tvOS and macOS keep
+    their chrome; the iOS branches of the shared `topChrome`, `controls` and `menuStrip` are gone.
+  - `MobilePlayerArrangement` places the group from measured geometry: the whole safe frame
+    (folded landscape below the 82 pt status strip, sideways, iPad landscape, or Fill); the
+    aspect-fit video rectangle on a large portrait scene (upright, at least 300 pt tall); the
+    trailing half in book (the top row stays); or tabletop, where the same `AVPlayerLayer`
+    shrinks to the half above the hinge and a deck below never auto-hides. The bottom group ends
+    before an active `reservedRegions(kind: .occlusion)` region in the lower half (the camera
+    island in tent). Transport status centres in the video rectangle, the book group or the
+    tabletop picture half; menus anchor to the bottom group, so in book they open in the trailing
+    half and in tabletop above the deck's buttons. A pose or arrangement change cancels a scrub
+    and records `player.arrangement_change`.
+  - Pose source: the shell's `\.duoPose` (division region, or `LABSTREAM_DEBUG_DUO_POSE` in
+    DEBUG), else the player's read-only `UIHingeInteraction` when it reports `partiallyOpen` on a
+    display whose short side is over 500 pt (a centre strip, like the override). The override is
+    not large-gated, so in DEBUG `book` also applies to the folded landscape player and `tabletop`
+    to a folded portrait scene; that is what lets the book XCUITest run on the folded simulator.
+    Real division regions only occur unfolded. `OverlayArrangement` was not used: `ArrangementView`
+    is driven only by the real hinge (the DEBUG override cannot drive it, so no headless evidence),
+    and it would re-parent the video into a system-managed container, which risks the
+    one-layer invariant. Reading `overlayArrangementZIndex` is therefore moot.
+  - Review findings: `isPhoneLandscape` and compact chrome no longer follow a vertical-compact
+    class when the measured short side is over 500 pt (951×669 gets the regular chrome; test). The
+    Duo lane gains `testBookPoseMovesTheControlGroupIntoTheTrailingHalf`; upright and tabletop
+    tests (`testLargePortraitChromeOverlaysTheVideoRect`,
+    `testTabletopPoseBuildsAControlDeckBelowTheHinge`) skip on the folded simulator and run on a
+    large portrait scene (iPad). Stats (left by Step 13): two equal tile columns on a narrow
+    panel, four with the chain stacked above on a wide one (the regular Stats panel is 600 pt).
+  - Verification: hermetic PMSKit (1788 + 109 tests), clean `LabstreamMobile` Duo build (15
+    unique warnings, none in touched files), Labstream/LabstreamTV/LabstreamMac compile, install
+    UUID match and a playing smoke. On the folded Duo the player fixture XCUITests (frames across
+    aspects, lock, reveal/hide envelope, buffering stages, book) and both Stats tests pass.
+    appResize proxy: upright, tabletop, sideways and book captures, and five resizes plus three
+    pose flips during playback with one `playback.session_start`, no `player.view_disappear`, no
+    `playback.session_stop` and no pause. Evidence (gitignored): `artifacts/duo-player/`.
+  - Not done: the hover preview was not exercised (no pointer headlessly); the camera-island
+    trim and folded landscape in the camera-trailing rotation were never observed (no occlusion
+    region appears in the simulator); iPhone 18 Pro and iPad were not run, so the upright and
+    tabletop XCUITests have not executed; the shared player change still needs the Plex,
+    Jellyfin and Emby passes (Open gates); real folds stay open (decision 9).

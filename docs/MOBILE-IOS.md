@@ -59,10 +59,11 @@ root, plus the shared `PMSKit` package. The public mobile support floor is iOS/i
   `glassBackgroundEffect`/material look.
 - The custom AVFoundation video player exposes mobile system hooks for Picture in Picture,
   AirPlay route picking, video Now Playing metadata, and remote play/pause/seek commands.
-  The iOS chrome keeps AirPlay/PiP in top-trailing system-style glass buttons, keeps
-  Quality/Chapters/Speed/Stats as labeled glass pills, and lets the pill strip scroll
-  horizontally when the row is too narrow instead of hiding controls behind an ellipsis
-  menu. It also registers hardware-keyboard shortcuts (Space play/pause, ←/→ skip
+  The iOS chrome is one arrangement of glass circles (symbols with accessibility titles) in
+  every pose: Close, Picture in Picture and Fit/Fill at top leading and AirPlay at top
+  trailing; −10 / play-pause / +10 in the centre; the title with a 1–2 word caption ("S1, E5"
+  or the year); the scrubber with elapsed and remaining times; then Subtitles, Audio, Chapters,
+  Speed, Stats and More. Quality lives in More, the single overflow. It also registers hardware-keyboard shortcuts (Space play/pause, ←/→ skip
   30s, Shift-←/Shift-→ skip 10s, Esc close). `UIBackgroundModes = audio`
   is set on `LabstreamMobile`; playback still pauses when the app backgrounds unless it is
   continuing through PiP or an external AirPlay route. A resign-active pauses video only if it
@@ -81,14 +82,18 @@ root, plus the shared `PMSKit` package. The public mobile support floor is iOS/i
   `.ignoresSafeArea()` to the player on iOS, because that would erase the chrome's insets. The
   Detail streaming/local covers use `customPlayerPresentationSafeArea()`, which keeps their
   previous full-bounds presentation on visionOS, tvOS, and macOS and is a no-op on iOS. The
-  iOS/visionOS Downloads cover adds no safe-area modifier. For a fixed device, orientation, and
-  source/menu set, the close/utility buttons, center play/pause, skips, menu pills, and bottom
-  platter keep the same frames, and hiding the chrome does not move the envelope. The
-  phone-landscape transport row never grows wider than its platter. If the item's menu set does
-  not fit beside the four skips, the row drops to the -10/+30 pair and then scrolls the pills. PiP
-  leads the top-trailing group, so its per-item availability never moves the display-mode or
-  AirPlay buttons. A hairline outline keeps the glass platter legible over letterbox/pillarbox
-  black.
+  iOS/visionOS Downloads cover adds no safe-area modifier. `MobilePlayerArrangement` (PMSKit)
+  places the control group: the whole safe frame; the aspect-fit video rectangle on a large
+  portrait scene (unfolded Duo upright, iPad portrait; at least 300 pt tall); the trailing half
+  after a book hinge (the top row stays); or a deck below a tabletop hinge, where the same layer
+  shrinks to the top half and the deck never auto-hides. The pose comes from the shell's pose
+  value, or from the player's read-only hinge interaction when it reports a partially open hinge
+  on the unfolded display. The bottom group ends before an active occlusion region (the outer
+  camera island). For a fixed device, orientation and source the controls keep the same frames
+  whatever the item's menu set, landscape frames do not depend on the source aspect, and hiding
+  the chrome does not move the envelope. The PiP slot is always present (dimmed when PiP is
+  unavailable), so its availability never moves the buttons beside it. A gradient scrim, not a
+  platter, keeps the controls legible.
 - Player geometry (iPhone, iPad, iPhone Duo): the landscape lock comes from
   `MobilePlayerOrientationLockPolicy`, not the idiom. It applies while the player's own scene is
   phone-class (short side under 500 pt) and fills its screen, and it is re-decided on every

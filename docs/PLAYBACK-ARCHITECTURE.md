@@ -403,7 +403,10 @@ invisible view inside the player, reports the player's own window scene to
 `MobilePlayerOrientationCoordinator`, which re-decides the phone-class landscape lock from that
 scene's measured geometry (`MobilePlayerOrientationLockPolicy`). Releasing the lock widens the mask
 without forcing a rotation. The chrome re-derives its branch from the measured viewport
-(`MobilePlayerChromeLayoutPolicy`) and cancels an open scrub when the branch changes.
+(`MobilePlayerChromeLayoutPolicy`) and its arrangement (`MobilePlayerArrangement`: overlay, video
+rectangle, book or tabletop) from the measured geometry and the foldable pose, and cancels an
+open scrub when either changes. In tabletop the one `AVPlayerLayer` only changes its frame to the
+half above the hinge; it is never replaced.
 
 Video pauses on `didEnterBackground`. On iOS a resign-active pauses only after 400 ms and is
 cancelled by `didBecomeActive`, so a transient inactive phase (a fold, Control Center, the start
@@ -415,6 +418,7 @@ Diagnostics for judging a fold run from bounded evidence (all `.playback`): `pla
 (scene and screen size, size classes, orientation, display class, lock decision, scene activation,
 safe-area insets, hinge status and vertical-bar edge on iOS 27.1), `player.orientation_lock`,
 `player.orientation_request_failed`, `player.hinge_status`, `player.chrome_branch_change`,
+`player.arrangement_change`,
 `player.lifecycle_pause` (reason and outcome), `player.pip_state`, `player.pip_rebind`,
 `player.view_disappear`, and the existing `playback.session_stop`.
 
