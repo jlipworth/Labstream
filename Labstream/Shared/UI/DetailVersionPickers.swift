@@ -4,6 +4,15 @@ import PMSKit
 /// Collapsed movie-version chooser (#108). This is distinct from the media-version picker below:
 /// each row is a separate backend item/ratingKey that the grid collapsed into one logical movie.
 struct DetailMovieVersionPicker: View {
+    /// iPhone/iPad menus use the Body style; other platforms keep `.callout`.
+    private static var labelFont: Font {
+        #if os(iOS)
+        .subheadline
+        #else
+        .callout
+        #endif
+    }
+
     let versions: [MediaItem]
     let activeVersionRatingKey: String
     @Binding var selectedVersionRatingKey: String?
@@ -30,7 +39,7 @@ struct DetailMovieVersionPicker: View {
                 #else
                 Label("Version: \(label(for: currentVersion, index: currentVersionIndex))",
                       systemImage: "square.stack.3d.up")
-                    .font(.callout)
+                    .font(Self.labelFont)
                     // Server-derived label, unbounded length — keep the header row
                     // one line; the dropdown shows the full text.
                     .lineLimit(1)
@@ -77,6 +86,15 @@ struct DetailMovieVersionPicker: View {
 /// In-item media-version chooser. These are multiple `Media` entries inside one backend item,
 /// e.g. 4K vs 1080p files under the same ratingKey.
 struct DetailMediaVersionPicker: View {
+    /// iPhone/iPad menus use the Body style; other platforms keep `.callout`.
+    private static var labelFont: Font {
+        #if os(iOS)
+        .subheadline
+        #else
+        .callout
+        #endif
+    }
+
     let media: [Media]?
     @Binding var selectedMediaIndex: Int
 
@@ -101,7 +119,7 @@ struct DetailMediaVersionPicker: View {
                 #else
                 Label("Version: \(MediaVersionLabel.versionLabel(for: media[safe: selectedMediaIndex] ?? media[0]))",
                       systemImage: "rectangle.stack.badge.play")
-                    .font(.callout)
+                    .font(Self.labelFont)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 #endif

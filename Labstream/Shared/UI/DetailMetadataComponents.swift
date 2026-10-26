@@ -17,7 +17,7 @@ struct DetailTitleHeader: View {
                         if let showItem {
                             NavigationLink(value: showItem) {
                                 Text(show)
-                                    .font(.title3.weight(.semibold))
+                                    .font(showLineFont.weight(.semibold))
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                                     .truncationMode(.tail)
@@ -31,7 +31,7 @@ struct DetailTitleHeader: View {
                             .padding(.leading, -DS.Space.sm)
                         } else {
                             Text(show)
-                                .font(.title3.weight(.semibold))
+                                .font(showLineFont.weight(.semibold))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
@@ -39,8 +39,8 @@ struct DetailTitleHeader: View {
                     }
                     if let code = item.seasonEpisodeCode {
                         Text(code)
-                            .font(.title3.weight(.bold))
-                            .foregroundStyle(.tint)
+                            .font(showLineFont.weight(.bold))
+                            .foregroundStyle(episodeCodeStyle)
                             .layoutPriority(1)
                     }
                 }
@@ -55,11 +55,32 @@ struct DetailTitleHeader: View {
         }
     }
 
+    /// iPhone/iPad: the hero title is the Title style (`.title3` semibold) and the show line is
+    /// Body, so the page keeps three text styles (iPhone Duo design spec, Color & type).
     private var detailTitleFont: Font {
         #if os(tvOS)
         .title2.bold()
+        #elseif os(iOS)
+        .title3.weight(.semibold)
         #else
         .largeTitle.bold()
+        #endif
+    }
+
+    private var showLineFont: Font {
+        #if os(iOS)
+        .subheadline
+        #else
+        .title3
+        #endif
+    }
+
+    /// Amber means "selected" on iPhone/iPad, so the episode code there is secondary label.
+    private var episodeCodeStyle: AnyShapeStyle {
+        #if os(iOS)
+        AnyShapeStyle(.secondary)
+        #else
+        AnyShapeStyle(.tint)
         #endif
     }
 }
@@ -168,6 +189,15 @@ struct DetailCreditsSection: View {
         #endif
     }
 
+    /// iPhone/iPad credits are Caption lines; other platforms keep `.callout`.
+    private var creditFont: Font {
+        #if os(iOS)
+        .caption
+        #else
+        .callout
+        #endif
+    }
+
     #if os(tvOS)
     @ViewBuilder
     private func tvCreditRow(label: String, tags: [Tag]?, limit: Int) -> some View {
@@ -195,7 +225,7 @@ struct DetailCreditsSection: View {
                 Text("\(label):").foregroundStyle(.secondary)
                 Text(names).foregroundStyle(.primary.opacity(0.85))
             }
-            .font(.callout)
+            .font(creditFont)
         }
     }
 }

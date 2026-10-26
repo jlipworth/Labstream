@@ -43,14 +43,46 @@ struct MobileDetailLayoutPolicyTests {
         #expect(MobileDetailLayoutPolicy.artworkMaximumHeight(viewportHeight: .nan) == nil)
     }
 
-    @Test func artworkWidthHonorsTheCapButKeepsHalfTheViewportWidth() {
-        // Slab iPhone landscape: the 120-pt height cap alone would give ~213 pt of art.
-        #expect(MobileDetailLayoutPolicy.artworkMaximumWidth(viewportWidth: 874, viewportHeight: 300) == 437)
-        // Portrait phone: the cap is wider than the page, so the art stays full width.
-        let portrait = MobileDetailLayoutPolicy.artworkMaximumWidth(viewportWidth: 402, viewportHeight: 780)
-        #expect(portrait.map { $0 >= 402 } == true)
-        #expect(MobileDetailLayoutPolicy.artworkMaximumWidth(viewportWidth: 0, viewportHeight: 300) == nil)
-        #expect(MobileDetailLayoutPolicy.artworkMaximumWidth(viewportWidth: 874, viewportHeight: 0) == nil)
+    @Test func resolvedModeWaitsForTheFirstMeasurement() {
+        #expect(MobileDetailLayoutPolicy.resolvedMode(viewportWidth: 0, viewportHeight: 800,
+                                                      horizontallyCompact: false) == nil)
+        #expect(MobileDetailLayoutPolicy.resolvedMode(viewportWidth: 669, viewportHeight: .nan,
+                                                      horizontallyCompact: false) == nil)
+        #expect(MobileDetailLayoutPolicy.resolvedMode(viewportWidth: 669, viewportHeight: 951,
+                                                      horizontallyCompact: false) == .stacked)
+    }
+
+    @Test func artworkIsFullWidthSixteenByNineCappedAtFortyPercentHeight() {
+        // Folded portrait: 16:9 of the width fits under the cap.
+        #expect(MobileDetailLayoutPolicy.artworkHeight(viewportWidth: 466, viewportHeight: 678)
+                == 466.0 * 9 / 16)
+        // Folded landscape and slab landscape: the height cap wins; the art still spans the width.
+        #expect(MobileDetailLayoutPolicy.artworkHeight(viewportWidth: 678, viewportHeight: 466)
+                == 466 * 0.4)
+        #expect(MobileDetailLayoutPolicy.artworkHeight(viewportWidth: 874, viewportHeight: 300) == 120)
+        #expect(MobileDetailLayoutPolicy.artworkHeight(viewportWidth: 0, viewportHeight: 300) == nil)
+        #expect(MobileDetailLayoutPolicy.artworkHeight(viewportWidth: 874, viewportHeight: 0) == nil)
+    }
+
+    @Test func sideBySideFlatPutsMetadataAfterThePoster() {
+        let placement = MobileDetailLayoutPolicy.sideBySidePlacement(contentWidth: 850, posterWidth: 220,
+                                                                     margin: 24, gap: 32)
+        #expect(placement == .init(posterLeading: 24, metadataLeading: 276, followsHinge: false))
+    }
+
+    @Test func sideBySideBookCentresThePosterBeforeTheHinge() {
+        // 867-pt content region with the hinge strip at 465.5...485.5.
+        let placement = MobileDetailLayoutPolicy.sideBySidePlacement(contentWidth: 867, posterWidth: 220,
+                                                                     margin: 24, gap: 32,
+                                                                     hinge: (465.5, 485.5))
+        #expect(placement.followsHinge)
+        #expect(placement.posterLeading == 24 + (441.5 - 220) / 2)
+        #expect(placement.metadataLeading == 509.5)
+        // A hinge that leaves no room for the poster is ignored.
+        let cramped = MobileDetailLayoutPolicy.sideBySidePlacement(contentWidth: 867, posterWidth: 220,
+                                                                   margin: 24, gap: 32,
+                                                                   hinge: (200, 220))
+        #expect(!cramped.followsHinge)
     }
 
     @Test func heroKeepsAuthoredSizeWhenThereIsRoom() {

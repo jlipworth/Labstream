@@ -36,12 +36,14 @@ struct DetailView: View {
     #endif
     @Environment(MusicPlayerController.self) private var musicPlayer
     #if os(iOS)
-    /// Fallback input for the iOS detail composition before the scroll container is measured.
+    /// Keeps regular-width iPhone landscape out of the phone composition (`MobileDetailLayoutPolicy`).
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// Book hinge for the side-by-side composition (the one shell pose source).
+    @Environment(\.duoPose) private var duoPose
     #endif
     /// True in ANY iOS compact-width context (iPhone, a folded iPhone Duo, a narrow iPad
     /// window). Coarse sizing such as page padding keys on this; the composition itself comes
-    /// from `detailLayoutMode`. Always false on visionOS, so its metrics stay untouched.
+    /// from `resolvedDetailLayoutMode`. Always false on visionOS, so its metrics stay untouched.
     @Environment(\.labstreamCompactWidth) private var compactWidth
     #if os(visionOS)
     @Environment(WatchTogetherCoordinator.self) private var watchTogetherCoordinator
@@ -85,6 +87,17 @@ struct DetailView: View {
     /// detail composition follows it so a resize or an iPhone Duo fold/unfold re-derives the
     /// layout from the space actually available rather than from the device idiom.
     @State private var detailViewportSize: CGSize = .zero
+    #if os(iOS)
+    /// The scroll content's global frame: the content region the rails, the side-by-side
+    /// placement and the book hinge conversion use.
+    @State private var detailContentRegion: CGRect = .zero
+    /// Whether the hero title is on screen; the navigation title appears once it is not.
+    @State private var heroTitleVisible = true
+    /// First visible section, kept across a phone → stacked → side-by-side flip.
+    @State private var detailScrollAnchor: String?
+    /// "More Like This" (movies only).
+    @State private var similarItems: [MediaItem] = []
+    #endif
     @AppStorage(PlaybackPreferences.Keys.remoteQualityKbps) private var remoteMaxVideoBitrateKbps = PlaybackPreferences.defaultRemoteQualityKbps
     @AppStorage(PlaybackPreferences.Keys.homeQualityKbps) private var homeMaxVideoBitrateKbps = PlaybackPreferences.defaultHomeQualityKbps
     @AppStorage(PlaybackPreferences.Keys.resumeRewindSeconds) private var resumeRewindSeconds = 0
@@ -161,22 +174,6 @@ struct DetailView: View {
         selectedVersionRatingKey ?? item.ratingKey
     }
 
-    #if os(iOS)
-    private var detailLayoutMode: MobileDetailLayoutPolicy.Mode {
-        MobileDetailLayoutPolicy.mode(viewportWidth: Double(detailViewportSize.width),
-                                      viewportHeight: Double(detailViewportSize.height),
-                                      horizontallyCompact: horizontalSizeClass == .compact)
-    }
-    #endif
-
-    private var isCompactPhoneLayout: Bool {
-        #if os(iOS)
-        detailLayoutMode == .phone
-        #else
-        false
-        #endif
-    }
-
     /// An episode's show as a pushable container item (episode hierarchy:
     /// show = grandparent, season = parent).
     private var showItem: MediaItem? {
@@ -237,48 +234,16 @@ struct DetailView: View {
                          type: "album", thumb: item.parentThumb)
     }
 
-    #if os(iOS)
-    /// Readable-measure cap for the metadata/synopsis column in regular width (iPad). Without
-    /// it the synopsis `Text` stretches edge-to-edge and is unreadably wide on a 13" landscape
-    /// iPad. The poster + text cluster stays leading (not centered), so this only bounds the
-    /// text column, not the page. visionOS keeps its uncapped fixed-window layout.
-    private static let readableMetadataWidth: CGFloat = 680
-    #endif
-
-    /// Poster + metadata arrangement. visionOS keeps the canonical side-by-side HStack. iOS
-    /// picks from the measured viewport (`MobileDetailLayoutPolicy`): the phone hierarchy for
-    /// phone-class viewports, the poster stacked above the metadata for medium widths (the
-    /// iPhone Duo inner display, a wide iPad Split View pane), and side by side with a
-    /// readable-measure metadata column when there is room.
+    /// Poster + metadata arrangement. visionOS and macOS keep the canonical side-by-side HStack
+    /// and tvOS its own composition. iPhone/iPad pick from the measured viewport
+    /// (`MobileDetailLayoutPolicy`, iPhone Duo design spec, Movie detail): phone, stacked or side
+    /// by side, each followed by the same full-width rails.
     @ViewBuilder
     private var detailLayout: some View {
         #if os(tvOS)
         tvDetailLayout
         #elseif os(iOS)
-        switch detailLayoutMode {
-        case .phone:
-            compactPhoneDetailLayout
-        case .stacked:
-            // Medium width: stack the poster above the metadata. The 220-pt compact hero,
-            // bounded by the measured viewport, keeps the title and actions near the fold.
-            VStack(alignment: .leading, spacing: DS.Space.xxxl) {
-                detailPoster(width: CGFloat(MobileDetailLayoutPolicy.heroSide(
-                    preferred: Double(DS.Poster.detailWidth(compact: true)),
-                    viewportWidth: Double(detailViewportSize.width),
-                    viewportHeight: Double(detailViewportSize.height),
-                    horizontalPadding: Double(DS.Space.xxxl))))
-                    .frame(maxWidth: .infinity, alignment: .center)
-                metadataColumn
-                    .frame(maxWidth: Self.readableMetadataWidth, alignment: .leading)
-            }
-        case .sideBySide:
-            HStack(alignment: .top, spacing: DS.Space.xxxl) {
-                posterHero
-                metadataColumn
-                    .frame(maxWidth: Self.readableMetadataWidth, alignment: .leading)
-                Spacer(minLength: 0)
-            }
-        }
+        mobileDetailContent
         #else
         HStack(alignment: .top, spacing: DS.Space.xxxl) {
             posterHero
@@ -352,56 +317,164 @@ struct DetailView: View {
     }
     #endif
 
-    /// Phone-only hierarchy optimized for a narrow, vertically-scrolling detail page. iPad and
-    /// visionOS continue to use `metadataColumn` unchanged.
-    private var compactPhoneDetailLayout: some View {
-        VStack(alignment: .leading, spacing: DS.Space.xl) {
-            compactPhoneArtwork
+    #if os(iOS)
+    // MARK: - iPhone/iPad composition (iPhone Duo design spec, Movie detail)
 
-            DetailTitleHeader(item: detailed, showItem: showItem)
+    /// The composition from the measured scroll viewport; `nil` until the first measurement,
+    /// while the page draws nothing so no size-class fallback flashes for a frame.
+    private var resolvedDetailLayoutMode: MobileDetailLayoutPolicy.Mode? {
+        MobileDetailLayoutPolicy.resolvedMode(viewportWidth: Double(detailViewportSize.width),
+                                              viewportHeight: Double(detailViewportSize.height),
+                                              horizontallyCompact: horizontalSizeClass == .compact)
+    }
 
-            DetailMetadataRow(year: detailed.year,
-                              runtimeMinutes: runtimeMinutes,
-                              contentRating: detailed.contentRating,
-                              rating: detailed.rating,
-                              criticRating: detailed.criticRating,
-                              isWatched: isWatched)
+    private var mobilePagePadding: CGFloat { DS.pagePadding(compact: compactWidth) }
 
-            playButton
-                .controlSize(.large)
+    /// Readable cap for the metadata text column (global rule 10).
+    private static let readableTextWidth: CGFloat = 640
 
-            VStack(spacing: DS.Space.md) {
-                #if !os(tvOS)
-                downloadButton
-                #endif
-                if supportsWatchedToggle {
-                    markWatchedButton
+    /// Poster width in the side-by-side composition.
+    private static let sideBySidePosterWidth: CGFloat = 220
+
+    /// Key art for the full-width band: backend landscape art first, else the poster cropped
+    /// into the band, else the placeholder.
+    private var keyArtPath: String? {
+        switch MobileDetailArtworkPolicy.selection(art: detailed.art, thumb: detailed.thumb) {
+        case .landscape(let path), .croppedPoster(let path): path
+        case .none: nil
+        }
+    }
+
+    /// Sections of the page, in the same order in every pose; each carries a stable scroll id so
+    /// the reading position survives a phone → stacked → side-by-side flip.
+    @ViewBuilder
+    private var mobileDetailContent: some View {
+        if let mode = resolvedDetailLayoutMode {
+            VStack(alignment: .leading, spacing: 0) {
+                Group {
+                    switch mode {
+                    case .phone:
+                        mobilePhoneHeader
+                    case .stacked:
+                        mobileStackedHeader
+                    case .sideBySide:
+                        mobileSideBySideHeader
+                    }
+                }
+                .id("detail.header")
+
+                if let roles = detailed.roles, !roles.isEmpty {
+                    DetailCastRail(roles: roles)
+                        .padding(.top, DS.Space.xxl)
+                        .id("detail.cast")
+                }
+                if !similarItems.isEmpty {
+                    DetailMoreLikeThisRail(items: similarItems)
+                        .padding(.top, DS.Space.xxl)
+                        .id("detail.similar")
+                }
+                if !relatedShelf.isEmpty {
+                    DetailRelatedMediaShelf(items: relatedShelf,
+                                            isBusy: isResolvingPlayback || presentingPlayer,
+                                            onPlay: playRelated)
+                        .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
+                        .padding(.top, DS.Space.xxl)
+                        .id("detail.extras")
                 }
             }
-            .controlSize(.large)
+            .padding(.bottom, DS.Space.xxxl)
+            .scrollTargetLayout()
+        } else {
+            Color.clear.frame(maxWidth: .infinity, minHeight: 1)
+        }
+    }
+
+    /// Folded portrait and landscape: full-width 16:9 key art (capped at 40% of the viewport
+    /// height), then the metadata in the content region.
+    private var mobilePhoneHeader: some View {
+        VStack(alignment: .leading, spacing: DS.Space.lg) {
+            DetailKeyArtBand(path: keyArtPath,
+                             height: CGFloat(MobileDetailLayoutPolicy.artworkHeight(
+                                viewportWidth: Double(detailContentRegion.width > 0
+                                                      ? detailContentRegion.width
+                                                      : detailViewportSize.width),
+                                viewportHeight: Double(detailViewportSize.height)) ?? 0))
+            mobileMetadataBlock
+                .padding(.horizontal, mobilePagePadding)
+        }
+    }
+
+    /// Unfolded upright: a 220-pt key-art hero above the metadata, capped at the readable width
+    /// and centred in the content region.
+    private var mobileStackedHeader: some View {
+        VStack(alignment: .leading, spacing: DS.Space.lg) {
+            DetailKeyArtBand(path: keyArtPath,
+                             height: CGFloat(MobileDetailLayoutPolicy.stackedHeroHeight))
+            mobileMetadataBlock
+                .frame(maxWidth: Self.readableTextWidth, alignment: .leading)
+                .padding(.horizontal, mobilePagePadding)
+                .frame(maxWidth: .infinity)
+        }
+    }
+
+    /// Unfolded sideways: the poster leading and the metadata trailing, ending one margin before
+    /// the content edge. In book the poster centres in the leading half and the metadata starts
+    /// after the hinge, so the gap sits on the fold.
+    private var mobileSideBySideHeader: some View {
+        let placement = MobileDetailLayoutPolicy.sideBySidePlacement(
+            contentWidth: Double(detailContentRegion.width),
+            posterWidth: Double(Self.sideBySidePosterWidth),
+            margin: Double(mobilePagePadding),
+            gap: Double(DS.Space.xxl),
+            hinge: detailHinge)
+        let posterLeading = CGFloat(placement.posterLeading)
+        let metadataLeading = CGFloat(placement.metadataLeading)
+        let metadataWidth = max(min(Self.readableTextWidth,
+                                    detailContentRegion.width - metadataLeading - mobilePagePadding), 0)
+        return HStack(alignment: .top, spacing: 0) {
+            Color.clear.frame(width: posterLeading, height: 1)
+            detailPoster(width: Self.sideBySidePosterWidth)
+            Color.clear.frame(width: max(metadataLeading - posterLeading - Self.sideBySidePosterWidth, 0),
+                              height: 1)
+            mobileMetadataBlock
+                .frame(width: metadataWidth, alignment: .leading)
+            Spacer(minLength: 0)
+        }
+        .padding(.top, DS.Space.xl)
+    }
+
+    /// A book hinge in the content region's horizontal space, from the one pose source.
+    private var detailHinge: (minX: Double, maxX: Double)? {
+        guard case .book(let rect) = duoPose, detailContentRegion.width > 0 else { return nil }
+        return (Double(rect.minX - detailContentRegion.minX), Double(rect.maxX - detailContentRegion.minX))
+    }
+
+    /// Title (once), context line, actions, time left, overview and credits. The navigation
+    /// title stays hidden until this hero title scrolls away.
+    private var mobileMetadataBlock: some View {
+        VStack(alignment: .leading, spacing: DS.Space.md) {
+            DetailTitleHeader(item: detailed, showItem: showItem)
+                .onScrollVisibilityChange(threshold: 0.01) { visible in
+                    heroTitleVisible = visible
+                }
+
+            DetailContextLine(parts: mobileContextParts)
+
+            mobileActionRow
+                .padding(.top, DS.Space.xs)
+
+            if let left = MediaDetailCaptions.timeLeft(for: detailed) {
+                Text(left)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
 
             if let playbackErrorMessage {
                 Text(playbackErrorMessage)
-                    .font(.callout)
+                    .font(.caption)
                     .foregroundStyle(.red)
             }
-
-            if let tagline = detailed.tagline, !tagline.isEmpty {
-                Text(tagline)
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-                    .italic()
-            }
-
-            if let genres = detailed.genres, !genres.isEmpty {
-                Text(genres.map(\.tag).joined(separator: " · "))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-
-            DetailCreditsSection(roles: detailed.roles,
-                                 directors: detailed.directors,
-                                 studios: detailed.studios)
 
             DetailMovieVersionPicker(versions: movieVersions,
                                      activeVersionRatingKey: activeVersionRatingKey,
@@ -411,72 +484,117 @@ struct DetailView: View {
             DetailMediaVersionPicker(media: detailed.media,
                                      selectedMediaIndex: $selectedMediaIndex)
 
+            if let summary = detailed.summary, !summary.isEmpty {
+                Text(summary)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary.opacity(0.9))
+                    .lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, DS.Space.xs)
+            }
+
+            if let genres = detailed.genres, !genres.isEmpty {
+                Text(genres.map(\.tag).joined(separator: " · "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            // Cast has its own rail below; directors and studios stay as caption lines.
+            DetailCreditsSection(roles: nil,
+                                 directors: detailed.directors,
+                                 studios: detailed.studios)
+
             if let media = selectedMedia {
                 DetailMediaInfoSummary(specBadges: mediaSpecBadges(media),
                                        chapterCount: detailed.chapters?.count)
             }
+        }
+    }
 
-            if let summary = detailed.summary, !summary.isEmpty {
-                Text(summary)
-                    .font(.body)
-                    .foregroundStyle(.primary.opacity(0.9))
-                    .lineSpacing(4)
-                    .padding(.top, DS.Space.sm)
+    /// year · runtime · content rating · audience rating, dropped from the end to fit one line.
+    private var mobileContextParts: [String] {
+        var parts = MediaDetailCaptions.movieContext(detailed)
+        if let rating = detailed.rating, rating > 0 {
+            parts.append("★ " + String(format: "%.1f", rating))
+        }
+        return parts
+    }
+
+    /// One prominent label-on-glass Resume/Play capsule, then Download and Mark Watched as glass
+    /// circles with accessibility titles.
+    private var mobileActionRow: some View {
+        HStack(spacing: DS.Space.md) {
+            playButton
+                .controlSize(.large)
+            if PlatformFeaturePolicy.supportsDownloads {
+                downloadCircleButton
+            }
+            if supportsWatchedToggle {
+                markWatchedCircleButton
             }
         }
     }
 
-    /// Full-width 16:9 key art for compact phones. The policy prefers backend landscape art,
-    /// deliberately crops a poster fallback to fill the landscape frame, and preserves the
-    /// existing `PosterImage` placeholder when neither path exists. Its height is capped at a
-    /// share of the measured viewport so short (landscape, folded) viewports keep the title
-    /// and actions closer to the fold, but it never drops below half the viewport width; a
-    /// capped frame stays 16:9 and centers.
     @ViewBuilder
-    private var compactPhoneArtwork: some View {
-        GeometryReader { geometry in
-            switch MobileDetailArtworkPolicy.selection(art: detailed.art, thumb: detailed.thumb) {
-            case .landscape(let path):
-                compactPhoneArtworkImage(path: path, size: geometry.size)
-            case .croppedPoster(let path):
-                // PosterImage renders loaded artwork with `.fill`, intentionally cropping the
-                // portrait fallback into this landscape frame rather than letterboxing it.
-                compactPhoneArtworkImage(path: path, size: geometry.size)
-            case .none:
-                compactPhoneArtworkImage(path: nil, size: geometry.size)
+    private var downloadCircleButton: some View {
+        if let identity = Self.offlinePlaybackIdentity(ratingKey: downloadRecordKey, manager: downloadManager) {
+            Button {
+                musicPlayer.pauseForVideo()
+                remotePlayback = nil
+                playingItem = nil
+                presentingPlayer = false
+                // Capture rendered authority before orientation; admission runs after it.
+                let request = downloadManager.offlinePlaybackLaunchFactory.beginPresentationRequest()
+                Task { await presentLocalPlayer(identity, request: request) }
+            } label: {
+                DetailCircleActionLabel(title: "Play Offline", systemImage: "arrow.down.circle.fill")
             }
+            .detailCircleActionStyle(title: "Play Offline")
+        } else {
+            Button {
+                guard !isPreparingDownloadOptions else { return }
+                isPreparingDownloadOptions = true
+                Task { await prepareDownloadOptions() }
+            } label: {
+                DetailCircleActionLabel(title: downloadLabel,
+                                        systemImage: isDownloading ? "arrow.down.circle.dotted" : "arrow.down",
+                                        isBusy: isPreparingDownloadOptions)
+            }
+            .detailCircleActionStyle(title: downloadLabel)
+            .disabled(isDownloading || isPreparingDownloadOptions || !metadataReadyForActions)
         }
-        .aspectRatio(16.0 / 9.0, contentMode: .fit)
-        .frame(maxWidth: compactPhoneArtworkMaximumWidth)
-        .frame(maxWidth: .infinity)
     }
 
-    /// Width bound that keeps the 16:9 art within its viewport height cap, floored at half the
-    /// viewport width so wide-and-short viewports (slab iPhone landscape) keep substantial art.
-    /// Capping the width (not the height) lets the aspect-ratio frame size itself.
-    private var compactPhoneArtworkMaximumWidth: CGFloat {
-        guard let width = MobileDetailLayoutPolicy.artworkMaximumWidth(
-            viewportWidth: Double(detailViewportSize.width),
-            viewportHeight: Double(detailViewportSize.height)) else { return .infinity }
-        return CGFloat(width)
+    private var markWatchedCircleButton: some View {
+        let title = isWatched ? "Mark Unwatched" : "Mark Watched"
+        return Button {
+            guard !isTogglingWatched else { return }
+            isTogglingWatched = true
+            Task { await toggleWatched() }
+        } label: {
+            DetailCircleActionLabel(title: title,
+                                    systemImage: isWatched ? "checkmark.circle.fill" : "checkmark")
+        }
+        .detailCircleActionStyle(title: title)
+        .disabled(isTogglingWatched || !metadataReadyForActions)
     }
 
-    private func compactPhoneArtworkImage(path: String?, size: CGSize) -> some View {
-        PosterImage(path: path,
-                    width: size.width,
-                    height: size.height,
-                    cornerRadius: DS.Radius.card)
-            .shadow(color: .black.opacity(0.4), radius: 24, x: 0, y: 16)
+    /// "More Like This" for movies; episodes keep their show's hierarchy instead.
+    private func loadSimilarItems() async {
+        guard detailed.kind == .movie else { similarItems = []; return }
+        let key = detailed.ratingKey
+        let items = await DetailRelatedContentLoader.similar(to: detailed, backend: actionBackend,
+                                                             appModel: appModel)
+        guard detailed.ratingKey == key, !Task.isCancelled else { return }
+        similarItems = items
     }
+    #endif
 
     /// Horizontal inset for the Trailers & Extras shelf (#199) so its content edge lines up
     /// with the hero above — compact-width on iPhone/narrow iPad, the wide page inset elsewhere.
     private var relatedShelfHorizontalPadding: CGFloat {
-        #if os(iOS)
-        return compactWidth ? DS.pagePadding(compact: true) : DS.Space.xxxl
-        #else
-        return DS.Space.xxxl
-        #endif
+        DS.Space.xxxl
     }
 
     /// Hero sizes to the item's real artwork ratio when the backend reports one
@@ -573,6 +691,10 @@ struct DetailView: View {
         // The page already owns the title in its hero. A tvOS navigation title places a second,
         // dimmed title over the content and can collide with the tagline/metadata while focused.
         .toolbar(.hidden, for: .navigationBar)
+        #elseif os(iOS)
+        // The hero title is the page's one title; the bar shows it only once it scrolls away.
+        .navigationTitle(heroTitleVisible ? "" : detailed.title)
+        .navigationBarTitleDisplayMode(.inline)
         #else
         .navigationTitle(detailed.title)
         #endif
@@ -607,6 +729,9 @@ struct DetailView: View {
                 await startPlayback(requestID: requestID)
             }
             await loadRelatedMedia()
+            #if os(iOS)
+            await loadSimilarItems()
+            #endif
         }
         // Resolve the collapsed versions' resolution/codec labels for the chooser (#108).
         // Keyed on `item.ratingKey` (the versions come from `item`, which is stable for this
@@ -665,13 +790,18 @@ struct DetailView: View {
 
     private var leafDetailScroll: some View {
         ScrollView {
+            #if os(iOS)
+            // The rails and the side-by-side placement measure the content region (the scroll
+            // content's own frame, which excludes the vertical bar's inset on either edge).
+            detailLayout
+                .onGeometryChange(for: CGRect.self) { proxy in
+                    proxy.frame(in: .global)
+                } action: { region in
+                    if detailContentRegion != region { detailContentRegion = region }
+                }
+            #else
             VStack(alignment: .leading, spacing: 0) {
-                #if os(iOS)
-                detailLayout
-                    .padding(.horizontal, isCompactPhoneLayout || compactWidth
-                             ? DS.pagePadding(compact: true) : DS.Space.xxxl)
-                    .padding(.vertical, isCompactPhoneLayout ? DS.Space.xl : DS.Space.xxxl)
-                #elseif os(tvOS)
+                #if os(tvOS)
                 detailLayout
                     .padding(.horizontal, 96)
                     .padding(.vertical, 64)
@@ -687,8 +817,10 @@ struct DetailView: View {
                         .padding(.bottom, DS.Space.xxxl)
                 }
             }
+            #endif
         }
         #if os(iOS)
+        .scrollPosition(id: $detailScrollAnchor, anchor: .top)
         .onGeometryChange(for: CGSize.self) { proxy in
             proxy.size
         } action: { size in
@@ -1002,7 +1134,11 @@ struct DetailView: View {
                 }
             }
             .font(detailActionFont.weight(.semibold))
+            #if os(iOS)
+            .padding(.horizontal, DS.Space.sm)
+            #else
             .frame(maxWidth: compactWidth ? .infinity : nil)
+            #endif
         }
         .labstreamGlassProminentButtonStyle()
         #if os(tvOS)
@@ -1076,6 +1212,9 @@ struct DetailView: View {
     private var detailActionFont: Font {
         #if os(tvOS)
         .body
+        #elseif os(iOS)
+        // iPhone/iPad buttons use the Body style (three text styles).
+        .subheadline
         #else
         .title3
         #endif
