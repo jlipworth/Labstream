@@ -55,6 +55,32 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
         add(attachment)
     }
 
+    /// Downloads has no detail page: a tap on an unfinished row opens its actions (Pause, Delete),
+    /// and a long-press offers the same; nothing is pushed.
+    @MainActor
+    func testUnfinishedDownloadRowTapOpensItsActions() {
+        let app = XCUIApplication()
+        app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
+        app.launchArguments = ["--ui-testing", "--ui-testing-backend", "plex", "--ui-testing-fixture", "browse",
+                               "--ui-testing-initial-tab", "offline", "--ui-testing-download-rows"]
+        app.launch()
+        let downloading = app.staticTexts["Atlas Station"].firstMatch
+        XCTAssertTrue(downloading.waitForExistence(timeout: 15), "downloading row")
+        downloading.tap()
+        let pause = app.buttons["Pause"].firstMatch
+        XCTAssertTrue(pause.waitForExistence(timeout: 5), "actions menu offers Pause")
+        XCTAssertTrue(app.buttons["Delete Download"].exists, "actions menu offers Delete")
+        XCTAssertFalse(app.descendants(matching: .any)["download.detail"].exists, "no detail page")
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "downloads-row-actions"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        if app.buttons["Cancel"].exists { app.buttons["Cancel"].tap() } else { app.tap() }
+
+        downloading.press(forDuration: 1.0)
+        XCTAssertTrue(app.buttons["Delete Download"].waitForExistence(timeout: 5), "context menu offers Delete")
+    }
+
     /// #360: use the real Home LazyHStack with landscape-first mixed artwork. Test both
     /// visible cards and a later card after horizontal realization changes the lazy row.
     @MainActor

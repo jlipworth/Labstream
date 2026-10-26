@@ -20,13 +20,8 @@ public struct OfflineLibraryView: View {
     @AppStorage(PlaybackPreferences.Keys.resumeRewindSeconds) private var resumeRewindSeconds = 0
     #if os(iOS)
     @State private var mobilePlayerOrientationCoordinator = MobilePlayerOrientationCoordinator()
-    /// The row the user chose, pushed as its detail page.
-    #if DEBUG
-    @State private var selectedRowID: String? = DebugUITestLaunchConfiguration.opensFirstDownload
-        ? DebugUIFixtureCatalog.downloadRowsSnapshot?.rows.first?.id : nil
-    #else
-    @State private var selectedRowID: String?
-    #endif
+    /// The unfinished row whose actions menu a tap opened.
+    @State private var actionMenuRowID: String?
     #endif
     #if os(visionOS)
     @Binding private var focusedRatingKey: String?
@@ -201,6 +196,7 @@ public struct OfflineLibraryView: View {
                 }
                 .disabled(manager.startupRecoveryState != .ready)
             }
+            .contextMenu { rowActionButtons(rowSnapshot) }
         #else
         row(for: rowSnapshot)
             .id(rowSnapshot.id)
@@ -540,7 +536,11 @@ public struct OfflineLibraryView: View {
             OfflinePosterTile(source: rowSnapshot.artwork.flatMap(OfflineArtworkSource.init),
                 isComplete: rowSnapshot.isComplete,
                 isFailed: presentation.tone == .failure, isUnverified: rowSnapshot.isUnverified)
+            #if os(iOS)
+            DownloadRowContent(presentation: presentation, sizeText: finishedSizeText(rowSnapshot))
+            #else
             DownloadRowContent(presentation: presentation)
+            #endif
             HStack(spacing: 12) {
                 ForEach(presentation.actions.filter { $0 != .delete || showsInlineDeleteControl }, id: \.rawValue) { action in
                     Button {
@@ -575,9 +575,13 @@ public struct OfflineLibraryView: View {
         .contentShape(Rectangle())
         .onTapGesture {
             #if os(iOS)
-            // iPhone/iPad: a tap pushes the row's detail. The row's own Play/Pause/Retry
-            // controls keep their one-tap actions.
-            selectedRowID = rowSnapshot.id
+            // iPhone/iPad: a tap plays a finished download; an unfinished one opens its actions
+            // (Resume/Pause/Retry and Delete). There is no detail page.
+            if presentation.actions.contains(.play) {
+                presentOfflinePlayer(presentation.actionIdentity)
+            } else {
+                actionMenuRowID = rowSnapshot.id
+            }
             #else
             if presentation.actions.contains(.play) {
                 presentOfflinePlayer(presentation.actionIdentity)
@@ -600,116 +604,57 @@ public struct OfflineLibraryView: View {
 
     #if os(iOS)
     /// iPhone/iPad Downloads (iPhone Duo design spec, Downloads, decision 5 revised): one list of
-    /// rows in every width, the same as folded; a tap pushes the row's detail. The unfolded
-    /// list + detail split was dropped: the detail repeated the row and halved the list.
+    /// rows in every width, the same as folded, and no detail page: a tap plays a finished
+    /// download or opens an unfinished one's actions; long-press and swipe offer the same.
     private func mobileRows(snapshot: OfflineLibrarySnapshot) -> some View {
         offlineList(snapshot: snapshot)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .navigationDestination(isPresented: Binding(
-                get: { selectedRowID.map { id in snapshot.rows.contains { $0.id == id } } == true },
-                set: { presented in
-                    if !presented { selectedRowID = nil }
-                })) {
-                if let selectedRowID,
-                   let rowSnapshot = currentSnapshot.rows.first(where: { $0.id == selectedRowID }) {
-                    offlineDetail(for: rowSnapshot)
-                        .navigationTitle(rowSnapshot.title)
-                        .navigationBarTitleDisplayMode(.inline)
+            .confirmationDialog(
+                actionMenuRow(in: snapshot)?.title ?? "Download",
+                isPresented: Binding(
+                    get: { actionMenuRow(in: snapshot) != nil },
+                    set: { if !$0 { actionMenuRowID = nil } }),
+                titleVisibility: .visible
+            ) {
+                if let rowSnapshot = actionMenuRow(in: snapshot) {
+                    rowActionButtons(rowSnapshot)
                 }
             }
     }
 
-    /// The detail for one download (iPhone Duo design spec, Downloads, decision 5): art, title,
-    /// context, the route and size, the full status, the row's actions as labelled controls
-    /// (Play prominent, Delete in red), then the overview.
-    private func offlineDetail(for rowSnapshot: OfflineDownloadRowSnapshot) -> some View {
+    private func actionMenuRow(in snapshot: OfflineLibrarySnapshot) -> OfflineDownloadRowSnapshot? {
+        guard let actionMenuRowID else { return nil }
+        return snapshot.rows.first { $0.id == actionMenuRowID }
+    }
+
+    /// The row's actions as labelled buttons (actions menu, context menu); Delete last, in red.
+    @ViewBuilder
+    private func rowActionButtons(_ rowSnapshot: OfflineDownloadRowSnapshot) -> some View {
         let presentation = Self.rowPresentation(rowSnapshot)
-        let record = manager.records.first { $0.ratingKey == rowSnapshot.id }
-        let sizeBytes = record.map { max(0, $0.bytes) + max(0, $0.sideAssetBytes) } ?? 0
-        let routeAndSize = [rowSnapshot.routeBadge.rawValue,
-                            sizeBytes > 0 ? DownloadRowDisplayPolicy.byteString(sizeBytes) : nil,
-                            rowSnapshot.showBackendBadge ? rowSnapshot.backendName : nil]
-            .compactMap { $0 }
-            .joined(separator: " • ")
-        let overview = record?.metadata?.summary?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return ScrollView {
-            VStack(alignment: .leading, spacing: DS.Space.md) {
-                OfflinePosterTile(source: rowSnapshot.artwork.flatMap(OfflineArtworkSource.init),
-                                  isComplete: rowSnapshot.isComplete,
-                                  isFailed: presentation.tone == .failure,
-                                  isUnverified: rowSnapshot.isUnverified,
-                                  size: CGSize(width: 120, height: 180))
-                    .padding(.bottom, DS.Space.sm)
-                Text(rowSnapshot.title)
-                    .font(.title3.weight(.semibold))
-                    .lineLimit(2)
-                if let subtitle = rowSnapshot.subtitle, !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Text(routeAndSize)
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .accessibilityIdentifier("download.detail.size")
-                if let quality = rowSnapshot.qualityText, !quality.isEmpty {
-                    Text(quality)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                // The pane has room for the full status (bytes, rate, ETA) the row abbreviates.
-                Text(presentation.statusText)
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(presentation.tone == .failure ? Color.red
-                                     : presentation.tone == .verified ? Color.green : Color.secondary)
-                    .lineLimit(2)
-                HStack(spacing: DS.Space.md) {
-                    ForEach(presentation.actions.filter { $0 != .delete }, id: \.rawValue) { action in
-                        Button {
-                            perform(action, presentation: presentation, row: rowSnapshot)
-                        } label: {
-                            Label(Self.detailTitle(action), systemImage: Self.detailSymbol(action))
-                                .font(.subheadline.weight(.semibold))
-                                .lineLimit(1)
-                        }
-                        .accessibilityLabel(presentation.actionLabel(action))
-                        .modifier(OfflineDetailActionStyle(prominent: action == .play))
-                        .disabled(action != .play && manager.startupRecoveryState != .ready)
-                    }
-                    if presentation.actions.contains(.delete) {
-                        Button(role: .destructive) {
-                            confirmDelete(rowSnapshot)
-                        } label: {
-                            Label("Delete Download", systemImage: "trash")
-                                .labelStyle(.iconOnly)
-                                .font(.subheadline.weight(.semibold))
-                        }
-                        .labstreamGlassButtonStyle()
-                        .tint(.red)
-                        .foregroundStyle(.red)
-                        .accessibilityLabel("Delete Download")
-                        .disabled(manager.startupRecoveryState != .ready)
-                    }
-                }
-                .padding(.top, DS.Space.sm)
-                if let overview, !overview.isEmpty {
-                    Text(overview)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, DS.Space.sm)
-                        .accessibilityIdentifier("download.detail.overview")
-                }
+        ForEach(presentation.actions.filter { $0 != .delete }, id: \.rawValue) { action in
+            Button {
+                perform(action, presentation: presentation, row: rowSnapshot)
+            } label: {
+                Label(Self.menuTitle(action), systemImage: Self.menuSymbol(action))
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(DS.pagePadding(compact: compactWidth))
+            .disabled(action != .play && manager.startupRecoveryState != .ready)
         }
-        .accessibilityIdentifier("download.detail")
+        if presentation.actions.contains(.delete) {
+            Button(role: .destructive) {
+                confirmDelete(rowSnapshot)
+            } label: {
+                Label("Delete Download", systemImage: "trash")
+            }
+            .disabled(manager.startupRecoveryState != .ready)
+        }
+    }
+
+    /// "4.2 GB" for a finished download (media plus side assets); `nil` while unfinished.
+    private func finishedSizeText(_ rowSnapshot: OfflineDownloadRowSnapshot) -> String? {
+        guard rowSnapshot.isComplete,
+              let record = manager.records.first(where: { $0.ratingKey == rowSnapshot.id }) else { return nil }
+        let bytes = max(0, record.bytes) + max(0, record.sideAssetBytes)
+        return bytes > 0 ? DownloadRowDisplayPolicy.byteString(bytes) : nil
     }
 
     private func perform(_ action: DownloadRowPresentation.Action,
@@ -723,7 +668,7 @@ public struct OfflineLibraryView: View {
         }
     }
 
-    private static func detailTitle(_ action: DownloadRowPresentation.Action) -> String {
+    private static func menuTitle(_ action: DownloadRowPresentation.Action) -> String {
         switch action {
         case .play: "Play"
         case .pause: "Pause"
@@ -733,7 +678,7 @@ public struct OfflineLibraryView: View {
         }
     }
 
-    private static func detailSymbol(_ action: DownloadRowPresentation.Action) -> String {
+    private static func menuSymbol(_ action: DownloadRowPresentation.Action) -> String {
         switch action {
         case .play, .resume: "play.fill"
         case .pause: "pause.fill"
@@ -793,14 +738,11 @@ private struct OfflinePosterTile: View {
     let isComplete: Bool
     let isFailed: Bool
     let isUnverified: Bool
-    /// Explicit size (detail pane); nil uses the row size: 44×66 compact, 60×90 regular on
-    /// iPhone/iPad (iPhone Duo design spec, Downloads), 44×66 elsewhere.
-    var size: CGSize? = nil
-
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
+    /// 44×66 compact, 60×90 regular on iPhone/iPad (iPhone Duo design spec, Downloads), 44×66
+    /// elsewhere.
     private var tileSize: CGSize {
-        if let size { return size }
         #if os(iOS)
         return compactWidth ? CGSize(width: 44, height: 66) : CGSize(width: 60, height: 90)
         #else
@@ -888,21 +830,6 @@ private struct OfflinePosterTile: View {
         }
     }
 }
-
-#if os(iOS)
-/// Detail-pane action style: Play is the prominent label-on-glass capsule, other actions glass.
-private struct OfflineDetailActionStyle: ViewModifier {
-    let prominent: Bool
-
-    func body(content: Content) -> some View {
-        if prominent {
-            content.labstreamGlassProminentButtonStyle()
-        } else {
-            content.labstreamGlassButtonStyle()
-        }
-    }
-}
-#endif
 
 private struct OfflineRowActionControlModifier: ViewModifier {
     // visionOS/iPad ride the gaze-sized 56×56 / 34-pt glyph; compact width (iPhone) shrinks to

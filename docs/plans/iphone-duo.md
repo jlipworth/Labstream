@@ -53,7 +53,7 @@ describe the chosen option.
 | 2 | Library grid in book | Keep both outer margins and accept the wide, off-centre hinge gutter | 2026-10-25 |
 | 3 | Switch (`Toggle`) on color | **Amber** (= selected/chosen); never system green | 2026-10-25 |
 | 4 | Mini player and scrolling content | A **bottom inset**: the scroll viewport ends above it | 2026-10-25 |
-| 5 | Downloads, unfolded sideways | **Revised 2026-10-26:** one list in every width, a tap pushes the detail. The Mail-style list + detail was built and dropped after review: the detail repeated the row and halved the list | 2026-10-26 |
+| 5 | Downloads, unfolded sideways | **Revised 2026-10-26:** one list in every width and no detail page (a tap plays, or opens an unfinished row's actions). The Mail-style list + detail was built and dropped after review: the detail repeated the row and halved the list | 2026-10-26 |
 | 6 | Settings, unfolded (and iPad regular width) | **Revised 2026-10-26:** two columns like iPad Settings (category list + the selected category's form; split on the hinge in book), after the centred 560 pt form left ~200 pt empty on each side in the sideways capture | 2026-10-26 |
 | 7 | Player in book | Keep the overlay; the whole control group (transport, title, scrubber, bottom circles) moves into the trailing half. The `OverlayArrangement` video-leading/controls-trailing book layout is not used. | 2026-10-25 |
 | 8 | Show resume line | "Resume S1, E3" plus "23m left" | 2026-10-25 |
@@ -328,7 +328,9 @@ hinge in book.
   ending at the content edge. Status context lines are 1–2 words and never wrap. Toolbar actions
   (Edit/select, storage) go in the column with titles and symbols.
 - **Unfolded upright and sideways (revised 2026-10-26, decision 5):** the same list at the
-  regular row size (60×90 pt art), full content width; a tap pushes the detail, as folded. The
+  regular row size (60×90 pt art), full content width. No detail page in any width: a tap plays
+  a finished download and opens an unfinished one's actions (Resume/Pause/Retry, Delete);
+  long-press and swipe offer the same, and a finished row's context line ends with its size. The
   list + detail below was built, reviewed on the simulator and dropped: the detail column
   repeated the row's art, title and status, and the list lost half the width.
 - **Superseded: unfolded sideways as a Mail-style list + detail** (Apple's "one extra level").
@@ -1070,8 +1072,8 @@ are in PMSKit: `RailCardMetrics`, `MobileLibraryGridLayout` (measured columns pl
   actions and description leading; tracks trailing) with the gap on the hinge in book; the track
   anchor persists across the reflow.
 - **Downloads (decision 5, revised 2026-10-26):** one row pattern ending at the content edge,
-  1–2 word status lines, one list in every width; a tap pushes the detail (Play, red Delete,
-  size, overview). The empty state is centred with at most 2 lines.
+  1–2 word status lines, one list in every width, no detail page (tap plays or opens the
+  row's actions; size on the context line). The empty state is centred with at most 2 lines.
 - **Search:** the field stays horizontal at the top of the content region; result rails follow the
   rail rules and songs use the Music track row; the query, focus and results scroll position
   persist across a fold.
@@ -1461,7 +1463,7 @@ re-lays out the same layer and deck from the pose value (deviation pending sign-
     upright, sideways, book, tabletop; login landscape via `--ui-testing`) with a verdict per
     image in `artifacts/duo-final/gallery/index.md` (gitignored). New DEBUG routes:
     `--ui-testing-orientation`, Settings via `--ui-testing-initial-tab settings`, fixture
-    episodes in `--ui-testing-open-item`, `--ui-testing-open-first-download`.
+    episodes in `--ui-testing-open-item` (`--ui-testing-open-first-download` was removed with the Downloads detail page on 2026-10-26).
   - Fixed: black Settings switches (the form tint hijacked `Color.accentColor`), the repeated
     Search hub title and its fourth text style, clipped rail cards taking taps through the
     column, and iPhone/iPad worktree simulator creation on Xcode 27.1 (the iOS 27.1 runtime

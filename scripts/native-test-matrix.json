@@ -98,6 +98,7 @@
         "-only-testing:LabstreamMobileUITests/LabstreamMobileDuoUITests/testFoldedLandscapeLeftBrowseDetailPlayback",
         "-only-testing:LabstreamMobileUITests/LabstreamMobileDuoUITests/testFoldedLandscapeRightBrowseDetailPlayback",
         "-only-testing:LabstreamMobileUITests/LabstreamMobileDuoUITests/testFoldedSettingsSheetKeepsTheVerticalBar",
+        "-only-testing:LabstreamMobileUITests/LabstreamMobileFixtureUITests/testUnfinishedDownloadRowTapOpensItsActions",
         "test", "CODE_SIGNING_ALLOWED=NO", "-enableCodeCoverage", "NO"
       ]
     },

@@ -5,6 +5,9 @@ import PMSKit
 /// Shared semantic cell content; native list/form wrappers retain artwork and action target sizes.
 struct DownloadRowContent: View {
     let presentation: DownloadRowPresentation
+    /// iPhone/iPad: the finished file's size, appended to the context line (there is no detail
+    /// page to show it).
+    var sizeText: String? = nil
 
     private var statusColor: Color {
         switch presentation.tone {
@@ -31,8 +34,7 @@ struct DownloadRowContent: View {
 
     #if os(iOS)
     /// iPhone/iPad: one row pattern with the three text styles (Body title on one line, one
-    /// Caption context line, a 1–2 word Caption status). The route badge and requested quality
-    /// live in the detail pane, so nothing prints twice.
+    /// Caption context line, a 1–2 word Caption status).
     private var mobileBody: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(presentation.row.title)
@@ -65,10 +67,11 @@ struct DownloadRowContent: View {
     }
 
     /// The single context line: the source (only when backends are mixed), then the year,
-    /// runtime and rating; the requested quality only when there is no metadata line.
+    /// runtime and rating; the requested quality only when there is no metadata line; then the
+    /// file size once the download has finished.
     private var mobileContextText: String? {
         let detail = presentation.row.subtitle ?? presentation.row.qualityText
-        let parts = [presentation.row.showBackendBadge ? presentation.row.backendName : nil, detail]
+        let parts = [presentation.row.showBackendBadge ? presentation.row.backendName : nil, detail, sizeText]
             .compactMap { $0 }
             .filter { !$0.isEmpty }
         return parts.isEmpty ? nil : parts.joined(separator: " • ")
