@@ -8,6 +8,15 @@ query; verify them in App Store Connect again before any upload or submission.
 
 ## Current status
 
+On 2026-10-26, the next internal TestFlight run built **1.8.0 (build 1569)** for all four
+platforms from clean commit `81ece411` on `downloads/overhaul`, using `--allow-unpublished`. It
+fixes Emby audio cutting in and out on 4K video-copy playback (#420): the fragmented-MP4 copy lane
+now requests 2-second segments, and the playback details report converted audio. All four
+archives passed validation and processed to **VALID**, **IN_BETA_TESTING**, in **Labstream
+Internal**. No App Store build was selected or submitted for review. Hermetic PMSKit tests, docs
+hygiene, and macOS host Emby acceptance (start, resume, deep seek) passed. Physical-device
+acceptance remains separate, as do the listening check and the deep-seek reopen race (#421).
+
 On 2026-10-24, the next internal TestFlight run built **1.8.0 (build 1567)** for all four
 platforms from clean commit `41f6f6dd` on `downloads/overhaul`, using
 `--allow-unpublished`. It makes every Home video shelf use 2:3 poster cards, so a mixed Continue
