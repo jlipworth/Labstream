@@ -94,6 +94,9 @@
         "-only-testing:LabstreamMobileUITests/LabstreamMobileFixtureUITests/testPlayerLandscapeLockFollowsMeasuredSceneClass",
         "-only-testing:LabstreamMobileUITests/LabstreamMobileFixtureUITests/testPlayerChromeEnvelopeIsStableAcrossRevealAndHide",
         "-only-testing:LabstreamMobileUITests/LabstreamMobileFixtureUITests/testBookPoseMovesTheControlGroupIntoTheTrailingHalf",
+        "-only-testing:LabstreamMobileUITests/LabstreamMobileDuoUITests/testFoldedPortraitBrowseDetailPlayback",
+        "-only-testing:LabstreamMobileUITests/LabstreamMobileDuoUITests/testFoldedLandscapeLeftBrowseDetailPlayback",
+        "-only-testing:LabstreamMobileUITests/LabstreamMobileDuoUITests/testFoldedLandscapeRightBrowseDetailPlayback",
         "test", "CODE_SIGNING_ALLOWED=NO", "-enableCodeCoverage", "NO"
       ]
     },

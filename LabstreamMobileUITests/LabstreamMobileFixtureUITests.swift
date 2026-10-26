@@ -13,7 +13,9 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
         XCTAssertTrue(item.waitForExistence(timeout: 10))
         item.tap()
 
-        let detail = app.staticTexts["Some signals should stay distant."]
+        // iPhone/iPad detail shows the overview body (the italic tagline is gone, Duo design).
+        let detail = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@",
+                                                          "A research crew follows a signal")).firstMatch
         XCTAssertTrue(detail.waitForExistence(timeout: 5))
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = "fixture-detail"
