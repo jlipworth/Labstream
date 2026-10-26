@@ -10,29 +10,26 @@ import UIKit
 /// resize, or a rotation as a layout-only event: the coordinator re-decides the landscape lock from
 /// the new geometry, and the diagnostics let a fold run be judged without reading raw logs. The
 /// view never touches playback state. On iOS 27.1 it also attaches a read-only
-/// `UIHingeInteraction`. Its status is recorded, and reported to the player so a partially open
-/// hinge on the unfolded display can drive the book / tabletop arrangement when the shell's
-/// division region reports nothing (`MobilePlayerPoseResolver`). It never reaches playback.
+/// `UIHingeInteraction` whose status is recorded for diagnostics only (iPhone Duo design spec,
+/// Player tabletop mechanism): the player's book / tabletop pose comes solely from the shell's
+/// `\.duoPose` (the `reservedRegions` division region, or the DEBUG override). It never reaches
+/// layout or playback.
 struct MobilePlayerSceneGeometryReader: UIViewRepresentable {
     let coordinator: MobilePlayerOrientationCoordinator
-    var onHingeStatusChange: ((MobilePlayerPoseResolver.HingeStatus) -> Void)?
 
     func makeUIView(context: Context) -> MobilePlayerSceneGeometryView {
         let view = MobilePlayerSceneGeometryView()
         view.coordinator = coordinator
-        view.onHingeStatusChange = onHingeStatusChange
         return view
     }
 
     func updateUIView(_ uiView: MobilePlayerSceneGeometryView, context: Context) {
         uiView.coordinator = coordinator
-        uiView.onHingeStatusChange = onHingeStatusChange
     }
 }
 
 final class MobilePlayerSceneGeometryView: UIView {
     weak var coordinator: MobilePlayerOrientationCoordinator?
-    var onHingeStatusChange: ((MobilePlayerPoseResolver.HingeStatus) -> Void)?
 
     private struct Sample: Equatable {
         let sceneSize: CGSize
@@ -79,26 +76,11 @@ final class MobilePlayerSceneGeometryView: UIView {
                 let status = Self.label(update.hinge?.status)
                 guard status != self.hingeStatus else { return }
                 self.hingeStatus = status
-                let resolved = Self.resolverStatus(update.hinge?.status)
-                // Never mutate SwiftUI state inside the update that reported the change.
-                DispatchQueue.main.async { [weak self] in self?.onHingeStatusChange?(resolved) }
                 AppDiagnostics.record(.playback, "player.hinge_status", fields: [
                     "status": .label(status),
                 ])
             }
             addInteraction(interaction)
-        }
-    }
-
-    @available(iOS 27.1, *)
-    private static func resolverStatus(_ status: UIHinge.Status?) -> MobilePlayerPoseResolver.HingeStatus {
-        switch status {
-        case .none: .unavailable
-        case .unknown?: .unknown
-        case .closed?: .closed
-        case .partiallyOpen?: .partiallyOpen
-        case .fullyOpen?: .fullyOpen
-        @unknown default: .unknown
         }
     }
 

@@ -202,37 +202,3 @@ struct MobilePlayerArrangementTests {
         #expect(arrangement.bottomGroupFrame == bounds)
     }
 }
-
-struct MobilePlayerPoseResolverTests {
-    private let upright = CGRect(x: 0, y: 0, width: 669, height: 951)
-    private let sideways = CGRect(x: 0, y: 0, width: 951, height: 669)
-
-    @Test func theShellPoseWins() {
-        let hinge = CGRect(x: 0, y: 400, width: 669, height: 20)
-        #expect(MobilePlayerPoseResolver.resolve(shellPose: .tabletop(hinge: hinge),
-                                                 hingeStatus: .fullyOpen, bounds: upright)
-            == .tabletop(hinge: hinge))
-    }
-
-    @Test func aPartiallyOpenHingeSynthesisesTheCentreStrip() {
-        let tabletop = MobilePlayerPoseResolver.resolve(shellPose: .flat, hingeStatus: .partiallyOpen,
-                                                        bounds: upright)
-        #expect(tabletop == .tabletop(hinge: CGRect(x: 0, y: 465.5, width: 669, height: 20)))
-        let book = MobilePlayerPoseResolver.resolve(shellPose: .flat, hingeStatus: .partiallyOpen,
-                                                    bounds: sideways)
-        #expect(book == .book(hinge: CGRect(x: 465.5, y: 0, width: 20, height: 669)))
-    }
-
-    @Test func otherHingeStatesAreFlat() {
-        for status in [MobilePlayerPoseResolver.HingeStatus.unavailable, .unknown, .closed, .fullyOpen] {
-            #expect(MobilePlayerPoseResolver.resolve(shellPose: .flat, hingeStatus: status,
-                                                     bounds: upright) == .flat)
-        }
-    }
-
-    @Test func aPhoneClassDisplayIsFlatEvenWhenPartiallyOpen() {
-        // Tent: the outer display, partially open.
-        #expect(MobilePlayerPoseResolver.resolve(shellPose: .flat, hingeStatus: .partiallyOpen,
-                                                 bounds: CGRect(x: 0, y: 0, width: 678, height: 466)) == .flat)
-    }
-}

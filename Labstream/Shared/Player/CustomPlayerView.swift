@@ -53,8 +53,6 @@ struct CustomPlayerView: View {
     @State private var mobileGeometry: PlayerTopSafeInsetSample?
     /// Width ÷ height of the decoded picture, reported by the player layer's `videoRect`.
     @State private var mobileVideoAspect: Double?
-    /// The read-only hinge interaction's status (`MobilePlayerSceneGeometryReader`).
-    @State private var mobileHingeStatus: MobilePlayerPoseResolver.HingeStatus = .unavailable
     /// Active occlusion regions (the outer camera island), global space.
     @State private var mobileOcclusions: [CGRect] = []
     #endif
@@ -290,10 +288,7 @@ struct CustomPlayerView: View {
         // The player's own scene drives the landscape lock and records every geometry change
         // (rotation, window resize, iPhone Duo fold) as a layout-only event.
         .background {
-            MobilePlayerSceneGeometryReader(coordinator: mobileOrientationCoordinator,
-                                            onHingeStatusChange: { status in
-                                                if mobileHingeStatus != status { mobileHingeStatus = status }
-                                            })
+            MobilePlayerSceneGeometryReader(coordinator: mobileOrientationCoordinator)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
@@ -367,9 +362,9 @@ struct CustomPlayerView: View {
         // The top edge sits at the latched inset, so a status-bar toggle never moves the group.
         let top = bounds.minY + max(CGFloat(mobileTopSafeInsetLatch.latchedTopInset), insets.top)
         let safe = CGRect(x: frame.minX, y: top, width: frame.width, height: max(0, frame.maxY - top))
-        let pose = MobilePlayerPoseResolver.resolve(shellPose: duoPose, hingeStatus: mobileHingeStatus,
-                                                    bounds: bounds)
-        return MobilePlayerArrangement.resolve(bounds: bounds, safeFrame: safe, pose: pose,
+        // The pose comes only from the shell's division region (or the DEBUG override); the
+        // hinge interaction is diagnostics-only.
+        return MobilePlayerArrangement.resolve(bounds: bounds, safeFrame: safe, pose: duoPose,
                                                videoAspect: mobileVideoAspect,
                                                fillsScreen: mobileVideoDisplayMode == .fill,
                                                occlusions: mobileOcclusions)
