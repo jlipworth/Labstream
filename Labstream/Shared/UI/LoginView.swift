@@ -101,11 +101,17 @@ struct LoginView: View {
                 }
             }
         }
+            // The content column is capped and centred in the content region (folded
+            // landscape on a foldable iPhone is compact but wide); the brand wash behind it
+            // stays full-bleed.
+            .frame(maxWidth: Self.compactColumnMaximumWidth, alignment: .leading)
             .padding(.horizontal, DS.Space.xl)
             .padding(.top, DS.Space.xxl)
             .padding(.bottom, DS.Space.xxxl)
             .frame(maxWidth: .infinity)
     }
+
+    private static let compactColumnMaximumWidth = CGFloat(MobileShellLayoutPolicy.loginColumnMaximumWidth)
 
     var body: some View {
         #if os(macOS)
@@ -151,6 +157,9 @@ struct LoginView: View {
         // Keep the mobile brand backdrop without forcing the entire login hierarchy
         // into dark mode; the panel backgrounds adapt to the user's appearance.
         .background(LoginBrandBackdrop())
+        // Amber means "selected" only: links, the text caret and secondary actions use the
+        // label color (the segmented backend picker keeps its system selection pill).
+        .tint(.primary)
         #endif
         .onChange(of: authManager.state) { _, newValue in
             switch newValue {

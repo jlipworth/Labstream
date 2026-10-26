@@ -422,10 +422,14 @@ extension View {
         #endif
     }
 
-    /// Prominent variant of `labstreamGlassButtonStyle`. Do not force a global label
+    /// Prominent variant of `labstreamGlassButtonStyle`. Do not force a hard-coded label
     /// foreground here: `.glassProminent` and `.borderedProminent` derive contrast
     /// from the active tint/material context, and hard-coded black is wrong for dark
     /// platform surfaces.
+    ///
+    /// iPhone/iPad: the prominent capsule (Play/Resume, sign-in, Reconnect) is filled with the
+    /// label color with the background color as its text — the TV app's white Play capsule in
+    /// dark mode — because amber means "selected" only (iPhone Duo design spec, Color & type).
     @ViewBuilder
     func labstreamGlassProminentButtonStyle() -> some View {
         #if os(visionOS)
@@ -436,6 +440,8 @@ extension View {
         self.buttonStyle(.borderedProminent)
         #else
         self.buttonStyle(.glassProminent)
+            .tint(.primary)
+            .foregroundStyle(Color(uiColor: .systemBackground))
         #endif
     }
 

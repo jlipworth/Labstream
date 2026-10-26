@@ -299,7 +299,7 @@ struct PlexLinkCodeView: View {
         }
             .buttonStyle(.plain)
             .fontWeight(.semibold)
-            .foregroundStyle(DS.Brand.amber)
+            .foregroundStyle(signInLinkStyle)
             .accessibilityHint("Opens Plex sign-in in your default browser")
         #endif
     }
@@ -467,7 +467,7 @@ struct EmbyConnectPinCodeView: View {
         }
             .buttonStyle(.plain)
             .fontWeight(.semibold)
-            .foregroundStyle(DS.Brand.amber)
+            .foregroundStyle(signInLinkStyle)
             .accessibilityHint("Opens Emby Connect sign-in in your default browser")
         #endif
     }
@@ -1037,4 +1037,14 @@ struct EmbyConnectServerPicker: View {
                 .disabled(isWorking || selectingServerID != nil)
         }
     }
+}
+
+/// Sign-in address links (semibold): label color on iPhone/iPad, where amber means
+/// "selected" only; the brand amber elsewhere.
+private var signInLinkStyle: AnyShapeStyle {
+    #if os(iOS)
+    AnyShapeStyle(.primary)
+    #else
+    AnyShapeStyle(DS.Brand.amber)
+    #endif
 }
