@@ -44,7 +44,20 @@ struct ContainerBrowserView: View {
         if isCollection {
             collectionBody
         } else {
+            #if os(iOS)
+            // iPhone/iPad (iPhone Duo design spec, Show detail): the show page with its header and
+            // resume action (split with the season on the unfolded-sideways inner display), and the
+            // season level as one episode-row list.
+            if container.kind == .show {
+                MobileShowBrowser(show: container)
+            } else if childrenAreEpisodes {
+                MobileSeasonPage(season: container)
+            } else {
+                tvBody
+            }
+            #else
             tvBody
+            #endif
         }
     }
 
@@ -198,21 +211,6 @@ struct ContainerBrowserView: View {
         .padding(DS.pagePadding(compact: compactWidth))
     }
 
-    private func recordContainerChildrenDiagnostics(_ loaded: [MediaItem],
-                                                    normalized: [MediaItem],
-                                                    backend: String) {
-        guard childrenAreEpisodes else { return }
-        let summary = BrowseDiagnostics.containerChildren(rawItems: loaded,
-                                                          normalizedItems: normalized,
-                                                          backend: backend,
-                                                          container: container,
-                                                          childrenAreEpisodes: childrenAreEpisodes)
-        AppDiagnostics.record(.browse, "container.children", fields: summary.fields)
-        #if DEBUG
-        NSLog("%@", "container.children \(summary.consoleLine)")
-        #endif
-    }
-
     private var collectionPagingSource: LibraryPagingSource {
         let backend = appModel.activeBackend
         return LibraryPagingSource(
@@ -280,56 +278,73 @@ struct ContainerBrowserView: View {
         // avoids keeping a stale, duplicated child snapshot alive across navigation restoration
         // or backend/model changes.
         children = []
-        #if DEBUG
-        if let fixtureChildren = DebugUIFixtureCatalog.containerChildren(for: container) {
-            children = fixtureChildren.normalizedForContainerBrowser(
-                childrenAreEpisodes: childrenAreEpisodes)
-            loadState = .loaded
-            return
-        }
-        #endif
-        if appModel.activeBackend == .jellyfin {
-            loadState = .loading
-            do {
-                let loaded = try await JellyfinBrowseService(appModel: appModel)
-                    .items(parentId: container.ratingKey, recursive: false)
-                let normalized = loaded.normalizedForContainerBrowser(childrenAreEpisodes: childrenAreEpisodes)
-                recordContainerChildrenDiagnostics(loaded, normalized: normalized, backend: "Jellyfin")
-                children = normalized
-                loadState = .loaded
-            } catch {
-                loadState = .failed(friendlyMessage(error))
-            }
-            return
-        }
-        if appModel.activeBackend == .emby {
-            loadState = .loading
-            do {
-                let loaded = try await EmbyBrowseService(appModel: appModel)
-                    .items(parentId: container.ratingKey, recursive: false)
-                let normalized = loaded.normalizedForContainerBrowser(childrenAreEpisodes: childrenAreEpisodes)
-                recordContainerChildrenDiagnostics(loaded, normalized: normalized, backend: "Emby")
-                children = normalized
-                loadState = .loaded
-            } catch {
-                loadState = .failed(friendlyMessage(error))
-            }
-            return
-        }
-
-        guard let service = try? PlexBrowseService(appModel: appModel) else {
-            loadState = .failed("No server selected.")
-            return
-        }
         loadState = .loading
         do {
-            let loaded = try await service.children(ratingKey: container.ratingKey)
-            let normalized = loaded.normalizedForContainerBrowser(childrenAreEpisodes: childrenAreEpisodes)
-            recordContainerChildrenDiagnostics(loaded, normalized: normalized, backend: "Plex")
-            children = normalized
+            children = try await Self.fetchChildren(of: container, appModel: appModel)
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))
+        }
+    }
+
+    /// One hierarchy level (a show's seasons or a season's episodes) from the active backend,
+    /// normalized for display (episode order, duplicate rows collapsed), with the
+    /// `container.children` diagnostics. Shared by the iPhone/iPad show and season pages.
+    static func fetchChildren(of container: MediaItem, appModel: AppModel) async throws -> [MediaItem] {
+        let childrenAreEpisodes = container.kind == .season
+        #if DEBUG
+        if let fixtureChildren = DebugUIFixtureCatalog.containerChildren(for: container) {
+            return fixtureChildren.normalizedForContainerBrowser(childrenAreEpisodes: childrenAreEpisodes)
+        }
+        #endif
+        let loaded: [MediaItem]
+        let backendLabel: String
+        switch appModel.activeBackend {
+        case .jellyfin:
+            loaded = try await JellyfinBrowseService(appModel: appModel)
+                .items(parentId: container.ratingKey, recursive: false)
+            backendLabel = "Jellyfin"
+        case .emby:
+            loaded = try await EmbyBrowseService(appModel: appModel)
+                .items(parentId: container.ratingKey, recursive: false)
+            backendLabel = "Emby"
+        case .plex:
+            guard let service = try? PlexBrowseService(appModel: appModel) else {
+                throw ContainerChildrenError.noServer
+            }
+            loaded = try await service.children(ratingKey: container.ratingKey)
+            backendLabel = "Plex"
+        }
+        let normalized = loaded.normalizedForContainerBrowser(childrenAreEpisodes: childrenAreEpisodes)
+        recordContainerChildrenDiagnostics(container: container, loaded, normalized: normalized,
+                                           backend: backendLabel)
+        return normalized
+    }
+
+    private static func recordContainerChildrenDiagnostics(container: MediaItem,
+                                                           _ loaded: [MediaItem],
+                                                           normalized: [MediaItem],
+                                                           backend: String) {
+        let childrenAreEpisodes = container.kind == .season
+        guard childrenAreEpisodes else { return }
+        let summary = BrowseDiagnostics.containerChildren(rawItems: loaded,
+                                                          normalizedItems: normalized,
+                                                          backend: backend,
+                                                          container: container,
+                                                          childrenAreEpisodes: childrenAreEpisodes)
+        AppDiagnostics.record(.browse, "container.children", fields: summary.fields)
+        #if DEBUG
+        NSLog("%@", "container.children \(summary.consoleLine)")
+        #endif
+    }
+}
+
+enum ContainerChildrenError: LocalizedError {
+    case noServer
+
+    var errorDescription: String? {
+        switch self {
+        case .noServer: "No server selected."
         }
     }
 }
