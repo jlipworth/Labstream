@@ -142,6 +142,25 @@ public enum EmbyLibrary {
                                 relationPath: "LocalTrailers")
     }
 
+    /// `GET /Items/{itemId}/Similar` — the "More Like This" items for a movie or show, as a
+    /// `QueryResult` (`Items`, `TotalRecordCount`).
+    public static func similarItemsRequest(server: URL,
+                                           token: String,
+                                           identity: EmbyClientIdentity,
+                                           userId: String,
+                                           itemId: String,
+                                           limit: Int = 20) throws -> URLRequest {
+        let dialect = requestFactory.dialect
+        let url = try url(server: server, path: "/Items/\(itemId)/Similar", queryItems: [
+            dialect.queryItem(.userId, value: userId),
+            dialect.queryItem(.limit, value: String(max(limit, 1))),
+            dialect.queryItem(.fields, value: gridItemFields),
+            dialect.queryItem(.enableUserData, value: "true"),
+            dialect.queryItem(.enableImages, value: "true"),
+        ])
+        return get(url: url, token: token, identity: identity, userId: userId)
+    }
+
     /// `GET /Users/{UserId}/Items/{Id}/SpecialFeatures` — playable special features.
     public static func specialFeaturesRequest(server: URL,
                                               token: String,

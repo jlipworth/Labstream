@@ -102,6 +102,30 @@ public enum PlexBrowseRequest {
                                  ratingKey: ratingKey)
     }
 
+    /// `GET /library/metadata/<ratingKey>/similar` — the "More Like This" items for a movie or
+    /// show.
+    public static func similar(server: URL,
+                               token: String,
+                               identity: ClientIdentity,
+                               ratingKey: String,
+                               count: Int = 20) -> PlexRequest {
+        PlexRequest(url: server.appendingPathComponent("/library/metadata/\(ratingKey)/similar"),
+                    method: "GET",
+                    queryItems: [.init(name: "count", value: String(max(count, 1)))],
+                    headers: PlexHeaders.standard(identity: identity, token: token))
+    }
+
+    /// `GET /library/metadata/<ratingKey>/allLeaves` — every episode of a show (with view
+    /// state), used to pick the show page's resume episode.
+    public static func allLeaves(server: URL,
+                                 token: String,
+                                 identity: ClientIdentity,
+                                 ratingKey: String) -> PlexRequest {
+        PlexRequest(url: server.appendingPathComponent("/library/metadata/\(ratingKey)/allLeaves"),
+                    method: "GET",
+                    headers: PlexHeaders.standard(identity: identity, token: token))
+    }
+
     /// `GET /library/metadata/<ratingKey>` — full detail/player metadata.
     public static func metadata(server: URL,
                                 token: String,

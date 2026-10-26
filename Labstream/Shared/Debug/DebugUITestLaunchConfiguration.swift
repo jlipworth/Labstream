@@ -25,6 +25,8 @@ enum DebugUITestLaunchConfiguration {
     nonisolated static let initialTabFlag = "--ui-testing-initial-tab"
     nonisolated static let openFirstLibraryFlag = "--ui-testing-open-first-library"
     nonisolated static let searchQueryFlag = "--ui-testing-search-query"
+    /// Push a fixture item (movie, show or fixture season, by rating key) onto Home at launch.
+    nonisolated static let openItemFlag = "--ui-testing-open-item"
 
     nonisolated static func argumentValue(_ flag: String, in arguments: [String]) -> String? {
         guard isEnabled(in: arguments),
@@ -39,6 +41,10 @@ enum DebugUITestLaunchConfiguration {
 
     static var opensFirstLibrary: Bool {
         usesBrowseFixture && ProcessInfo.processInfo.arguments.contains(openFirstLibraryFlag)
+    }
+
+    static var initialOpenItemKey: String? {
+        usesBrowseFixture ? argumentValue(openItemFlag, in: ProcessInfo.processInfo.arguments) : nil
     }
 
     static var initialSearchQuery: String? {

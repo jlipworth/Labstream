@@ -31,6 +31,7 @@ enum DebugUIFixtureCatalog {
     )
 
     static func containerChildren(for container: MediaItem) -> [MediaItem]? {
+        if isBrowseEnabled, let children = showFixtureChildren(for: container) { return children }
         guard DebugUITestLaunchConfiguration.fixtureKind == .season,
               container.ratingKey == seasonContainer.ratingKey else { return nil }
         return [
@@ -43,6 +44,82 @@ enum DebugUIFixtureCatalog {
                       grandparentTitle: "Fixture Series", parentTitle: "Season 1",
                       parentIndex: 1, index: 2),
         ]
+    }
+
+    // MARK: Show → season → episode fixture (detail captures)
+
+    private static let showEpisodeTitles = ["Pilot Light", "Low Water", "The Crossing", "Signals",
+                                            "Undertow", "Fog Bank", "Return", "Open Sea"]
+
+    /// "<backend>-atlas" is the fixture show: three seasons of eight episodes, with S1 E1–E2
+    /// watched and S1 E3 started, so the show page reads "Resume S1, E3" with "23m left".
+    private static func isFixtureShow(_ item: MediaItem) -> Bool {
+        item.kind == .show && item.ratingKey.hasSuffix("-atlas")
+    }
+
+    private static func fixtureSeasons(showKey: String, showTitle: String) -> [MediaItem] {
+        (1...3).map { (season: Int) -> MediaItem in
+            MediaItem(ratingKey: "\(showKey)-s\(season)", title: "Season \(season)", type: "season",
+                      thumb: "fixture://home-artwork/portrait",
+                      parentTitle: showTitle, parentRatingKey: showKey,
+                      index: season, leafCount: 8)
+        }
+    }
+
+    private static func fixtureEpisodes(showKey: String, showTitle: String, season: Int) -> [MediaItem] {
+        (1...8).map { (number: Int) -> MediaItem in
+            let watched = season == 1 && number <= 2
+            let started = season == 1 && number == 3
+            return MediaItem(ratingKey: "\(showKey)-s\(season)e\(number)",
+                             title: showEpisodeTitles[number - 1], type: "episode",
+                             duration: (38 + 3 * (number % 3)) * 60_000,
+                             viewOffset: started ? 900_000 : nil,
+                             viewCount: watched ? 1 : nil,
+                             summary: "The crew keeps the station running through another long shift.",
+                             thumb: "fixture://home-artwork/landscape",
+                             art: "fixture://home-artwork/landscape",
+                             grandparentTitle: showTitle, grandparentRatingKey: showKey,
+                             parentTitle: "Season \(season)",
+                             parentRatingKey: "\(showKey)-s\(season)",
+                             parentIndex: season, index: number)
+        }
+    }
+
+    private static func showFixtureChildren(for container: MediaItem) -> [MediaItem]? {
+        if isFixtureShow(container) {
+            return fixtureSeasons(showKey: container.ratingKey, showTitle: container.title)
+        }
+        guard container.kind == .season,
+              let showKey = container.parentRatingKey, showKey.hasSuffix("-atlas"),
+              let season = container.index else { return nil }
+        return fixtureEpisodes(showKey: showKey, showTitle: container.parentTitle ?? "Atlas Station",
+                               season: season)
+    }
+
+    /// Every episode of the fixture show, for its resume action.
+    static func showEpisodes(for show: MediaItem) -> [MediaItem]? {
+        guard isBrowseEnabled, isFixtureShow(show) else { return nil }
+        return (1...3).flatMap { fixtureEpisodes(showKey: show.ratingKey, showTitle: show.title, season: $0) }
+    }
+
+    /// "More Like This" for any fixture movie or show: one synthetic shelf.
+    static func similarItems(for item: MediaItem, backend: MediaBackendKind) -> [MediaItem] {
+        guard isBrowseEnabled else { return [] }
+        return shelfItems(backend: backend, shelf: 1).filter { $0.ratingKey != item.ratingKey }
+    }
+
+    /// A fixture item by rating key (`--ui-testing-open-item`), so captures can open a movie
+    /// detail or the show page without a tap.
+    static func item(ratingKey: String, backend: MediaBackendKind) -> MediaItem? {
+        guard isBrowseEnabled else { return nil }
+        let items = fixtureItems(backend: backend)
+        if let item = items.first(where: { $0.ratingKey == ratingKey }) { return item }
+        // A fixture season ("<backend>-atlas-s1") opens the pushed season level directly.
+        for show in items where isFixtureShow(show) {
+            let seasons = fixtureSeasons(showKey: show.ratingKey, showTitle: show.title)
+            if let season = seasons.first(where: { $0.ratingKey == ratingKey }) { return season }
+        }
+        return nil
     }
 
     static func homeContent(for backend: MediaBackendKind) -> HomeContent? {
@@ -256,6 +333,8 @@ enum DebugUIFixtureCatalog {
             MediaItem(ratingKey: "\(prefix)-orbit", title: "The Long Orbit", type: "movie",
                       duration: 7_140_000, viewOffset: 2_160_000, year: 2026,
                       summary: "A research crew follows a signal beyond the mapped edge of the solar system, where every transmission challenges what they thought they knew about the mission and one another.",
+                      thumb: "fixture://home-artwork/portrait",
+                      art: "fixture://home-artwork/landscape",
                       media: [
                         Media(id: 1, bitrate: 24_000, width: 3_840, height: 2_160,
                               videoCodec: "hevc", audioCodec: "eac3", container: "mkv", part: []),
@@ -269,14 +348,18 @@ enum DebugUIFixtureCatalog {
                       ],
                       rating: 8.2, contentRating: "PG-13", tagline: "Some signals should stay distant.",
                       genres: [Tag(tag: "Science Fiction"), Tag(tag: "Drama")],
-                      roles: [Tag(tag: "Mara Voss"), Tag(tag: "Elias North"), Tag(tag: "Sana Vale")],
+                      roles: [Tag(tag: "Mara Voss"), Tag(tag: "Elias North"), Tag(tag: "Sana Vale"),
+                              Tag(tag: "Theo Lark"), Tag(tag: "June Ashby"), Tag(tag: "Ravi Moss")],
                       directors: [Tag(tag: "Iris Chen")],
                       studios: [Tag(tag: "Labstream Pictures")]),
             MediaItem(ratingKey: "\(prefix)-harbor", title: "Harbor Lights", type: "movie",
                       duration: 6_540_000, year: 2025,
                       summary: "A family returns to the island where their story began."),
             MediaItem(ratingKey: "\(prefix)-atlas", title: "Atlas Station", type: "show",
-                      year: 2026, summary: "Engineers keep an impossible station alive."),
+                      year: 2026, summary: "Engineers keep an impossible station alive.",
+                      thumb: "fixture://home-artwork/portrait",
+                      art: "fixture://home-artwork/landscape",
+                      contentRating: "TV-14", leafCount: 24),
             MediaItem(ratingKey: "\(prefix)-quiet", title: "A Quiet Current", type: "movie",
                       duration: 5_820_000, year: 2024),
             MediaItem(ratingKey: "\(prefix)-north", title: "Northbound", type: "movie",

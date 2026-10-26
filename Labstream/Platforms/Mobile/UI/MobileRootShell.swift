@@ -151,6 +151,12 @@ struct PlatformRootShell: View {
       navigation.librariesPath.append(
         LibraryRootItem.Destination.plex(PlexSection(key: "1", title: "Movies", type: "movie")))
     }
+    if let key = DebugUITestLaunchConfiguration.initialOpenItemKey, navigation.homePath.isEmpty,
+      let item = DebugUIFixtureCatalog.item(ratingKey: key, backend: appModel.activeBackend)
+    {
+      navigation.selection = .home
+      navigation.homePath.append(item)
+    }
   }
   #endif
 
