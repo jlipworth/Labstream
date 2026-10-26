@@ -54,7 +54,7 @@ describe the chosen option.
 | 3 | Switch (`Toggle`) on color | **Amber** (= selected/chosen); never system green | 2026-10-25 |
 | 4 | Mini player and scrolling content | A **bottom inset**: the scroll viewport ends above it | 2026-10-25 |
 | 5 | Downloads, unfolded sideways | Mail-style **list + detail** | 2026-10-25 |
-| 6 | Settings, unfolded sideways | Keep the centred, capped form; the list-plus-pane split stays deferred | 2026-10-25 |
+| 6 | Settings, unfolded (and iPad regular width) | **Revised 2026-10-26:** two columns like iPad Settings (category list + the selected category's form; split on the hinge in book), after the centred 560 pt form left ~200 pt empty on each side in the sideways capture | 2026-10-26 |
 | 7 | Player in book | Keep the overlay; the whole control group (transport, title, scrubber, bottom circles) moves into the trailing half. The `OverlayArrangement` video-leading/controls-trailing book layout is not used. | 2026-10-25 |
 | 8 | Show resume line | "Resume S1, E3" plus "23m left" | 2026-10-25 |
 | 9 | Real Device Hub unfold captures | **Open gate (deferred):** inner-display, folded-landscape (both rotations), book, tabletop and real-fold frames are still needed before visual acceptance of those poses | – |
@@ -572,12 +572,20 @@ column; Search at the bottom of the column); the digest's sheet rules (§4).
 
 - **Folded:** a sheet from the Settings toolbar item (existing). Grouped Form, ending one margin
   before the sheet's own inset.
-- **Unfolded upright and sideways:** the Settings tab. A grouped Form at the regular row height
-  with a symbol per row (label color), capped at 560 pt and centered in the content region.
-  - A list-plus-pane split for sideways is **deferred**: it would be a new hierarchy level for
-    every section, and it needs its own mockup.
-- **Fold and unfold:** the sheet becomes the tab, or the tab becomes the sheet, at the same
-  navigation depth and scroll position.
+- **Unfolded upright and sideways (and iPad regular width):** the Settings tab, two columns like
+  iPad Settings (decision 6, revised 2026-10-26; mockup in `artifacts/duo-design/settings-split.html`).
+  - Left: eight categories (Account & Server, Libraries, Playback, Audio & Subtitles, Downloads,
+    Maintenance, Diagnostics, About), `SettingsCategoryPolicy`. Rows draw their own selection
+    (amber tint + amber symbol) so phone and pad idioms match; other symbols are label color.
+  - Right: the selected category's sections only, inline title; a one-section category drops its
+    repeated header. Pushed screens (Choose Libraries) push in the detail column.
+  - Width about a third (280–360 pt); in book pose exactly the first page, so the split sits on
+    the hinge. Built from two navigation stacks side by side: inside the tab view the system
+    ignored `navigationSplitViewColumnWidth` and kept its own ~250–320 pt sidebar.
+- **Fold and unfold:** the sheet becomes the tab, or the tab becomes the sheet, keeping the place:
+  the section the form last settled on (a finished scroll or a restore) becomes the selected
+  category, and the selected category is where the folded form scrolls to. Measured at scroll
+  settle, not at the resize, because mid-resize header positions are stale.
 
 ### Login
 
@@ -1011,8 +1019,8 @@ vertical bar is detected from the iOS 27.1 `verticalBarEdge` trait (bridged into
   column (revised 2026-10-26, see "Sheets"); sheet content lays out from the sheet's own safe area. Stats sheet
   (`PlaybackStatsView`): no truncated values ("58.2 Mb…"), one column width per row, 2 columns
   folded and 4 unfolded.
-- **Settings (decision 6):** grouped Form, regular row height, one symbol per row in label color,
-  capped at 560 pt and centred in the content region in both unfolded poses. No sideways split.
+- **Settings (decision 6, revised 2026-10-26):** compact keeps the one grouped Form; regular width
+  is the two-column layout (see "Settings").
 - **Colors (one meaning each):** amber only for selection, including `Toggle` `.tint` (decision
   3; never system green). Remove amber from progress, the scrubber, View All, the primary action
   button, star ratings, Reconnect, the sign-in button and the caret. Green only for the Direct-play

@@ -25,8 +25,7 @@ struct MobileShellLayoutPolicyTests {
         // Unmeasured.
         (0.0, 0.0), (Double.nan, 0.0),
     ])
-    func settingsFormIsCappedAndCentred(width: Double, margin: Double) {
-        #expect(MobileShellLayoutPolicy.readableColumnMargin(
-            containerWidth: width, maximumWidth: MobileShellLayoutPolicy.settingsFormMaximumWidth) == margin)
+    func aTextColumnIsCappedAndCentred(width: Double, margin: Double) {
+        #expect(MobileShellLayoutPolicy.readableColumnMargin(containerWidth: width, maximumWidth: 560) == margin)
     }
 }

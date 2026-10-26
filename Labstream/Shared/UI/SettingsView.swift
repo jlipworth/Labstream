@@ -12,10 +12,11 @@ import PMSKit
 struct SettingsView: View {
     let authManager: AuthManager
     let catalogRepository: LibraryCatalogRepository
-    /// Optional shared vertical scroll offset, so the iPhone/iPad shell can carry the scroll
-    /// position between the compact Settings sheet and the regular-width Settings tab when the
-    /// size class changes (iPhone Duo fold/unfold, iPad resize).
-    var scrollOffset: Binding<CGFloat?>? = nil
+    /// The one category a regular-width two-column Settings detail pane shows (iPhone Duo
+    /// unfolded, iPad). `nil` shows the whole form: the compact sheet, visionOS, tvOS and macOS.
+    var category: SettingsCategory? = nil
+    /// The compact form taking over from the two-column layout scrolls to this category once.
+    var restoreCategory: SettingsCategory? = nil
 
     @Environment(AppModel.self) private var appModel
     @Environment(\.artworkPipeline) private var artworkPipeline
@@ -82,20 +83,13 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            backendSection
-            serverSection
-            librariesSection
-            playbackSection
-            #if !os(tvOS)
-            storageSection
-            #endif
-            maintenanceSection
-            diagnosticsSection
-            aboutSection
-            accountSection
+            ForEach(formSections, id: \.self) { section in
+                formSection(section)
+                    .id(section)
+            }
         }
         #if os(iOS)
-        .modifier(MobileSettingsFormLayout(scrollOffset: scrollOffset))
+        .modifier(MobileSettingsFormLayout(restoreCategory: restoreCategory))
         #endif
         .navigationDestination(for: SettingsRoute.self) { route in
             switch route {
@@ -103,7 +97,7 @@ struct SettingsView: View {
                 LibraryVisibilityEditor(catalogRepository: catalogRepository)
             }
         }
-        .labstreamTopLevelNavigationTitle("Settings")
+        .modifier(SettingsNavigationTitle(category: category))
         .onAppear {
             PlaybackPreferences.migrateLegacyQualityIfNeeded()
             homeMaxVideoBitrateKbps = PlaybackPreferences.qualityKbps(forDefaultsKey: PlaybackPreferences.Keys.homeQualityKbps)
@@ -157,6 +151,54 @@ struct SettingsView: View {
         let v = ProcessInfo.processInfo.operatingSystemVersion
         let base = "\(v.majorVersion).\(v.minorVersion)"
         return v.patchVersion == 0 ? base : "\(base).\(v.patchVersion)"
+    }
+
+    // MARK: Sections
+
+    /// Form order; a category detail pane shows only its own sections.
+    private var formSections: [SettingsFormSection] {
+        let all = SettingsFormSection.allCases.filter { section in
+            #if os(tvOS)
+            return section != .downloads
+            #else
+            return true
+            #endif
+        }
+        guard let category else { return all }
+        return all.filter { SettingsCategoryPolicy.category(of: $0) == category }
+    }
+
+    @ViewBuilder
+    private func formSection(_ section: SettingsFormSection) -> some View {
+        switch section {
+        case .backend: backendSection
+        case .server: serverSection
+        case .libraries: librariesSection
+        case .playback: playbackSection
+        case .audioSubtitles: audioSubtitlesSection
+        case .downloads:
+            #if !os(tvOS)
+            storageSection
+            #endif
+        case .maintenance: maintenanceSection
+        case .diagnostics: diagnosticsSection
+        case .about: aboutSection
+        case .account: accountSection
+        }
+    }
+
+    /// A section header, marked so the compact iPhone/iPad form can report and restore its place.
+    /// A one-section category's detail pane drops it: the pane's title already names it.
+    @ViewBuilder
+    private func settingsHeader(_ title: String, _ section: SettingsFormSection) -> some View {
+        if let category, SettingsCategoryPolicy.sections(of: category).count == 1 {
+            EmptyView()
+        } else {
+            Text(title)
+                #if os(iOS)
+                .modifier(SettingsFormAnchor(section: section))
+                #endif
+        }
     }
 
     // MARK: Playback
@@ -238,6 +280,17 @@ struct SettingsView: View {
                     Label("Show Media in Spotlight & Siri", systemImage: "magnifyingglass.circle")
                 }
 
+        } header: {
+            settingsHeader("Playback", .playback)
+        } footer: {
+            Text(playbackFooter)
+        }
+    }
+
+    // MARK: Audio & Subtitles
+
+    private var audioSubtitlesSection: some View {
+        SwiftUI.Section {
             Picker(selection: $preferredAudioLanguage) {
                 ForEach(PlaybackLanguageOption.common) { option in
                     Text(option.label).tag(option.id)
@@ -282,10 +335,20 @@ struct SettingsView: View {
                 Label("Burn Subtitles", systemImage: "square.bottomhalf.filled")
             }
         } header: {
-            Text("Playback")
+            settingsHeader("Audio & Subtitles", .audioSubtitles)
         } footer: {
-            Text(playbackFooter)
+            if let audioSubtitlesFooter {
+                Text(audioSubtitlesFooter)
+            }
         }
+    }
+
+    /// Plex explains its subtitle auto-select and burn-in modes; the other backends have none.
+    private var audioSubtitlesFooter: String? {
+        guard appModel.activeBackend == .plex else { return nil }
+        let subtitleMode = SubtitleAutoSelectMode(rawValue: subtitleAutoSelectModeRaw) ?? .manual
+        let burnMode = SubtitleBurnMode(rawValue: subtitleBurnModeRaw) ?? .automatic
+        return "\(subtitleMode.help) \(burnMode.help)"
     }
 
     @ViewBuilder
@@ -314,9 +377,7 @@ struct SettingsView: View {
         let active = "Current \(appModel.activeStreamingQualityScopeLabel) cap: \(StreamingQuality.label(kbps: appModel.activeStreamingQualityKbps))."
         switch appModel.activeBackend {
         case .plex:
-            let subtitleMode = SubtitleAutoSelectMode(rawValue: subtitleAutoSelectModeRaw) ?? .manual
-            let burnMode = SubtitleBurnMode(rawValue: subtitleBurnModeRaw) ?? .automatic
-            return active + " Home/Local applies when the selected Plex connection is advertised as local; Internet/Remote applies otherwise. These are maximum/default caps, not a Direct Play guarantee. Adaptive Bitrate may reopen the stream at a lower or higher capped quality after sustained stalls or healthy playback. Spotlight & Siri suggestions can expose browsed media titles to system surfaces; turn them off to stop new indexing and clear Labstream's Spotlight index. \(subtitleMode.help) \(burnMode.help)"
+            return active + " Home/Local applies when the selected Plex connection is advertised as local; Internet/Remote applies otherwise. These are maximum/default caps, not a Direct Play guarantee. Adaptive Bitrate may reopen the stream at a lower or higher capped quality after sustained stalls or healthy playback. Spotlight & Siri suggestions can expose browsed media titles to system surfaces; turn them off to stop new indexing and clear Labstream's Spotlight index."
         case .jellyfin:
             return active + " Jellyfin currently uses the Internet/Remote cap. Adaptive Bitrate may reopen transcoded streams at a lower or higher capped quality after sustained stalls or healthy playback. Spotlight & Siri suggestions can expose browsed media titles to system surfaces; turn them off to stop new indexing and clear Labstream's Spotlight index. Skip modes are honored when marker data exists."
         case .emby:
@@ -348,7 +409,7 @@ struct SettingsView: View {
                 }
             }
         } header: {
-            Text("Backend")
+            settingsHeader("Backend", .backend)
         } footer: {
             Text("Switching keeps each backend’s credentials separate. If the selected backend has a saved session, Labstream reconnects automatically; otherwise it opens that backend’s sign-in flow.")
         }
@@ -379,7 +440,7 @@ struct SettingsView: View {
     }
 
     private var serverSection: some View {
-        SwiftUI.Section("Server") {
+        SwiftUI.Section {
             switch appModel.activeBackend {
             case .plex:
                 if appModel.plexServers.isEmpty {
@@ -510,6 +571,8 @@ struct SettingsView: View {
                     Label("Sign in to a different Emby server", systemImage: "arrow.triangle.2.circlepath")
                 }
             }
+        } header: {
+            settingsHeader("Server", .server)
         }
     }
 
@@ -606,7 +669,7 @@ struct SettingsView: View {
                 Label("Choose Libraries", systemImage: "rectangle.stack.badge.person.crop")
             }
         } header: {
-            Text("Libraries")
+            settingsHeader("Libraries", .libraries)
         } footer: {
             Text("Pick which libraries appear on the Libraries screen for this server. Choices are saved per backend; new server libraries appear automatically.")
         }
@@ -680,7 +743,7 @@ struct SettingsView: View {
                 }
             }
         } header: {
-            Text("Downloads")
+            settingsHeader("Downloads", .downloads)
         } footer: {
             Text("Download quality is the default for new downloads; Original still appears only when feasible. Cellular downloads are off by default where cellular data is available; while off, downloads also avoid Low Data Mode and expensive networks such as a personal hotspot. The network setting applies to new transfers only. Simultaneous downloads limits active downloads; lowering it lets running transfers finish, and raising it starts waiting downloads when slots are available. The storage limit is checked before enqueue/start and won’t delete existing downloads automatically. Prioritizing quick downloads only affects Plex server-side optimize jobs: when permitted, Labstream moves the new conversion behind the currently active one. Jellyfin and Emby keep their normal order.")
         }
@@ -761,7 +824,7 @@ struct SettingsView: View {
             .disabled(clearedSpotlightIndex)
             #endif
         } header: {
-            Text("Maintenance")
+            settingsHeader("Maintenance", .maintenance)
         } footer: {
             #if os(tvOS)
             Text("Artwork re-downloads the next time it appears.")
@@ -850,7 +913,7 @@ struct SettingsView: View {
                 Label("Send feedback to developer", systemImage: "exclamationmark.bubble")
             }
         } header: {
-            Text("Diagnostics")
+            settingsHeader("Diagnostics", .diagnostics)
         } footer: {
             #if os(tvOS)
             Text("Logging is off by default. When enabled, Labstream keeps a bounded, redacted local ring buffer. Send feedback opens the TV support handoff without copying unavailable pasteboard data.")
@@ -878,7 +941,7 @@ struct SettingsView: View {
             // it's treated as a secret in this repo.
             LabeledContent("Client", value: "\(appModel.identity.product) on \(appModel.identity.deviceName)")
         } header: {
-            Text("About")
+            settingsHeader("About", .about)
         } footer: {
             // Trademark/branding sign-off (#92): nominative-use disclaimer covering all three
             // backends. Emby staff explicitly approved this "independent third-party / not
@@ -1186,6 +1249,8 @@ struct SettingsView: View {
                     Text(signOutAllConfirmationMessage)
                 }
             }
+        } header: {
+            settingsHeader("Account", .account)
         }
     }
 
@@ -1240,45 +1305,99 @@ enum SettingsRoute: Hashable {
     case libraryVisibility
 }
 
+extension SettingsRoute {
+    /// The two-column Settings category whose detail pane pushes this screen.
+    var category: SettingsCategory {
+        switch self {
+        case .libraryVisibility: .libraries
+        }
+    }
+}
+
 #if os(iOS)
 /// iPhone/iPad Settings form layout (iPhone Duo design spec, "Settings"):
 /// - row symbols and action rows use the label color; amber means "selected" only, and switches
 ///   keep their amber on state through `LabstreamSwitchToggleStyle`;
-/// - in regular width the grouped form is capped at 560 pt and centred in the content region
-///   (the measured width already excludes the vertical bar's safe-area inset);
-/// - the vertical scroll offset is published to and restored from the shell's shared value.
+/// - the compact form taking over from the two-column layout scrolls once to that category.
 private struct MobileSettingsFormLayout: ViewModifier {
-    let scrollOffset: Binding<CGFloat?>?
+    let restoreCategory: SettingsCategory?
 
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @State private var containerWidth: CGFloat = 0
-    @State private var position = ScrollPosition()
-    @State private var restoredOffset = false
+    @State private var restoredCategory: SettingsCategory?
+    @Environment(\.settingsFormAnchorTracker) private var tracker
+
+    func body(content: Content) -> some View {
+        ScrollViewReader { proxy in
+            content
+                .tint(.primary)
+                // Also set here: sheets do not reliably inherit the app-wide switch style.
+                .toggleStyle(LabstreamSwitchToggleStyle())
+                .onGeometryChange(for: Double.self) { Double($0.size.height) } action: { height in
+                    tracker?.viewportHeight = height
+                }
+                // Commit the section being read when a scroll settles; a resize never scrolls,
+                // so a fold/unfold hands over this value instead of mid-resize geometry.
+                .onScrollPhaseChange { old, new in
+                    guard new == .idle, old != .idle else { return }
+                    tracker?.commit()
+                }
+                // Keyed on the value: the sheet's first pass can still carry the previous state.
+                .task(id: restoreCategory) {
+                    guard let restoreCategory, restoreCategory != restoredCategory else { return }
+                    restoredCategory = restoreCategory
+                    // The form's rows load after the first pass; scroll once they exist.
+                    try? await Task.sleep(for: .milliseconds(300))
+                    // Not `.top`: that parks the header under the large navigation title.
+                    proxy.scrollTo(SettingsCategoryPolicy.anchorSection(for: restoreCategory),
+                                   anchor: UnitPoint(x: 0.5, y: 0.2))
+                    // A jump leaves stale header positions behind; the restored category stands.
+                    tracker?.reset()
+                    tracker?.committed = restoreCategory
+                }
+        }
+    }
+}
+
+/// Where the compact form is: each rendered section header's last known top edge in the scroll
+/// view, and the category it last settled on, so a compact→regular change selects the category
+/// the user was reading.
+@MainActor
+final class SettingsFormAnchorTracker {
+    /// Headers in the upper half of the form are "passed": the section above them is the one
+    /// being read once its header has scrolled into the upper half.
+    static let topLineFraction: Double = 0.5
+
+    var headerTops: [SettingsFormSection: Double] = [:]
+    var viewportHeight: Double = 0
+    /// The category the form last settled on (a finished scroll or a restore); `nil` at the top
+    /// of a fresh visit.
+    var committed: SettingsCategory?
+
+    func commit() {
+        committed = SettingsCategoryPolicy.category(headerTops: headerTops,
+                                                    topLine: viewportHeight * Self.topLineFraction)
+    }
+
+    func reset() {
+        headerTops = [:]
+        committed = nil
+    }
+}
+
+extension EnvironmentValues {
+    /// Installed by the shell on the compact Settings sheet only.
+    @Entry var settingsFormAnchorTracker: SettingsFormAnchorTracker? = nil
+}
+
+private struct SettingsFormAnchor: ViewModifier {
+    let section: SettingsFormSection
+
+    @Environment(\.settingsFormAnchorTracker) private var tracker
 
     func body(content: Content) -> some View {
         content
-            .tint(.primary)
-            .contentMargins(.horizontal, capMargin, for: .scrollContent)
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { containerWidth = $0 }
-            .scrollPosition($position)
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.contentOffset.y + geometry.contentInsets.top
-            } action: { _, offset in
-                guard restoredOffset else { return }
-                scrollOffset?.wrappedValue = offset
+            .onGeometryChange(for: Double.self) { Double($0.frame(in: .scrollView).minY) } action: { top in
+                tracker?.headerTops[section] = top
             }
-            .onAppear {
-                defer { restoredOffset = true }
-                guard !restoredOffset, let offset = scrollOffset?.wrappedValue, offset > 0 else { return }
-                position.scrollTo(y: offset)
-            }
-    }
-
-    private var capMargin: CGFloat {
-        guard horizontalSizeClass == .regular else { return 0 }
-        return CGFloat(MobileShellLayoutPolicy.readableColumnMargin(
-            containerWidth: Double(containerWidth),
-            maximumWidth: MobileShellLayoutPolicy.settingsFormMaximumWidth))
     }
 }
 
@@ -1309,3 +1428,22 @@ extension View {
     }
 }
 #endif
+
+/// "Settings" as the top-level title; a two-column detail pane shows its category inline instead.
+private struct SettingsNavigationTitle: ViewModifier {
+    let category: SettingsCategory?
+
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        if let category {
+            content
+                .navigationTitle(category.title)
+                .navigationBarTitleDisplayMode(.inline)
+        } else {
+            content.labstreamTopLevelNavigationTitle("Settings")
+        }
+        #else
+        content.labstreamTopLevelNavigationTitle("Settings")
+        #endif
+    }
+}

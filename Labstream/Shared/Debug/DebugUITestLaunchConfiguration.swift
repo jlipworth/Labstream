@@ -24,6 +24,9 @@ enum DebugUITestLaunchConfiguration {
     /// simulator taps are not scriptable, so these make folded/appResize captures possible.
     nonisolated static let initialTabFlag = "--ui-testing-initial-tab"
     nonisolated static let openFirstLibraryFlag = "--ui-testing-open-first-library"
+    /// With `--ui-testing-initial-tab settings`: the Settings category to show (raw value, e.g.
+    /// `audioSubtitles`). Regular width selects it; the compact sheet scrolls to it.
+    nonisolated static let settingsCategoryFlag = "--ui-testing-settings-category"
     nonisolated static let searchQueryFlag = "--ui-testing-search-query"
     /// Push a fixture item (movie, show, fixture season or episode, by rating key) onto Home at launch.
     nonisolated static let openItemFlag = "--ui-testing-open-item"
@@ -44,6 +47,10 @@ enum DebugUITestLaunchConfiguration {
 
     static var initialTab: String? {
         argumentValue(initialTabFlag, in: ProcessInfo.processInfo.arguments)
+    }
+
+    static var initialSettingsCategory: String? {
+        usesBrowseFixture ? argumentValue(settingsCategoryFlag, in: ProcessInfo.processInfo.arguments) : nil
     }
 
     static var opensFirstLibrary: Bool {

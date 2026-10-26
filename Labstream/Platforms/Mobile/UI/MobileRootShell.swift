@@ -8,17 +8,24 @@ enum MobileSettingsPresentationAction: Equatable {
   case dismissSheet(selecting: AppDestination)
 }
 
-/// Settings navigation shared by the compact sheet and the regular-width tab, so a size-class
-/// change (iPhone Duo fold/unfold, iPad resize) moves Settings between them at the same depth and
-/// scroll position (design spec global rule 9).
+/// Settings navigation shared by the compact sheet (one form) and the regular-width tab (two
+/// columns), so a size-class change (iPhone Duo fold/unfold, iPad resize) keeps the user's place
+/// (design spec global rule 9): the tab's selected category is where the form scrolls to, and
+/// the section the form was showing becomes the selected category.
 struct MobileSettingsNavigationState: Equatable {
   var path: [SettingsRoute] = []
-  var scrollOffset: CGFloat?
+  var category: SettingsCategory?
 
   /// Opening the sheet from the toolbar is a fresh visit: start at the Settings root.
   mutating func beginFreshVisit() {
     path = []
-    scrollOffset = nil
+    category = nil
+  }
+
+  /// The form hands over to the two-column layout: a pushed screen selects the category that owns
+  /// it, otherwise the section the form was showing.
+  mutating func takeOverFromForm(showing formCategory: SettingsCategory) {
+    category = path.last?.category ?? formCategory
   }
 }
 
@@ -52,6 +59,7 @@ struct PlatformRootShell: View {
   @Environment(\.labstreamVerticalBarEdge) private var verticalBarEdge
   @State private var showsSettingsSheet = false
   @State private var settingsNavigation = MobileSettingsNavigationState()
+  @State private var settingsFormAnchors = SettingsFormAnchorTracker()
 
   private var appModel: AppModel { runtime.appModel }
   private var authManager: AuthManager { runtime.authManager }
@@ -92,9 +100,13 @@ struct PlatformRootShell: View {
     .nowPlayingSheet(presentation: $navigation.nowPlayingPresentation)
     .sheet(isPresented: $showsSettingsSheet) {
       NavigationStack(path: $settingsNavigation.path) {
-        settingsView
+        SettingsView(
+          authManager: authManager,
+          catalogRepository: runtime.libraryCatalogRepository,
+          restoreCategory: settingsNavigation.category)
           .mobileSettingsSheetChrome { showsSettingsSheet = false }
       }
+      .environment(\.settingsFormAnchorTracker, settingsFormAnchors)
     }
     .onChange(of: navigation.selection) { _, destination in
       if destination == .search {
@@ -113,11 +125,14 @@ struct PlatformRootShell: View {
       case .unchanged:
         break
       case .presentSheet(let selection):
-        // Same visit: the tab's path and scroll offset carry into the sheet unchanged.
+        // Same visit: the tab's path carries into the sheet, which scrolls to its category.
+        settingsFormAnchors.reset()
         navigation.selection = selection
         showsSettingsSheet = true
       case .dismissSheet(let selection):
-        // Same visit: the sheet's path and scroll offset carry into the tab unchanged.
+        // Same visit: the sheet's path carries into the tab, selecting the section it showed.
+        settingsNavigation.takeOverFromForm(
+          showing: settingsFormAnchors.committed ?? SettingsCategoryPolicy.defaultCategory)
         showsSettingsSheet = false
         navigation.selection = selection
       }
@@ -140,6 +155,9 @@ struct PlatformRootShell: View {
   /// Browse-fixture capture routes (`DebugUITestLaunchConfiguration`), applied once at launch.
   private func applyDebugCaptureRoute() {
     guard DebugUITestLaunchConfiguration.usesBrowseFixture else { return }
+    if let raw = DebugUITestLaunchConfiguration.initialSettingsCategory {
+      settingsNavigation.category = SettingsCategory(rawValue: raw)
+    }
     if let raw = DebugUITestLaunchConfiguration.initialTab,
       let destination = AppDestination.allCases.first(where: { "\($0)" == raw })
     {
@@ -168,14 +186,6 @@ struct PlatformRootShell: View {
     MobileShellLayoutPolicy.miniPlayerPlacement(verticalBarEdge: verticalBarEdge)
   }
 
-  /// One Settings view for both the sheet and the tab, sharing the scroll offset.
-  private var settingsView: some View {
-    SettingsView(
-      authManager: authManager,
-      catalogRepository: runtime.libraryCatalogRepository,
-      scrollOffset: $settingsNavigation.scrollOffset)
-  }
-
   private var mobileTabs: [AppDestination] {
     AppDestination.allCases.filter { destination in
       if destination == .search { return false }
@@ -190,6 +200,7 @@ struct PlatformRootShell: View {
       ToolbarItem(placement: .topBarTrailing) {
         Button {
           settingsNavigation.beginFreshVisit()
+          settingsFormAnchors.reset()
           showsSettingsSheet = true
         } label: {
           Label("Settings", systemImage: "gearshape")
@@ -231,8 +242,17 @@ struct PlatformRootShell: View {
       .miniPlayerInset(placement: miniPlayerPlacement,
                        presentation: $navigation.nowPlayingPresentation)
     case .settings:
-      NavigationStack(path: $settingsNavigation.path) {
-        settingsView
+      // The Settings tab exists only in regular width: two columns, like iPad Settings.
+      MobileSettingsSplitView(
+        selection: $settingsNavigation.category,
+        path: $settingsNavigation.path,
+        includesDownloads: true
+      ) { category in
+        SettingsView(
+          authManager: authManager,
+          catalogRepository: runtime.libraryCatalogRepository,
+          category: category)
+          .id(category)
       }
       .miniPlayerInset(placement: miniPlayerPlacement,
                        presentation: $navigation.nowPlayingPresentation)

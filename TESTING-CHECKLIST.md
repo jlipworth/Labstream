@@ -135,6 +135,13 @@ layout code changed.
       gallery in `artifacts/duo-final/gallery/` (gitignored) cover every surface; inner sizes
       come from the appResize proxy, which has horizontal bars. Open: the inner display with its
       own vertical bar, real Device Hub folds (Resolved decision 9) and the physical iPhone Duo.
+- [ ] **Settings two columns (#419):** On an unfolded iPhone Duo and on iPad in regular width,
+      Settings shows the category list beside the selected category (only that row is amber);
+      in book pose the split sits on the hinge. Scroll the folded Settings sheet to a section,
+      unfold: that category is selected; select another, fold: the sheet opens at it. Compact
+      iPad (Slide Over) keeps the single form in the sheet. Simulator evidence (2026-10-26):
+      `testRegularWidthSettingsShowsCategoriesBesideTheDetail` on iPad, appResize captures of
+      both hand-off directions and book on the Duo. Open: the physical Duo and real folds.
 - [ ] Home Continue Watching and On Deck render poster cards (episodes show season/show posters)
       whether a movie or an episode was watched most recently, on Plex, Jellyfin, and Emby.
 

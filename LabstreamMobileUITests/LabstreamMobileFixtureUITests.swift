@@ -23,6 +23,38 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
         add(attachment)
     }
 
+    /// Regular-width Settings (iPad, unfolded iPhone Duo) is two columns: categories on the left,
+    /// the selected category's form on the right, with the selection marked on the row. Skips in
+    /// compact width (slab iPhone, folded Duo), where Settings is the toolbar sheet.
+    @MainActor
+    func testRegularWidthSettingsShowsCategoriesBesideTheDetail() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
+        app.launchArguments = ["--ui-testing", "--ui-testing-backend", "plex",
+                               "--ui-testing-fixture", "browse", "--ui-testing-initial-tab", "settings"]
+        app.launch()
+        let accountRow = app.buttons["labstream.settings.category.accountServer"]
+        guard accountRow.waitForExistence(timeout: 10) else {
+            throw XCTSkip("compact width: Settings is the toolbar sheet (\(app.sceneFrame.size))")
+        }
+        XCTAssertTrue(accountRow.isSelected, "the first category is selected by default")
+        XCTAssertTrue(app.staticTexts["Backend"].waitForExistence(timeout: 5), "Account & Server detail")
+
+        let playbackRow = app.buttons["labstream.settings.category.playback"]
+        playbackRow.tap()
+        let quality = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Home / Local Quality")).firstMatch
+        XCTAssertTrue(quality.waitForExistence(timeout: 5), "Playback detail")
+        XCTAssertTrue(playbackRow.isSelected, "the tapped category is selected")
+        XCTAssertFalse(accountRow.isSelected, "one selected category")
+        XCTAssertFalse(app.staticTexts["Backend"].exists, "the detail shows only the selected category")
+        XCTAssertGreaterThan(quality.frame.minX, playbackRow.frame.maxX, "detail sits right of the list")
+
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "settings-two-columns"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     /// #360: use the real Home LazyHStack with landscape-first mixed artwork. Test both
     /// visible cards and a later card after horizontal realization changes the lazy row.
     @MainActor

@@ -31,8 +31,6 @@ public enum MobileShellLayoutPolicy {
         verticalBarEdge == .none
     }
 
-    /// The Settings form cap in regular width (both unfolded poses, iPad).
-    public static let settingsFormMaximumWidth: Double = 560
     /// The login content column cap.
     public static let loginColumnMaximumWidth: Double = 420
 
