@@ -422,6 +422,10 @@ uv run python scripts/check-doc-links.py --site-dir site
 uv run python scripts/check-docs-mermaid.py
 ```
 
+PMSKit geometry helpers and their tests conditionally import `CoreGraphics` where available;
+Linux uses Foundation geometry types. Keep these helpers in the portable test lane rather than
+excluding pose or player-arrangement coverage from Linux CI.
+
 `PMSKit/Tests/PMSKitTests` is the portable package suite. App-owned deterministic tests live in
 `LabstreamTests/` and are hosted by platform-specific Xcode test targets over the same test sources:
 

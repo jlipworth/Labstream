@@ -1,4 +1,6 @@
+#if canImport(CoreGraphics)
 import CoreGraphics
+#endif
 import Foundation
 
 /// Where the iPhone/iPad player puts its picture and its one control arrangement (iPhone Duo design

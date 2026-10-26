@@ -1,4 +1,6 @@
+#if canImport(CoreGraphics)
 import CoreGraphics
+#endif
 import Foundation
 
 /// The partially folded pose a foldable iPhone reports, as the one input every pose-aware layout
