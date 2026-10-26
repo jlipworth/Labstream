@@ -1000,6 +1000,12 @@ vertical bar is detected from the iOS 27.1 `verticalBarEdge` trait (bridged into
 
 ### Step 14: browse surfaces (Home, Library, Music, Downloads, Search)
 
+**Status (2026-10-25):** done, with the gaps listed in the journal. iOS rails clip at their layout
+frame (the content region) with a vertical overflow clip shape instead of vertical padding, so the
+rail height is unchanged; visionOS, tvOS and macOS keep their pass-through rails. The pure rules
+are in PMSKit: `RailCardMetrics`, `MobileLibraryGridLayout` (measured columns plus the book split),
+`HomeShelfCaptionPolicy`, `MusicDetailLayoutPolicy` and `DownloadsLayoutPolicy`.
+
 - **Rails (decision 1, global rules 6 and 7, Step 8 superseded):** replace the
   `mediaRailScrollStyle` default `scrollClipDisabled(true)` in `DesignSystem.swift` with a
   viewport clipped at the content region on whichever edge carries the bar, a trailing content
@@ -1233,3 +1239,39 @@ vertical bar is detected from the iOS 27.1 `verticalBarEdge` trait (bridged into
     hermetic PMSKit tests, the Settings suites in `LabstreamTests`, and a folded Duo smoke with the
     browse fixture (UUID match, alive, also with `--pose tabletop`). Evidence (gitignored):
     `artifacts/duo-shell/`.
+- 2026-10-25, Step 14 (browse area):
+  - Rails: on iPhone/iPad `mediaRailScrollStyle` clips at the rail's layout frame horizontally
+    (the content region, so the bar's inset is already outside it on either edge) and lets the
+    rail draw 48 pt above and below for shadows. Folded portrait shows three 104 pt posters plus a
+    cue and nothing under the bar (`artifacts/duo-browse/home-folded*.png`). Home, Search and the
+    Music rails size cards with `RailCardMetrics` from the measured viewport (count rule: every
+    count whose whole cards fit at the minimum, the clamped width closest to the authored width
+    wins) and keep the first visible card with `scrollPosition(id:)`. The Detail metadata rail
+    inherits the clip only; its widths stay with Step 15.
+  - Home: shelf captions come from `HomeShelfCaptionPolicy` (resume shelves by identifier:
+    "23m left" on every card; otherwise all episode codes, all years, or none), Body/Caption card
+    type, Title section headers, View All as the secondary label with a chevron.
+  - Library grid: measured columns for both iOS size classes (3 folded portrait, 3 upright,
+    4 sideways captured; 4 folded landscape by test only), the 2 + 2 book split from the pose
+    seam (captured with `--pose book`: the hinge gutter widens, both margins stay), A–Z letters
+    in the secondary label. Letter thinning already measures the content height (`ViewThatFits`
+    over the grid's own height; the appResize sideways capture thins to every 2nd letter).
+  - Music: album and playlist pages use `MusicDetailScaffold` on iOS (centred stacked header, or
+    two columns with the gap on the hinge when the content region is wide, regular and landscape;
+    a shared track anchor). No music fixture exists, so this is compile-verified only.
+  - Downloads: compact column (list safe-area margins kept), 560 pt cap upright, list + detail
+    sideways with an amber selected row and a push in the single column that survives folding;
+    60×90 regular art; label-color actions and transfer bar; two-line empty state. Captured with
+    the DEBUG `--ui-testing-download-rows` fixture in folded, upright, sideways and book.
+  - Search: the system search field stays horizontal at the top (folded capture with the
+    keyboard up); result rails use the measured widths.
+  - DEBUG capture routes: `--ui-testing-initial-tab`, `--ui-testing-open-first-library` (a
+    fixture-backed alphabetical Movies grid), `--ui-testing-search-query`,
+    `--ui-testing-download-rows`. On Xcode 27.1 the appResize session renders on the simulator's
+    `Resizable` display (`simctl io <id> screenshot --display=Resizable`), and the folded outer
+    display must be selected explicitly by its display UUID.
+  - Not done: the Downloads detail has no overview (the offline row snapshot carries none) and no
+    separate horizontal Select/Storage row (the existing toolbar metrics stay in the nav bar);
+    Music grids keep their adaptive columns without a book split; folded-landscape and leading-bar
+    captures, iPhone 18 Pro and iPad captures, and the music pages need a later sim turn or real
+    data; real-fold frames stay open (decision 9).
