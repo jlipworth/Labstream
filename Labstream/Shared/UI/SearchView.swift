@@ -426,7 +426,7 @@ private struct SearchLibrarySection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.xl) {
             Text(group.title)
-                .font(compactWidth ? .title2.bold() : .title.bold())
+                .font(groupTitleFont)
                 .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
                 .macSearchResultMeasurementMilestone(isMeasurementMilestone)
 
@@ -438,10 +438,30 @@ private struct SearchLibrarySection: View {
                     SearchSongsSection(tracks: section.items)
                 case .standard:
                     SearchHubSection(section: section,
-                                     destination: destination(for: section))
+                                     destination: destination(for: section),
+                                     showsHeader: showsHeader(for: section))
                 }
             }
         }
+    }
+
+    private var groupTitleFont: Font {
+        #if os(iOS)
+        // iPhone/iPad type scale: one Title style for section headers (Duo design, Color & type).
+        .title3.weight(.semibold)
+        #else
+        compactWidth ? .title2.bold() : .title.bold()
+        #endif
+    }
+
+    /// iPhone/iPad: a hub titled like its library ("Movies" in "Movies") repeats the header right
+    /// above it, so it drops its own title unless that header carries a View All link.
+    private func showsHeader(for section: SearchPresentationSection) -> Bool {
+        #if os(iOS)
+        return section.title != group.title || destination(for: section) != nil
+        #else
+        return true
+        #endif
     }
 
     /// MediaBrowser (Jellyfin/Emby) search hubs get a "View All" paging destination
@@ -491,6 +511,7 @@ private extension View {
 private struct SearchHubSection: View {
     let section: SearchPresentationSection
     let destination: RailViewAllDestination?
+    var showsHeader = true
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
     @State private var railViewportWidth: CGFloat?
@@ -505,7 +526,9 @@ private struct SearchHubSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: compactWidth ? DS.Space.sm : DS.Space.lg) {
-            RailSectionHeader(title: section.title, destination: destination)
+            if showsHeader {
+                RailSectionHeader(title: section.title, destination: destination)
+            }
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
