@@ -5,6 +5,18 @@ AVPlayer host on an Apple silicon Mac running macOS 27. It requires Xcode comman
 line tools and `uv`. No simulator, server login, library-media access, or visible
 player window is required for the routine suite.
 
+## Milestone status
+
+The bounded regression package is complete and integrated locally into
+`downloads/overhaul` at the 2026-10-27 milestone. Further speculative capture work is paused at
+this checkpoint. [Issue #422](https://github.com/jlipworth/Labstream/issues/422)
+tracks the remaining work; integration does not close codec or hardware acceptance.
+The routine synthetic suite is the repeatable baseline. Wider codec findings,
+seek freshness, native original-file audio capture and authenticated cross-backend
+quality checks remain explicit follow-ups described below. Earlier source-bound
+reports remain historical evidence; rerun on the integrated checkout for fresh
+acceptance rather than reusing old build attestations.
+
 ## Routine command
 
 From the repository root:

@@ -5,6 +5,17 @@ uses generated media with a standalone macOS 27 run-loop host and an opt-in
 visionOS 27 raw-URL probe. Both compile the same capture implementation. It does **not** establish PlaybackController, Plex/Jellyfin/Emby packaging,
 physical audio output, HDR display, or universal codec acceptance.
 
+## Checkpoint — 2026-10-27
+
+The approved bounded implementation is complete; speculative experiments stop at
+this milestone, with the package integrated locally into `downloads/overhaul`.
+The canonical workflow is [Headless playback testing](../HEADLESS-PLAYBACK-TESTING.md).
+This research journal remains active because seek freshness, native original-file
+capture, codec-specific findings and backend/hardware acceptance are unresolved.
+[Issue #422](https://github.com/jlipworth/Labstream/issues/422) retains those follow-ups.
+Historical results below describe their recorded source/runtime, not a new pass on
+the combined downloads branch. No private captures or inventory are published.
+
 ## Reproduce
 
 For the simulator lane, use a clean visionOS Debug build and the worktree simulator procedures in
