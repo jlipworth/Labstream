@@ -98,7 +98,10 @@ final class PlaybackController {
             visibleAttachment: debugVisibleAttachmentCount == 0 ? .detached
                 : debugVisibleWindowIsVisible.map { $0() ? .attached : .detached } ?? .unknown,
             positionBucketSeconds: position.isFinite ? Int(min(604_800, max(0, position))) / 5 * 5 : 0,
-            cleanupRequested: debugCleanupRequested, serverCleanup: "unknown")
+            cleanupRequested: debugCleanupRequested, serverCleanup: "unknown",
+            deliveryTransport: DebugPlaybackEvidence.deliveryTransport(
+                assetURL: (player.currentItem?.asset as? AVURLAsset)?.url,
+                originalFileRoute: remotePlayMethod == .directPlay))
     }
     #endif
 

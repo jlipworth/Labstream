@@ -121,9 +121,34 @@ struct ContentView: View {
             // Restore exactly once per app launch. The session objects are app-lifetime, so a window
             // reopened after Cinema already holds a live, connected session — re-running discovery
             // here would needlessly re-show "Connecting…" and re-probe the server.
-            guard !bootstrap.didStartRestore else { return }
+            #if DEBUG
+            DebugPlaybackProbeSupport.recordStartupStage(.contentTaskEntered)
+            #endif
+            guard !bootstrap.didStartRestore else {
+                #if DEBUG
+                DebugPlaybackProbeSupport.recordStartupStage(.restoreSkipped)
+                #endif
+                return
+            }
             bootstrap.didStartRestore = true
+            #if DEBUG && (os(visionOS) || os(macOS))
+            // Synthetic signal experiments must not depend on server authentication
+            // or trigger download restoration. Normal launches retain the usual path.
+            if ProcessInfo.processInfo.arguments.contains("--vp-probe-capture-signals") ||
+                ProcessInfo.processInfo.arguments.contains("--vp-probe-observer-control") ||
+                ProcessInfo.processInfo.arguments.contains("--vp-probe-tap-control") {
+                bootstrap.isRestoring = false
+                await DebugRawURLPlaybackProbe.runIfRequested()
+                return
+            }
+            #endif
+            #if DEBUG
+            DebugPlaybackProbeSupport.recordStartupStage(.restoreBegin)
+            #endif
             await authManager.restoreSession()
+            #if DEBUG
+            DebugPlaybackProbeSupport.recordStartupStage(.restoreDone)
+            #endif
             bootstrap.isRestoring = false
 #if DEBUG
             // Explicit playback probes must not wait behind unrelated inactive-download
@@ -136,7 +161,9 @@ struct ContentView: View {
                debugArgs.indices.contains(idx + 1),
                let backend = MediaBackendKind(rawValue: debugArgs[idx + 1]),
                backend != appModel.activeBackend {
+                DebugPlaybackProbeSupport.recordStartupStage(.backendSwitchBegin)
                 await authManager.switchBackend(backend)
+                DebugPlaybackProbeSupport.recordStartupStage(.backendSwitchDone)
             }
 
             await DebugJellyfinPlaybackProbe.runIfRequested(appModel: appModel)

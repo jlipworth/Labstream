@@ -893,3 +893,50 @@ requires an existing evidence file and a resolution commit reachable from curren
 Reopened, rejected or deferred findings retain their history. Authorization fields record
 existing user decisions, never grant permission. The mirrored `merge-worktree` and
 `review-ledger` skills use these records without changing push, merge or issue-close gates.
+
+## Experimental headless signal measurement
+
+For the bounded routine command, optional codec/channel sweeps, inventory coverage,
+and result interpretation, use [Headless playback testing](HEADLESS-PLAYBACK-TESTING.md).
+`uv run scripts/playback-regression.py run` packages the generated-fixture and
+standalone-host checks without starting a simulator.
+
+The headless audio/video signal experiment (repository notes:
+`docs/research/HEADLESS-AV-SIGNAL-LAB.md`) generates local H.264/AAC HLS fixtures and captures decoded audio/video from a
+Debug-only visionOS 27 AVPlayer probe or standalone macOS 27 run-loop host. It needs
+no server authentication. `uv run scripts/playback-signal-lab.py run-host` compiles a
+small host around the shared capture method; with an `NSApplication` event loop,
+AVPlayer advanced and delivered audio/video without a window or simulator. Six
+controlled clean/defect cases passed the detector suite on that host. This is not a
+LabstreamMac application acceptance run. Use it to
+investigate capture methods and deliberately injected signal defects; it does not
+establish backend playback acceptance, physical audio output, or HDR accuracy.
+Direct pixel-buffer copying avoids the first-use Core Image stall observed in the
+initial experiment. Keep simulator runs serialized and all generated evidence private.
+
+The experimental codec sweep is `uv run scripts/playback-signal-matrix.py generate`
+followed by `uv run scripts/playback-signal-matrix.py run`. It requires the six-case
+detector suite to pass before testing fourteen generated SDR/stereo HLS combinations.
+Its private manifest fingerprints the media; results distinguish generation/capture
+failures from signal mismatches and preserve explicit untested codec families.
+
+
+Set `SIGNAL_LAB_AUDIO_TAP=1` for the host suite to require a second audio check through
+an OS-27 mixed-track audio tap. It captures player-mix samples, not speakers. Use
+`scripts/playback-signal-compare.py` to compare pre/post-effects measurements and
+fixture controls; API timing offsets remain unresolved, so these results do not
+establish absolute A/V synchronization. The research notes retain observed limitations.
+
+
+For 5.1 tone fixtures and separately measured stereo downmixes, use
+`uv run scripts/playback-multichannel-lab.py generate` then `run`. The runner verifies
+encoded fixtures with FFmpeg and retains unverified channel layouts as explicit
+non-passing outcomes. See the research notes for current codec/packaging limits.
+
+On visionOS 27 or macOS 27, admitted backend playback scenarios may add
+`--vp-probe-observe-signals <UUID>` to capture their existing controller player at
+initial and post-scenario points. The observer never starts, pauses, seeks or replaces
+the player item and does not install an audio-mix tap. Private output goes to
+`Documents/ProbeSignalCaptures/<UUID>/`. Summarize a copied capture using
+`uv run scripts/playback-observation-report.py <directory> --run-id <UUID>`;
+coverage and audio levels are evidence, not a quality verdict for unknown content.

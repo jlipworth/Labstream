@@ -100,6 +100,20 @@ Commands and limitations: [workflow status and review evidence](../docs/DEVELOPM
   container; it writes only gitignored listing, cache, inventory, representative, and summary
   artifacts. See the
   [private media corpus workflow](../docs/MEDIA-CORPUS-TESTING.md).
+- `playback-regression.py` — bounded, simulator-free synthetic audio/video regression package
+  for a compatible Mac. `plan` previews commands; `run` executes known controls and optional
+  codec/multichannel suites; `report` validates a saved package. See
+  [Headless playback testing](../docs/HEADLESS-PLAYBACK-TESTING.md).
+- `playback-coverage.py` — maps a private inventory to synthetic fixture families and prioritizes
+  technical combinations using file counts. Family matches never establish library-file playback.
+- `playback-native-control.py` — explicit generated-fixture native Mac controls for retained
+  observation, seek/item/cancellation lifecycle, and mixed or asset-track audio taps. Uses only
+  the worktree-staged dev app, exact process identity, bounded logs and a loopback range server;
+  normal app launch is restored afterward. This is not a backend credential runner.
+- `playback-signal-lab.py`, `playback-signal-matrix.py`, `playback-multichannel-lab.py`, and
+  `playback-signal-compare.py` — lower-level fixture generation, detector, codec/channel and
+  capture-method experiments. `playback-observation-report.py` checks existing-player capture
+  coverage without inventing a reference-quality verdict for arbitrary content.
 - `perf-log-summary.py` — converts privacy-safe performance signposts into summaries/Markdown and
   produces strict, raw-artifact-bound comparison summaries.
 - `perf_evidence_schema.py` — shared closed schema/parser for privacy-safe performance spans,

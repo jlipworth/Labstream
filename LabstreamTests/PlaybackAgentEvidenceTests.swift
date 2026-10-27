@@ -8,6 +8,95 @@ import PMSKit
 
 @MainActor
 struct PlaybackAgentEvidenceTests {
+    #if os(macOS) || os(visionOS)
+    @Test func tapRejectsUnsafePCMByteLayoutsAndPreservesExistingMix() throws {
+        if #available(macOS 27, visionOS 27, *) {
+            let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
+            let good = format.streamDescription.pointee
+            #expect(DebugPlaybackAudioTap.supportsFormat(good))
+            var invalid = good; invalid.mFormatFlags |= kAudioFormatFlagIsBigEndian
+            #expect(!DebugPlaybackAudioTap.supportsFormat(invalid))
+            invalid = good; invalid.mBytesPerFrame = 8
+            #expect(!DebugPlaybackAudioTap.supportsFormat(invalid))
+            invalid = good; invalid.mBytesPerPacket = 0
+            #expect(!DebugPlaybackAudioTap.supportsFormat(invalid))
+            let item = AVPlayerItem(url: URL(fileURLWithPath: "/fixture.invalid"))
+            let existing = AVMutableAudioMix()
+            item.audioMix = existing
+            let original = item.audioMix
+            let tap = try DebugPlaybackAudioTap()
+            #expect(throws: (any Error).self) { try tap.installIfUnmixed(to: item) }
+            #expect(item.audioMix === original)
+            item.audioMix = nil
+            let installed = try tap.installIfUnmixed(to: item)
+            #expect(item.audioMix === installed)
+        }
+    }
+    #endif
+    #if os(macOS) || os(visionOS)
+    @Test func retainedObserverRejectsPriorAndFutureWindowAudioAndCleansUp() throws {
+        if #available(macOS 27, visionOS 27, *) {
+            #expect(!DebugPlaybackSignalCapture.sampleStartsInObservationWindow(9.99, start: 10, duration: 8))
+            #expect(DebugPlaybackSignalCapture.sampleStartsInObservationWindow(10, start: 10, duration: 8))
+            #expect(!DebugPlaybackSignalCapture.sampleStartsInObservationWindow(18, start: 10, duration: 8))
+            #expect(!DebugPlaybackSignalCapture.sampleStartsInObservationWindow(.nan, start: 10, duration: 8))
+            let item = AVPlayerItem(url: URL(fileURLWithPath: "/fixture.invalid"))
+            let other = AVPlayerItem(url: URL(fileURLWithPath: "/other.invalid"))
+            let owner = DebugPlaybackSignalCapture.RetainedAudioOutput(item: item)
+            #expect(owner.isActive(for: item))
+            #expect(!owner.isActive(for: other))
+            #expect(item.outputs.contains { $0 === owner.output })
+            // A decoded buffer beyond one window must be returned first to the next,
+            // not discarded while the current window catches up to its deadline.
+            var pixel: CVPixelBuffer?
+            #expect(CVPixelBufferCreate(kCFAllocatorDefault, 2, 2, kCVPixelFormatType_32BGRA,
+                                       nil, &pixel) == kCVReturnSuccess)
+            let image = try #require(pixel)
+            var description: CMVideoFormatDescription?
+            #expect(CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault,
+                imageBuffer: image, formatDescriptionOut: &description) == noErr)
+            var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 30),
+                presentationTimeStamp: CMTime(seconds: 18, preferredTimescale: 600), decodeTimeStamp: .invalid)
+            var future: CMSampleBuffer?
+            #expect(CMSampleBufferCreateReadyWithImageBuffer(allocator: kCFAllocatorDefault,
+                imageBuffer: image, formatDescription: try #require(description), sampleTiming: &timing,
+                sampleBufferOut: &future) == noErr)
+            let deferred = try #require(future)
+            let sequence = owner.sequenceGeneration
+            try owner.deferFutureSample(deferred, expectedSequence: sequence)
+            #expect(try owner.nextSample(expectedSequence: sequence) === deferred)
+            #expect(try owner.nextSample(expectedSequence: sequence) == nil)
+            try owner.deferFutureSample(deferred, expectedSequence: sequence)
+            owner.outputSequenceWasRestarted(owner.output)
+            #expect(owner.sequenceGeneration == sequence + 1)
+            #expect(throws: DebugPlaybackSignalCapture.CaptureError.self) {
+                try owner.requireSequence(sequence)
+            }
+            #expect(throws: DebugPlaybackSignalCapture.CaptureError.self) {
+                try owner.deferFutureSample(deferred, expectedSequence: sequence)
+            }
+            #expect(try owner.nextSample(expectedSequence: sequence + 1) == nil)
+            try owner.deferFutureSample(deferred, expectedSequence: sequence + 1)
+            owner.close(); owner.close()
+            #expect(throws: DebugPlaybackSignalCapture.CaptureError.self) {
+                try owner.nextSample(expectedSequence: sequence + 1)
+            }
+            #expect(!owner.isActive(for: item))
+            #expect(!item.outputs.contains { $0 === owner.output })
+        }
+    }
+    #endif
+    @Test func deliveryEvidenceKeepsAmbiguousRemoteAssetsUnknown() {
+        #expect(DebugPlaybackEvidence.deliveryTransport(assetURL: nil, originalFileRoute: true) == .unknown)
+        #expect(DebugPlaybackEvidence.deliveryTransport(assetURL: URL(string: "https://fixture.invalid/stream.mp4"),
+            originalFileRoute: false) == .unknown)
+        #expect(DebugPlaybackEvidence.deliveryTransport(assetURL: URL(string: "https://fixture.invalid/stream"),
+            originalFileRoute: true) == .remoteOriginalFileRoute)
+        #expect(DebugPlaybackEvidence.deliveryTransport(assetURL: URL(string: "https://fixture.invalid/master.m3u8?private=sentinel"),
+            originalFileRoute: true) == .hlsPlaylistURL)
+        #expect(DebugPlaybackEvidence.deliveryTransport(assetURL: URL(fileURLWithPath: "/fixture.mp4"),
+            originalFileRoute: false) == .localFileURL)
+    }
     @Test func completedResumeSeekRestartsPausedPlayerOnlyWithCurrentAuthority() {
         let identity = ClientIdentity(clientIdentifier: "fixture-only", product: "Labstream",
                                       version: "1", deviceName: "Fixture")
@@ -208,7 +297,7 @@ struct PlaybackAgentEvidenceTests {
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(Set(object.keys) == Set(["buildNumber", "phase", "bufferBucketSeconds", "renderedFormat", "schemaVersion",
             "generation", "backend", "qualityKbps", "videoDecision", "videoProvenance", "audioDecision", "consent",
-            "visibleAttachment", "positionBucketSeconds", "cleanupRequested", "serverCleanup"]))
+            "visibleAttachment", "positionBucketSeconds", "cleanupRequested", "serverCleanup", "deliveryTransport"]))
     }
 
     @Test func runStartResetRemovesEveryPreviousCaptureLabel() throws {

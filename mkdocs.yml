@@ -66,6 +66,7 @@ nav:
           - Testing strategy: TESTING-STRATEGY.md
           - Agent playback troubleshooting: AGENT-PLAYBACK-TROUBLESHOOTING.md
           - Private media corpus: MEDIA-CORPUS-TESTING.md
+          - Headless playback testing: HEADLESS-PLAYBACK-TESTING.md
           - App Store screenshots: APP-STORE-SCREENSHOTS.md
           - Compile performance: COMPILE-PERFORMANCE.md
           - Native macOS CI: MACOS-CI.md

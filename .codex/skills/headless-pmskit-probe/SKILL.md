@@ -74,17 +74,16 @@ the self-signed cert accepted, which the app doesn't do by default.
 
 ## Hard limits — what this canNOT do
 
-Covers pure Foundation/URLSession only. It does **not** exercise AVPlayer/AVKit: real HLS
-playback, buffering depth, stall watchdog firing, seek-restart-during-play. Headless AVPlayer
-(even on macOS) fetches segments, fills the buffer, and populates `AVPlayerItemAccessLog`, but
-the **playhead does not advance without an on-screen render surface** (verified empirically).
-For the playback half, see the next section. UI-tap automation is shelved (see the
-`sim-driving` skill).
+Covers pure Foundation/URLSession only; these tests do not exercise AVPlayer/AVKit.
+The earlier Foundation-only CLI experiment did not advance playback. That is not a
+universal headless limitation: `scripts/playback-signal-lab.py run-host` supplies an
+NSApplication event loop and has advanced AVPlayer and captured decoded signals on
+macOS 27 without a visible window. See `docs/research/HEADLESS-AV-SIGNAL-LAB.md`.
+That generated-media experiment does not establish backend or physical-output acceptance.
 
 ## The playback half — in-process simulator probe (real AVPlayer, hands-free)
 
-The simulator **is** an on-screen render surface, so AVPlayer's playhead **does** advance
-there — the headless limitation above is macOS-CLI only. To exercise real playback (start,
+To exercise real playback (start,
 playhead advance, seek-restart, stall) without UI tapping, use the launch-arg-driven
 **in-process debug probes** that already exist per backend:
 

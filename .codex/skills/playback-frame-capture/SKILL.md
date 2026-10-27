@@ -77,8 +77,11 @@ is the ground truth.
 
 ## Limits
 
-- Requires the simulator (AVPlayer playheads don't advance headless on macOS CLI — see
-  `headless-pmskit-probe` "Hard limits").
+- The simulator probes above require their app runtime. For generated-signal experiments,
+  the OS-27 standalone macOS host in `scripts/playback-signal-lab.py run-host` has also
+  advanced AVPlayer and captured decoded audio/video without a window or simulator:
+  it supplies an `NSApplication` event loop. See `docs/DEVELOPMENT.md` and
+  `docs/research/HEADLESS-AV-SIGNAL-LAB.md`; this does not establish backend acceptance.
 - Frames are tone-mapped to SDR BGRA by the capture conversion, so this judges
   *correct vs broken rendering*, not HDR colorimetry.
 - Probe output PNGs may contain recognizable movie frames — never commit them; keep them in

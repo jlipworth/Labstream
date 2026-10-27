@@ -153,7 +153,14 @@ def validate_report(payload):
     numeric = {"buildNumber": 1_000_000, "generation": 1_000_000, "qualityKbps": 1_000_000,
                "positionBucketSeconds": 604_800, "bufferBucketSeconds": 3600, "schemaVersion": 1}
     for snapshot in snapshots:
-        exact_keys(snapshot, (*enums, *numeric, "cleanupRequested"))
+        if not isinstance(snapshot, dict):
+            raise InvalidEvidence("invalid_snapshot")
+        # Preserve older private v1 reports while admitting only the new bounded enum.
+        optional = ("deliveryTransport",) if "deliveryTransport" in snapshot else ()
+        exact_keys(snapshot, (*enums, *numeric, "cleanupRequested", *optional))
+        if optional and snapshot["deliveryTransport"] not in (
+                "hlsPlaylistURL", "remoteOriginalFileRoute", "localFileURL", "unknown"):
+            raise InvalidEvidence("invalid_delivery_transport")
         for key, choices in enums.items():
             if snapshot[key] not in choices:
                 raise InvalidEvidence("invalid_snapshot_enum")
