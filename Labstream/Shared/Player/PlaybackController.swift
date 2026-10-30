@@ -46,6 +46,8 @@ final class PlaybackController {
     private var videoTranscodeConsentResumeMs: Int?
     private var preferEmbyVideoCopyHLS = false
     private var mediaBrowserVideoCopyEnforced = false
+    /// #421: one automatic reopen per Emby copy reopen target, never a loop.
+    private var embyCopyReopenRetryUsed = false
     private var usesEmbyHEVCSDRNativeTimeline = false
     private let embyReopenStopBarrier = EmbyReopenStopBarrier()
     private var embyReopenTransactionTail: Task<Void, Never>?
@@ -3421,25 +3423,36 @@ final class PlaybackController {
         // (its ticks-primed playlist names segments it mints only on demand — verified live:
         // prewarm timed out yet playback resumed fine) — so a long budget would only add
         // latency to every JF deep seek.
-        let observer: (@Sendable (HLSSessionPrewarmer.Observation) -> Void)?
-        if AppDiagnostics.isEnabled {
-            observer = { Self.recordRemotePrewarmObservation($0) }
+        // #421: a verified Emby copy child is already a media playlist. The prewarm would
+        // request its segment 0, starting a transcode from zero that races the -ss restart
+        // AVPlayer's seek target triggers; overlapping writers can corrupt the served init.
+        // Copy needs no encoder head start, so only the proxy below applies.
+        if mediaBrowserSession?.backend == .emby, mediaBrowserVideoCopyEnforced {
+            recordPlaybackDiagnostic("playback.remote_prewarm_skipped", fields: [
+                "reason": .label("emby_video_copy_child"),
+                "target": .millisecondsBucket(resumeOffsetMs),
+            ])
         } else {
-            observer = nil
+            let observer: (@Sendable (HLSSessionPrewarmer.Observation) -> Void)?
+            if AppDiagnostics.isEnabled {
+                observer = { Self.recordRemotePrewarmObservation($0) }
+            } else {
+                observer = nil
+            }
+            let prewarm = await HLSSessionPrewarmer.prewarm(startURL: primedURL,
+                                                            headers: headers,
+                                                            budgetSeconds: 8,
+                                                            observe: observer)
+            guard !Task.isCancelled, generation == playbackGeneration else { return nil }
+            recordPlaybackDiagnostic("playback.remote_prewarm", fields: [
+                "outcome": .label(prewarm.outcome.rawValue),
+                "elapsed_ms": .int(Int(prewarm.elapsedSeconds * 1000)),
+                "polls": .int(prewarm.polls),
+                "target": .millisecondsBucket(resumeOffsetMs),
+            ])
+            NSLog("PlaybackController: remote transcode prewarm %@ after %.1fs (%d polls) (#196)",
+                  prewarm.outcome.rawValue, prewarm.elapsedSeconds, prewarm.polls)
         }
-        let prewarm = await HLSSessionPrewarmer.prewarm(startURL: primedURL,
-                                                        headers: headers,
-                                                        budgetSeconds: 8,
-                                                        observe: observer)
-        guard !Task.isCancelled, generation == playbackGeneration else { return nil }
-        recordPlaybackDiagnostic("playback.remote_prewarm", fields: [
-            "outcome": .label(prewarm.outcome.rawValue),
-            "elapsed_ms": .int(Int(prewarm.elapsedSeconds * 1000)),
-            "polls": .int(prewarm.polls),
-            "target": .millisecondsBucket(resumeOffsetMs),
-        ])
-        NSLog("PlaybackController: remote transcode prewarm %@ after %.1fs (%d polls) (#196)",
-              prewarm.outcome.rawValue, prewarm.elapsedSeconds, prewarm.polls)
 
         let proxy = MediaSessionProxy(strippedPlaylistQueryItemNames: ["starttimeticks"],
                                       injectedPlaylistStartTimeOffsetSeconds: Double(resumeOffsetMs) / 1000.0)
@@ -4979,8 +4992,34 @@ final class PlaybackController {
         return true
     }
 
+    /// #421: Emby can race two transcodes on one copy session's init segment around a
+    /// seek-gap restart, and AVPlayer then fails to build its render pipeline (`fmt?`).
+    /// Reopen the same verified copy lane once before asking to encode video.
+    private func attemptEmbyCopyReopenRetry(_ failure: PlaybackFailure) -> Bool {
+        guard EmbyCopyReopenRetryPolicy.shouldRetry(
+                isEmby: mediaBrowserSession?.backend == .emby,
+                videoCopyEnforced: mediaBrowserVideoCopyEnforced,
+                bitrateCeilingKbps: maxVideoBitrateKbps,
+                videoTranscodeApproved: videoTranscodeApprovedForCurrentItem,
+                retryAlreadyUsed: embyCopyReopenRetryUsed,
+                failureIsTerminal: [.serverHTTP, .backendUnsupported, .authenticationRequired,
+                                    .connectionUnavailable].contains(failure.code))
+        else { return false }
+        let resume = playheadSnapshotForRestart(cause: .directPlayRuntimeFallback).positionMs
+        playbackLog.notice("remote.emby_copy_reopen_retry")
+        recordPlaybackDiagnostic("playback.emby_copy_reopen_retry", fields: [
+            "target": .millisecondsBucket(resume),
+            "failure": .label(failure.code.rawValue),
+        ])
+        playbackError.clear()
+        endReconnectStatus()
+        reopenRemoteStream(offsetMs: resume, bitrateKbps: 0, isEmbyCopyRetry: true)
+        return true
+    }
+
     /// Surface a playback failure to the UI. No silent auto-retry: a failed PMS stream must not
     /// become a hidden restart loop that can hammer the server. Retry is an explicit user action.
+    /// The only automatic reopens are Emby's one-shot copy fallback and copy reopen retry.
     private func handlePlaybackFailure(_ error: Error?,
                                        source: PlaybackFailureSource = .playerFailure,
                                        playerItem: AVPlayerItem? = nil,
@@ -5008,6 +5047,7 @@ final class PlaybackController {
             return
         }
         if attemptEmbyVideoCopyFallback() { return }
+        if attemptEmbyCopyReopenRetry(observedFailure) { return }
         if let backend = mediaBrowserSession?.backend,
            backend == .jellyfin || backend == .emby, maxVideoBitrateKbps <= 0,
            !videoTranscodeApprovedForCurrentItem {
@@ -5702,8 +5742,10 @@ final class PlaybackController {
 
     private func reopenRemoteStream(offsetMs: Int,
                                     bitrateKbps: Int,
-                                    preferShortRemoteHLSBuffer: Bool = true) {
+                                    preferShortRemoteHLSBuffer: Bool = true,
+                                    isEmbyCopyRetry: Bool = false) {
         guard let session = mediaBrowserSession else { return }
+        embyCopyReopenRetryUsed = isEmbyCopyRetry
         let remoteStreamReopener = session.reopener
         let predecessor = session.backend == .emby ? embyReopenTransactionTail : nil
         beginItemPreparation()

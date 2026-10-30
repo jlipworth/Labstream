@@ -183,6 +183,14 @@ burn require consent; Maximum explicitly authorizes video encoding. This fallbac
 video-copy Original (Direct Stream), not byte-for-byte original-file Direct Play. Native-file starvation
 itself remains unresolved; the scoped recovery passed Mac playback and deep-seek acceptance.
 
+Emby can still race two transcodes on one copy session: an `init.mp4` request that lands
+while a seek-gap restart has the job unregistered starts a second writer for the same init and
+segments, and AVPlayer can then fail to build its render pipeline (`fmt?`). A verified Emby
+copy failure that is not a server, authentication or connection error therefore reopens the
+same copy lane once at the playhead before the encode-consent prompt (#421). The budget resets
+only when a seek, quality change or other reopen starts a new target, so a persistent failure
+still reaches consent.
+
 A reopened result arriving after cancellation must still stop its exact server session.
 `stopAndWaitIgnoringCancellation()` isolates that cleanup from the cancelled preparation
 task; playback-stopped reporting alone does not establish encoder cleanup.
@@ -203,7 +211,10 @@ Current invariants:
 - `HLSSessionPrewarmer` is lane-specific rather than a universal HLS prerequisite. Plex uses
   its full 20-second budget only when the selected quality is Original (Direct Stream).
   Outside native full-timeline lanes, Emby gives nonzero transcode resume/reopen targets
-  an 8-second head start. Absent/zero-resume AV1 transcodes instead warm the same session
+  an 8-second head start. A verified fragmented-MP4 copy child skips it (#421): it is already
+  a media playlist, so the prewarm would request segment 0 and start a transcode from zero that
+  races AVPlayer's seek-target restart. The prewarmer itself also refuses a non-master start
+  playlist. Absent/zero-resume AV1 transcodes instead warm the same session
   for up to 20 seconds without the proxy ([evidence and limits](https://github.com/jlipworth/Labstream/blob/main/docs/research/emby-av1-startup.md)).
   Jellyfin skips legacy priming and client-seeks its VOD timeline.
   All prewarm outcomes are soft and AVPlayer still gets a chance to load.

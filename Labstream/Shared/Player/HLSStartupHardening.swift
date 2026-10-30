@@ -198,7 +198,7 @@ enum HLSSessionPrewarmer {
         func remaining() -> Double { budgetSeconds - elapsed() }
 
         guard let master = await fetchPlaylist(startURL, headers: headers, timeout: remaining(), phase: .master, observe: observe),
-              let childURL = firstMediaPlaylistURL(inMaster: master, baseURL: startURL) else {
+              let childURL = childPlaylistURL(inStartPlaylist: master, baseURL: startURL) else {
             return Result(outcome: .playlistUnavailable, elapsedSeconds: elapsed(), polls: 0)
         }
         guard let child = await fetchPlaylist(childURL, headers: headers, timeout: remaining(), phase: .child, observe: observe) else {
@@ -238,6 +238,13 @@ enum HLSSessionPrewarmer {
     }
 
     // MARK: - Playlist parsing (line-oriented; PMS output is simple)
+
+    /// The start URL must be a master. Given a media playlist, its first URI is segment 0,
+    /// and fetching that as a "child" makes Emby start a competing transcode from zero (#421).
+    static func childPlaylistURL(inStartPlaylist playlist: String, baseURL: URL) -> URL? {
+        guard playlistTopology(playlist).kind == .master else { return nil }
+        return firstMediaPlaylistURL(inMaster: playlist, baseURL: baseURL)
+    }
 
     static func firstMediaPlaylistURL(inMaster playlist: String, baseURL: URL) -> URL? {
         for line in playlist.split(whereSeparator: \.isNewline) {

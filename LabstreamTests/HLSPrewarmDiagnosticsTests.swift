@@ -3,6 +3,17 @@ import Testing
 @testable import Labstream
 
 struct HLSPrewarmDiagnosticsTests {
+    /// #421: a media playlist's first URI is segment 0. Treating it as a child playlist
+    /// requests that segment, which starts a competing Emby transcode from zero.
+    @Test func childLookupRequiresAMasterPlaylist() throws {
+        let base = try #require(URL(string: "https://emby.example.internal/videos/1/main.m3u8"))
+        let media = "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:2,\nhls1/main/0.m4s\n#EXT-X-ENDLIST\n"
+        #expect(HLSSessionPrewarmer.childPlaylistURL(inStartPlaylist: media, baseURL: base) == nil)
+        let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nmain.m3u8?VideoCodec=copy\n"
+        let child = HLSSessionPrewarmer.childPlaylistURL(inStartPlaylist: master, baseURL: base)
+        #expect(child?.absoluteString == "https://emby.example.internal/videos/1/main.m3u8?VideoCodec=copy")
+    }
+
     @Test func queryClassificationUsesNamesNotSecretValues() {
         #expect(HLSSessionPrewarmer.hasStartTimeTicks("segment.ts?sTaRtTiMeTiCkS=PRIVATE_TICKS&api_key=PRIVATE_TOKEN"))
         #expect(!HLSSessionPrewarmer.hasStartTimeTicks("segment.ts?api_key=StartTimeTicks&keep=PRIVATE_TOKEN"))
