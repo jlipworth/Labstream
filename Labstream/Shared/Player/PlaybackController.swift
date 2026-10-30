@@ -3428,6 +3428,7 @@ final class PlaybackController {
         // AVPlayer's seek target triggers; overlapping writers can corrupt the served init.
         // Copy needs no encoder head start, so only the proxy below applies.
         if mediaBrowserSession?.backend == .emby, mediaBrowserVideoCopyEnforced {
+            playbackLog.notice("remote.prewarm_skipped reason=emby_video_copy_child")
             recordPlaybackDiagnostic("playback.remote_prewarm_skipped", fields: [
                 "reason": .label("emby_video_copy_child"),
                 "target": .millisecondsBucket(resumeOffsetMs),

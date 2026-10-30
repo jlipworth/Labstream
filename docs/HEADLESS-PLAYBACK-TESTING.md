@@ -171,6 +171,27 @@ intended bounded structured diagnostics or a user-mediated export; do not bypass
 privacy restrictions. Exact source bindings, inventories, raw logs, library frames
 and credentials stay private and gitignored.
 
+### Emby deep-seek reopen soak
+
+`scripts/emby-reopen-soak.py` targets intermittent Emby copy-lane reopen failures (#421) and
+audio dropouts (#420), which need many repetitions to observe. It relaunches the staged Mac dev
+app with the admitted Emby `seek` scenario for each run, cycling seek targets, and waits for the
+probe verdict. It then counts app signals from the unified log: prewarm outcome or skip, copy-lane
+retry, `Could not create render pipeline`, `Resyncing AQ timeline` and `sbufIsOld`. Server signals
+come from only the lines Emby appended to `/config/logs/embyserver.txt` during the run, notably
+`Starting transcoding because currentTranscodingIndex=null` (a competing transcode start).
+
+```sh
+python3 scripts/emby-reopen-soak.py --query "<exact private title>" --runs 20
+```
+
+The app must already hold an Emby session; the runner never authenticates. It refuses to run while
+the screen is locked, because the app cannot open its window or render. A run fails when the probe
+gives no pass verdict or a prewarm runs against a verified copy child. A recovered retry and
+audio-queue resyncs are reported, not failed. The printed summary omits the title, IDs, URLs and
+tokens; redacted raw per-run logs stay under the gitignored `build/emby-reopen-soak/`. This is
+Mac transport evidence only; lip sync, other platforms and hardware remain separate gates.
+
 ## Limits and remaining acceptance
 
 Apple's decoded-audio sample output is documented for HLS. Negotiated original-file

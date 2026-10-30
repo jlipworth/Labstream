@@ -110,6 +110,10 @@ Commands and limitations: [workflow status and review evidence](../docs/DEVELOPM
   observation, seek/item/cancellation lifecycle, and mixed or asset-track audio taps. Uses only
   the worktree-staged dev app, exact process identity, bounded logs and a loopback range server;
   normal app launch is restored afterward. This is not a backend credential runner.
+- `emby-reopen-soak.py` — repeats the in-app Emby deep-seek reopen probe on the Mac host dev app
+  (already signed in to Emby) and correlates each run with the lines Emby appended to its server
+  log over `kubectl`. Counts prewarm, copy-lane retry, render-pipeline failure, audio-queue resync
+  and server transcode-start signals (#420/#421). Raw logs stay under `build/emby-reopen-soak/`.
 - `playback-signal-lab.py`, `playback-signal-matrix.py`, `playback-multichannel-lab.py`, and
   `playback-signal-compare.py` — lower-level fixture generation, detector, codec/channel and
   capture-method experiments. `playback-observation-report.py` checks existing-player capture
