@@ -3423,23 +3423,29 @@ final class PlaybackController {
         // (its ticks-primed playlist names segments it mints only on demand — verified live:
         // prewarm timed out yet playback resumed fine) — so a long budget would only add
         // latency to every JF deep seek.
-        // #421: a verified Emby copy child is already a media playlist. The prewarm would
-        // request its segment 0, starting a transcode from zero that races the -ss restart
-        // AVPlayer's seek target triggers; overlapping writers can corrupt the served init.
-        // Copy needs no encoder head start, so only the proxy below applies.
+        let observer: (@Sendable (HLSSessionPrewarmer.Observation) -> Void)?
+        if AppDiagnostics.isEnabled {
+            observer = { Self.recordRemotePrewarmObservation($0) }
+        } else {
+            observer = nil
+        }
+        // #421: a verified Emby copy child is already a media playlist. The generic prewarm
+        // would request its segment 0 and start a transcode from zero that races the seek
+        // target. Instead serve the target segment itself, so the job already runs at the
+        // target when AVPlayer's init.mp4 request arrives (see warmTargetSegment).
         if mediaBrowserSession?.backend == .emby, mediaBrowserVideoCopyEnforced {
-            playbackLog.notice("remote.prewarm_skipped reason=emby_video_copy_child")
-            recordPlaybackDiagnostic("playback.remote_prewarm_skipped", fields: [
-                "reason": .label("emby_video_copy_child"),
+            let warm = await HLSSessionPrewarmer.warmTargetSegment(
+                mediaPlaylistURL: EmbyVideoCopyPolicy.fullTimelineURL(url) ?? url,
+                targetMs: resumeOffsetMs, headers: headers, budgetSeconds: 8, observe: observer)
+            guard !Task.isCancelled, generation == playbackGeneration else { return nil }
+            playbackLog.notice("remote.emby_copy_target_warm outcome=\(warm.outcome.rawValue, privacy: .public) polls=\(warm.polls, privacy: .public)")
+            recordPlaybackDiagnostic("playback.emby_copy_target_warm", fields: [
+                "outcome": .label(warm.outcome.rawValue),
+                "elapsed_ms": .int(Int(warm.elapsedSeconds * 1000)),
+                "polls": .int(warm.polls),
                 "target": .millisecondsBucket(resumeOffsetMs),
             ])
         } else {
-            let observer: (@Sendable (HLSSessionPrewarmer.Observation) -> Void)?
-            if AppDiagnostics.isEnabled {
-                observer = { Self.recordRemotePrewarmObservation($0) }
-            } else {
-                observer = nil
-            }
             let prewarm = await HLSSessionPrewarmer.prewarm(startURL: primedURL,
                                                             headers: headers,
                                                             budgetSeconds: 8,

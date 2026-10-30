@@ -14,6 +14,34 @@ struct HLSPrewarmDiagnosticsTests {
         #expect(child?.absoluteString == "https://emby.example.internal/videos/1/main.m3u8?VideoCodec=copy")
     }
 
+    /// #421: the Emby copy warm must start the job at the seek target, not at segment 0.
+    @Test func targetSegmentLookupWalksTheTimeline() throws {
+        let base = try #require(URL(string: "https://emby.example.internal/videos/1/main.m3u8"))
+        let media = """
+        #EXTM3U
+        #EXT-X-MAP:URI="hls1/main/init.mp4"
+        #EXTINF:2.0,
+        hls1/main/0.m4s
+        #EXTINF:2.0,
+        hls1/main/1.m4s
+        #EXTINF:1.5,
+        hls1/main/2.m4s
+        #EXT-X-ENDLIST
+        """
+        func segment(_ ms: Int) -> String? {
+            HLSSessionPrewarmer.segmentURL(containingMs: ms, inMediaPlaylist: media, baseURL: base)?.lastPathComponent
+        }
+        #expect(segment(0) == "0.m4s")
+        #expect(segment(1_999) == "0.m4s")
+        #expect(segment(2_000) == "1.m4s")
+        #expect(segment(4_400) == "2.m4s")
+        #expect(segment(99_000) == "2.m4s")
+        let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nmain.m3u8\n"
+        #expect(HLSSessionPrewarmer.segmentURL(containingMs: 0, inMediaPlaylist: master, baseURL: base) == nil)
+        let invalid = "#EXTM3U\n#EXTINF:nan,\n0.m4s\n"
+        #expect(HLSSessionPrewarmer.segmentURL(containingMs: 0, inMediaPlaylist: invalid, baseURL: base) == nil)
+    }
+
     @Test func queryClassificationUsesNamesNotSecretValues() {
         #expect(HLSSessionPrewarmer.hasStartTimeTicks("segment.ts?sTaRtTiMeTiCkS=PRIVATE_TICKS&api_key=PRIVATE_TOKEN"))
         #expect(!HLSSessionPrewarmer.hasStartTimeTicks("segment.ts?api_key=StartTimeTicks&keep=PRIVATE_TOKEN"))

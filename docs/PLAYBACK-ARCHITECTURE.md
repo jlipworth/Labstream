@@ -185,8 +185,10 @@ itself remains unresolved; the scoped recovery passed Mac playback and deep-seek
 
 Emby can still race two transcodes on one copy session: an `init.mp4` request that lands
 while a seek-gap restart has the job unregistered starts a second writer for the same init and
-segments, and AVPlayer can then fail to build its render pipeline (`fmt?`). A verified Emby
-copy failure that is not a server, authentication or connection error therefore reopens the
+segments, and AVPlayer can then fail to build its render pipeline (`fmt?`). Emby 4.10 can also
+lose a mid-file job's absolute position after a few segments and restart the encoder on every
+following request; the client does not trigger that, and it is tracked as a server-side gate in
+#421. A verified Emby copy failure that is not a server, authentication or connection error therefore reopens the
 same copy lane once at the playhead before the encode-consent prompt (#421). The budget resets
 only when a seek, quality change or other reopen starts a new target, so a persistent failure
 still reaches consent.
@@ -211,10 +213,14 @@ Current invariants:
 - `HLSSessionPrewarmer` is lane-specific rather than a universal HLS prerequisite. Plex uses
   its full 20-second budget only when the selected quality is Original (Direct Stream).
   Outside native full-timeline lanes, Emby gives nonzero transcode resume/reopen targets
-  an 8-second head start. A verified fragmented-MP4 copy child skips it (#421): it is already
-  a media playlist, so the prewarm would request segment 0 and start a transcode from zero that
-  races AVPlayer's seek-target restart. The prewarmer itself also refuses a non-master start
-  playlist. Absent/zero-resume AV1 transcodes instead warm the same session
+  an 8-second head start. A verified fragmented-MP4 copy child uses a target warm instead (#421).
+  The child is already a media playlist, so the generic prewarm would request segment 0 and start
+  a transcode from zero that races AVPlayer's seek target; the prewarmer now refuses any
+  non-master start playlist. The target warm reads the full-timeline playlist, then fully fetches
+  the segment containing the target, so Emby's job already runs there when AVPlayer requests
+  `init.mp4`. Without it, an `init.mp4` and a target-segment request arriving together started a
+  job from zero, stalled the target for about 20 seconds, and restarted the encoder on every
+  later segment, dropping audio each time (#420). Absent/zero-resume AV1 transcodes instead warm the same session
   for up to 20 seconds without the proxy ([evidence and limits](https://github.com/jlipworth/Labstream/blob/main/docs/research/emby-av1-startup.md)).
   Jellyfin skips legacy priming and client-seeks its VOD timeline.
   All prewarm outcomes are soft and AVPlayer still gets a chance to load.

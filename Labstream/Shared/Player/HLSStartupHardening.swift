@@ -237,7 +237,65 @@ enum HLSSessionPrewarmer {
         return Result(outcome: .ready, elapsedSeconds: elapsed(), polls: polls)
     }
 
+    /// #421: an Emby copy session with no running job races an `init.mp4` request against the
+    /// seek target's segment request. The init starts a job from zero, the target request is
+    /// mis-assigned and stalls, and every later segment then restarts the encoder (each restart
+    /// also drops audio, #420). Serving the target segment first leaves a job running at the
+    /// target, so AVPlayer's init request joins it. The whole segment is read because a client
+    /// disconnect mid-segment can make Emby restart its encoder (#305). Soft, like `prewarm`.
+    static func warmTargetSegment(mediaPlaylistURL: URL,
+                                  targetMs: Int,
+                                  headers: [String: String],
+                                  budgetSeconds: Double = 8,
+                                  observe: (@Sendable (Observation) -> Void)? = nil) async -> Result {
+        let clock = ContinuousClock.now
+        func elapsed() -> Double {
+            let components = clock.duration(to: .now).components
+            return Double(components.seconds) + Double(components.attoseconds) / 1e18
+        }
+        func remaining() -> Double { budgetSeconds - elapsed() }
+        guard let playlist = await fetchPlaylist(mediaPlaylistURL, headers: headers, timeout: remaining(),
+                                                 phase: .child, observe: observe),
+              let segmentURL = segmentURL(containingMs: targetMs, inMediaPlaylist: playlist,
+                                          baseURL: mediaPlaylistURL) else {
+            return Result(outcome: .playlistUnavailable, elapsedSeconds: elapsed(), polls: 0)
+        }
+        var polls = 0
+        while remaining() > 0, !Task.isCancelled {
+            polls += 1
+            if await probeServed(segmentURL, headers: headers, fully: true, timeout: remaining(),
+                                 phase: .segment, observe: observe) {
+                return Result(outcome: .ready, elapsedSeconds: elapsed(), polls: polls)
+            }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        return Result(outcome: Task.isCancelled ? .cancelled : .timedOut, elapsedSeconds: elapsed(), polls: polls)
+    }
+
     // MARK: - Playlist parsing (line-oriented; PMS output is simple)
+
+    /// The media segment whose `#EXTINF` span contains `targetMs`, clamped to the last segment.
+    /// Only a media playlist with valid durations qualifies; a master playlist returns nil.
+    static func segmentURL(containingMs targetMs: Int, inMediaPlaylist playlist: String, baseURL: URL) -> URL? {
+        guard playlistTopology(playlist).kind == .media else { return nil }
+        var segmentStartMs = 0.0
+        var pendingDuration: Double?
+        var last: URL?
+        for line in playlist.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("#EXTINF:") {
+                let raw = trimmed.dropFirst("#EXTINF:".count).split(separator: ",", omittingEmptySubsequences: false).first ?? ""
+                guard let seconds = Double(raw), seconds.isFinite, seconds > 0 else { return nil }
+                pendingDuration = seconds * 1000
+            } else if !trimmed.isEmpty, !trimmed.hasPrefix("#"), let duration = pendingDuration {
+                pendingDuration = nil
+                last = URL(string: trimmed, relativeTo: baseURL)?.absoluteURL
+                if Double(max(0, targetMs)) < segmentStartMs + duration { return last }
+                segmentStartMs += duration
+            }
+        }
+        return last
+    }
 
     /// The start URL must be a master. Given a media playlist, its first URI is segment 0,
     /// and fetching that as a "child" makes Emby start a competing transcode from zero (#421).
