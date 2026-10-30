@@ -390,6 +390,14 @@ project — `xcodebuild` is the only truth.
 
 Manual test plan: `TESTING-CHECKLIST.md` (keep it updated as fixes ship).
 
+**Keep growing the headless tooling.** Treat `scripts/` (and the in-app probes and hermetic
+tests they drive) as a continuously improved asset. Whenever a task needed a manual, ad hoc, or
+user-driven step that a script, probe, fixture, or hermetic test could have covered, or a bug
+slipped past the existing headless coverage, say so in the close-out: name the gap and recommend
+the concrete script/test extension. Build it in the same change when it is small and clearly in
+scope; otherwise file or update an issue for it. Document new tooling in `scripts/README.md`
+and the owning testing doc.
+
 ## Corpus-backed playback and release evidence
 
 Use `scripts/media-corpus.py` and `docs/MEDIA-CORPUS-TESTING.md` for private,
