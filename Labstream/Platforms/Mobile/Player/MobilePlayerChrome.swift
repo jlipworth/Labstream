@@ -82,9 +82,18 @@ extension CustomPlayerChrome {
     func mobileBottomInset(_ arrangement: MobilePlayerArrangement) -> CGFloat {
         switch arrangement.mode {
         case .videoRect: mobileEdgeInset
-        case .overlay, .book, .tabletop: bottomChromeBottomInset
+        case .tabletop: bottomChromeBottomInset
+        case .overlay, .book:
+            // The group's frame already stops at the bottom safe edge (the home indicator), so the
+            // authored margin counts from the picture's edge, not on top of the inset. Stacking
+            // both left a tall dead band under the circles on the unfolded Duo.
+            max(mobileMinimumSafeEdgeMargin,
+                bottomChromeBottomInset - max(0, arrangement.videoFrame.maxY - arrangement.chromeFrame.maxY))
         }
     }
+
+    /// The least gap kept between the controls and a non-zero safe edge.
+    var mobileMinimumSafeEdgeMargin: CGFloat { 8 }
 
     /// Margin between the group's frame and its controls: 16 pt compact, 24 pt regular.
     var mobileEdgeInset: CGFloat {
@@ -143,7 +152,7 @@ extension CustomPlayerChrome {
 
         if shouldShowChrome, arrangement.mode != .tabletop {
             mobileScrim
-                .mobilePlaced(in: arrangement.chromeFrame)
+                .mobilePlaced(in: mobileScrimRect(arrangement))
                 .allowsHitTesting(false)
                 .transition(.opacity)
         }
@@ -251,6 +260,18 @@ extension CustomPlayerChrome {
             .init(color: .black.opacity(0), location: 0.55),
             .init(color: .black.opacity(0.6), location: 1),
         ], startPoint: .top, endPoint: .bottom)
+    }
+
+    /// The scrim darkens the whole picture, not just the safe frame the controls sit in: over a
+    /// full-bleed picture (overlay, book) it runs under the status strip and the home-indicator
+    /// band too, so tapping never leaves undimmed stripes at the top and bottom edges. On the
+    /// upright video rectangle the bands are already black, so it stays on the group's frame,
+    /// where its gradient stops line up with the top row and the bottom group.
+    func mobileScrimRect(_ arrangement: MobilePlayerArrangement) -> CGRect {
+        switch arrangement.mode {
+        case .overlay, .book: arrangement.videoFrame.union(arrangement.chromeFrame)
+        case .videoRect, .tabletop: arrangement.chromeFrame
+        }
     }
 
     func mobileSubtitleRect(_ arrangement: MobilePlayerArrangement) -> CGRect {
