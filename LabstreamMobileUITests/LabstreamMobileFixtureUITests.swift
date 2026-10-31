@@ -193,8 +193,8 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
 
     @MainActor
     private func assertStableChrome(orientationLabel: String) throws {
-        // One arrangement everywhere: the circles row and the ±10 transport never change with the
-        // item's menu set (Quality lives in More). On a large portrait scene (unfolded Duo upright,
+        // One arrangement everywhere: the menu row and the transport never change with the
+        // item's menu set (Quality is always present, dimmed when unavailable). On a large portrait scene (unfolded Duo upright,
         // iPad portrait) the chrome overlays the aspect-fit video rectangle, so frames follow the
         // source aspect there and are compared only across menu sets of one aspect.
         var references: [String: [String: CGRect]] = [:]
@@ -202,7 +202,9 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
                                    ("16x9", true), ("239x100", true)] {
             let (frames, skips, followsVideoRect) = try chromeFrames(aspect: aspect, allMenus: allMenus,
                                                                      orientationLabel: orientationLabel)
-            XCTAssertEqual(skips.count, 2, "−10 / +10 transport for \(aspect)")
+            XCTAssertNotNil(skips["Skip back 10 seconds"], "−10 for \(aspect)")
+            XCTAssertNotNil(skips["Skip forward 10 seconds"], "+10 for \(aspect)")
+            XCTAssertTrue(skips.count == 2 || skips.count == 4, "±10, optionally ±30, for \(aspect)")
             let merged = frames.merging(skips) { first, _ in first }
             let key = followsVideoRect ? aspect : "all"
             if let reference = references[key] {
@@ -317,21 +319,23 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
             assertHitTarget(control, "\(control.label) for \(aspect)")
         }
 
-        // One fixed row of glass circles; Quality is in the More overflow.
-        for circle in ["Subtitles", "Audio", "Chapters", "Speed", "Stats", "More"] {
+        // One fixed menu set, Quality first and always present (dimmed when unavailable), so the
+        // item's menu set never moves a button. There is no More overflow.
+        for circle in ["Quality", "Subtitles", "Audio", "Chapters", "Speed", "Stats"] {
             let element = app.buttons.matching(NSPredicate(format: "label == %@", circle)).firstMatch
             XCTAssertTrue(element.waitForExistence(timeout: 5), "\(circle) circle for \(aspect)")
             assertHitTarget(element, "\(circle) circle for \(aspect)")
             frames["circle.\(circle)"] = element.frame
         }
-        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label == %@", "Quality")).firstMatch.exists,
-                       "Quality is not a top-level control for \(aspect)")
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label == %@", "More")).firstMatch.exists,
+                       "no More overflow for \(aspect)")
 
         let window = app.sceneFrame
         let followsVideoRect = window.height > window.width
             && min(window.width, window.height) >= Self.phoneShortSideLimit
         var skips: [String: CGRect] = [:]
-        for label in ["Skip back 10 seconds", "Skip forward 10 seconds"] {
+        for label in ["Skip back 30 seconds", "Skip back 10 seconds",
+                      "Skip forward 10 seconds", "Skip forward 30 seconds"] {
             // The zero-size hardware-keyboard shortcut buttons share these labels; skip them.
             guard let element = app.buttons.matching(identifier: label).allElementsBoundByIndex
                 .first(where: { $0.frame.width > 0 && $0.isHittable }) else { continue }

@@ -242,9 +242,9 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
       the prior orientation policy on close. Ordinary backgrounding pauses, while active PiP
       or AirPlay is allowed to continue.
 - [ ] **iPhone player layout (#258):** In landscape, with the same chrome state, the top row,
-      transport, scrubber and circles row sit in the same place and size for a pillarboxed
+      transport, scrubber and menu row sit in the same place and size for a pillarboxed
       (16:9 or 4:3) and a letterboxed (2.39:1) title, for streamed and downloaded playback, and
-      with or without Quality (in More). No control is clipped by the rounded display corners.
+      with Quality available or dimmed. The menus are labeled whenever they fit, with Quality first. No control is clipped by the rounded display corners.
       Simulator fixture evidence exists; physical-device confirmation is open.
 - [ ] **iPhone Duo player poses:** Folded landscape keeps the chrome below the top status strip
       and the bottom row clear of the camera island (both rotations). Unfolded upright overlays

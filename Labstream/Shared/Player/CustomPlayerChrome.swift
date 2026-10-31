@@ -78,8 +78,6 @@ struct CustomPlayerChrome: View {
     /// transport status centre between them.
     @State var mobileTopRowFrame: CGRect = .zero
     @State var mobileBottomGroupFrame: CGRect = .zero
-    /// The overflow (More) popover keeps the chrome up while it is open.
-    @State var mobileOverflowPresented = false
     #endif
     #if os(macOS)
     @State var macWindowBridge = MacPlayerWindowBridge()
@@ -405,10 +403,10 @@ struct CustomPlayerChrome: View {
             || selectedMenu != nil || mobileChromeIsPinned
     }
 
-    /// The tabletop deck never auto-hides, and an open overflow popover holds the chrome up.
+    /// The tabletop deck never auto-hides.
     var mobileChromeIsPinned: Bool {
         #if os(iOS)
-        mobileLocalArrangement.pinsControls || mobileOverflowPresented
+        mobileLocalArrangement.pinsControls
         #else
         false
         #endif

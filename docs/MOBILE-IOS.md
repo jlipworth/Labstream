@@ -63,11 +63,15 @@ iPhone, iPad and the iPhone Duo foldable.
   `glassBackgroundEffect`/material look.
 - The custom AVFoundation video player exposes mobile system hooks for Picture in Picture,
   AirPlay route picking, video Now Playing metadata, and remote play/pause/seek commands.
-  The iOS chrome is one arrangement of glass circles (symbols with accessibility titles) in
-  every pose: Close, Picture in Picture and Fit/Fill at top leading and AirPlay at top
-  trailing; −10 / play-pause / +10 in the centre; the title with a 1–2 word caption ("S1, E5"
-  or the year); the scrubber with elapsed and remaining times; then Subtitles, Audio, Chapters,
-  Speed, Stats and More. Quality lives in More, the single overflow. It also registers hardware-keyboard shortcuts (Space play/pause, ←/→ skip
+  The iOS chrome is one arrangement in every pose: glass circles for Close, Picture in Picture
+  and Fit/Fill at top leading and AirPlay at top trailing; −30 / −10 / play-pause / +10 / +30 in
+  the centre (the smaller ±30 pair drops when the row has no room); the title with a 1–2 word
+  caption ("S1, E5" or the year); the scrubber with elapsed and remaining times; and the menus
+  Quality, Subtitles, Audio, Chapters, Speed and Stats, in that fixed order. The menus are labeled
+  glass capsules beside the title when they fit there, else on their own row under the scrubber,
+  else icon-only circles; a row never mixes the two. Quality is always present (dimmed when the
+  source only plays at original quality), so an item's menu set never moves a button, and there is
+  no More overflow. On the iPhone Duo both displays seat the labeled capsules. It also registers hardware-keyboard shortcuts (Space play/pause, ←/→ skip
   30s, Shift-←/Shift-→ skip 10s, Esc close). `UIBackgroundModes = audio`
   is set on `LabstreamMobile`; playback still pauses when the app backgrounds unless it is
   continuing through PiP or an external AirPlay route. A resign-active pauses video only if it

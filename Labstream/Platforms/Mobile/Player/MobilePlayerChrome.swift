@@ -12,9 +12,12 @@ import UIKit
 //   transport    −10 / play-pause / +10, centred
 //   title        the title (1 line) and a 1–2 word caption, at leading
 //   scrubber     the timeline with elapsed and remaining times
-//   circles      Subtitles, Audio, Chapters, Speed, Stats, More (Quality lives in More)
+//   menus        Quality, Subtitles, Audio, Chapters, Speed, Stats
 //
-// Every control is a glass circle with a symbol and an accessibility title. `MobilePlayerArrangement`
+// The menus are labeled glass capsules whenever they fit (beside the title on a wide viewport,
+// else on their own row under the scrubber) and icon-only circles, same order, when they do not.
+// Quality is always present and first (dimmed when the source only plays at original quality).
+// The transport adds −30 / +30 outside the ±10 pair when the row has room. `MobilePlayerArrangement`
 // (PMSKit) decides only where the group sits: the whole safe frame, the video rectangle on a
 // portrait viewport, the trailing half in book, or a deck below the hinge in tabletop.
 extension CustomPlayerChrome {
@@ -367,12 +370,32 @@ extension CustomPlayerChrome {
     // MARK: Transport
 
     var mobileTransportRow: some View {
+        ViewThatFits(in: .horizontal) {
+            mobileTransportRow(includesLongSkips: true)
+            mobileTransportRow(includesLongSkips: false)
+        }
+    }
+
+    func mobileTransportRow(includesLongSkips: Bool) -> some View {
         HStack(spacing: isCompactMobileChrome ? 20 : 28) {
+            if includesLongSkips {
+                mobileSkipButton(seconds: -30, visibleSide: mobileLongSkipSide)
+            }
             mobileSkipButton(seconds: -10)
             mobilePlayPauseButton
                 .playerGeometryProbe("centerPlayPause")
             mobileSkipButton(seconds: 10)
+            if includesLongSkips {
+                mobileSkipButton(seconds: 30, visibleSide: mobileLongSkipSide)
+            }
         }
+        // Keep the long skips well clear of the screen edges; they are secondary to ±10.
+        .padding(.horizontal, includesLongSkips ? mobileEdgeInset * 2 : 0)
+    }
+
+    /// The ±30 circles sit outside ±10 and read as secondary: slightly smaller discs.
+    var mobileLongSkipSide: CGFloat {
+        isCompactMobileChrome ? 34 : 38
     }
 
     var mobilePlayPauseButton: some View {
@@ -392,11 +415,12 @@ extension CustomPlayerChrome {
         .accessibilityHint("Toggles playback")
     }
 
-    func mobileSkipButton(seconds: Int) -> some View {
+    func mobileSkipButton(seconds: Int, visibleSide: CGFloat? = nil) -> some View {
         let isForward = seconds > 0
         let amount = abs(seconds)
         return mobileCircleButton(isForward ? "Skip forward \(amount) seconds" : "Skip back \(amount) seconds",
-                                  systemImage: isForward ? "goforward.\(amount)" : "gobackward.\(amount)") {
+                                  systemImage: isForward ? "goforward.\(amount)" : "gobackward.\(amount)",
+                                  visibleSide: visibleSide) {
             performRelativeSkip(seconds: seconds)
         }
         .disabled(scrubState.durationMs <= 0)
@@ -412,109 +436,143 @@ extension CustomPlayerChrome {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                if let mobileCaption, !mobileCaption.isEmpty {
-                    Text(mobileCaption)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+            // The first that fits: labeled menus beside the title, labeled menus on their own
+            // row under the scrubber, then icon-only circles in the same order. A row never
+            // mixes labeled and icon-only buttons.
+            ViewThatFits(in: .horizontal) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .bottom, spacing: 12) {
+                        mobileTitleBlock
+                            .frame(minWidth: 160, idealWidth: 160, maxWidth: .infinity, alignment: .leading)
+                        mobileMenuPills
+                            .playerGeometryProbe("bottomMenuRow", detail: "variant=inline")
+                    }
+                    mobileScrubberBlock
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    mobileTitleBlock
+                    mobileScrubberBlock
+                    mobileMenuPills
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.top, 4)
+                        .playerGeometryProbe("bottomMenuRow", detail: "variant=row")
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    mobileTitleBlock
+                    mobileScrubberBlock
+                    mobileMenuCircles
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.top, 4)
+                        .playerGeometryProbe("bottomMenuRow", detail: "variant=icons")
                 }
             }
-            .accessibilityElement(children: .combine)
-
-            VStack(spacing: 2) {
-                timelineSlider
-                HStack {
-                    Text(format(ms: scrubState.displayedPositionMs))
-                    Spacer()
-                    Text("−" + format(ms: max(0, scrubState.durationMs - scrubState.displayedPositionMs)))
-                        .accessibilityLabel("Remaining \(format(ms: max(0, scrubState.durationMs - scrubState.displayedPositionMs)))")
-                }
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-            }
-
-            mobileCirclesRow
-                .frame(maxWidth: .infinity)
-                .padding(.top, 4)
-                .playerGeometryProbe("bottomMenuRow")
         }
         .foregroundStyle(.white)
         .playerGeometryProbe("bottomPlatter",
                              detail: "branch=\(mobileChromeBranch.rawValue) arrangement=\(mobileLocalArrangement.mode.rawValue)")
     }
 
-    /// The secondary row, in one fixed order. Quality (when the source supports a reload) lives in
-    /// More, the single overflow menu, so the row never changes with the item's menu set.
-    var mobileCirclesRow: some View {
+    /// The menus in one fixed order, Quality first. It is always present, so an item's menu set
+    /// never moves a button; when the source only plays at original quality it is dimmed.
+    static let mobileMenuOrder: [CustomPlayerMenuKind] = [.quality, .subtitles, .audio, .chapters, .speed, .stats]
+
+    var mobileMenuPills: some View {
+        HStack(spacing: 6) {
+            ForEach(Self.mobileMenuOrder, id: \.self) { mobileMenuPill($0) }
+        }
+        .fixedSize()
+    }
+
+    var mobileMenuCircles: some View {
         HStack(spacing: isCompactMobileChrome ? 6 : 10) {
-            ForEach([CustomPlayerMenuKind.subtitles, .audio, .chapters, .speed, .stats], id: \.self) { menu in
-                mobileCircleButton(menu.title, systemImage: menu.systemImage) {
-                    openMenu(menu)
-                }
-            }
-            mobileMoreButton
+            ForEach(Self.mobileMenuOrder, id: \.self) { mobileMenuCircle($0) }
         }
     }
 
-    var mobileMoreButton: some View {
-        mobileCircleButton("More", systemImage: "ellipsis") {
-            revealChrome(keepVisible: true)
-            mobileOverflowPresented = true
-        }
-        .popover(isPresented: $mobileOverflowPresented) {
-            mobileOverflowMenu
-                .presentationCompactAdaptation(.popover)
-        }
-        .onChange(of: mobileOverflowPresented) { _, presented in
-            if !presented { scheduleChromeHideIfNeeded() }
-        }
-    }
-
-    var mobileOverflowMenu: some View {
-        let qualityAvailable = availableMenus.contains(.quality)
-        return VStack(alignment: .leading, spacing: 0) {
-            Button {
-                mobileOverflowPresented = false
-                openMenu(.quality)
-            } label: {
-                Label(CustomPlayerMenuKind.quality.title, systemImage: CustomPlayerMenuKind.quality.systemImage)
-                    .font(.subheadline)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!qualityAvailable)
-            .accessibilityHint(qualityAvailable ? "Changes the streaming quality"
-                                                : "This source plays at its original quality")
-            if !qualityAvailable {
-                Text("Original quality")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.bottom, 8)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
-        .frame(minWidth: 200)
-    }
-
-    func mobileCircleButton(_ title: String, systemImage: String,
+    func mobileCircleButton(_ title: String, systemImage: String, visibleSide: CGFloat? = nil,
                             action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
                 .labelStyle(.iconOnly)
-                .font(.body.weight(.semibold))
+                .font(visibleSide.map { $0 < mobileCircleSide ? .subheadline.weight(.semibold) : .body.weight(.semibold) }
+                      ?? .body.weight(.semibold))
                 .frame(width: mobileHitSide, height: mobileHitSide)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .mobilePlayerCircleStyle(visibleSide: mobileCircleSide)
+        .mobilePlayerCircleStyle(visibleSide: visibleSide ?? mobileCircleSide)
         .accessibilityLabel(title)
+    }
+
+    /// A labeled glass capsule for a player menu: the same glass and height as the circles.
+    func mobileMenuPill(_ menu: CustomPlayerMenuKind) -> some View {
+        Button {
+            openMenu(menu)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: menu.systemImage)
+                Text(menu.title)
+            }
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .fixedSize()
+                .padding(.horizontal, 12)
+                .frame(height: mobileCircleSide)
+                .frame(minHeight: 44)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white)
+        .background {
+            Capsule()
+                .fill(.clear)
+                .frame(height: mobileCircleSide)
+                .glassEffect(.regular, in: Capsule())
+        }
+        .shadow(color: .black.opacity(0.32), radius: 9, y: 4)
+        .accessibilityLabel(menu.title)
+        .mobileMenuAvailability(menu, available: isMobileMenuAvailable(menu))
+    }
+
+    func mobileMenuCircle(_ menu: CustomPlayerMenuKind) -> some View {
+        mobileCircleButton(menu.title, systemImage: menu.systemImage) {
+            openMenu(menu)
+        }
+        .mobileMenuAvailability(menu, available: isMobileMenuAvailable(menu))
+    }
+
+    func isMobileMenuAvailable(_ menu: CustomPlayerMenuKind) -> Bool {
+        availableMenus.contains(menu)
+    }
+
+    var mobileTitleBlock: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            if let mobileCaption, !mobileCaption.isEmpty {
+                Text(mobileCaption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    var mobileScrubberBlock: some View {
+        VStack(spacing: 2) {
+            timelineSlider
+            HStack {
+                Text(format(ms: scrubState.displayedPositionMs))
+                Spacer()
+                Text("−" + format(ms: max(0, scrubState.durationMs - scrubState.displayedPositionMs)))
+                    .accessibilityLabel("Remaining \(format(ms: max(0, scrubState.durationMs - scrubState.displayedPositionMs)))")
+            }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+        }
     }
 
     // MARK: Layout changes
@@ -588,6 +646,20 @@ struct MobilePlayerCircleStyle: ViewModifier {
 }
 
 extension View {
+    /// An unavailable menu keeps its slot (so nothing beside it moves) but is dimmed and inert.
+    @ViewBuilder
+    func mobileMenuAvailability(_ menu: CustomPlayerMenuKind, available: Bool) -> some View {
+        if menu == .quality {
+            disabled(!available)
+                .opacity(available ? 1 : 0.45)
+                .accessibilityHint(available ? "Changes the streaming quality"
+                                             : "This source plays at its original quality")
+        } else {
+            disabled(!available)
+                .opacity(available ? 1 : 0.45)
+        }
+    }
+
     func mobilePlayerCircleStyle(visibleSide: CGFloat) -> some View {
         modifier(MobilePlayerCircleStyle(visibleSide: visibleSide))
     }
