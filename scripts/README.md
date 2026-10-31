@@ -78,6 +78,16 @@ media details out of commits and public issues.
   container; it writes only gitignored listing, cache, inventory, representative, and summary
   artifacts. See the
   [private media corpus workflow](../docs/MEDIA-CORPUS-TESTING.md).
+- `scrub-server-logs.py` — offline, stdlib-only scrubber for Plex, Jellyfin, and Emby server and
+  transcoder (ffmpeg) logs before they go into an upstream report. It first discovers the concrete
+  hosts, IPs, tokens, client/device/user/session IDs, user and device names, media paths, titles,
+  release names, and search terms (including inside base64/gzip payloads), then replaces them with
+  the repository placeholders and re-encodes payloads, and finally re-scans the output. Any residual
+  hit exits 1 and writes `SCRUB-VERIFY-FAILED` into the output. `--since`/`--until` and
+  `--play-session` cut the main log down to one playback and pull in the matching transcoder logs.
+  `--output` must be a fresh directory outside the inputs; `--report` writes per-file category
+  counts. Neither the summary nor the report ever contains a value. Posting stays manual. See
+  [Sharing server logs upstream](../docs/AGENT-PLAYBACK-TROUBLESHOOTING.md#sharing-server-logs-upstream).
 - `perf-log-summary.py` — converts privacy-safe performance signposts into summaries/Markdown and
   produces strict, raw-artifact-bound comparison summaries.
 - `perf_evidence_schema.py` — shared closed schema/parser for privacy-safe performance spans,

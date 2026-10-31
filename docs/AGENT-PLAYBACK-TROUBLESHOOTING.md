@@ -77,6 +77,30 @@ log pull for a terminal app result. Keep raw logs private and bounded; retain di
 for broader investigation. Stop the exact probe/fixture process and shut down any leased simulator
 when finished. User-enabled diagnostics remain enabled.
 
+## Sharing server logs upstream
+
+Plex, Jellyfin, and Emby bug reports often need the server log and the per-playback transcoder
+(ffmpeg) logs. Raw copies carry hostnames, LAN/WAN addresses, tokens, device/user/session IDs,
+user and device names, library paths, titles, and release names, sometimes inside a base64/gzip
+blob. Never post them raw. Run the offline scrubber on a private copy instead:
+
+```sh
+uv run python scripts/scrub-server-logs.py /path/to/private/raw-logs \
+  --since "2026-10-30 23:20" --until "2026-10-30 23:40" \
+  --output /path/to/private/scrubbed --report /path/to/private/scrub-report.json
+```
+
+`--play-session ID` narrows the main log to one session. The transcoder logs it names (Emby
+`ffmpeg-*-<uuid>_N.txt`, Jellyfin `FFmpeg.*.log` by start time, Plex `Plex Transcoder Statistics`
+reports) come along automatically. The script exits non-zero and leaves a `SCRUB-VERIFY-FAILED`
+marker when its re-scan still finds something sensitive. The summary names categories and line
+numbers, never values.
+
+A clean verify pass does not replace review. Title and user discovery is heuristic, and it can
+over-redact common words that also appear as library titles. Read the scrubbed output before
+sharing. Posting it to a forum, issue, or upstream tracker remains a manual step, done only with
+the user's approval.
+
 ## Probe launch-argument reference
 
 The procedures live in two skills: the
