@@ -19,6 +19,17 @@ four-platform builds, mobile hosted and UI smoke, the Duo UI smoke lane, and tvO
 smoke passed. A physical iPhone Duo, real Device Hub folds, cross-backend playback and Duo App
 Store screenshots remain open.
 
+On 2026-10-31, the next internal TestFlight run built **1.8.0 (build 1649)** for all four
+platforms from clean commit `8de68dca` on `downloads/overhaul`, using `--allow-unpublished`. It
+adds an offline scrubber for Plex, Jellyfin and Emby server and transcoder logs, and fixes the
+iOS player overlay on the unfolded iPhone Duo: the tap scrim now dims the whole picture (it
+previously stopped at the safe frame, leaving bright bands under the status strip and the home
+indicator), and the bottom group no longer stacks its margin on the home-indicator inset. All four
+archives passed validation and processed to **VALID**, **IN_BETA_TESTING**, in **Labstream
+Internal**. No App Store build was selected or submitted for review. The clean Duo-simulator
+`LabstreamMobile` build and the three player-chrome fixture UI tests passed. Physical iPhone Duo
+acceptance of the scrim fix, real folds, other platforms and hardware remain open.
+
 On 2026-10-30, the next internal TestFlight run built **1.8.0 (build 1646)** for all four
 platforms from clean commit `cbaaf6a5` on `downloads/overhaul`, using `--allow-unpublished`. It
 adds bounded headless audio and video codec regression testing (#422) and fixes Emby copy-lane
