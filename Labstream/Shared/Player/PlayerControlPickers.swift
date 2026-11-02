@@ -810,14 +810,19 @@ struct StatsTabView: View {
     var loadTracks: () async -> PlaybackStatsSummary.Tracks = { .init() }
 
     @State private var tracks = PlaybackStatsSummary.Tracks()
+    @State private var route: PlaybackConnectionRoute?
 
     var body: some View {
         ScrollView {
-            PlaybackStatsView(diagnostics: diagnostics, tracks: tracks)
+            PlaybackStatsView(diagnostics: diagnostics, tracks: tracks, route: route)
                 .padding(DS.Space.md)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task { tracks = await loadTracks() }
+        .task(id: diagnostics.connectionHost) {
+            route = nil
+            route = await PlaybackConnectionRouteResolver.resolve(host: diagnostics.connectionHost)
+        }
     }
 }
 

@@ -553,14 +553,22 @@ lease path. tvOS compiles neither `VideoNowPlayingCore` nor the visionOS
 
 The player Stats panel (#331) opens on a compact summary: the path title and one reason line,
 then a signal chain from the server file to this device (video, HDR, audio), then Buffer,
-Bitrate, Connection, Audio, and Subtitles tiles. The path color means only how the server
-handles the stream (direct, copy, encode). A device-side value is drawn in that color only when
-the server converted it. Delivered values come from runtime facts
+Bitrate, Connection, Audio, and Subtitles tiles. The path color is the same on every platform:
+green means only "plays as-is" (direct), and copy and encode are neutral gray, told apart by the
+path title and the link label, because cyan or orange would read as the amber "selected" accent.
+A device-side value is drawn on a path-tinted chip only when the server converted it. Delivered values come from runtime facts
 (`AVPlayerItem.presentationSize` and the asset probe's codec and HDR), never from a guess, so an
 encode shows "—" until they arrive. Red is used only for real stalls. **See more** switches
 the same panel to Video / Audio / Network sections. These keep every diagnostic row, and the
 remembered compact/expanded choice persists. Copy writes a plain-text summary with no track
-titles. The player never shows the server host, only Local / Remote / Downloaded / Unknown.
+titles. The player never shows the server host, only Local / VPN / Remote / Downloaded / Unknown.
+The route first comes from the host alone (a private or `plex.direct` literal, an mDNS or `.lan`
+name). Opening Stats then resolves the host on the device and compares the address with the
+device's interfaces (`PlaybackConnectionRouteResolver`): the subnet of a physical interface is
+Local; a tunnel subnet, the 100.64.0.0/10 overlay range, or Tailscale's IPv6 range is VPN; any
+other private address is VPN while a tunnel interface carries an address (a subnet router) and
+Local otherwise; a public address is Remote. A custom domain is therefore Unknown only when it
+cannot be resolved.
 
 The reason line and the expanded Decision rows come from `PlaybackExplanation`: one lane
 headline and at most two useful reasons, with provenance (backend-reported, app-requested, or

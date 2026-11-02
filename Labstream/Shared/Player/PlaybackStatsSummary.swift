@@ -135,7 +135,10 @@ extension PlaybackStatsSummary {
     }
 
     @MainActor
-    static func make(_ d: PlaybackDiagnostics, tracks: Tracks = Tracks()) -> PlaybackStatsSummary {
+    /// `route` is the resolved-address classification from `PlaybackConnectionRouteResolver`;
+    /// until it arrives the panel shows the host-only classification.
+    static func make(_ d: PlaybackDiagnostics, tracks: Tracks = Tracks(),
+                     route resolvedRoute: PlaybackConnectionRoute? = nil) -> PlaybackStatsSummary {
         let explanation = d.playbackExplanation
         let path = Path(lane: explanation.lane)
         let reasons = explanation.evidence.map(\.reason)
@@ -221,7 +224,7 @@ extension PlaybackStatsSummary {
                            accessibilityContext: path == .direct ? "Original"
                                : sourceKbps > 0 ? "Source \(Format.bitrate(sourceKbps))" : "Source unknown")
 
-        let route = PlaybackConnectionRoute.classify(host: d.connectionHost)
+        let route = resolvedRoute ?? PlaybackConnectionRoute.classify(host: d.connectionHost)
         let connection: Tile
         if route == .downloaded {
             connection = Tile(label: "Connection", value: route.title, context: "On this device")
@@ -372,30 +375,41 @@ extension PlaybackStatsSummary {
 
 // MARK: - Connection route
 
-/// Where the stream comes from, classified from the host alone. Only provable cases are named:
-/// a private/link-local/loopback literal (including Plex's dashed-IP `plex.direct` names) or an
+/// Where the stream comes from. `classify(host:)` is the immediate host-only answer: a
+/// private/link-local/loopback literal (including Plex's dashed-IP `plex.direct` names) or an
 /// mDNS/home name is Local; a public IP literal is Remote; any other DNS name is Unknown,
 /// because a custom domain can point at either side of the router.
-enum PlaybackConnectionRoute: Equatable {
-    case downloaded, local, remote, unknown
+/// `PlaybackConnectionRouteResolver` then resolves the name and refines the answer against this
+/// device's own interfaces, which is where VPN (e.g. Tailscale) is recognized.
+enum PlaybackConnectionRoute: Equatable, Sendable {
+    case downloaded, local, vpn, remote, unknown
+
+    static let downloadedHost = "Local file"
 
     var title: String {
         switch self {
         case .downloaded: "Downloaded"
         case .local: "Local"
+        case .vpn: "VPN"
         case .remote: "Remote"
         case .unknown: "Unknown"
         }
     }
 
-    static func classify(host rawHost: String) -> PlaybackConnectionRoute {
-        if rawHost == "Local file" { return .downloaded }
+    /// The lowercased host with any `[…]` IPv6 brackets and `:port` removed.
+    static func bareHost(_ rawHost: String) -> String {
         var host = rawHost.lowercased()
         if host.hasPrefix("["), let end = host.firstIndex(of: "]") {
             host = String(host[host.index(after: host.startIndex)..<end])
         } else if host.filter({ $0 == ":" }).count == 1, let colon = host.lastIndex(of: ":") {
             host = String(host[..<colon]) // strip :port from a name or IPv4 literal
         }
+        return host
+    }
+
+    static func classify(host rawHost: String) -> PlaybackConnectionRoute {
+        if rawHost == downloadedHost { return .downloaded }
+        let host = bareHost(rawHost)
         guard !host.isEmpty, host != "—" else { return .unknown }
         if let ipv4 = ipv4Octets(host) { return isPrivate(ipv4) ? .local : .remote }
         if host.contains(":") { return isPrivateIPv6(host) ? .local : .remote }

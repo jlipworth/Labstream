@@ -21,6 +21,8 @@ import AppKit
 struct PlaybackStatsView: View {
     var diagnostics: PlaybackDiagnostics
     var tracks: PlaybackStatsSummary.Tracks
+    /// Resolved-address route; nil until `PlaybackConnectionRouteResolver` answers.
+    var route: PlaybackConnectionRoute? = nil
 
     /// "" shows the compact summary; otherwise the raw value of the expanded section.
     @AppStorage(PlaybackStatsView.sectionDefaultsKey) private var storedSection = ""
@@ -36,7 +38,7 @@ struct PlaybackStatsView: View {
 
     nonisolated static let sectionDefaultsKey = "playback.stats.expandedSection"
 
-    private var summary: PlaybackStatsSummary { .make(diagnostics, tracks: tracks) }
+    private var summary: PlaybackStatsSummary { .make(diagnostics, tracks: tracks, route: route) }
     private var section: PlaybackStatsSummary.Section? { .init(rawValue: storedSection) }
     private var stacksCells: Bool { dynamicTypeSize.isAccessibilitySize }
 
@@ -340,15 +342,8 @@ struct PlaybackStatsView: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// The path hue, deepened on light glass so converted values keep text contrast. On
-    /// iPhone/iPad only Direct keeps a hue (green = plays as-is); copy and encode are neutral
-    /// gray and are told apart by their path title and link label (iPhone Duo design spec,
-    /// Color & type: no cyan or orange, which reads as the amber "selected" color).
     private func pathColor(_ path: PlaybackStatsSummary.Path) -> Color {
-        #if os(iOS)
-        if path != .direct { return Color(uiColor: .systemGray) }
-        #endif
-        return path.color(for: colorScheme)
+        path.color(for: colorScheme)
     }
 
     private func copy(_ text: String) {
@@ -393,16 +388,15 @@ private enum Metrics {
 }
 
 extension PlaybackStatsSummary.Path {
-    /// One hue per path. Light appearance (e.g. iOS glass over a bright frame) uses deeper
-    /// shades of the same hues so small value text stays legible.
+    /// The same palette on every platform (design spec, Color & type): green means only "plays
+    /// as-is"; copy and encode are neutral gray and are told apart by their path title and link
+    /// label, because cyan and orange read as the amber "selected" accent. Light appearance
+    /// (e.g. glass over a bright frame) uses a deeper green so small value text stays legible.
     func color(for scheme: ColorScheme) -> Color {
         switch (self, scheme) {
         case (.direct, .dark): .green
-        case (.copy, .dark): .cyan
-        case (.encode, .dark): .orange
         case (.direct, _): Color(red: 0.05, green: 0.45, blue: 0.18)
-        case (.copy, _): Color(red: 0.0, green: 0.40, blue: 0.58)
-        case (.encode, _): Color(red: 0.70, green: 0.30, blue: 0.0)
+        case (.copy, _), (.encode, _): .gray
         }
     }
 }

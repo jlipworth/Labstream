@@ -141,6 +141,43 @@ struct PlaybackStatsSummaryTests {
         #expect(Route.classify(host: "—") == .unknown)
     }
 
+    @Test func resolvedAddressClassifiesAgainstDeviceInterfaces() {
+        typealias R = PlaybackConnectionRouteResolver
+        func a(_ s: String) -> R.Address { R.Address(literal: s)! }
+        let wifi = R.Interface(name: "en0", address: a("192.168.1.30"), netmask: a("255.255.255.0"))
+        let tailscale = R.Interface(name: "utun4", address: a("100.101.102.103"),
+                                    netmask: a("255.255.255.255"))
+        let systemTunnel = R.Interface(name: "utun0", address: a("fe80::1"),
+                                       netmask: a("ffff:ffff:ffff:ffff::"))
+
+        // Same physical subnet, loopback.
+        #expect(R.classify(a("192.168.1.20"), interfaces: [wifi, tailscale]) == .local)
+        #expect(R.classify(a("127.0.0.1"), interfaces: []) == .local)
+        // A name published for a Tailscale address (IPv4 CGNAT or Tailscale IPv6).
+        #expect(R.classify(a("100.88.1.2"), interfaces: [wifi, tailscale]) == .vpn)
+        #expect(R.classify(a("fd7a:115c:a1e0::12"), interfaces: [wifi]) == .vpn)
+        // The home LAN reached from elsewhere through a subnet router.
+        #expect(R.classify(a("10.0.0.20"), interfaces: [wifi, tailscale]) == .vpn)
+        // Another private subnet with no VPN up (a routed home VLAN); system-only link-local
+        // tunnels do not count as a VPN.
+        #expect(R.classify(a("10.0.0.20"), interfaces: [wifi, systemTunnel]) == .local)
+        #expect(R.classify(a("198.51.100.7"), interfaces: [wifi, tailscale]) == .remote)
+    }
+
+    @Test func resolverKeepsHostOnlyAnswersItCannotImprove() async {
+        #expect(await PlaybackConnectionRouteResolver.resolve(host: "Local file") == .downloaded)
+        #expect(await PlaybackConnectionRouteResolver.resolve(host: "—") == .unknown)
+        #expect(await PlaybackConnectionRouteResolver.resolve(host: "127.0.0.1:32400") == .local)
+        #expect(await PlaybackConnectionRouteResolver.resolve(host: "198.51.100.7:32400") == .remote)
+    }
+
+    @Test func resolvedRouteReplacesHostOnlyClassification() {
+        let d = base()
+        d.connectionHost = "media.example.com:32400"
+        #expect(PlaybackStatsSummary.make(d).connection.value == "Unknown")
+        #expect(PlaybackStatsSummary.make(d, route: .vpn).connection.value == "VPN")
+    }
+
     @Test func expandedViewKeepsEveryLegacyStatsRow() {
         let d = base()
         d.decisionText = "video transcode · audio copy"

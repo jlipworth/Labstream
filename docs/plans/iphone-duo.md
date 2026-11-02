@@ -1428,7 +1428,7 @@ re-lays out the same layer and deck from the pose value (deviation pending sign-
     the size and overview. The list-column controls are an accepted gap (Downloads section).
   - Colors (iOS only): library tiles neutral; download route icons neutral (checkmark carries the
     selection); unverified downloads and the Stats copy/encode paths are neutral gray instead of
-    orange/cyan. The A–Z rail letters are secondary on iOS but keep `.tint` letters and outlines on
+    orange/cyan (the Stats path palette later became the same on every platform). The A–Z rail letters are secondary on iOS but keep `.tint` letters and outlines on
     macOS (the earlier change had leaked to the Mac).
   - Detail: the content region observes only minX and width (no body re-evaluation per scroll
     frame); Trailers & Extras uses `RailSectionHeader`, `mediaRailScrollStyle`, measured 16:9 cards

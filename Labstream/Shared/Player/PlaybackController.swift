@@ -3167,7 +3167,7 @@ final class PlaybackController {
                                 decision: nil,
                                 server: nil,
                                 targetBitrateKbps: 0)
-        diagnostics.connectionHost = "Local file"
+        diagnostics.connectionHost = PlaybackConnectionRoute.downloadedHost
         var fields: [String: DiagnosticFieldValue] = [
             "path_mode": .label("local_file"),
             "stream_url_shape": .urlShape(url),
