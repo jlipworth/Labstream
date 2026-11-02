@@ -19,6 +19,17 @@ four-platform builds, mobile hosted and UI smoke, the Duo UI smoke lane, and tvO
 smoke passed. A physical iPhone Duo, real Device Hub folds, cross-backend playback and Duo App
 Store screenshots remain open.
 
+On 2026-11-02, the next internal TestFlight run built **1.8.0 (build 1653)** for all four
+platforms from clean commit `f1efcae5` on `downloads/overhaul`, using `--allow-unpublished`. The
+Stats path palette is now the same on every platform (green for direct play, neutral gray for
+copy and encode), and the Connection tile resolves the server host on the device and classifies
+the address against the device's interfaces, adding a VPN route for Tailscale and other tunnels
+instead of Unknown for custom domains. All four archives passed validation and processed to
+**VALID**, **IN_BETA_TESTING**, in **Labstream Internal**. No App Store build was selected or
+submitted for review. The 13 Stats summary tests, the two mobile Stats UI tests, a clean visionOS
+build and launch smoke, and docs hygiene passed. The new colors on visionOS, tvOS and macOS and
+the VPN route on a real Tailscale connection are unverified on device.
+
 On 2026-10-31, the next internal TestFlight run built **1.8.0 (build 1651)** for all four
 platforms from clean commit `ff57f33d` on `downloads/overhaul`, using `--allow-unpublished`. It
 reworks the iOS player menus: Quality, Subtitles, Audio, Chapters, Speed and Stats are labeled
