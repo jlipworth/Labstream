@@ -16,15 +16,16 @@ plus the work integrated on the same branch: iPhone Duo support and the Xcode 27
 ([#419](https://github.com/jlipworth/Labstream/issues/419)), the iOS player and Stats rework,
 Emby copy-lane fixes, bounded headless codec regression testing and Mac navigation fixes.
 
-The latest recorded processed distribution is **1.8.0 (build 1654)** for all four platforms,
-archived on 2026-11-05 from clean `main` commit `27b6bf5a`, after `downloads/overhaul` landed (#425)
-and the in-app privacy and support links merged (#427). It processed to **VALID**, reached
+The latest recorded processed distribution is **1.8.0 (build 1655)** for all four platforms,
+archived on 2026-11-05 from clean `main` commit `b9162746`, the rebrand (#432) on top of the in-app
+privacy and support links (#427) and `downloads/overhaul` (#425). It processed to **VALID**, reached
 **IN_BETA_TESTING** and is in the **Labstream Internal** TestFlight group. Builds 1523–1653 were
 archived from the `downloads/overhaul` integration branch before it landed (uploaded with
 `--allow-unpublished`).
 
 On 2026-11-05 the four App Store Connect version drafts were renamed from 1.7.2 to **1.8.0**, and
-**1.8.0 (build 1654)** was selected for each platform. 1.7.2 was never submitted or released.
+**1.8.0 (build 1654)** was selected for each platform; later that day **1.8.0 (build 1655)**, with the
+new icons, replaced it on all four. 1.7.2 was never submitted or released.
 Nothing has been submitted for review. The previous release was **1.6.1 (build 2)** at
 `abd1ddcac351`.
 
@@ -38,10 +39,10 @@ runtime client identity reads the bundle version and falls back to `0.0.0`.
 
 | Product | Current source | Latest processed (internal TestFlight) | Selected for the App Store version | Open acceptance |
 | --- | --- | --- | --- | --- |
-| Apple Vision Pro (`Labstream`) | 1.8.0 (build 2) | 1.8.0 (build 1654) | 1.8.0 (build 1654) | Physical TestFlight acceptance and review access. |
-| iPhone and iPad (`LabstreamMobile`) | 1.8.0 (build 2) | 1.8.0 (build 1654) | 1.8.0 (build 1654) | Physical iPhone and iPad acceptance; Duo App Store screenshots. The maintainer has tested on a physical iPhone Duo (the 1649–1653 player-menu changes came from that testing). |
-| Apple TV (`LabstreamTV`) | 1.8.0 (build 2) | 1.8.0 (build 1654) | 1.8.0 (build 1654) | Physical Apple TV acceptance. |
-| Mac (`LabstreamMac`) | 1.8.0 (build 2) | 1.8.0 (build 1654) | 1.8.0 (build 1654) | Sandbox and live-host acceptance. A 1.6.1 (build 2) TestFlight install passed launch and receipt/signature checks; no later Mac TestFlight install is recorded. |
+| Apple Vision Pro (`Labstream`) | 1.8.0 (build 2) | 1.8.0 (build 1655) | 1.8.0 (build 1655) | Physical TestFlight acceptance and review access. |
+| iPhone and iPad (`LabstreamMobile`) | 1.8.0 (build 2) | 1.8.0 (build 1655) | 1.8.0 (build 1655) | Physical iPhone and iPad acceptance; Duo App Store screenshots. The maintainer has tested on a physical iPhone Duo (the 1649–1653 player-menu changes came from that testing). |
+| Apple TV (`LabstreamTV`) | 1.8.0 (build 2) | 1.8.0 (build 1655) | 1.8.0 (build 1655) | Physical Apple TV acceptance. |
+| Mac (`LabstreamMac`) | 1.8.0 (build 2) | 1.8.0 (build 1655) | 1.8.0 (build 1655) | Sandbox and live-host acceptance. A 1.6.1 (build 2) TestFlight install passed launch and receipt/signature checks; no later Mac TestFlight install is recorded. |
 
 ### 1.8.0 internal TestFlight builds
 
@@ -50,6 +51,7 @@ verification, and none of it is physical-device or live-backend acceptance unles
 
 | Date | Build | Commit | What it adds | Checked | Still open |
 | --- | --- | --- | --- | --- | --- |
+| 2026-11-05 | 1655 | `b9162746` | Rebrand ([#432](https://github.com/jlipworth/Labstream/pull/432)): a white Inter Black L on a black tile for every app icon (Icon Composer for iPhone/iPad and Mac; regenerated visionOS and tvOS image stacks and Top Shelf art), the in-app glyph and the sign-in header; brand colors become black and white, with amber kept as a UI color only. Selected for all four 1.8.0 App Store versions, replacing 1654. | Pre-upload validation (signing, entitlements, matching privacy manifests); `generate-brand-assets.py --check`; quiet-machine Mac hosted suite 989/990 (one intermittent offline-subtitle test, [#436](https://github.com/jlipworth/Labstream/issues/436)). | Owner device check of the iPhone/iPad clear and tinted icons, visionOS icon parallax and Apple TV focus parallax; physical acceptance (#403). |
 | 2026-11-05 | 1654 | `27b6bf5a` | First 1.8.0 build from `main`: everything above plus in-app Privacy Policy, Support and support-email links in Settings ▸ About and on the sign-in screen, a QR sheet on Apple TV and the Mac Help menu ([#427](https://github.com/jlipworth/Labstream/pull/427)). Selected for all four 1.8.0 App Store versions. | Four-platform builds, Mac hosted suite, hermetic PMSKit, iPhone/iPad/Apple TV simulator screenshots of the new links, docs hygiene, pre-upload validation. | Physical-device acceptance (#403); tapping the links and the Apple TV QR sheet. |
 | 2026-11-02 | 1653 | `f1efcae5` | One Stats path palette on every platform (green for direct play, neutral gray for copy and encode); the Connection tile resolves the host on device and reports a VPN route for Tailscale and other tunnels instead of Unknown for custom domains. | 13 Stats summary tests, two mobile Stats UI tests, clean visionOS build and launch smoke, docs hygiene. | New colors on visionOS, tvOS and macOS; the VPN route on a real Tailscale connection. |
 | 2026-10-31 | 1651 | `ff57f33d` | iOS player menus: Quality, Subtitles, Audio, Chapters, Speed and Stats become labeled glass capsules when they fit (beside the title, else under the scrubber, else icon-only); Quality is always present and first; the More overflow is gone; the −30/+30 skips return outside ±10. | Clean Duo-simulator build, folded-display capture, 12-test mobile fixture UI suite. | Unfolded inner-display layout on screen; physical Duo; other platforms. |
@@ -327,7 +329,7 @@ and App Store Connect state before relying on them for a new submission.
 - [x] Clean **1.7.2 (build 1503)** archives from `b63d1757` were built, validated, uploaded, and
       processed for all four platforms on 2026-10-16, added to the internal TestFlight group, and
       selected for each 1.7.2 platform version (superseded on 2026-11-05: the versions became 1.8.0
-      with build 1654 selected).
+      with build 1654 selected, then 1655).
 - [x] Clean **1.7.2 (build 1506)** archives from `6faff16f` were built, validated, uploaded, and
       processed for all four platforms on 2026-10-16 and added to the internal TestFlight group.
       They are not selected for the platform versions.
