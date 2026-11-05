@@ -69,7 +69,7 @@ simulator taps are needed:
 | Scene | Fixture route | Targets |
 | --- | --- | --- |
 | home | `--ui-testing-fixture browse` | all |
-| library | `--ui-testing-open-first-library` | all (the Mac sidebar selects its first library row) |
+| library | `--ui-testing-open-first-library` | all except Mac (its sidebar lists libraries from the live catalog repository, which has no fixture data) |
 | detail | `--ui-testing-open-item plex-orbit` | all |
 | playback | `--ui-testing-fixture player --ui-testing-player-paused` (Mac unpaused; Duo inner adds `--ui-testing-player-present-delay 8` so the appResize session starts first) | iPhone, iPad, Duo, tvOS, Mac; **visionOS has no fixture route** (spatial player, passive-only simulator) |
 | downloads | `--ui-testing-initial-tab offline` | all except tvOS (streaming-only, no Downloads) |

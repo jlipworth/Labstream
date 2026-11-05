@@ -13,6 +13,7 @@ Options:
   --skip-build          Reuse this worktree's staged isolated app.
   fixture-home-passive only:
   --fixture browse|player  Debug fixture kind. Default: browse.
+  --settle SECONDS      Wait after launch before the window capture. Default: 0.
   --launch-arg ARG      Extra --ui-testing-* capture-route argument or plain value (repeatable).
 
 Exit codes: 0 passed, 1 failed, 2 blocked/precondition missing.
@@ -29,8 +30,10 @@ timeout=15
 skip_build=0
 fixture=browse
 extra_launch_args=()
+settle=0
 while (($#)); do
   case "$1" in
+    --settle) settle=${2:-}; shift 2 ;;
     --fixture) fixture=${2:-}; shift 2 ;;
     --launch-arg) extra_launch_args+=("${2:-}"); shift 2 ;;
     --artifact-root) artifact_root=${2:-}; shift 2 ;;
@@ -40,6 +43,9 @@ while (($#)); do
     *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
 done
+[[ $settle =~ ^[0-9]+$ ]] && ((settle <= 60)) || {
+  printf 'Settle must be an integer from 0 through 60.\n' >&2; exit 2;
+}
 [[ $fixture == browse || $fixture == player ]] || {
   printf 'Unsupported macOS fixture: %s\n' "$fixture" >&2; exit 2;
 }
@@ -176,6 +182,7 @@ on run argv
 end run
 APPLESCRIPT
 
+((settle == 0)) || sleep "$settle"
 driver_args=(--pid "$app_pid" --output "$outdir/driver.json"
   --screenshot-before "$outdir/screen-before.png"
   --screenshot-after "$outdir/screen-after.png" --timeout "$timeout")

@@ -79,6 +79,9 @@ FIXTURE_ROUTES: dict[str, dict[str, dict[str, Any] | None]] = {
     },
     "macos": {
         **MOBILE_ROUTES,
+        # The Mac sidebar lists libraries from the live catalog repository, which has no
+        # synthetic data, so the library scene is a live capture on Mac.
+        "library": None,
         "playback": {"fixture": "player", "args": []},
     },
 }
@@ -188,6 +191,7 @@ def _runner_command(target: str, scene: str, evidence_root: Path, *, first: bool
                 "--duration", str(SCENE_SETTLE_SECONDS[scene]), "--fixture", route["fixture"], *([] if first else ["--skip-build"]), *keep,
                 *launch, *common]
     return ["scripts/agent-macos-run.sh", "fixture-home-passive", "--fixture", route["fixture"],
+            "--settle", str(SCENE_SETTLE_SECONDS[scene]),
             *([] if first else ["--skip-build"]), *launch, *common]
 
 

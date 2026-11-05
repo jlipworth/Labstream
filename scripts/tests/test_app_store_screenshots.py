@@ -50,6 +50,8 @@ class AppStoreScreenshotTests(unittest.TestCase):
             self.assertEqual(scenes[:4], ("home", "library", "detail", "playback"))
             self.assertEqual("downloads" in scenes, target != "tvos")
         self.assertNotIn("playback", screenshots.fixture_scenes("visionos"))
+        self.assertNotIn("library", screenshots.fixture_scenes("macos"))
+        self.assertIn("library", screenshots.live_scenes("macos"))
         for target in screenshots.MOBILE_TARGETS | {"tvos", "macos"}:
             self.assertIn("playback", screenshots.fixture_scenes(target))
 
