@@ -15,9 +15,10 @@ through either channel:
    account and is checked first.
 2. **[GitHub private vulnerability reporting](https://github.com/jlipworth/Labstream/security/advisories/new).**
 
-The same contacts are published at `https://labstream.app/.well-known/security.txt` once the
-project site is live. If neither channel works for you, wait rather than posting sensitive details
-in public; ordinary support issues cannot provide a private security channel.
+The same contacts, in the same order, are published in
+[`https://labstream.app/.well-known/security.txt`](https://labstream.app/.well-known/security.txt).
+If neither channel works for you, wait rather than posting sensitive details in public; ordinary
+support issues cannot provide a private security channel.
 
 Include only the minimum information needed to reproduce the problem. Do not include real media
 titles, library paths, server names or addresses, usernames, access tokens, client identifiers,
