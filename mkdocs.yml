@@ -21,6 +21,9 @@ plugins:
   - search
   - include-markdown
 
+hooks:
+  - scripts/mkdocs_canonical_hook.py
+
 markdown_extensions:
   - admonition
   - attr_list
