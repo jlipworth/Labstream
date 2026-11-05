@@ -251,6 +251,14 @@ only one simulator at a time, must shut it down before switching platforms, and 
 the lease before another agent boots a simulator. Do not leave the golden simulator booted
 while a linked-worktree simulator is running.
 
+**Xcode host lease.** `scripts/xcodebuild-versioned.sh` and the `agent-*-run.sh` runners hold a
+per-user OS lock (`~/.cache/labstream/xcode.lease`) shared by every worktree; wrap other Xcode
+work in `scripts/xcodebuild-lease.py run --lane NAME -- ...`. Exit 75 means the bounded wait
+timed out. Never delete the lock file to break a live lease. `scripts/workspace-status.py`,
+`issues.py`, `ci-wait.py` and `workflow-state.py` give read-only cross-worktree status, issue
+search, exact-commit CI and local receipts; see
+`docs/DEVELOPMENT.md#workflow-status-and-review-evidence`.
+
 **Shut the leased sim down immediately when its verification turn ends** —
 `xcrun simctl shutdown $(scripts/worktree-sim.sh id)` from inside the worktree (or
 `xcrun simctl shutdown <UDID>`). The lead should check `xcrun simctl list devices` between
@@ -396,7 +404,7 @@ user-driven step that a script, probe, fixture, or hermetic test could have cove
 slipped past the existing headless coverage, say so in the close-out: name the gap and recommend
 the concrete script/test extension. Build it in the same change when it is small and clearly in
 scope; otherwise file or update an issue for it. Document new tooling in `scripts/README.md`
-and the owning testing doc.
+and the owning testing doc (server-free codec/playback regressions: `docs/HEADLESS-PLAYBACK-TESTING.md`).
 
 ## Corpus-backed playback and release evidence
 

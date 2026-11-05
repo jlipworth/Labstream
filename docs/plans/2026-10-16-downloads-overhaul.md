@@ -1,9 +1,12 @@
 # Downloads manager overhaul
 
-**Status (2026-10-17):** P1–P6 and P7.1–P7.6 implementation are in the stack through
-`0e7bae0f`. P7 review fixes and dead-facade cleanup are parallel integration lanes. P7.7 (the
-coordinated 1.8.0 source bump and release note) and external acceptance remain open. This plan
-stays active in `docs/plans/` until release work is complete; do not archive it yet.
+**Status (2026-11-04):** P1–P7 are merged into `downloads/overhaul` (P7 as #389 on 2026-10-18,
+including the P7.7 1.8.0 source bump and release note). Post-overhaul follow-ups #405, #406, #408,
+#409, #410, #412, #414, #415 and #416 landed on the same branch, and 1.8.0 internal TestFlight
+builds 1523–1653 are recorded in [Releases](../RELEASES.md#180-internal-testflight-builds).
+Live-backend, physical-device and release acceptance remain open in
+[#403](https://github.com/jlipworth/Labstream/issues/403); this plan stays active in `docs/plans/`
+until those gates close.
 
 **Scope:** the shared visionOS, iOS/iPadOS and macOS download engine, backend download policies,
 local playback and row presentation. tvOS remains streaming-only and compiles no Downloads
@@ -51,8 +54,10 @@ The retained architecture has these boundaries:
 1. One pure reducer owns lifecycle/history. Immutable attempt/source identity, artifacts, server
    obligations and history remain separate durable facts; status is a compatibility projection.
 2. One event-driven admission window supervises taps, season starts, Resume All, retries and
-   recovery. Static 2, prep 1, live-forward 1, total 3 are the normal caps. Existing OS work is
-   observed first, and prep-to-static handoff can temporarily occupy a third static lane.
+   recovery. The user sets the total from 1 to 5 (default 3, #408); static is `max(1, total − 1)`
+   and live-forward is 1. Server preparation does not use a transfer slot: up to 5 jobs are
+   submitted, and finished renders wait for a static slot (#414). Existing OS work is observed
+   first.
 3. Plex and Emby preparation use registered pollers. Existing matching versions are adopted
    before create; live-lane handoff, durable dispatch grace and exact ownership survive awaits.
 4. One independent cleanup journal retains server authority. Runner eligibility, claims and
@@ -130,7 +135,7 @@ downgrades before the P1 guard remain a release compatibility limitation. Option
 | P4 | #385 | Shared lane admission, supervised starts/backoff, row Pause All exemption and registered Plex/Emby prep runners. |
 | P5 | #387 | Unified physical/cap accounting, source size/unknown estimates, targeted retry/claim/auth-generation/HEVC fixes. |
 | P6 | #388 | Async store resolution, off-lock observations, physical leases, exact failed epochs, inventory visibility and absolute wake budget. |
-| P7 | PR pending | Joined local launch/event sinks, subtitle-source preservation/menu, MediaBrowser helper/keepalive, availability/return and shared rows. Release step remains open. |
+| P7 | #389 | Joined local launch/event sinks, subtitle-source preservation/menu, MediaBrowser helper/keepalive, availability/return and shared rows, plus the 1.8.0 source bump (P7.7). |
 
 ### P1 outcome
 
@@ -300,8 +305,6 @@ helper-level coverage for end-to-end proof. The following limits remain explicit
 - P7 real surface adapters exercise shared factories/sinks, metadata backend conflicts, missing
   local files, source/audio and subtitle parse races. They do not prove decoded playback, device
   rotation/layout/accessibility or server negotiation on real accounts.
-- P7 review/code-cleanup lanes must land and pass the final combined checks before the release
-  commit. The docs lane edits no source/project/version file and boots no simulator.
 
 ## Deferred work
 
@@ -309,7 +312,8 @@ Each deferral states why it remains separate and what behaviour is retained. Suc
 B83 #390, B85 #391, B27 #392, B30 #393, side-asset payload queueing #394, P6 wait polling #395,
 D4 sync-back #396, offline Up Next #397, season grouping #398, Emby entitlement #399, D3/B55 #400,
 remaining safety limits and unpinned paths #401, smaller product deferrals #402. Acceptance and
-landing on `main` are tracked in #403; the post-sleep speed counter (#379) was not in scope.
+landing on `main` are tracked in #403. The post-sleep speed counter (#379) was outside the
+overhaul and was fixed afterwards by #406, with #416 for Range segment boundaries.
 
 ### Open defects and safety limits
 
@@ -391,33 +395,15 @@ addresses persistence/lock/wake pressure. This is **addressed, not confirmed**. 
 **`.ips`/JetsamEvent is still required**; no code test proves that termination's cause or rules out
 recurrence. Do not turn a missing signature into a jetsam/watchdog diagnosis.
 
-## P7.7 Final sub-phase — version bump and release note — lead
+## P7.7 version bump and release note (done)
 
-This is the remaining final implementation step, after code integration and checks:
+Landed with P7 (#389): all twelve marketing-version settings moved from 1.7.2 to **1.8.0** (four
+app targets × Debug/Release/PerformanceAudit), and the 1.8.0 source note is in
+[Releases](../RELEASES.md#current-status). Build numbers and tags stay with the separate release
+workflow; release pin 15 is satisfied.
 
-1. Use the repository version workflow to update all twelve marketing-version settings from
-   1.7.2 to **1.8.0**: four app targets × Debug/Release/PerformanceAudit, including streaming-only
-   tvOS. Verify exact count/configuration mapping statically. Keep runtime bundle identity.
-2. Write the 1.8.0 source/download-overhaul note in `docs/RELEASES.md` and source columns for all
-   four products. Preserve recorded 1.7.2 processed/selected distribution history. No archive,
-   upload, selection, validation, device acceptance or App Review claim follows from a source bump.
-3. Keep build numbering/tagging in the separately coordinated release workflow. Do not bump a
-   build number or invoke release preflight just to inspect source versions.
-4. Retain release/digest tooling compatibility tests. Add cases only if a real version assumption
-   appears; no unconditional tooling expansion. `testflight-release.py` reads project settings,
-   while `asc-digest.py` defaults to newest uploaded version, which can still be 1.7.2 after bump.
-   Historical fixture versions are not stale production constants.
-5. Correct the old release-page wording about a matching PMSKit version fallback if still present:
-   the app takes bundle version with a neutral fallback, not a production 1.7.2 Swift constant.
-6. Run focused static assertions, the release and digest unittest modules, then strict docs,
-   rendered links, Mermaid and hygiene. Resolve functional defects before this final commit.
+### User-visible changes in 1.8.0
 
-Release pin 15 remains pending until this step. This docs lane does **not** edit the project,
-Swift, release page, build number, tag or distribution state.
-
-### User-visible changes feeding the final release note
-
-Use accepted implementation as the source, without copying a proposed note into current releases:
 
 - Consistent download status and controls across iPhone/iPad, Vision Pro and Mac.
 - Bounded shared queue, durable paused-static upgrade preservation and route-specific recovery.
@@ -445,29 +431,9 @@ Use accepted implementation as the source, without copying a proposed note into 
   background recovery. No simulator stands in for host acceptance.
 - **HDR/DV:** actual decoded video and display evidence on hardware, independently of labels or
   an advancing playhead.
-- **Release/TestFlight:** P7 review lanes and final combined gate, P7.7 source commit, then separately
-  authorized archive/validate/upload/distribution/selection and physical acceptance. No App Review
-  submission is implied.
-
-### Final integration checklist
-
-- Reconcile the parallel P7 review fixes and dead-facade cleanup without changing v5's persisted
-  cases, losing legacy import authority or reintroducing MainActor persistence waits.
-- Search both surfaces for duplicate local construction, rating-key saves, active/prefix backend
-  authority, body-time stats and unordered side-control Tasks. Metadata identity wins; safe legacy
-  fallback is explicit. Preserve `Generic` and the tvOS compile exclusion.
-- Run hermetic PMSKit, affected app-hosted suites and normal-parallel full Mac hosted gate with
-  one Xcode lane active. Fixtures acknowledge held-worker entry/recovery completion, not arbitrary
-  yield counts. Require terminal xcodebuild result and no unexpected skips/failures.
-- Run applicable native builds/product smokes under the lead's one-simulator lease, using exact
-  worktree products/IDs, then shut down and clean staged Mac apps. This docs lane boots none.
-- Run strict MkDocs first, rendered links, Mermaid and hygiene; search unpublished internal lanes
-  for removed anchors too. Promote durable changes into canonical docs before pruning the plan.
-- Check narrow phone, regular iPad, visionOS and resizable Mac with long context/error strings,
-  waiting/zero-progress/indexing/verification, exact delete race/copy and accessible action values.
-- Keep live/device/D3/signature/TestFlight gates explicit. Unit counts never close them.
-- Commit P7.7 last, then let the maintainer coordinate stack integration and authorized release.
-  Archive this plan only once release work and successor tracking are complete.
+- **Release/TestFlight:** internal 1.8.0 builds are uploaded (see [Releases](../RELEASES.md)); App
+  Store build selection, physical TestFlight acceptance and App Review remain separately
+  authorized steps. No App Review submission is implied.
 
 ## Edge cases added by the second review
 
@@ -1241,7 +1207,7 @@ where an original requirement was narrowed; the evidence page owns bug-fix class
 - **pu-06:** Indeterminate atomic-write outcome pauses download admission (fail closed)
 
 - **pu-07:** Lane-aware bounded admission window (static 2 / server-prep 1 / live-forward 1 /
-  total 3)
+  total 3). Superseded by #408 (user-set total 1–5) and #414 (server prep outside the total).
 
 - **pu-08:** Ordinary stale/relaunch recovery must not start season-pending rows
 

@@ -902,7 +902,7 @@ and result interpretation, use [Headless playback testing](HEADLESS-PLAYBACK-TES
 standalone-host checks without starting a simulator.
 
 The headless audio/video signal experiment (repository notes:
-`docs/research/HEADLESS-AV-SIGNAL-LAB.md`) generates local H.264/AAC HLS fixtures and captures decoded audio/video from a
+`docs/research/2026-10-26-headless-av-signal-lab.md`) generates local H.264/AAC HLS fixtures and captures decoded audio/video from a
 Debug-only visionOS 27 AVPlayer probe or standalone macOS 27 run-loop host. It needs
 no server authentication. `uv run scripts/playback-signal-lab.py run-host` compiles a
 small host around the shared capture method; with an `NSApplication` event loop,

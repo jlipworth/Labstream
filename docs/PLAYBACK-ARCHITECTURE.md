@@ -299,7 +299,9 @@ title and `.subheadline` detail; compact width scales with the viewport (up to 3
 height (iPhone landscape) uses a tighter rhythm and smaller controls so it clears the scrubber.
 tvOS, visionOS, and macOS keep their established card sizes. When chrome is visible, the
 overlay centers in the free space between the measured top bar and bottom controls. When chrome
-is hidden, it centers in the chrome's safe-area frame. Appear/disappear and the
+is hidden, it centers in the chrome's safe-area frame. On iOS the frame is
+`MobilePlayerArrangement.statusFrame`: the video rectangle in a Fit portrait scene, the trailing
+group after a book hinge, or the picture half in tabletop. Appear/disappear and the
 spinner → card transition animate with an opacity and scale change. On iOS the center
 play/pause stays hidden while any status is presented. The pre-controller startup spinner in
 `CustomPlayerView` uses the same stage-1 view, so startup reads as one indicator. The

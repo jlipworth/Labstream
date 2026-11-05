@@ -81,7 +81,7 @@ is the ground truth.
   the OS-27 standalone macOS host in `scripts/playback-signal-lab.py run-host` has also
   advanced AVPlayer and captured decoded audio/video without a window or simulator:
   it supplies an `NSApplication` event loop. See `docs/DEVELOPMENT.md` and
-  `docs/research/HEADLESS-AV-SIGNAL-LAB.md`; this does not establish backend acceptance.
+  `docs/research/2026-10-26-headless-av-signal-lab.md`; this does not establish backend acceptance.
 - Frames are tone-mapped to SDR BGRA by the capture conversion, so this judges
   *correct vs broken rendering*, not HDR colorimetry.
 - Probe output PNGs may contain recognizable movie frames — never commit them; keep them in

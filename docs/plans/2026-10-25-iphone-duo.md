@@ -1,7 +1,8 @@
 # iPhone Duo support for LabstreamMobile
 
-**Status (2026-10-26):** implemented on `duo/support` and merged into `downloads/overhaul`
-(2026-10-26). The worktree Duo simulator platform is done (`c8cbbf5f`). Part 1 (toolchain,
+**Status (2026-11-04):** implemented on `duo/support` and merged into `downloads/overhaul`
+(2026-10-26); player follow-ups through 2026-11-02 (labeled menus, full-picture scrim, one Stats
+palette) are in the journal. The worktree Duo simulator platform is done (`c8cbbf5f`). Part 1 (toolchain,
 shell and non-player layout: Steps 1, 6, 7, 9 and the Step 8 hero sizing) is done; see the
 journal. Part 2 (the player: Steps 2 to 5) is done on the simulator; a real fold during playback
 is still a manual gate. A Duo design spec (see Design) now governs layout rework; the maintainer approved its mockups and decisions on 2026-10-25, and the rework (Steps 12 to 16) is done on the simulator with the gaps
@@ -55,7 +56,7 @@ describe the chosen option.
 | 4 | Mini player and scrolling content | A **bottom inset**: the scroll viewport ends above it | 2026-10-25 |
 | 5 | Downloads, unfolded sideways | **Revised 2026-10-26:** one list in every width and no detail page (a tap plays, or opens an unfinished row's actions). The Mail-style list + detail was built and dropped after review: the detail repeated the row and halved the list | 2026-10-26 |
 | 6 | Settings, unfolded (and iPad regular width) | **Revised 2026-10-26:** two columns like iPad Settings (category list + the selected category's form; split on the hinge in book), after the centred 560 pt form left ~200 pt empty on each side in the sideways capture | 2026-10-26 |
-| 7 | Player in book | Keep the overlay; the whole control group (transport, title, scrubber, bottom circles) moves into the trailing half. The `OverlayArrangement` video-leading/controls-trailing book layout is not used. | 2026-10-25 |
+| 7 | Player in book | Keep the overlay; the whole control group (transport, title, scrubber, menus) moves into the trailing half. The `OverlayArrangement` video-leading/controls-trailing book layout is not used. | 2026-10-25 |
 | 8 | Show resume line | "Resume S1, E3" plus "23m left" | 2026-10-25 |
 | 9 | Real Device Hub unfold captures | **Open gate (deferred):** inner-display, folded-landscape (both rotations), book, tabletop and real-fold frames are still needed before visual acceptance of those poses | – |
 
@@ -321,8 +322,7 @@ modeled on the description only.
 ### Downloads
 
 *Modeled on:* the Settings and Contacts lists on the outer display (inset rows ending one margin
-before the column); Mail and Contacts list + detail on the inner display, with the split on the
-hinge in book.
+before the column), in every width; the Mail-style list + detail was dropped (decision 5).
 
 - **Folded portrait / landscape:** one column of the existing download rows (one row pattern),
   ending at the content edge. Status context lines are 1–2 words and never wrap. Toolbar actions
@@ -345,8 +345,7 @@ hinge in book.
 - **Accepted gap (2026-10-26):** the list column's own horizontal controls (title, Select,
   Storage) are not built. The storage and queue controls stay in the page toolbar, and there is
   no Select mode on this surface to move (adding multi-select is a new feature that needs its
-  own mockup). The detail column has Play, Delete in red, route and size, the full status and the
-  overview.
+  own mockup).
 - **Offline shell** (no tab column, by design): Reconnect becomes an ordinary toolbar item in the
   same glass style as its siblings, not an amber one-off.
 
@@ -462,17 +461,19 @@ There is no inline season picker in any pose.
 - the Fill preference stays per device.
 
 **Chrome control style (all poses, one arrangement in overlay, book and the tabletop deck):**
-- **One style:** glass circles with symbols and accessibility titles.
-- **Top row:** Close, PiP and gravity at leading; AirPlay at trailing (the TV app).
-- **Center:** −10 / play-pause / +10.
+*Revised 2026-10-31 (`ff57f33d`); the original all-circles spec with a More overflow menu is in
+git history.*
+- **Top row:** Close, PiP and gravity at leading; AirPlay at trailing (the TV app), as glass
+  circles with symbols and accessibility titles.
+- **Center:** −10 / play-pause / +10, with −30 / +30 outside the pair when the row has room.
 - **Above the scrubber:** the title (1 line) plus a 1–2 word caption ("S1, E5") at leading.
-- **Bottom:** the scrubber with elapsed and remaining times, then one row of circles: Subtitles,
-  Audio, Chapters, Speed, Stats, More.
-- The vertical order (top row, transport, title, scrubber, circles) is the same in every pose
+- **Bottom:** the scrubber with elapsed and remaining times.
+- **Menus:** Quality, Subtitles, Audio, Chapters, Speed, Stats, as labeled glass capsules when they
+  fit (beside the title on a wide viewport, else on their own row under the scrubber) and
+  icon-only circles in the same order when they do not. Quality is always present and first
+  (dimmed when the source only plays at original quality). There is no More overflow menu.
+- The vertical order (top row, transport, title, scrubber, menus) is the same in every pose
   (HIG: keep the controls' relative positions).
-- **Overflow:** Quality and any further items go in the single system overflow menu (T-BAR:
-  "Reserve the ellipsis for overflow only").
-- This replaces today's mix of icon circles and labelled pills, which crowds and truncates.
 
 **Poses:**
 - **Folded landscape** (the app locks landscape while the scene is phone-class, so folded
@@ -508,10 +509,10 @@ There is no inline season picker in any pose.
   - **Bottom half (primary):** a stable control deck that does not auto-hide, laid out like the
     TV app:
     - **Row 1:** Close, PiP and gravity at leading; AirPlay at trailing.
-    - **Row 2:** −10 / play-pause / +10, centered.
+    - **Row 2:** −30 / −10 / play-pause / +10 / +30, centered (±30 when there is room).
     - **Row 3:** the title and caption at leading, then the full-width scrubber with elapsed and
       remaining times.
-    - **Row 4:** Subtitles, Audio, Chapters, Speed, Stats, More.
+    - **Row 4:** Quality, Subtitles, Audio, Chapters, Speed, Stats.
   - It has the same controls, hierarchy and order as the overlay, and nothing is tabletop-only.
   - Dark only, like the rest of the player and every reference (TV, Netflix).
   - **Mechanism:** `OverlayArrangement` / `UIOverlayArrangement`, with the controls as primary
@@ -654,7 +655,7 @@ mockup sign-off, and land as their own commits.
 | Player `toolbarVerticalBehavior(.disabled)` (`d63b6527`) | **Keep** | Apple-sanctioned and stable per screen. |
 | Top-inset latch on full bounds (`a53e94e7`) | **Keep** | – |
 | Measured chrome branch, menu clamp, scrub cancel, hover preview (`d63b6527`, `ac346eb4`) | **Keep** | – |
-| Chrome button styling (circles mixed with labelled pills) | **Change** | One glass-circle style plus the overflow menu (Player). |
+| Chrome button styling (circles mixed with labelled pills) | **Change** | One arrangement: glass circles for the top row and transport, labeled menu capsules (icon circles when they do not fit), no overflow menu (Player; revised 2026-10-31). |
 | Deferred 400 ms resign pause, PiP rebind and restore delegate (`d3a5d5f6`) | **Keep, gated** | Shared player code: needs recorded passes on Plex, Jellyfin and Emby (Open gates). |
 | No tabletop composition | **Change (new)** | Add the `OverlayArrangement` table layout (Player). |
 | Login wash ignores horizontal safe area (`efd1e2b5`) | **Keep** | It is decoration only. Cap the content column (Login). |
@@ -1004,7 +1005,7 @@ through one seam:
 
 ### Step 13: shell, sheets, Settings and colors
 
-**Status (2026-10-25):** done except the stats sheet and the type pass (see the journal). The
+**Status (2026-10-25):** done except the stats sheet (landed in Step 16, `cab04b3b`) and the type pass (see the journal). The
 vertical bar is detected from the iOS 27.1 `verticalBarEdge` trait (bridged into
 `\.labstreamVerticalBarEdge`), not `reservedRegions`. The Settings hand-off state stays app-side
 (`MobileSettingsNavigationState`, tested in `LabstreamTests`) because `AppDestination` and
@@ -1043,7 +1044,8 @@ vertical bar is detected from the iOS 27.1 `verticalBarEdge` trait (bridged into
 frame (the content region) with a vertical overflow clip shape instead of vertical padding, so the
 rail height is unchanged; visionOS, tvOS and macOS keep their pass-through rails. The pure rules
 are in PMSKit: `RailCardMetrics`, `MobileLibraryGridLayout` (measured columns plus the book split),
-`HomeShelfCaptionPolicy`, `MusicDetailLayoutPolicy` and `DownloadsLayoutPolicy`.
+`HomeShelfCaptionPolicy`, `MusicDetailLayoutPolicy` and `DownloadsLayoutPolicy` (removed with the
+list + detail on 2026-10-26, `a7e1d341`).
 
 - **Rails (decision 1, global rules 6 and 7, Step 8 superseded):** replace the
   `mediaRailScrollStyle` default `scrollClipDisabled(true)` in `DesignSystem.swift` with a
@@ -1127,14 +1129,16 @@ re-lays out the same layer and deck from the pose value (deviation pending sign-
   and AirPlay trailing; centre −10 / play-pause / +10; above the scrubber the title (1 line) and a
   1–2 word caption; bottom the scrubber with elapsed and remaining times, then Subtitles, Audio,
   Chapters, Speed, Stats and More. Quality and further items go in the single overflow menu. The
-  scrubber uses label color. Replaces the mixed circles and labelled pills.
+  scrubber uses label color. Replaces the mixed circles and labelled pills. *Superseded by
+  `ff57f33d` (2026-10-31): labeled menu capsules with Quality first, no More, ±30 restored; see
+  Player → Chrome control style.*
 - **Kept:** `toolbarVerticalBehavior(.disabled)`, the latched top inset, the same
   `AVPlayerLayer`, in-place `videoGravity`, aspect fit by default and the per-device Fill
   preference. Every fold-during-playback invariant and every `docs/PLAYBACK-ARCHITECTURE.md`
   invariant holds: the pose changes layout only.
 - **Upright:** chrome overlays the aspect-fit video rectangle, not the bands; the transport status
   centres in the video rectangle.
-- **Book (decision 7):** keep the overlay; the transport, title, scrubber and bottom circles move
+- **Book (decision 7):** keep the overlay; the transport, title, scrubber and menus move
   together into the trailing half from `DuoPoseLayout`; the top row does not move.
 - **Tabletop:** the table layout (implemented from the pose value, not `OverlayArrangement`;
   see the Player section's mechanism deviation): video aspect-fit in the
@@ -1505,3 +1509,13 @@ re-lays out the same layer and deck from the pose value (deviation pending sign-
 - 2026-10-26: merged into `downloads/overhaul` (rebased onto its tip, fast-forward) and pushed.
   The Downloads detail page is gone, so the "pushed detail on unfold" item above no longer
   applies. The music fixture and every gate in Open gates remain.
+- **2026-10-30 to 2026-11-02, player follow-ups on `downloads/overhaul`:**
+  - `8de68dca` (build 1649): the tap scrim dims the whole picture instead of stopping at the safe
+    frame, and the bottom group no longer stacks its margin on the home-indicator inset.
+  - `ff57f33d` (build 1651): the menus become labeled capsules (beside the title, else under the
+    scrubber, else icon-only), Quality is always present and first, the More overflow is gone,
+    and −30/+30 return outside ±10. The Player design spec above is revised to match.
+  - `f1efcae5` (build 1653): one Stats path palette on every platform and an on-device
+    Connection route (VPN for tunnels).
+  - Verified on the simulator only (clean Duo builds, folded captures, the mobile fixture and
+    Stats UI tests); the unfolded inner display, real folds and the physical Duo remain open.

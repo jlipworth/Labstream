@@ -204,6 +204,10 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
       sizes, tiles stack instead of wrapping. VoiceOver reads the chain as one sentence and each
       tile as label plus value. Copy diagnostics pastes without track titles. On tvOS, focus
       reaches See more, the section picker, and Show less with the Siri Remote.
+- [ ] **Stats palette and route (1.8.0 build 1653):** on every platform only the direct-play path
+      is green; copy and encode paths are neutral gray. Over Tailscale or another VPN (including a
+      100.64.0.0/10 address), Connection reads VPN, and a resolvable custom domain is never
+      Unknown.
 - [ ] **visionOS playback explanation (#203):** open Stats during each representative
       lane below. Confirm the reason line and the Video section's Decision rows (headline and at
       most two useful reasons) agree with the active result. The normal player must not show raw reason arrays, backend prose, URLs,
@@ -249,7 +253,7 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
 - [ ] **iPhone Duo player poses:** Folded landscape keeps the chrome below the top status strip
       and the bottom row clear of the camera island (both rotations). Unfolded upright overlays
       the video rectangle; sideways shows the hover preview with a trackpad. Book moves the
-      transport, title, scrubber and circles into the trailing half; tabletop shows the picture
+      transport, title, scrubber and menus into the trailing half; tabletop shows the picture
       above the hinge and a deck below that does not auto-hide. Folding or unfolding mid-playback
       never stops, reloads or seeks. Simulator evidence (2026-10-26): the folded Duo UI smoke
       (`LabstreamMobileDuoUITests`, both folded-landscape rotations through the DEBUG orientation
@@ -396,13 +400,13 @@ background-session registration, or migration/recovery work.
       original. While the conversion is still preparing, the static episodes are admitted and
       transfer (at the default setting: at most two static and three total transfers; server
       preparation does not use a transfer slot). A waiting row reads **Waiting for a download
-      slot…** in Offline and the current-download sheets, never "Downloading optimized…" with a
+      slot…** in Offline and the current-download sheets (**Queued** on iPhone/iPad), never "Downloading optimized…" with a
       spinner.
 - [ ] Server jobs (#414): on Plex (and separately Emby), queue three optimize/Convert downloads,
       then lock or background the device for a few hours. The server shows all three jobs
       submitted straight away, and all three finish rendering while the app is suspended. On
       reopening, finished renders beyond the free transfer slots read **Ready — waiting for a
-      download slot…** and start in queue order as slots free; the transfer count never exceeds
+      download slot…** (**Queued** on iPhone/iPad) and start in queue order as slots free; the transfer count never exceeds
       the simultaneous-downloads setting. Deleting a waiting row cleans up like any server-prep row.
 - [ ] Admission (P4): with five paused rows, Resume All starts at most the caps and the rest read
       **Waiting for a download slot…** until a lane frees. A tap while every lane is busy waits and
@@ -411,8 +415,9 @@ background-session registration, or migration/recovery work.
       it is back, instead of failing.
 - [ ] In Settings ▸ Downloads on visionOS, iOS/iPadOS and macOS, **Simultaneous downloads**
       offers 1–5 and defaults to 3; tvOS has no Downloads section. At 1, 3 and 5, total admission
-      respects the selection, static transfers are capped at `max(1, total - 1)`, and server
-      preparation and live-forward streams each stay capped at 1. Lower the setting during active
+      respects the selection, static transfers are capped at `max(1, total - 1)`, live-forward
+      streams stay capped at 1, and server preparation does not use a transfer slot (up to 5
+      server jobs are submitted). Lower the setting during active
       transfers: nothing is cancelled and waiting rows stay waiting until occupancy drops below
       the caps. Raise it: waiting rows start without another Resume action. Relaunch with waiting
       rows and verify the stored value still bounds admission after existing work is reattached.
@@ -538,9 +543,15 @@ claiming background durability.
 - [ ] With embedded text subtitles and a downloaded sidecar, one menu shows both and one Off.
       Switch sidecar → embedded → Off, including a slow sidecar load; only the selected source
       renders and a late parse cannot restore an overlay. Repeat from Detail and Offline.
-- [ ] On narrow iPhone, regular iPad, Vision Pro and resizable Mac, compare Offline rows with
+- [ ] On iPhone and iPad (narrow, regular and unfolded Duo), Offline is one list with no detail
+      page. Each row is a one-line title, one context line (finished rows end with the size) and a
+      1–2 word status (Ready, Unverified, Downloading 42%, Queued, Paused, Preparing, Verifying)
+      that never wraps. Caution is the gray secondary color plus a triangle, never orange or
+      amber; VoiceOver reads the full caption as the status value. A tap plays a finished row or
+      opens an unfinished row's actions; long-press and swipe offer the same.
+- [ ] On Vision Pro and resizable Mac, compare Offline rows with
       current-download sheets: waiting/paused and route context are neutral, verified completion
-      green, caution amber, failure/destructive actions red. All text lines align without icons;
+      green, caution orange, failure/destructive actions red. All text lines align without icons;
       poster badges remain. Zero server progress is indeterminate; server indexing and verification
       have distinct captions.
       Finished rows have one summary in status/resolution/average bitrate/size order, no separate

@@ -332,7 +332,7 @@ upstream connection rotation used by `PlaybackController`.
   `EmbyConvertCleanupJournal.swift` owns the compatibility Emby Convert tombstone file and
   serializes that queue independently of the `DownloadStore` index lock.
 - `Labstream/Capabilities/Downloads/Core/OfflineLibraryView.swift` owns the cross-backend offline UI and
-  local playback launch. Its snapshot is lightweight and actions re-resolve exact attempt identity.
+  local playback launch. On iPhone/iPad it is one list in every width with no detail page. Its snapshot is lightweight and actions re-resolve exact attempt identity.
 - `Labstream/Shared/UI/OfflineLaunchView.swift` owns the restricted cold-launch surface when a
   saved-session restore is temporarily unavailable and an existing local file belongs to a
   complete or unverified row. PMSKit's `OfflineLaunchAvailability` decides admission from the
@@ -358,6 +358,7 @@ App files below are under `Labstream/Capabilities/Downloads/`; pure policy files
 | `Core/DownloadCleanupIntentRunner.swift` | Bounded cleanup execution, claims, eligibility and per-intent retry deadlines. |
 | `Core/DownloadManager+CleanupRunner.swift` | Cleanup producers, recovery barriers and backend-specific journal executors. |
 | `CleanupIntentEligibilityPolicy.swift` | Exact resource/owner claims and deletion, terminal-release and abandonment eligibility. |
+| `Core/DownloadCleanupOrdering.swift` | Journal-first ordering for destructive Delete: required server cleanup enters the journal first, else the row stays durably deletion-pending. |
 | `Core/DurableJournalCommit.swift` | Full-sync atomic commit shared by cleanup authority files. |
 | `DownloadLifecycle.swift` | Persisted lifecycle, pause/failure reasons and attempt history, including truncation and condemnation. |
 | `DownloadLifecycleReducer.swift` | Pure authority for lifecycle/history transitions and their effects. |
@@ -366,7 +367,14 @@ App files below are under `Labstream/Capabilities/Downloads/`; pure policy files
 | `Core/DownloadStoreFilesystem.swift` | Narrow injected stat/read/copy/rename/remove scheduling and fault seam. |
 | `Core/DownloadUpgradeNotice.swift` | Durable, full-attempt-key removal/cleanup notice for the v4-to-v5 upgrade. |
 | `Core/DownloadWakeBudgetContract.swift` | Monotonic receipt deadlines, identified operations and typed wake terminal outcomes. |
+| `Core/StaticRangeTransferConfiguration.swift` | Static-range train sizing: 512 MiB closed segments and per-row depth. |
+| `StaticRangeTaskHealthPolicy.swift` | Process-local #409 foreground range-reissue experiment: settle, active window, rate and discard bounds. |
+| `DownloadAggregateRateEstimator.swift` | Header aggregate speed from common-interval delegate observations (#379/#406). `DownloadLiveRangeProgressPolicy.swift` keeps samples across Range segment boundaries (#416). |
+| `Core/OrderedAsyncWorkCoordinator.swift` | Per-key serial async work with exactly-once, in-order completions. |
+| `Core/CompletedSideAssetInventory.swift` and `Core/DownloadManager+ResumePresence.swift` | Observation-only side-asset and resume-presence evidence; neither grants publication authority. |
 | `BackgroundReattachTaskGatePolicy.swift` | Rejects paused, halted or stale task adoption without reviving the row. |
+| `Core/DownloadVolumeFreeSpace.swift` | Proactive free-space measurement for the downloads volume, including purgeable space. |
+| `Core/DownloadFileStat.swift` | Metadata-only file observations for diagnostics and recovery, separate from body readers. |
 | `DownloadStorageAdmissionPolicy.swift` | Shared physical free-space and self-excluding storage-cap accounting. |
 | `DownloadNetworkAccessPolicy.swift` | One cellular/constrained/expensive network preference for new requests. |
 | `DownloadExistingVersionDiscovery.swift` | Distinguishes interactive existing-version discovery from season planning. |
@@ -379,8 +387,9 @@ App files below are under `Labstream/Capabilities/Downloads/`; pure policy files
 | `Core/OfflinePlaybackEventSink.swift` | Exact-attempt/session observed-playing and bounded coalesced position persistence. |
 | `Core/OfflinePlayableAvailability.swift` | Generation-tagged off-main local-file scan, independent of mutation admission. |
 | `LaunchDownloadRecoveryGate.swift` | One serialized recovery replay when an offline launch reconnects. |
-| `DownloadRowPresentation.swift` | Shared lifecycle, progress, caption, color and accessibility presentation. |
-| `UI/DownloadRowContent.swift` | Common row layout for Offline and mobile, visionOS and Mac download sheets. |
+| `DownloadRowPresentation.swift` | Shared lifecycle, progress, caption (including the iPhone/iPad `compactStatusText`), color and accessibility presentation. |
+| `UI/DownloadRowContent.swift` | Shared row cell: the compact one-status-line layout on iPhone/iPad, the full layout on visionOS and Mac. |
+| `Debug/Debug*DownloadProbe.swift` | DEBUG-only Plex, Jellyfin and Emby download probes and their shared support. |
 
 `BackgroundDownloadWakeCoordinator.swift` consumes the wake contract, while the completion
 registry timestamps handlers before MainActor registration. `DownloadKeepaliveCoordinator.swift`

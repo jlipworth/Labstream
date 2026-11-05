@@ -173,7 +173,9 @@ new watermark, with four seconds of baseline replacement to exclude buffered cat
 (#224), before the shared window can produce a total. Staggered callbacks are interpolated
 inside their observed overlap, never extrapolated or silently omitted. Observed quiet intervals
 contribute zero; a silent attempt makes the total unavailable once the common window expires.
-All measurement state is memory-only.
+A dip in a Range attempt's reported bytes resets its window only when bodies that finished but are
+not yet appended cannot explain the whole dip, so the total survives 512 MiB segment boundaries
+(#416; `DownloadLiveRangeProgressPolicy`). All measurement state is memory-only.
 
 For the shared pre-overhaul transport crawl reported in #409, static closed ranges have a
 bounded foreground experiment. After authoritative reconciliation and ten seconds of settling,
@@ -359,8 +361,10 @@ User-facing expectations worth setting (the "downloads disclaimer"):
   dispatch, the row durably records a 3-minute visibility grace. Relaunch preserves that timestamp:
   absence during the grace keeps inspecting without another create; proven absence after it fails
   server preparation if no matching version is visible. An HTTP 400 duplicate rechecks adoption;
-  other create errors fail promptly. The separate 120-second completion/indexing grace, 24-hour
-  prep deadline and authentication failure budget remain in force. Static handoff uses the live
+  other create errors fail promptly. The separate 120-second completion/indexing grace and
+  authentication failure budget remain in force. The 24-hour prep deadline applies only while
+  nothing is rendered: a matching finished render (for example one that waited for a transfer
+  slot across a relaunch) is adopted even past it (#414). Static handoff uses the live
   server lane on which the rendered Part was observed.
 - Fresh Plex and Emby preparation starts return after registering their poller tasks. Delete
   cancels those tasks. Emby reuse and completed conversions share one handoff that detaches its
@@ -504,15 +508,23 @@ selection; item/session/selection generations reject late parses. Emby converted
 an independent original text-subtitle source. Historically ambiguous origins skip repair safely
 and keep existing cached subtitles and playable media.
 
-Library and current-download sheets share lifecycle-driven rows. Waiting/paused and route/context
-are neutral, verified completion green, caution amber, and failures/destructive controls red.
-All text lines share a leading edge without status icons; poster badges remain. Finished rows show
+Library and current-download sheets share lifecycle-driven rows. On visionOS and macOS,
+waiting/paused and route/context are neutral, verified completion green, caution orange, and
+failures/destructive controls red. All text lines share a leading edge without status icons;
+poster badges remain. Finished rows show
 one tail-truncated summary: `Downloaded • 1080p • 5.7 Mbps avg • 1.6 GB + 12 MB extras` or
 `Not verified • 1080p • 6.1 Mbps avg • 1.8 GB`. Resolution, local media average bitrate and size
 are omitted when unknown; extras appear only when present. Finished rows have no separate quality
 line. Other states retain requested quality, progress and captions. Context and status stay
 single-line with full accessibility values; VoiceOver adds “Downloaded and verified” or
 “Downloaded; playback not verified” to the full summary. Error details expand.
+On iPhone/iPad (`DownloadRowContent.mobileBody`) a row is a one-line title, one context line
+(the backend only when backends are mixed, the metadata or requested quality, and the size once
+finished) and a 1–2 word status from `compactStatusText` (Ready, Unverified, Downloading 42%,
+Queued, Paused, Preparing, Verifying, Failed). Caution uses the secondary color plus a warning
+triangle, never orange, because amber means selection on iOS. The full caption is the status's
+accessibility value. Offline is one list in every width with no detail page: a tap plays a
+finished row or opens an unfinished row's actions, and long-press and swipe offer the same.
 Server indexing, preparation and verification remain distinct, and preterminal progress never
 claims 100%. Delete captures exact attempt identities and explains supported unfinished server-job
 cancellation while retaining finished server versions.
@@ -640,7 +652,7 @@ available on visionOS, iOS/iPadOS and macOS; tvOS has no Downloads settings.
   free the lane without any release call.
 - **Finished renders wait for a transfer slot (#414).** When a Plex render or an Emby Convert job
   with a persisted job identity finishes, the row keeps its prep slot and reads **Ready — waiting
-  for a download slot…** until the static and total caps have room, then starts its byte transfer
+  for a download slot…** (iPhone/iPad: **Queued**) until the static and total caps have room, then starts its byte transfer
   with the live backend session. Waiting renders go first come, first served, and ahead of new
   transfer starts (taps, Resume, Retry, automatic static resumes); new server jobs can still be
   submitted meanwhile. The wait is in memory: after a relaunch the resume poller finds the
@@ -657,7 +669,8 @@ available on visionOS, iOS/iPadOS and macOS; tvOS has no Downloads settings.
   through the refreshed, source-validated first-start path. Resume All and a capacity-delayed row
   Resume or Retry keep the row paused or failed with a `retryRequested` intent, so its retry
   routes from its own facts (checkpoint, resume blob, Emby job, Plex queue item). Waiting rows read
-  **Waiting for a download slot…**, or **Waiting — downloads paused** during Pause All.
+  **Waiting for a download slot…**, or **Waiting — downloads paused** during Pause All
+  (iPhone/iPad rows show the compact **Queued** or **Paused**).
 - **Bulk controls** show **Pause All** whenever any row is active, preparing, retrying or
   waiting for admission, including paused/failed rows with a pending retry request. Mixed idle,
   completed or failed rows never hide Pause All. With no running or requested work, paused/failed
@@ -706,7 +719,7 @@ Storage uses one rule for every gate (`DownloadStorageAdmissionPolicy`, P5):
 
 A planned row with no in-flight slot is waiting, not transferring. All current-download surfaces
 use the shared waiting caption; an admitted row may show **Queued…** and a server-prep row
-**Preparing on server…**.
+**Preparing on server…** (the compact iPhone/iPad forms are **Queued** and **Preparing**).
 **Downloading optimized** is the static transfer of an existing or converted version. When it reads
 0% with a spinner, the row is active but URLSession has delivered no body bytes yet. Common reasons
 are the window before the first byte, OS scheduling, and the per-host connection limit, since each

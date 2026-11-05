@@ -23,6 +23,11 @@ When the investigation resolves:
 
 ## Active research notes
 
+- [`2026-10-26-headless-av-signal-lab.md`](2026-10-26-headless-av-signal-lab.md) — headless
+  audio/video signal measurement method with generated media; the current workflow is
+  [Headless playback testing](../HEADLESS-PLAYBACK-TESTING.md). It does not establish backend,
+  physical-output or HDR acceptance.
+
 - [`2026-10-22-macos-keychain-signature-prompts.md`](2026-10-22-macos-keychain-signature-prompts.md)
   — storage-error and migration investigation for macOS signing-channel changes (#343).
 

@@ -78,7 +78,7 @@ Covers pure Foundation/URLSession only; these tests do not exercise AVPlayer/AVK
 The earlier Foundation-only CLI experiment did not advance playback. That is not a
 universal headless limitation: `scripts/playback-signal-lab.py run-host` supplies an
 NSApplication event loop and has advanced AVPlayer and captured decoded signals on
-macOS 27 without a visible window. See `docs/research/HEADLESS-AV-SIGNAL-LAB.md`.
+macOS 27 without a visible window. See `docs/research/2026-10-26-headless-av-signal-lab.md`.
 That generated-media experiment does not establish backend or physical-output acceptance.
 
 ## The playback half — in-process simulator probe (real AVPlayer, hands-free)

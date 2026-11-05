@@ -91,8 +91,7 @@ retired-root prefix; range-body recovery lists its configured temp directory, wh
 held-range recovery lists the store base. These are distinct ownership boundaries.
 
 Require terminal xcodebuild success and the result bundle, not merely a printed test summary.
-Expected known issues must be named explicitly: P7 release pin 15 remains a pending P7.7/version
-gate at this checkpoint. No hosted suite establishes live backend or physical-device acceptance.
+Expected known issues must be named explicitly. No hosted suite establishes live backend or physical-device acceptance.
 
 ### Suspended-request integration regressions
 
@@ -151,7 +150,7 @@ moves the control group into the trailing half. `LabstreamMobileDuoUITests` adds
 asserting that content clears the measured vertical-bar column and the playhead advances.
 `mobile-ui-smoke` also runs the lock check. Shared and mobile-platform paths select it alongside `mobile-ui-smoke`.
 It proves the posture the simulator booted in only. `scripts/duo-appresize.sh` drives the
-inner-size proxy by hand (`launch [--pose book|tabletop]`, `start`, `set WxH`, `shot`, `stop`):
+inner-size proxy by hand (`launch [--pose book|tabletop|flat]`, `start`, `set WxH`, `shot`, `stop`):
 `--pose` sets the DEBUG-only `LABSTREAM_DEBUG_DUO_POSE` override so book and tabletop layouts can
 be captured against the pose seam. Those captures prove layout against the seam only. XCUITest
 cannot observe an `appResize` session (it keeps reporting the outer-display window), so inner-size
@@ -425,6 +424,9 @@ those summaries and `analysis/novel-events.jsonl` instead of re-reading whole di
 or broad unified logs.
 
 ## Private release media corpus
+
+Synthetic codec, channel-layout and native-control regressions that need no media server are
+covered by [Headless playback testing](HEADLESS-PLAYBACK-TESTING.md).
 
 Use the [private media corpus workflow](MEDIA-CORPUS-TESTING.md) to inventory
 observed codec/container/audio/subtitle combinations and choose bounded release cases.

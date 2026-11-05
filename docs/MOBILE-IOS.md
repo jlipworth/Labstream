@@ -91,8 +91,9 @@ iPhone, iPad and the iPhone Duo foldable.
   Detail streaming/local covers use `customPlayerPresentationSafeArea()`, which keeps their
   previous full-bounds presentation on visionOS, tvOS, and macOS and is a no-op on iOS. The
   iOS/visionOS Downloads cover adds no safe-area modifier. `MobilePlayerArrangement` (PMSKit)
-  places the control group: the whole safe frame; the aspect-fit video rectangle on a large
-  portrait scene (unfolded Duo upright, iPad portrait; at least 300 pt tall); the trailing half
+  places the control group: the whole safe frame; the aspect-fit video rectangle on a portrait
+  scene with Fit on (unfolded Duo upright, iPad portrait; Fill keeps the overlay, and the control
+  band stays at least 300 pt tall); the trailing half
   after a book hinge (the top row stays); or a deck below a tabletop hinge, where the same layer
   shrinks to the top half and the deck never auto-hides. The pose comes only from the shell's pose
   value (the active `reservedRegions(kind: .division)` region, or the DEBUG override); the
@@ -137,7 +138,7 @@ iPhone, iPad and the iPhone Duo foldable.
 ## iPhone Duo design contract
 
 The full rationale, mockup sign-off and Apple sources live in the
-Design section of `docs/plans/iphone-duo.md`. These are the rules current code
+Design section of `docs/plans/2026-10-25-iphone-duo.md`. These are the rules current code
 holds to; layout keys on size class and measured safe area, never on pose name, idiom or
 `UIScreen`.
 
@@ -193,14 +194,14 @@ of the inner display is about the size of the outer display.
 `\.duoPose` value (always `.flat` on visionOS, tvOS and macOS). It comes only from the active
 `reservedRegions(kind: .division)` region (iOS 27.1); `UIHingeInteraction` is diagnostics-only.
 Book keeps the player overlay and moves the whole control group (transport, title, scrubber,
-bottom circles) into the trailing half; tabletop shows the video in the top half and a
+menus) into the trailing half; tabletop shows the video in the top half and a
 non-auto-hiding deck with the same controls in the bottom half. Because folding cannot be driven
-headlessly, Debug builds accept `LABSTREAM_DEBUG_DUO_POSE=book|tabletop` (launch environment, or
+headlessly, Debug builds accept `LABSTREAM_DEBUG_DUO_POSE=book|tabletop|flat` (launch environment, or
 `--labstream-debug-duo-pose <value>`): it synthesises a 20 pt hinge strip at the centre of the
 current bounds, applies only while the bounds match the pose's orientation (sideways for book,
 upright for tabletop), reports `flat` for unknown values, and records `duo.pose_override` in
 `AppDiagnostics`. Release never compiles the override. `scripts/duo-appresize.sh launch --pose
-book|tabletop` combines it with the `appResize` inner-size proxy; those captures prove layout
+book|tabletop|flat` combines it with the `appResize` inner-size proxy; those captures prove layout
 against the seam only, and real Device Hub and hardware fold frames remain an open gate.
 
 ## Build and smoke on an iPhone or iPad simulator
@@ -238,7 +239,8 @@ exported XCTest attachments, `test-summary.json`, and machine-readable `run.json
 `--ui-testing --ui-testing-fixture player --ui-testing-player-aspect 16x9|239x100|4x3
 --ui-testing-player-paused`, optionally adding `--ui-testing-player-all-menus` to show the
 streaming-width menu set. The fixture plays a synthetic local clip through the real
-`CustomPlayerView`, and the test asserts identical chrome frames across aspects. On iPad it checks
+`CustomPlayerView`, and the test asserts identical chrome frames across aspects, except where the chrome follows
+the video rectangle (portrait). On iPad it checks
 portrait and landscape. Adding `--ui-testing-player-geometry` writes a privacy-safe
 `PlayerGeometry` log, with labels, window frames, safe-area insets, and
 `AVPlayerLayer.videoRect`, under the `PlayerGeometry` category. Xcode Device Interaction is

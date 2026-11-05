@@ -6,7 +6,8 @@ the app does not bundle or sell media. A separate optional project-operated revi
 hosts licensed sample content; see the [Privacy Policy](privacy.md).
 
 The repository contains four coordinated pre-release targets: Apple Vision Pro, one universal
-iPhone/iPad target, a streaming-only Apple TV target, and a native Mac target. Labstream is
+iPhone/iPad target (including the iPhone Duo foldable), a streaming-only Apple TV target, and a
+native Mac target. Vision Pro, iPhone/iPad and Mac also download media for offline playback. Labstream is
 available as public source for local builds. The repository records invitation-only internal
 TestFlight binaries, but there is no public App Store release. The
 [release and App Store status](RELEASES.md) page is the single source of truth for the current
@@ -55,6 +56,10 @@ flowchart TD
   physical-device gates.
 - [Agent playback troubleshooting](AGENT-PLAYBACK-TROUBLESHOOTING.md) — bounded playback fixtures,
   admitted live scenarios, and evidence interpretation.
+- [Headless playback testing](HEADLESS-PLAYBACK-TESTING.md) and the
+  [private media corpus](MEDIA-CORPUS-TESTING.md) — server-free codec regression and bounded
+  release coverage.
+- [Scripts catalog](SCRIPTS.md) — validation, simulator, deploy and probe helpers.
 - [Manual validation checklist](https://github.com/jlipworth/Labstream/blob/main/TESTING-CHECKLIST.md)
   — the repository's current cross-platform acceptance matrix.
 

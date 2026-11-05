@@ -184,7 +184,8 @@ Labstream/
   [downloads/offline](docs/DOWNLOADS-OFFLINE.md), [music](docs/MUSIC-DESIGN.md),
   [persistence](docs/PERSISTENCE.md), [system integration](docs/SYSTEM-INTEGRATION.md), and
   [diagnostics/privacy](docs/DIAGNOSTICS-PRIVACY.md)
-- Validation: [private media corpus](docs/MEDIA-CORPUS-TESTING.md),
+- Validation: [headless playback testing](docs/HEADLESS-PLAYBACK-TESTING.md),
+  [private media corpus](docs/MEDIA-CORPUS-TESTING.md),
   [App Store screenshots](docs/APP-STORE-SCREENSHOTS.md), [compile performance](docs/COMPILE-PERFORMANCE.md),
   and [manual validation checklist](TESTING-CHECKLIST.md)
 

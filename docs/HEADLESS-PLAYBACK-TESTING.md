@@ -228,4 +228,4 @@ Jellyfin browsing was restored. Cross-backend audio-quality acceptance remains o
 
 See [the corpus workflow](MEDIA-CORPUS-TESTING.md),
 [development guidance](DEVELOPMENT.md#experimental-headless-signal-measurement),
-and repository research notes at `docs/research/HEADLESS-AV-SIGNAL-LAB.md`.
+and repository research notes at `docs/research/2026-10-26-headless-av-signal-lab.md`.

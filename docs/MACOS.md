@@ -52,8 +52,9 @@ transfer has an exact expected byte total. Unknown or estimated totals suppress 
 The queue toolbar's `Pause All` / `Resume All` action is intentionally distinct from per-item pause
 and retry controls.
 
-The native Mac download sheet shares lifecycle presentation and row content with Offline and the
-iOS/visionOS sheets. Waiting and paused are neutral, verified completion green, cautions amber and
+The native Mac download sheet shares lifecycle presentation with Offline and the iOS/visionOS
+sheets, and its full row layout with visionOS; iPhone/iPad use a compact row with a neutral
+caution. Waiting and paused are neutral, verified completion green, cautions orange and
 failures/destructive actions red. Context, status and quality stay on one line with complete
 accessibility values and expandable errors. Zero-progress preparation is indeterminate; indexing
 and verification are distinct. Exact-attempt confirmations explain cancellation of supported
