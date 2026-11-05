@@ -57,7 +57,14 @@ MOBILE_ROUTES: dict[str, dict[str, Any] | None] = {
     "downloads": {"fixture": "browse", "args": ["--ui-testing-initial-tab", "offline"]},
 }
 FIXTURE_ROUTES: dict[str, dict[str, dict[str, Any] | None]] = {
-    **{target: MOBILE_ROUTES for target in MOBILE_TARGETS},
+    **{target: MOBILE_ROUTES for target in MOBILE_TARGETS - {"duo-inner"}},
+    "duo-inner": {
+        **MOBILE_ROUTES,
+        # appResize can only start while the app is portrait and frontmost, so the player waits
+        # until the proxy session is running before it presents (and applies its orientation).
+        "playback": {"fixture": "player",
+                     "args": ["--ui-testing-player-paused", "--ui-testing-player-present-delay", "8"]},
+    },
     "visionos": {
         **MOBILE_ROUTES,
         # The visionOS player is spatial and has no Debug player fixture; the simulator cannot be
@@ -68,7 +75,7 @@ FIXTURE_ROUTES: dict[str, dict[str, dict[str, Any] | None]] = {
         "home": MOBILE_ROUTES["home"],
         "library": MOBILE_ROUTES["library"],
         "detail": MOBILE_ROUTES["detail"],
-        "playback": {"fixture": "player", "args": []},
+        "playback": {"fixture": "player", "args": ["--ui-testing-player-paused"]},
     },
     "macos": {
         **MOBILE_ROUTES,
@@ -76,7 +83,7 @@ FIXTURE_ROUTES: dict[str, dict[str, dict[str, Any] | None]] = {
     },
 }
 # Seconds to let each scene settle before capture; the player fixture must finish preparing its clip.
-SCENE_SETTLE_SECONDS = {"home": 4, "library": 4, "detail": 4, "playback": 12, "downloads": 4}
+SCENE_SETTLE_SECONDS = {"home": 4, "library": 4, "detail": 4, "playback": 16, "downloads": 4}
 SOURCE_NAMES = {target: "screen-end.png" for target in SIMULATOR_TARGETS} | {"macos": "screen-before.png"}
 # Live capture display names (simctl io --display). The Duo's plain screenshot targets the inner
 # LCD, which is black while folded; outer is `primary`, the real unfolded inner is `primary-1`.

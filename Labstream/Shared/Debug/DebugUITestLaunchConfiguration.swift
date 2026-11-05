@@ -166,7 +166,7 @@ enum DebugUITestLaunchConfiguration {
     }
 
     /// Holds the fixture paused once playback is ready, so the chrome stays visible in one
-    /// deterministic state for geometry comparison.
+    /// deterministic state for geometry comparison (iPhone/iPad and tvOS).
     static var playerFixtureStartsPaused: Bool {
         fixtureKind == .player && ProcessInfo.processInfo.arguments.contains(playerPausedFlag)
     }

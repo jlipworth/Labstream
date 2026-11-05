@@ -71,7 +71,7 @@ simulator taps are needed:
 | home | `--ui-testing-fixture browse` | all |
 | library | `--ui-testing-open-first-library` | all (the Mac sidebar selects its first library row) |
 | detail | `--ui-testing-open-item plex-orbit` | all |
-| playback | `--ui-testing-fixture player` (paused on iPhone/iPad/Duo) | iPhone, iPad, Duo, tvOS, Mac; **visionOS has no fixture route** (spatial player, passive-only simulator) |
+| playback | `--ui-testing-fixture player --ui-testing-player-paused` (Mac unpaused; Duo inner adds `--ui-testing-player-present-delay 8` so the appResize session starts first) | iPhone, iPad, Duo, tvOS, Mac; **visionOS has no fixture route** (spatial player, passive-only simulator) |
 | downloads | `--ui-testing-initial-tab offline` | all except tvOS (streaming-only, no Downloads) |
 
 The tab, first-library, and open-item routes are applied for every product by `RootView`
