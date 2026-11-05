@@ -151,7 +151,8 @@ GitHub, as described in the next section. No fixed project-wide retention/deleti
 
 ## Email to the project
 
-You can email the project at <support@labstream.app> or <privacy@labstream.app>. Labstream does not
+You can email the project at <support@labstream.app>, <privacy@labstream.app>, or (for security
+reports) <security@labstream.app>. Labstream does not
 send email for you: you write the message from your own email account. Cloudflare Email Routing
 delivers it to a Google (Gmail) mailbox that the maintainer uses, and replies currently come from
 that mailbox rather than from an `@labstream.app` address.
@@ -178,9 +179,10 @@ those optional paths are used.
 
 For ordinary, non-sensitive privacy questions, open an issue at
 <https://github.com/jlipworth/Labstream/issues>. For privacy questions that include private data,
-and for deletion requests, email <privacy@labstream.app>. Report a possible vulnerability through
+and for deletion requests, email <privacy@labstream.app>. Report a possible vulnerability privately to
+<security@labstream.app> or through
 [GitHub private vulnerability reporting](https://github.com/jlipworth/Labstream/security/advisories/new),
-not a public issue.
+not in a public issue.
 
 ## Changes
 

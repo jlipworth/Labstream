@@ -74,9 +74,10 @@ Public questions and bug reports belong on GitHub (see above), so other people c
 For anything private, such as an account-specific problem or details you would rather not post
 publicly, email **[support@labstream.app](mailto:support@labstream.app)**. Send privacy questions
 and data-deletion requests to **[privacy@labstream.app](mailto:privacy@labstream.app)**. Report
-security vulnerabilities through the private route in the
-[security policy](https://github.com/jlipworth/Labstream/blob/main/SECURITY.md), not email or a
-public issue.
+security vulnerabilities privately to **[security@labstream.app](mailto:security@labstream.app)** or
+through GitHub private vulnerability reporting, as described in the
+[security policy](https://github.com/jlipworth/Labstream/blob/main/SECURITY.md); never in a public
+issue.
 
 Never email passwords, access tokens, or your server's address. Replies currently come from the
 maintainer's own email address. The

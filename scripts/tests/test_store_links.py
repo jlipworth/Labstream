@@ -33,6 +33,15 @@ class StoreLinkTests(unittest.TestCase):
     def test_support_email_is_published_on_the_support_page(self):
         self.assertIn(swift_links()['email'], (ROOT / 'SUPPORT.md').read_text())
 
+    def test_site_source_pages_use_only_absolute_links(self):
+        """labstream.app renders PRIVACY.md and SUPPORT.md outside the repo, so relative links break."""
+        for name in ('PRIVACY.md', 'SUPPORT.md'):
+            text = (ROOT / name).read_text()
+            relative = [m for m in re.findall(r'\]\(([^)\s]+)\)', text)
+                        if not re.match(r'(https?:|mailto:|#)', m)]
+            with self.subTest(page=name):
+                self.assertEqual(relative, [])
+
 
 if __name__ == '__main__':
     unittest.main()
