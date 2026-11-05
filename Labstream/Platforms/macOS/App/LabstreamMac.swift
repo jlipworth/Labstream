@@ -119,7 +119,10 @@ private enum DebugMacAgentFixtureWindow {
     private static var retainedWindow: NSWindow?
 
     static func scheduleFallbackIfNeeded(runtime: AppRuntime) {
-        guard DebugUITestLaunchConfiguration.usesBrowseFixture else { return }
+        // The browse and player fixtures both render through ContentView (the player fixture on
+        // `.dev.` identities), so both need a window when the restorable scene is skipped.
+        guard DebugUITestLaunchConfiguration.usesBrowseFixture
+            || DebugUITestLaunchConfiguration.fixtureKind == .player else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             guard MacMainWindowController.shared.mainWindow == nil else { return }
             let root = ContentView(runtime: runtime)
