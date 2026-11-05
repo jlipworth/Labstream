@@ -33,6 +33,7 @@ final class LabstreamTVLiveCatalogUITests: XCTestCase {
         checkpoint("home")
 
         try select(app.buttons["Libraries"].firstMatch, in: app)
+        if let confirm = libraryChooserConfirm(app) { try select(confirm, in: app) }
         let library = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", config.library)).firstMatch
         XCTAssertTrue(library.waitForExistence(timeout: 20), "No \(config.library) library")
         try select(library, in: app)

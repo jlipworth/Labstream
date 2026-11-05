@@ -34,6 +34,7 @@ final class LabstreamVisionLiveCatalogUITests: XCTestCase {
         checkpoint("home")
 
         app.buttons["rectangle.stack"].firstMatch.tap()
+        libraryChooserConfirm(app)?.tap()
         let library = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", config.library)).firstMatch
         XCTAssertTrue(library.waitForExistence(timeout: 20), "No \(config.library) library")
         library.tap()

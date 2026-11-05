@@ -13,6 +13,9 @@ import XCTest
 /// capture each screen (`UITestCheckpoint`). `LABSTREAM_LIVE_ATTACH=1` attaches to the process
 /// that `live start` launched without arguments instead of launching a new one.
 final class LabstreamMobileLiveCatalogUITests: XCTestCase {
+    /// 30-second skips past the opening title cards before the playback capture.
+    private static let playbackSkips = 3
+
     @MainActor
     func testSignInAndBrowseReviewCatalog() throws {
         let config = try LiveCatalogConfig.load()
@@ -39,6 +42,7 @@ final class LabstreamMobileLiveCatalogUITests: XCTestCase {
         let librariesTab = app.tabBars.buttons["Libraries"].firstMatch
         XCTAssertTrue(librariesTab.waitForExistence(timeout: 10))
         librariesTab.tap()
+        libraryChooserConfirm(app)?.tap()
         let library = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", config.library)).firstMatch
         XCTAssertTrue(library.waitForExistence(timeout: 20), "No \(config.library) library")
         library.tap()
@@ -56,8 +60,19 @@ final class LabstreamMobileLiveCatalogUITests: XCTestCase {
         play.tap()
         let chrome = app.buttons["Close"].firstMatch
         XCTAssertTrue(chrome.waitForExistence(timeout: 45), "Player did not present")
-        // Let the first frames decode before the host waits for two identical display frames.
-        sleep(8)
+        // A playing video never gives the host two identical frames, and the opening seconds are
+        // title cards: pause, then skip past the opening so the capture holds a still scene.
+        sleep(4)
+        let pause = app.buttons["Pause"].firstMatch
+        if !pause.isHittable { app.windows.firstMatch.tap() }
+        XCTAssertTrue(pause.waitForExistence(timeout: 5), "Player chrome has no Pause button")
+        pause.tap()
+        let skip = app.buttons["Skip forward 30 seconds"].firstMatch
+        XCTAssertTrue(skip.waitForExistence(timeout: 5), "Player chrome has no skip-forward button")
+        for _ in 0..<Self.playbackSkips { skip.tap(); usleep(500_000) }
+        XCTAssertTrue(app.buttons["Play"].firstMatch.waitForExistence(timeout: 5), "Player did not stay paused")
+        // Let the paused frame decode after the seek.
+        sleep(4)
         checkpoint("playback")
     }
 

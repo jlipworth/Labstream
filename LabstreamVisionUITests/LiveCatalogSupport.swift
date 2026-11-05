@@ -53,4 +53,17 @@ extension XCTestCase {
     func settle(_ app: XCUIApplication, seconds: UInt32 = 3) {
         sleep(seconds)
     }
+
+    /// The confirm button ("Done", or "Save Selection" on tvOS) of the first-run Choose Libraries
+    /// sheet that opens the first time Libraries is shown, or nil when the sheet is not showing.
+    @MainActor
+    func libraryChooserConfirm(_ app: XCUIApplication, timeout: TimeInterval = 5) -> XCUIElement? {
+        let heading = app.staticTexts["Choose Libraries"].firstMatch
+        let navTitle = app.navigationBars["Choose Libraries"].firstMatch
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline, !heading.exists, !navTitle.exists { usleep(250_000) }
+        guard heading.exists || navTitle.exists else { return nil }
+        let confirm = app.buttons.matching(NSPredicate(format: "label IN %@", ["Done", "Save Selection"])).firstMatch
+        return confirm.waitForExistence(timeout: 5) ? confirm : nil
+    }
 }
