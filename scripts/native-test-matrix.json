@@ -12,6 +12,7 @@
       "pmskit-correctness",
       "visionos-build",
       "visionos-hosted",
+      "visionos-ui-smoke",
       "mobile-build",
       "mobile-hosted",
       "mobile-ui-smoke",
@@ -45,6 +46,19 @@
       "kind": "hosted",
       "status": "planned",
       "reason": "No visionOS-hosted target exists yet. Keep pure policy in PMSKit and add only narrow visionOS integration tests after the platform source split."
+    },
+    "visionos-ui-smoke": {
+      "kind": "ui-smoke",
+      "simulator": "visionos",
+      "command": [
+        "scripts/xcodebuild-versioned.sh", "-project", "Labstream.xcodeproj",
+        "-scheme", "Labstream", "-testPlan", "LabstreamVisionUITests",
+        "-destination", "platform=visionOS Simulator,id={visionos_sim_id}",
+        "-derivedDataPath", "{output_dir}/visionos-ui-smoke",
+        "-only-testing:LabstreamVisionUITests/LabstreamVisionFixtureUITests/testFixtureHomeOpensDetailAndPlay",
+        "-collect-test-diagnostics", "never",
+        "test", "CODE_SIGNING_ALLOWED=NO", "-enableCodeCoverage", "NO"
+      ]
     },
     "mobile-build": {
       "kind": "build",
@@ -176,7 +190,7 @@
     {
       "patterns": ["PMSKit/**"],
       "lanes": [
-        "pmskit-correctness", "visionos-build", "visionos-hosted",
+        "pmskit-correctness", "visionos-build", "visionos-hosted", "visionos-ui-smoke",
         "mobile-build", "mobile-hosted", "mobile-ui-smoke", "duo-ui-smoke", "tvos-build",
         "tvos-hosted", "tvos-ui-smoke", "macos-build", "macos-hosted"
       ]
@@ -188,6 +202,10 @@
     {
       "patterns": ["LabstreamTVUITests/**"],
       "lanes": ["tvos-build", "tvos-ui-smoke"]
+    },
+    {
+      "patterns": ["LabstreamVisionUITests/**"],
+      "lanes": ["visionos-build", "visionos-ui-smoke"]
     },
     {
       "patterns": ["LabstreamMobileUITests/**"],
@@ -203,7 +221,7 @@
     },
     {
       "patterns": ["Labstream/Platforms/visionOS/**"],
-      "lanes": ["visionos-build", "visionos-hosted"],
+      "lanes": ["visionos-build", "visionos-hosted", "visionos-ui-smoke"],
       "exclusive": true
     },
     {
@@ -224,15 +242,15 @@
     {
       "patterns": ["Labstream/**"],
       "lanes": [
-        "visionos-build", "visionos-hosted", "mobile-build", "mobile-hosted", "mobile-ui-smoke",
-        "duo-ui-smoke", "tvos-build", "tvos-hosted", "tvos-ui-smoke", "macos-build",
+        "visionos-build", "visionos-hosted", "visionos-ui-smoke", "mobile-build", "mobile-hosted",
+        "mobile-ui-smoke", "duo-ui-smoke", "tvos-build", "tvos-hosted", "tvos-ui-smoke", "macos-build",
         "macos-hosted"
       ]
     },
     {
       "patterns": ["Labstream.xcodeproj/**", "*.xctestplan", "Config/**"],
       "lanes": [
-        "visionos-build", "visionos-hosted", "mobile-build", "mobile-hosted",
+        "visionos-build", "visionos-hosted", "visionos-ui-smoke", "mobile-build", "mobile-hosted",
         "tvos-build", "tvos-hosted", "tvos-ui-smoke", "macos-build", "macos-hosted"
       ]
     }
