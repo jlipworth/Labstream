@@ -756,6 +756,42 @@ separate. tvOS builds shared policies/player code but no Downloads capability.
   without app involvement, bounding what a silent wake-time retry can destroy to one segment;
   see `docs/DOWNLOADS-OFFLINE.md` for the design.
 
+## Brand and app icons
+
+The mark is a white capital **L** on a black tile. The L is Inter Black's own outline, which
+is rectilinear, so no font file is needed to draw it. It is optically centered and its cap
+height is 52% of the tile. The brand itself is pure black and white. `DS.Brand` holds `ink`,
+`paper`, the graphite `backdropGradient` and a neutral `wash`. Amber stays in `DS.Brand`
+only as a UI accent: it means "selected" on iPhone/iPad and is the link/accent color elsewhere.
+It is never used in the logo or the one-color "Labstream" wordmark.
+
+Every icon asset is generated. Do not edit the PNGs or SVGs by hand. Change the
+geometry in `scripts/generate-brand-assets.py` and re-run it. `--check` fails if the committed
+assets are stale.
+
+| Platform | Asset | Notes |
+| --- | --- | --- |
+| iPhone/iPad | `Labstream/Platforms/Mobile/Resources/MobileAppIcon.icon` | Icon Composer document; the system derives the dark, clear and tinted appearances |
+| Mac | `Labstream/Platforms/macOS/Resources/MacAppIcon.icon` | Same document; follows the macOS 26 icon grid |
+| visionOS | `AppIcon.solidimagestack` | Black Back layer; front L at 46% so it clears the circular mask |
+| tvOS | `TVAppIcon.brandassets` | Layered 400×240 (@1x/@2x) and 1280×768 icons; Top Shelf and Top Shelf Wide (wordmark set in Inter Bold, SIL OFL) |
+| In-app | `LabstreamGlyph.imageset` | Vector L on the icon's own 1024-pt canvas; `BrandMarkTile` draws the miniature icon |
+
+Verified findings:
+
+- An `.icon` document must live in a **platform-only** synchronized folder. The asset
+  catalog is shared by every target, and visionOS and tvOS still need their layered stacks.
+  It must also be named exactly like the target's `ASSETCATALOG_COMPILER_APPICON_NAME`, and no
+  `.appiconset` with that name may remain in the catalog.
+- To keep the icon flat, the layer needs `"glass": false`, with shadow and translucency off.
+  Otherwise Liquid Glass gives the white L a vertical white-to-gray gradient.
+- Xcode's `ictool`
+  (`Xcode.app/Contents/Applications/Icon Composer.app/Contents/Executables/ictool`) renders any
+  appearance headlessly, e.g. `ictool MobileAppIcon.icon --export-image --output-file out.png
+  --platform iOS --rendition TintedDark --width 1024 --height 1024 --scale 1 --tint-color 0.08
+  --tint-strength 0.8`. Renditions: `Default`, `Dark`, `ClearLight`, `ClearDark`, `TintedLight`,
+  `TintedDark`.
+
 ## Documentation workflow
 
 Preview the published site locally with:

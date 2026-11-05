@@ -363,6 +363,10 @@ scripts/perf-compare.py compare \
 - `deploy-macos-to-host.sh` — builds/stages/optionally launches `LabstreamMac` on the arm64 host
   under an isolated per-worktree development identity; also owns safe staged-app/container cleanup.
 - `smoke-macos-host.sh` — bounded signed-out host launch smoke under an isolated identity.
+- `generate-brand-assets.py` — regenerates every app icon and brand asset (the iPhone/iPad and Mac
+  Icon Composer documents, the visionOS and tvOS layers, Top Shelf, and the in-app
+  `LabstreamGlyph`) from one L geometry. `--check` fails on stale committed assets. See
+  [Brand and app icons](../docs/DEVELOPMENT.md#brand-and-app-icons).
 - `validate-macos-228.sh` — repeatable Mac-target validation sweep. The filename is retained from
   the implementation issue; it also builds shared targets and runs focused diagnostics checks.
 - `validate-macos-pipeline.py` — enforces the trust-boundary/label rules (`platform: darwin/arm64`,
