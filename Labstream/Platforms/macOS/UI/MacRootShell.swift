@@ -97,6 +97,15 @@ struct PlatformRootShell: View {
     }
     .task(id: appModel.activeBrowseSessionKey) {
       await reloadMacSidebar()
+      #if DEBUG
+        // Browse-fixture capture route: the Mac sidebar selects a concrete library row rather
+        // than the shared `.libraries` destination.
+        if DebugUITestLaunchConfiguration.opensFirstLibrary,
+          let first = macSidebarModel.catalog.libraries.first
+        {
+          macSelection = .library(first.id)
+        }
+      #endif
     }
     .onReceive(
       NotificationCenter.default.publisher(for: LibraryVisibilityStore.didChangeNotification)

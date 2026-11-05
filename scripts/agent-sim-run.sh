@@ -17,6 +17,8 @@ Options:
   --artifact-root PATH       Artifact root. Default: artifacts/agent-sim-runs.
   --keep-booted              Do not shut down the visionOS worktree simulator after the run.
   --allow-simulator          Required assertion that the caller owns the simulator lease.
+  --launch-arg ARG           launch-fixture-home-passive only: extra --ui-testing-* capture-route
+                             argument or plain value (repeatable), e.g. --ui-testing-initial-tab.
 
 Exit codes:
   0 passed with artifacts
@@ -36,8 +38,10 @@ duration=8
 artifact_root="artifacts/agent-sim-runs"
 shutdown_on_exit=1
 allow_simulator=0
+extra_launch_args=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --launch-arg) extra_launch_args+=("${2:-}"); shift 2 ;;
     --skip-build) skip_build=1; shift ;;
     --duration) duration="${2:-}"; [ -n "$duration" ] || { echo "missing --duration value" >&2; exit 2; }; shift 2 ;;
     --artifact-root) artifact_root="${2:-}"; [ -n "$artifact_root" ] || { echo "missing --artifact-root value" >&2; exit 2; }; shift 2 ;;
@@ -57,6 +61,17 @@ case "$scenario" in
   launch-home-passive|launch-fixture-home-passive) ;;
   *) echo "unknown scenario: $scenario" >&2; usage >&2; exit 2 ;;
 esac
+if [ "$scenario" != "launch-fixture-home-passive" ] && [ "${#extra_launch_args[@]}" -gt 0 ]; then
+  echo "--launch-arg requires launch-fixture-home-passive" >&2; exit 2
+fi
+for arg in ${extra_launch_args[@]+"${extra_launch_args[@]}"}; do
+  [[ $arg =~ ^--ui-testing-[a-z0-9-]+$ || $arg =~ ^[A-Za-z0-9._-]+$ ]] || {
+    printf 'Rejected launch argument: %s\n' "$arg" >&2; exit 2;
+  }
+  [[ $arg != --ui-testing-backend && $arg != --ui-testing-fixture ]] || {
+    printf 'Use --fixture instead of %s.\n' "$arg" >&2; exit 2;
+  }
+done
 
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
@@ -219,10 +234,12 @@ log_note "Launching Labstream..."
 xcrun simctl terminate "$simid" org.labstream.Labstream >/dev/null 2>&1 || true
 launch_args=()
 if [ "$scenario" = "launch-fixture-home-passive" ]; then
-  launch_args=(--ui-testing --ui-testing-backend plex --ui-testing-fixture browse)
+  launch_args=(--ui-testing --ui-testing-backend plex --ui-testing-fixture browse
+    ${extra_launch_args[@]+"${extra_launch_args[@]}"})
 fi
+printf '%s\n' ${launch_args[@]+"${launch_args[@]}"} >"$outdir/launch-args.txt"
 set +e
-xcrun simctl launch "$simid" org.labstream.Labstream "${launch_args[@]}" \
+xcrun simctl launch "$simid" org.labstream.Labstream ${launch_args[@]+"${launch_args[@]}"} \
   >"$outdir/launch.log" 2>&1
 launch_exit_code=$?
 set -e

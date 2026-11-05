@@ -43,6 +43,12 @@ struct RootView: View {
           navigation.consumeOfflineReturn(route)
         }
       #endif
+      #if DEBUG
+        .task {
+          DebugUITestLaunchConfiguration.applySharedCaptureRoute(
+            to: navigation, backend: appModel.activeBackend)
+        }
+      #endif
       .task {
         // System entries can arrive while restore/login UI is still mounted. Consume the
         // process-lifetime pending value when this authenticated shell appears.
