@@ -58,11 +58,14 @@ struct TVPlayerFixtureView: View {
     @ViewBuilder
     private func fixturePlayer(url: URL) -> some View {
         let item = DebugPlayerFixtureMedia.item
-        if DebugUITestLaunchConfiguration.playerFixtureStartsBuffering || DebugStatsFixture.scenario != nil {
+        if DebugUITestLaunchConfiguration.playerFixtureStartsBuffering
+            || DebugUITestLaunchConfiguration.playerFixtureStartsPaused
+            || DebugStatsFixture.scenario != nil {
             // The buffering-review variant needs the controller instance so it can pin
             // `transportStatus` in `.buffering` against the KVO-driven transitions that would
             // otherwise clear it as local playback primes instantly. The Stats-scenario
-            // variant needs it to seed synthetic diagnostics (#331).
+            // variant needs it to seed synthetic diagnostics (#331), and the paused variant
+            // holds the chrome revealed for App Store layout captures.
             let identity = PlatformClientIdentity.make(clientIdentifier: "offline")
             let client = PlexClient(identity: identity)
             CustomPlayerView(item: item,
@@ -75,6 +78,9 @@ struct TVPlayerFixtureView: View {
                                  if DebugUITestLaunchConfiguration.playerFixtureStartsBuffering {
                                      holdBufferingStatus(on: controller)
                                  }
+                                 if DebugUITestLaunchConfiguration.playerFixtureStartsPaused {
+                                     holdPaused(controller)
+                                 }
                                  DebugStatsFixture.seedWhenReady(controller)
                                  return controller
                              },
@@ -83,6 +89,21 @@ struct TVPlayerFixtureView: View {
             CustomPlayerView(localFile: url,
                              item: item,
                              onClose: { presentingPlayer = false })
+        }
+    }
+
+    /// Pause once the local item is ready so the transport chrome stays revealed.
+    private func holdPaused(_ controller: PlaybackController) {
+        Task { @MainActor [weak controller] in
+            for _ in 0..<40 {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let controller else { return }
+                if controller.player.currentItem?.status == .readyToPlay {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    controller.requestPause()
+                    return
+                }
+            }
         }
     }
 

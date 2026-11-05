@@ -152,32 +152,21 @@ struct PlatformRootShell: View {
   private var usesCompactTabSet: Bool { horizontalSizeClass == .compact }
 
   #if DEBUG
-  /// Browse-fixture capture routes (`DebugUITestLaunchConfiguration`), applied once at launch.
+  /// Mobile-only browse-fixture capture routes (`DebugUITestLaunchConfiguration`), applied once at
+  /// launch. Tab, first-library and open-item routes are shared by `RootView` on every product;
+  /// Settings stays here because compact width presents it as a sheet rather than a tab.
   private func applyDebugCaptureRoute() {
     guard DebugUITestLaunchConfiguration.usesBrowseFixture else { return }
     if let raw = DebugUITestLaunchConfiguration.initialSettingsCategory {
       settingsNavigation.category = SettingsCategory(rawValue: raw)
     }
-    if let raw = DebugUITestLaunchConfiguration.initialTab,
-      let destination = AppDestination.allCases.first(where: { "\($0)" == raw })
-    {
-      if destination == .settings, usesCompactTabSet {
+    if DebugUITestLaunchConfiguration.initialTab == "\(AppDestination.settings)" {
+      if usesCompactTabSet {
         // Compact width has no Settings tab: the toolbar gear's sheet is the Settings surface.
         showsSettingsSheet = true
       } else {
-        navigation.selection = destination
+        navigation.selection = .settings
       }
-    }
-    if DebugUITestLaunchConfiguration.opensFirstLibrary, navigation.librariesPath.isEmpty {
-      navigation.selection = .libraries
-      navigation.librariesPath.append(
-        LibraryRootItem.Destination.plex(PlexSection(key: "1", title: "Movies", type: "movie")))
-    }
-    if let key = DebugUITestLaunchConfiguration.initialOpenItemKey, navigation.homePath.isEmpty,
-      let item = DebugUIFixtureCatalog.item(ratingKey: key, backend: appModel.activeBackend)
-    {
-      navigation.selection = .home
-      navigation.homePath.append(item)
     }
   }
   #endif

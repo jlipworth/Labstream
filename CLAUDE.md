@@ -206,6 +206,8 @@ script backs both the git hook and these agent steps.
   visionOS golden. Use `LABSTREAM_SIM_PLATFORM=iphone` or `ipad`,
   `scripts/worktree-sim.sh --platform iphone|ipad ...`, or a gitignored `.simplatform`
   containing `iphone` or `ipad`; iPhone UDIDs live in `.simid-iphone`, iPad UDIDs in `.simid-ipad`.
+  App Store 6.9-inch captures use the opt-in `--platform iphone69` Pro Max-only lane
+  (`iphone69wt-*`, `.simid-iphone69`); the default iPhone lane is unchanged.
 - iPhone Duo (foldable) work uses `--platform duo` / `.simplatform` `duo`: a fresh `duowt-*`
   simulator (UDID in `.simid-duo`) that only ever selects the iPhone Duo device type (Xcode 27.1+
   with the iOS 27.1+ runtime) and never falls back to a slab iPhone.
@@ -220,7 +222,7 @@ scripts/worktree-sim.sh install-hook   # one-time: post-checkout auto-clones on 
 scripts/worktree-sim.sh setup          # provision this worktree's sim (idempotent; clone bounces the golden briefly)
 scripts/worktree-sim.sh teardown       # delete this worktree's clone + .simid (run before removing the worktree)
 scripts/worktree-sim.sh teardown --all # delete every sim owned by this linked worktree
-scripts/worktree-sim.sh closeout PATH  # teardown PATH if present, then prune orphaned vpwt-*/iphonewt-*/duowt-*/ipadwt-*/tvwt-* sims
+scripts/worktree-sim.sh closeout PATH  # teardown PATH if present, then prune orphaned vpwt-*/iphonewt-*/iphone69wt-*/duowt-*/ipadwt-*/tvwt-* sims
 scripts/worktree-sim.sh prune          # sweep worktree sims whose worktree is gone (backstop after a bare `git worktree remove`)
 scripts/worktree-sim.sh --platform visionos id
 scripts/worktree-sim.sh --platform iphone id
@@ -285,11 +287,11 @@ scripts/worktree-sim.sh closeout <worktree>
 
 # If the worktree was already removed or you are unsure:
 scripts/worktree-sim.sh prune
-xcrun simctl list devices | rg 'vpwt|iphonewt|duowt|ipadwt|tvwt|<branch-fragment>' || true
+xcrun simctl list devices | rg 'vpwt|iphonewt|iphone69wt|duowt|ipadwt|tvwt|<branch-fragment>' || true
 ```
 
 Closeout invariant: only the main worktree owns the golden sim; linked-worktree closeout
-must remove the relevant `vpwt-*`, `iphonewt-*`, `duowt-*`, `ipadwt-*`, and/or `tvwt-*` simulator and must not
+must remove the relevant `vpwt-*`, `iphonewt-*`, `iphone69wt-*`, `duowt-*`, `ipadwt-*`, and/or `tvwt-*` simulator and must not
 remove the golden sim.
 
 **Close out on merge — don't leave merged worktrees behind.** A linked worktree is finished

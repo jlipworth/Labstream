@@ -220,7 +220,7 @@ class ToolingHardeningTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("usage: worktree-sim.sh", result.stdout)
             self.assertIn("closeout [PATH]", result.stdout)
-            self.assertIn("visionos|iphone|ipad|tvos", result.stdout)
+            self.assertIn("visionos|iphone|iphone69|ipad|tvos", result.stdout)
             self.assertIn("-h|--help", result.stdout)
             self.assertEqual(result.stderr, "")
 
@@ -376,6 +376,15 @@ class ToolingHardeningTests(unittest.TestCase):
                 udid="IPHONE-0000-0000-0000-000000000000", allow_boot=True,
             ),
             dict(
+                platform="iphone69", label="6.9-inch iPhone",
+                runtime="com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+                devicetype="com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro-Max",
+                devicetype_name="iPhone 17 Pro Max",
+                stock_devices='{"name":"iPhone 17 Pro Max","udid":"STOCK-IPHONE69-0000-0000-000000000000","state":"Shutdown"}',
+                extra_separator=",", prefix="iphone69wt",
+                udid="IPHONE69-0000-0000-0000-000000000000", allow_boot=True,
+            ),
+            dict(
                 platform="duo", label="iPhone Duo",
                 runtime="com.apple.CoreSimulator.SimRuntime.iOS-27-1",
                 devicetype="com.apple.CoreSimulator.SimDeviceType.iPhone-Duo",
@@ -431,6 +440,44 @@ class ToolingHardeningTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("no available iPhone Duo simulator device type found", result.stderr)
             self.assertFalse((root / ".simid-duo").exists())
+
+    def test_worktree_sim_iphone69_never_falls_back_and_default_iphone_is_unchanged(self):
+        script = (REPO / "scripts" / "worktree-sim.sh").read_text()
+        default_block = script.split("IPHONE_DEVICE_TYPE_CANDIDATES=(", 1)[1].split(")", 1)[0]
+        self.assertNotIn("Pro-Max", default_block)
+        self.assertIn("iPhone-18-Pro", default_block.split()[0])
+        with self.make_repo() as root:
+            self.copy_script(root, "worktree-sim.sh")
+            (root / "Labstream" / "Existing.swift").write_text("// baseline\n")
+            self.commit_all(root)
+            fakebin = root / "fakebin"
+            fakebin.mkdir()
+            (fakebin / "xcrun").write_text(textwrap.dedent("""\
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [ "$1 $2 $3" = "simctl list devices" ] && [ "${4:-}" = "-j" ]; then
+                  printf '{"devices":{}}\\n'
+                  exit 0
+                fi
+                if [ "$1 $2 $3" = "simctl list runtimes" ] && [ "${4:-}" = "-j" ]; then
+                  printf '{"runtimes":[{"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-27-0","version":"27.0","isAvailable":true}]}\\n'
+                  exit 0
+                fi
+                if [ "$1 $2 $3" = "simctl list devicetypes" ] && [ "${4:-}" = "-j" ]; then
+                  printf '{"devicetypes":[{"identifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro","name":"iPhone 17 Pro","isAvailable":true}]}\\n'
+                  exit 0
+                fi
+                echo "unexpected xcrun $*" >&2
+                exit 2
+                """))
+            (fakebin / "xcrun").chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{fakebin}:{env['PATH']}"
+
+            result = subprocess.run(["scripts/worktree-sim.sh", "--platform", "iphone69", "id"], cwd=root, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("no available 6.9-inch iPhone simulator device type found", result.stderr)
+            self.assertFalse((root / ".simid-iphone69").exists())
 
     def test_worktree_sim_tvos_fails_cleanly_without_runtime(self):
         with self.make_repo() as root:

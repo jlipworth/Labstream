@@ -11,6 +11,10 @@ Options:
   --artifact-root PATH  Default: artifacts/agent-platform-runs.
   --timeout SECONDS     AX target/assertion timeout. Default: 15.
   --skip-build          Reuse this worktree's staged isolated app.
+  fixture-home-passive only:
+  --fixture browse|player  Debug fixture kind. Default: browse.
+  --settle SECONDS      Wait after launch before the window capture. Default: 0.
+  --launch-arg ARG      Extra --ui-testing-* capture-route argument or plain value (repeatable).
 
 Exit codes: 0 passed, 1 failed, 2 blocked/precondition missing.
 USAGE
@@ -24,14 +28,39 @@ shift
 artifact_root=artifacts/agent-platform-runs
 timeout=15
 skip_build=0
+fixture=browse
+extra_launch_args=()
+settle=0
 while (($#)); do
   case "$1" in
+    --settle) settle=${2:-}; shift 2 ;;
+    --fixture) fixture=${2:-}; shift 2 ;;
+    --launch-arg) extra_launch_args+=("${2:-}"); shift 2 ;;
     --artifact-root) artifact_root=${2:-}; shift 2 ;;
     --timeout) timeout=${2:-}; shift 2 ;;
     --skip-build) skip_build=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
+done
+[[ $settle =~ ^[0-9]+$ ]] && ((settle <= 60)) || {
+  printf 'Settle must be an integer from 0 through 60.\n' >&2; exit 2;
+}
+[[ $fixture == browse || $fixture == player ]] || {
+  printf 'Unsupported macOS fixture: %s\n' "$fixture" >&2; exit 2;
+}
+if [[ $scenario != fixture-home-passive ]] && { [[ $fixture != browse ]] ||
+  ((${#extra_launch_args[@]} > 0)); }; then
+  printf -- '--fixture and --launch-arg apply to fixture-home-passive only.\n' >&2
+  exit 2
+fi
+for arg in ${extra_launch_args[@]+"${extra_launch_args[@]}"}; do
+  [[ $arg =~ ^--ui-testing-[a-z0-9-]+$ || $arg =~ ^[A-Za-z0-9._-]+$ ]] || {
+    printf 'Rejected launch argument: %s\n' "$arg" >&2; exit 2;
+  }
+  [[ $arg != --ui-testing-backend && $arg != --ui-testing-fixture ]] || {
+    printf 'Use --fixture instead of %s.\n' "$arg" >&2; exit 2;
+  }
 done
 [[ $timeout =~ ^[1-9][0-9]*$ ]] && ((timeout <= 60)) || {
   printf 'Timeout must be an integer from 1 through 60.\n' >&2; exit 2;
@@ -125,8 +154,10 @@ executable="$app_path/Contents/MacOS/Labstream"
 
 xcrun swiftc scripts/agent-macos-ax-driver.swift -o "$repo_root/build/agent-macos-ax-driver"
 pkill -f "^$executable( |$)" >/dev/null 2>&1 || true
-open -n "$app_path" --args --ui-testing --ui-testing-backend plex --ui-testing-fixture browse \
-  >"$outdir/process.log" 2>&1
+launch_args=(--ui-testing --ui-testing-backend plex --ui-testing-fixture "$fixture"
+  ${extra_launch_args[@]+"${extra_launch_args[@]}"})
+printf '%s\n' "${launch_args[@]}" >"$outdir/launch-args.txt"
+open -n "$app_path" --args "${launch_args[@]}" >"$outdir/process.log" 2>&1
 for _ in {1..100}; do
   app_pid=$(ps -axo pid=,command= | awk -v executable="$executable" \
     '$2 == executable && !found {value=$1; found=1} END {if (found) print value}')
@@ -151,6 +182,7 @@ on run argv
 end run
 APPLESCRIPT
 
+((settle == 0)) || sleep "$settle"
 driver_args=(--pid "$app_pid" --output "$outdir/driver.json"
   --screenshot-before "$outdir/screen-before.png"
   --screenshot-after "$outdir/screen-after.png" --timeout "$timeout")

@@ -18,10 +18,11 @@ enum DebugUITestLaunchConfiguration {
         isEnabled(in: ProcessInfo.processInfo.arguments)
     }
 
-    /// Browse-fixture capture routes for headless layout evidence (iPhone/iPad shell): select a
-    /// tab at launch (`home`, `libraries`, `search`, `music`, `offline`), push the fixture's
-    /// first library grid, or seed the Search query. Nothing deep-links to these screens and
-    /// simulator taps are not scriptable, so these make folded/appResize captures possible.
+    /// Browse-fixture capture routes for headless layout evidence: select a tab at launch
+    /// (`home`, `libraries`, `search`, `music`, `offline`), push the fixture's first library
+    /// grid, or push a fixture item (all products, via `applySharedCaptureRoute`), or seed the
+    /// Search query (iPhone/iPad). Nothing deep-links to these screens and simulator taps are not
+    /// scriptable everywhere, so these make folded/appResize and App Store layout captures possible.
     nonisolated static let initialTabFlag = "--ui-testing-initial-tab"
     nonisolated static let openFirstLibraryFlag = "--ui-testing-open-first-library"
     /// With `--ui-testing-initial-tab settings`: the Settings category to show (raw value, e.g.
@@ -165,7 +166,7 @@ enum DebugUITestLaunchConfiguration {
     }
 
     /// Holds the fixture paused once playback is ready, so the chrome stays visible in one
-    /// deterministic state for geometry comparison.
+    /// deterministic state for geometry comparison (iPhone/iPad and tvOS).
     static var playerFixtureStartsPaused: Bool {
         fixtureKind == .player && ProcessInfo.processInfo.arguments.contains(playerPausedFlag)
     }
@@ -180,6 +181,34 @@ enum DebugUITestLaunchConfiguration {
     /// stream, so the fixture can hold the full streaming menu set (the widest bottom row).
     static var playerFixtureShowsAllMenus: Bool {
         fixtureKind == .player && ProcessInfo.processInfo.arguments.contains(playerAllMenusFlag)
+    }
+
+    /// Shared browse-fixture capture route, applied once when the authenticated shell appears on
+    /// every product: select a tab, push the first library grid, or push a fixture item onto Home.
+    /// Settings presentation stays platform-owned (the compact iPhone shell uses a sheet), and
+    /// tvOS has no Offline destination, so neither is routed here.
+    static func applySharedCaptureRoute(to navigation: RootNavigationCoordinator,
+                                        backend: MediaBackendKind) {
+        guard usesBrowseFixture else { return }
+        if let raw = initialTab,
+           let destination = AppDestination.allCases.first(where: { "\($0)" == raw }),
+           destination != .settings {
+            #if os(tvOS)
+            if destination != .offline { navigation.selection = destination }
+            #else
+            navigation.selection = destination
+            #endif
+        }
+        if opensFirstLibrary, navigation.librariesPath.isEmpty {
+            navigation.selection = .libraries
+            navigation.librariesPath.append(
+                LibraryRootItem.Destination.plex(PlexSection(key: "1", title: "Movies", type: "movie")))
+        }
+        if let key = initialOpenItemKey, navigation.homePath.isEmpty,
+           let item = DebugUIFixtureCatalog.item(ratingKey: key, backend: backend) {
+            navigation.selection = .home
+            navigation.homePath.append(item)
+        }
     }
 
     static func configure(appModel: AppModel, bootstrap: SessionBootstrap) {

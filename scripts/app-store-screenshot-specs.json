@@ -1,39 +1,101 @@
 {
-  "schemaVersion": 1,
-  "verifiedAt": "2026-09-29",
+  "schemaVersion": 2,
+  "verifiedAt": "2026-11-05",
   "officialSource": "https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications",
   "uploadSource": "https://developer.apple.com/help/app-store-connect/manage-app-information/upload-app-previews-and-screenshots",
+  "duoGuideSource": "https://developer.apple.com/iphone-duo/",
   "requirements": {
     "format": ["jpeg", "jpg", "png"],
     "alphaAllowed": false,
     "minimumCount": 1,
     "maximumCount": 10
   },
-  "targets": {
-    "visionos": {
+  "appleRequiredStatement": [
+    "To submit your app, you must provide screenshots for the following required display sizes:",
+    "iPhone: At least one screenshot for iPhone with Dynamic Island (medium display).",
+    "iPad (if your app supports iPadOS): At least one screenshot for iPad 13-inch display."
+  ],
+  "displayClasses": {
+    "vision-pro": {
+      "label": "Apple Vision Pro",
       "acceptedPixels": [[3840, 2160]],
-      "capturePixels": [3840, 2160],
-      "runner": "scripts/agent-sim-run.sh launch-fixture-home-passive"
+      "appleRequirement": "Required for Apple Vision Pro"
     },
-    "iphone": {
-      "acceptedPixels": [[1260, 2736], [1290, 2796], [1320, 2868], [1284, 2778], [1242, 2688], [1179, 2556], [1206, 2622], [1170, 2532], [1125, 2436], [1080, 2340]],
-      "capturePixels": [1206, 2622],
-      "runner": "scripts/agent-mobile-run.sh iphone fixture-home-passive"
+    "iphone-duo-outer": {
+      "label": "iPhone Duo (outer display)",
+      "acceptedPixels": [[1398, 2034], [2034, 1398]],
+      "appleRequirement": "Starting in April 2027, screenshots will be required for any app using the iOS 27.1 SDK or later."
     },
-    "ipad": {
-      "acceptedPixels": [[2064, 2752], [2048, 2732], [1488, 2266], [1668, 2420], [1668, 2388], [1640, 2360]],
-      "capturePixels": [2064, 2752],
-      "runner": "scripts/agent-mobile-run.sh ipad fixture-home-passive"
+    "iphone-duo-inner": {
+      "label": "iPhone Duo (inner display)",
+      "acceptedPixels": [[2007, 2853], [2853, 2007]],
+      "appleRequirement": "Starting in April 2027, screenshots will be required for any app using the iOS 27.1 SDK or later."
     },
-    "tvos": {
+    "iphone-dynamic-island-large": {
+      "label": "iPhone with Dynamic Island (large display); commonly called 6.9-inch",
+      "acceptedPixels": [[1260, 2736], [2736, 1260], [1290, 2796], [2796, 1290], [1320, 2868], [2868, 1320]],
+      "appleRequirement": null
+    },
+    "iphone-face-id-large": {
+      "label": "iPhone with Face ID (large display); commonly called 6.5-inch",
+      "acceptedPixels": [[1284, 2778], [2778, 1284], [1242, 2688], [2688, 1242]],
+      "appleRequirement": "Required if app runs on iPhone and screenshots for iPhone with Dynamic Island (large display) aren't provided"
+    },
+    "iphone-dynamic-island-medium": {
+      "label": "iPhone with Dynamic Island (medium display); commonly called 6.3-inch",
+      "acceptedPixels": [[1179, 2556], [2556, 1179], [1206, 2622], [2622, 1206]],
+      "appleRequirement": "Required device sizes: at least one screenshot for iPhone with Dynamic Island (medium display)"
+    },
+    "ipad-13": {
+      "label": "iPad 13-inch display",
+      "acceptedPixels": [[2064, 2752], [2752, 2064], [2048, 2732], [2732, 2048]],
+      "appleRequirement": "Required if app runs on iPad"
+    },
+    "apple-tv": {
+      "label": "Apple TV",
       "acceptedPixels": [[1920, 1080], [3840, 2160]],
-      "capturePixels": [3840, 2160],
-      "runner": "scripts/agent-tvos-run.sh fixture-home-passive"
+      "appleRequirement": "Required for Apple TV apps"
     },
-    "macos": {
+    "mac": {
+      "label": "Mac",
       "acceptedPixels": [[1280, 800], [1440, 900], [2560, 1600], [2880, 1800]],
-      "capturePixels": [2560, 1600],
-      "runner": "scripts/agent-macos-run.sh fixture-home-passive"
+      "appleRequirement": "Required for Mac apps"
     }
+  },
+  "coverageRules": [
+    {"id": "vision-pro", "anyOf": ["vision-pro"]},
+    {"id": "iphone-dynamic-island-medium", "anyOf": ["iphone-dynamic-island-medium"]},
+    {"id": "iphone-large", "anyOf": ["iphone-dynamic-island-large", "iphone-face-id-large"]},
+    {"id": "ipad-13", "anyOf": ["ipad-13"]},
+    {"id": "apple-tv", "anyOf": ["apple-tv"]},
+    {"id": "mac", "anyOf": ["mac"]},
+    {
+      "id": "iphone-duo",
+      "allOf": ["iphone-duo-outer", "iphone-duo-inner"],
+      "effectiveFrom": "2027-04-01",
+      "condition": "apps built with the iOS 27.1 SDK or later (Labstream ships with Xcode 27.1 / iOS 27.1 SDK)"
+    }
+  ],
+  "unknowns": [
+    "Apple's page names iPhone classes (Dynamic Island large/medium, Face ID large) and gives no inch sizes; 6.9/6.5/6.3-inch labels are repository shorthand only.",
+    "The page states two iPhone requirements that it does not reconcile: Dynamic Island (medium) is listed as the required size, and Face ID (large) is required unless Dynamic Island (large) is provided. Coverage enforces both rules.",
+    "Apple gives only the month (April 2027) for the iPhone Duo requirement; coverage treats it as effective from 2027-04-01.",
+    "Apple does not say whether both iPhone Duo displays are required or whether one satisfies the requirement; coverage requires both.",
+    "Apple does not say whether iPhone Duo screenshots scale to or from other iPhone classes."
+  ],
+  "targets": {
+    "visionos": {"displayClass": "vision-pro", "capturePixels": [3840, 2160], "simPlatform": "visionos"},
+    "iphone": {"displayClass": "iphone-dynamic-island-medium", "capturePixels": [1206, 2622], "simPlatform": "iphone"},
+    "iphone69": {"displayClass": "iphone-dynamic-island-large", "capturePixels": [1320, 2868], "simPlatform": "iphone69"},
+    "ipad": {"displayClass": "ipad-13", "capturePixels": [2064, 2752], "simPlatform": "ipad"},
+    "duo-outer": {"displayClass": "iphone-duo-outer", "capturePixels": [1398, 2034], "simPlatform": "duo"},
+    "duo-inner": {
+      "displayClass": "iphone-duo-inner",
+      "capturePixels": [2007, 2853],
+      "simPlatform": "duo",
+      "fixtureProxy": "devicectl appResize session at 669x951 points (3x) on the folded simulator; not a real unfolded inner display"
+    },
+    "tvos": {"displayClass": "apple-tv", "capturePixels": [3840, 2160], "simPlatform": "tvos"},
+    "macos": {"displayClass": "mac", "capturePixels": [2560, 1600], "simPlatform": null}
   }
 }

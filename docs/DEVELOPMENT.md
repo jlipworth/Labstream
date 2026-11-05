@@ -372,7 +372,7 @@ and physical keyboard/headset behavior remain separate acceptance checks from fi
 
 ## Linked-worktree simulator cleanup
 
-Linked worktrees own their `vpwt-*`, `iphonewt-*`, `duowt-*`, `ipadwt-*`, and `tvwt-*` simulators. Before removing a
+Linked worktrees own their `vpwt-*`, `iphonewt-*`, `iphone69wt-*`, `duowt-*`, `ipadwt-*`, and `tvwt-*` simulators. Before removing a
 linked worktree, delete all of its simulators and then remove the worktree:
 
 ```sh

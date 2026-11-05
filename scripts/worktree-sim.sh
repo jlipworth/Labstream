@@ -13,6 +13,12 @@
 # or write `iphone` to a gitignored <worktree>/.simplatform. iPhone simulators are named
 # iphonewt-<branch>-<hash> and recorded in <worktree>/.simid-iphone.
 #
+# App Store 6.9-inch iPhone captures use a separate, opt-in Pro Max lane so the default iPhone
+# simulator (6.3-inch) is unchanged:
+#   scripts/worktree-sim.sh --platform iphone69 id
+# It only ever selects a 1320x2868 Pro Max device type (never a smaller iPhone), is named
+# iphone69wt-<branch>-<hash>, and is recorded in <worktree>/.simid-iphone69.
+#
 # iPhone Duo (foldable) work is the same shape, but only ever selects an iPhone Duo device
 # type (it never falls back to a slab iPhone):
 #   LABSTREAM_SIM_PLATFORM=duo scripts/worktree-sim.sh id
@@ -42,9 +48,9 @@
 #                 owned by this worktree (never the main golden sim).
 #   closeout      safe finish command: teardown all sims for an existing linked worktree
 #                 path, then prune orphaned worktree sims.
-#   prune         delete every vpwt-* / ipadwt-* / iphonewt-* / duowt-* / tvwt-* sim no live worktree references.
+#   prune         delete every vpwt-* / ipadwt-* / iphonewt-* / iphone69wt-* / duowt-* / tvwt-* sim no live worktree references.
 #   id            print the current worktree's sim UDID (seeds/setups if needed).
-#   platform      print the effective platform (visionos, iphone, duo, ipad, or tvos).
+#   platform      print the effective platform (visionos, iphone, iphone69, duo, ipad, or tvos).
 #   install-hook  install a post-checkout hook that runs `setup` after `git worktree add`.
 #
 set -euo pipefail
@@ -52,6 +58,7 @@ set -euo pipefail
 VISION_PREFIX="vpwt-"
 IPAD_PREFIX="ipadwt-"
 IPHONE_PREFIX="iphonewt-"
+IPHONE69_PREFIX="iphone69wt-"
 DUO_PREFIX="duowt-"
 TV_PREFIX="tvwt-"
 DEFAULT_PLATFORM="visionos"
@@ -82,6 +89,14 @@ IPHONE_DEVICE_TYPE_CANDIDATES=(
   "com.apple.CoreSimulator.SimDeviceType.iPhone-15"
 )
 
+# 6.9-inch (1320x2868) iPhone device types for App Store captures, newest first. Like Duo there is
+# deliberately NO generic fallback: a smaller iPhone would produce the wrong display class.
+IPHONE69_DEVICE_TYPE_CANDIDATES=(
+  "com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro-Max"
+  "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro-Max"
+  "com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro-Max"
+)
+
 # iPhone Duo (foldable) device types, newest/preferred first. Unlike iPhone/iPad there is
 # deliberately NO generic fallback: a Duo lane must run on the foldable, never a slab iPhone.
 DUO_DEVICE_TYPE_CANDIDATES=(
@@ -97,7 +112,7 @@ TV_DEVICE_TYPE_CANDIDATES=(
 )
 
 die() { echo "worktree-sim: $*" >&2; exit 1; }
-usage() { printf '%s\n' "usage: worktree-sim.sh [--platform visionos|iphone|ipad|tvos|duo] {setup|teardown [--all]|closeout [PATH]|prune|id|platform|install-hook|-h|--help}"; }
+usage() { printf '%s\n' "usage: worktree-sim.sh [--platform visionos|iphone|iphone69|ipad|tvos|duo] {setup|teardown [--all]|closeout [PATH]|prune|id|platform|install-hook|-h|--help}"; }
 
 worktree_root() { git rev-parse --show-toplevel; }
 
@@ -113,9 +128,10 @@ normalize_platform() {
     ""|vision|visionos|xros|xr|vp) printf 'visionos' ;;
     ipad|ipados) printf 'ipad' ;;
     iphone|ios|mobile) printf 'iphone' ;;
+    iphone69|iphone-69|iphone-max|iphonemax|promax) printf 'iphone69' ;;
     duo|iphone-duo|iphoneduo|foldable) printf 'duo' ;;
     tv|tvos|appletv|apple-tv) printf 'tvos' ;;
-    *) die "unknown simulator platform '$p' (expected visionos, iphone, duo, ipad, or tvos)" ;;
+    *) die "unknown simulator platform '$p' (expected visionos, iphone, iphone69, duo, ipad, or tvos)" ;;
   esac
 }
 
@@ -142,6 +158,7 @@ name_prefix_for_platform() {
     visionos) printf '%s' "$VISION_PREFIX" ;;
     ipad) printf '%s' "$IPAD_PREFIX" ;;
     iphone) printf '%s' "$IPHONE_PREFIX" ;;
+    iphone69) printf '%s' "$IPHONE69_PREFIX" ;;
     duo) printf '%s' "$DUO_PREFIX" ;;
     tvos) printf '%s' "$TV_PREFIX" ;;
   esac
@@ -155,6 +172,7 @@ simid_file_for_platform() {
     visionos) printf '%s/.simid' "$root" ;;
     ipad) printf '%s/.simid-ipad' "$root" ;;
     iphone) printf '%s/.simid-iphone' "$root" ;;
+    iphone69) printf '%s/.simid-iphone69' "$root" ;;
     duo) printf '%s/.simid-duo' "$root" ;;
     tvos) printf '%s/.simid-tvos' "$root" ;;
   esac
@@ -302,6 +320,7 @@ available_device_type() {
   case "$family" in
     ipad) candidates=("${IPAD_DEVICE_TYPE_CANDIDATES[@]}") ;;
     iphone) candidates=("${IPHONE_DEVICE_TYPE_CANDIDATES[@]}") ;;
+    iphone69) candidates=("${IPHONE69_DEVICE_TYPE_CANDIDATES[@]}") ;;
     duo) candidates=("${DUO_DEVICE_TYPE_CANDIDATES[@]}") ;;
     *) die "unknown iOS device family '$family'" ;;
   esac
@@ -311,8 +330,8 @@ available_device_type() {
       return 0
     fi
   done
-  # Duo never falls back to a non-foldable device; the caller reports the missing type.
-  [ "$family" = "duo" ] && return 0
+  # Duo and the 6.9-inch lane never fall back to another device; the caller reports the gap.
+  [ "$family" = "duo" ] || [ "$family" = "iphone69" ] && return 0
   xcrun simctl list devicetypes -j | python3 -c '
 import json, sys
 family = sys.argv[1]
@@ -332,6 +351,7 @@ create_ios_sim() {
   case "$family" in
     ipad) label="iPad" ;;
     duo) label="iPhone Duo" ;;
+    iphone69) label="6.9-inch iPhone" ;;
     *) label="iPhone" ;;
   esac
   [ -n "$device" ] || die "no available ${label} simulator device type found$([ "$family" = "duo" ] && printf ' (requires Xcode 27.1+ with the iOS 27.1+ runtime)')"
@@ -370,6 +390,7 @@ cmd_setup_platform() {
       visionos) udid=$(clone_golden "$name") ;;
       ipad) udid=$(create_ios_sim ipad "$name") ;;
       iphone) udid=$(create_ios_sim iphone "$name") ;;
+      iphone69) udid=$(create_ios_sim iphone69 "$name") ;;
       duo) udid=$(create_ios_sim duo "$name") ;;
       tvos) udid=$(create_tvos_sim "$name") ;;
     esac
@@ -408,6 +429,7 @@ cmd_teardown() {
     cmd_teardown_platform visionos
     cmd_teardown_platform ipad
     cmd_teardown_platform iphone
+    cmd_teardown_platform iphone69
     cmd_teardown_platform duo
     cmd_teardown_platform tvos
     return 0
@@ -421,6 +443,7 @@ cmd_prune() {
     if [ -f "$wt/.simid" ]; then refs+="$(cat "$wt/.simid") "; fi
     if [ -f "$wt/.simid-ipad" ]; then refs+="$(cat "$wt/.simid-ipad") "; fi
     if [ -f "$wt/.simid-iphone" ]; then refs+="$(cat "$wt/.simid-iphone") "; fi
+    if [ -f "$wt/.simid-iphone69" ]; then refs+="$(cat "$wt/.simid-iphone69") "; fi
     if [ -f "$wt/.simid-duo" ]; then refs+="$(cat "$wt/.simid-duo") "; fi
     if [ -f "$wt/.simid-tvos" ]; then refs+="$(cat "$wt/.simid-tvos") "; fi
   done < <(git worktree list --porcelain | awk '/^worktree /{print $2}')
@@ -433,10 +456,10 @@ for devs in json.load(sys.stdin)["devices"].values():
     for d in devs:
         if d["name"].startswith(prefixes) and d["udid"] not in refs:
             print(d["udid"], d["name"])
-' "$VISION_PREFIX,$IPAD_PREFIX,$IPHONE_PREFIX,$DUO_PREFIX,$TV_PREFIX" "$refs" > "$tmp"
+' "$VISION_PREFIX,$IPAD_PREFIX,$IPHONE_PREFIX,$IPHONE69_PREFIX,$DUO_PREFIX,$TV_PREFIX" "$refs" > "$tmp"
   count=$(wc -l < "$tmp" | tr -d ' ')
   if [ "$count" = "0" ]; then
-    echo "worktree-sim: no orphaned ${VISION_PREFIX}* / ${IPAD_PREFIX}* / ${IPHONE_PREFIX}* / ${DUO_PREFIX}* / ${TV_PREFIX}* simulators found"
+    echo "worktree-sim: no orphaned ${VISION_PREFIX}* / ${IPAD_PREFIX}* / ${IPHONE_PREFIX}* / ${IPHONE69_PREFIX}* / ${DUO_PREFIX}* / ${TV_PREFIX}* simulators found"
     rm -f "$tmp"
     return 0
   fi
