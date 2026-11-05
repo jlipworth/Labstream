@@ -1,10 +1,31 @@
 # Licensed demo screenshots and review notes
 
-Status: active; catalog provenance snapshot dated 2026-09-15. Official license pages and
-Apple screenshot sizes rechecked 2026-09-29; final captures and clean-install candidate journeys
-remain pending. The deployed catalog, service availability and asset hashes were not rechecked
-by this consolidation.
+Status: active; catalog provenance snapshot dated 2026-09-15, updated to the deployed
+`open-films-v2` release on 2026-11-05. Official license pages were rechecked 2026-09-29 and Apple
+screenshot classes on 2026-11-05. Final captures and clean-install candidate journeys remain
+pending; the app logo and brand colors are being redone, so no final screenshots may be taken until
+that work lands.
 No screenshots were uploaded and no App Store Connect fields were changed by this work.
+
+## Review-server check — 2026-11-05 (read-only)
+
+- **Catalog release:** the server serves `open-films-v2`. Versus `open-films-v1` only the procedural
+  fixture generator changed (a second audio track); both open films and their four artwork crops
+  are unchanged. The public manifest now records `open-films-v2` and the matching source-manifest hash.
+- **Asset hashes:** all six allowlisted files (two complete encodes, two posters, two backdrops) in
+  the live media volume match `scripts/app-review-media-provenance.json`, and the server's own
+  23-entry runtime digest manifest verifies with no failures.
+- **Reachability without a VPN:** the private hostname resolves through public DNS to public
+  addresses only; from the capture host, traffic used the ordinary default interface (no VPN or
+  exit node) through the proxied public edge, and returned trusted-TLS 200 responses for the
+  public server-info endpoint and `/attribution`. The 15-minute public smoke CronJob was passing.
+  An off-LAN device test (for example cellular) remains part of the reviewer-journey gate.
+- **Attribution page:** live, byte-identical to its committed source, and names both films, their
+  required credit lines, the CC BY 4.0 license link, the crop/resize modifications, and the
+  no-endorsement statement.
+
+The check read only Kubernetes object status and file hashes and made unauthenticated HTTPS reads.
+It did not sign in, read Secrets, or write to the server. The address and credentials stay private.
 
 ## Decision and provenance
 
@@ -68,24 +89,27 @@ session configurations gitignored. Authentication screenshots never enter the ex
 
 | Family | Required final lane | Intended real surfaces | Runner / remaining gate |
 | --- | --- | --- | --- |
-| iPhone | 1320 × 2868 portrait, 6.9-inch | Home/library, film detail, playback | Semantic XCUITest with ordinary account login; actual large-display simulator required |
+| iPhone | 1206 × 2622 (Dynamic Island medium, "6.3-inch") **and** 1320 × 2868 (Dynamic Island large, "6.9-inch") | Home/library, film detail, playback, downloads | `live` mode on the `iphone` and `iphone69` simulators; ordinary account login |
+| iPhone Duo | 1398 × 2034 outer and 2007 × 2853 inner (required from April 2027) | Same as iPhone | `live` mode; a person unfolds the simulator for the inner display |
 | iPad | 2064 × 2752 portrait, 13-inch | Library/sidebar, detail, playback | Semantic XCUITest; regular-width composition inspected separately |
 | Mac | 2560 × 1600, 16:10 | Library, detail, windowed playback | Isolated host Accessibility/window-only capture; permissions, active window, production-equivalent branding |
 | Apple TV | 3840 × 2160 or 1920 × 1080 | Movies, focused detail, playback | XCUITest/XCUIRemote; streaming only, no Downloads claims |
 | Apple Vision Pro | 3840 × 2160 | Home, film detail, spatial playback | Passive capture; human navigation/authentication or headset for unsupported interaction |
 
 Use three strong images per family as an editorial target, not a requirement to manufacture
-unavailable views. Apple permits one to ten PNG/JPEG/JPG images per size with no alpha. A 6.3-inch
-iPhone image alone cannot replace the required 6.9-inch set (or 6.5-inch fallback). A 13-inch iPad
-set is required. Rechecked against [Apple screenshot specifications](https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications)
-on 2026-09-29; [the existing exporter](../APP-STORE-SCREENSHOTS.md) validates individual accepted
-sizes, **not** display-class completeness or licensed-catalog authenticity.
+unavailable views. Apple permits one to ten PNG/JPEG/JPG images per size with no alpha. Apple's
+page (rechecked 2026-11-05) lists iPhone Dynamic Island (medium) as required and Face ID (large) as
+required unless Dynamic Island (large) is provided, so supply both the 6.3- and 6.9-inch sets. A
+13-inch iPad set is required. [The exporter](../APP-STORE-SCREENSHOTS.md) now validates
+display-class coverage (`coverage --live-only`) and records live-session provenance, but it cannot
+judge licensed-catalog authenticity or composition.
 
 Acquire the lead's simulator/host playback lease; run one family at a time and shut it down
 before the next. Never use the golden simulator as a substitute. On Xcode 27 do not coordinate-drive
 visionOS. Do not reuse fixture or probe-only frames as if they showed the reviewer journey.
-The current exporter has no authenticated-catalog capture lane; use the named platform runners
-and ordinary app navigation, preserving raw evidence and applying the same size/hash/privacy checks.
+Use the exporter's `live start|shot|finish` lane: it launches the installed candidate with no
+arguments, a person signs in and navigates, and each shot is bound to that process. macOS has no
+live lane yet; capture its window by hand and apply the same size/hash/privacy checks.
 
 ## Review-note draft — fill private fields only in App Store Connect
 
@@ -118,7 +142,8 @@ its remaining acceptance gate before submission.
 - [x] Reuse deployed catalog rather than new/shared infrastructure; public provenance recorded.
 - [x] Exact official license terms and current Apple size requirements checked.
 - [ ] Obtain normal private review-account authentication in each isolated app session.
-- [ ] Bind captures to the exact release candidate and verify deployed asset hashes/attribution.
+- [x] Verify deployed asset hashes and attribution (read-only, 2026-11-05).
+- [ ] Bind captures to the exact release candidate; recheck hashes on the capture day.
 - [ ] Capture and inspect actual catalog surfaces across all five families; no final images yet.
 - [ ] Approve artwork, age suitability, storefront credit placement, composition and privacy.
 - [ ] Rehearse exact reviewer instructions on clean candidate installs; preserve hardware gates.
