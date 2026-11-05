@@ -130,8 +130,21 @@ def main(argv=None):
             raise KeyboardInterrupt
         signal.signal(signal.SIGTERM, interrupted)
         with acquire(path, args.lane, args.wait_timeout) as fd:
-            child = subprocess.Popen(command, start_new_session=True, pass_fds=(fd,))
+            # Hold SIGTERM/SIGINT while spawning: an interrupt that lands inside Popen, after the
+            # fork but before `child` is bound, would otherwise orphan a child that keeps the
+            # inherited lease fd (and the Xcode lease) for its whole run. The child gets the
+            # caller's original mask back before exec.
+            interrupts = {signal.SIGTERM, signal.SIGINT}
+            mask = signal.pthread_sigmask(signal.SIG_BLOCK, interrupts)
             try:
+                child = subprocess.Popen(command, start_new_session=True, pass_fds=(fd,),
+                                         preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, mask))
+            except BaseException:
+                signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+                raise
+            try:
+                # A pending interrupt is delivered here, inside the block that stops the child.
+                signal.pthread_sigmask(signal.SIG_SETMASK, mask)
                 code = child.wait()
             finally:
                 # Also reap descendants if the leader exited, as Xcode diagnostics can outlive it.
