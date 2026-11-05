@@ -4,11 +4,12 @@ import Foundation
 /// (Settings ▸ About, the sign-in footer, the Mac Help menu, and the feedback handoff).
 ///
 /// App Review guideline 5.1.1(i) requires an easily accessible in-app privacy-policy link, and the
-/// support page must lead to real contact information. When the project site moves to
-/// `https://labstream.app/`, change `siteBase` only; keep it in sync with
-/// `appstore/metadata/*/en-US/support_url.txt` and `appstore/metadata/app/en-US/privacy_policy_url.txt`.
+/// support page must lead to real contact information. https://labstream.app/ publishes PRIVACY.md
+/// and SUPPORT.md (the github.io copies name it canonical). Keep `siteBase` in sync with
+/// `appstore/metadata/*/en-US/support_url.txt` and `appstore/metadata/app/en-US/privacy_policy_url.txt`
+/// (`scripts/tests/test_store_links.py` enforces it).
 enum LabstreamLinks {
-    static let siteBase = "https://jlipworth.github.io/Labstream/"
+    static let siteBase = "https://labstream.app/"
 
     static let privacyPolicy = URL(string: siteBase + "privacy/")!
     static let support = URL(string: siteBase + "support/")!

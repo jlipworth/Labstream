@@ -356,8 +356,12 @@ and App Store Connect state before relying on them for a new submission.
 - [x] The description states that Labstream connects to a server selected by the user, provides no
       media, and is unofficial and unaffiliated with Plex, Jellyfin, and Emby.
 - [x] The public support URL and privacy-policy URL resolve over HTTPS:
-      [Support](https://jlipworth.github.io/Labstream/support/) and
-      [Privacy](https://jlipworth.github.io/Labstream/privacy/).
+      [Support](https://labstream.app/support/) and
+      [Privacy](https://labstream.app/privacy/). The app links, `appstore/metadata` URLs and the
+      App Store Connect fields all use these; the github.io copies remain, with canonical tags
+      pointing here.
+- [ ] App Store Connect matches: `scripts/asc-metadata.py diff` is clean after the URL push, and
+      any address in the Apple TV privacy-policy text (web-only) is `labstream.app/privacy`.
 - [ ] Replace the staged single-image synthetic placeholders with final, reviewed
       screenshot sets for every required App Store device size;
       the Vision Pro set includes at least one 3840 × 2160 image. Apple permits up to ten

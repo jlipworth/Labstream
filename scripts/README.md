@@ -71,6 +71,9 @@ Commands and limitations: [workflow status and review evidence](../docs/DEVELOPM
   `--exit-code` exits 1 on any match.
 - `check-docs-mermaid.py` — verifies that published Mermaid source fences become
   generated Mermaid containers without external script dependencies.
+- `mkdocs_canonical_hook.py` — MkDocs hook that applies a page's `canonical_url:` front matter.
+  `docs/privacy.md` and `docs/support.md` use it to name the https://labstream.app/ copies of
+  `PRIVACY.md` and `SUPPORT.md` canonical (no redirects); `ci-hygiene.sh` checks the built tags.
 - `check-doc-links.py` — validates repository-local links and Markdown heading anchors across all
   tracked Markdown, including unpublished research, evidence, and archive lanes.
 - Documentation gate: after `uv run --with-requirements requirements.txt mkdocs build --strict`,
