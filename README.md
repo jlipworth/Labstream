@@ -202,7 +202,7 @@ Start with [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md). In short:
 
 ## Privacy and bug reports
 
-Labstream does not send analytics, diagnostics, or media-server data to the developer. If something breaks, the app can generate a local redacted diagnostic report that you review before posting to GitHub.
+Labstream does not automatically send analytics or diagnostics to the developer. If something breaks, the app can generate a local redacted diagnostic report that you review before posting to GitHub or emailing [support@labstream.app](mailto:support@labstream.app). The optional project-operated review/demo service, and anything you choose to send, are covered in the [Privacy Policy](PRIVACY.md).
 
 - Bug guide: [`docs/REPORTING-BUGS.md`](docs/REPORTING-BUGS.md)
 - Bug form: <https://github.com/jlipworth/Labstream/issues/new?template=bug_report.yml>

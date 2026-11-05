@@ -87,6 +87,10 @@ skipping them.
       cleared, the active backend resets to Plex, Spotlight index is cleared, and in-flight
       downloads for every backend pause without losing records or files. Also confirm the
       action is hidden/disabled when only one backend has a saved session.
+- [ ] **Privacy and support links (App Store 5.1.1(i)):**
+      - Sign-in screen: on iPhone, iPad, Vision Pro and Mac, Privacy Policy and Support open in the browser. On Apple TV, the privacy address is shown under the logo.
+      - Settings ▸ About: Privacy Policy, Support and Email support@labstream.app open the right page or a new mail message. On Apple TV, Privacy Policy and Support each open a QR code that scans to the right page.
+      - Mac: Help ▸ Labstream Support, Email Support… and Privacy Policy work.
 
 ## 3. Browse, search, and detail
 

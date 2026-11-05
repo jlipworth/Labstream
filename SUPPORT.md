@@ -68,6 +68,21 @@ you see it (no tokens, hostnames, usernames, paths, or media titles); review it 
 [bug reporting guide](https://github.com/jlipworth/Labstream/blob/main/docs/REPORTING-BUGS.md)
 has the full steps, per-platform options, and what the report does and does not include.
 
+## Contact
+
+Public questions and bug reports belong on GitHub (see above), so other people can find the answers.
+For anything private, such as an account-specific problem or details you would rather not post
+publicly, email **[support@labstream.app](mailto:support@labstream.app)**. Send privacy questions
+and data-deletion requests to **[privacy@labstream.app](mailto:privacy@labstream.app)**. Report
+security vulnerabilities through the private route in the
+[security policy](https://github.com/jlipworth/Labstream/blob/main/SECURITY.md), not email or a
+public issue.
+
+Never email passwords, access tokens, or your server's address. Replies currently come from the
+maintainer's own email address. The
+[Privacy Policy](https://github.com/jlipworth/Labstream/blob/main/PRIVACY.md#email-to-the-project)
+explains what happens to an email you send.
+
 ## Privacy
 
 See the [Privacy Policy](https://github.com/jlipworth/Labstream/blob/main/PRIVACY.md). Labstream does

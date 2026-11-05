@@ -125,7 +125,7 @@ struct SettingsView: View {
         #endif
         .sheet(isPresented: $presentingFeedback) {
             FeedbackSheet(reportText: diagnosticReportText,
-                          githubIssuesURL: Self.feedbackIssuesURL,
+                          githubIssuesURL: LabstreamLinks.bugReport,
                           appVersionBuild: "\(Self.appVersion) (\(Self.appBuild))",
                           osVersion: Self.shortOSVersion)
         }
@@ -141,9 +141,6 @@ struct SettingsView: View {
             Text(differentServerConfirmationMessage)
         }
     }
-
-    /// Single source of truth for the web bug-report link (template-prefilled new-issue URL).
-    static let feedbackIssuesURL = URL(string: "https://github.com/jlipworth/Labstream/issues/new?template=bug_report.yml")!
 
     /// "26.5"-style OS version for prefilling the bug form (the full
     /// `operatingSystemVersionString` carries a build suffix the form doesn't want).
@@ -939,6 +936,7 @@ struct SettingsView: View {
             // Product/device name exactly as sent to Plex. NEVER the client identifier —
             // it's treated as a secret in this repo.
             LabeledContent("Client", value: "\(appModel.identity.product) on \(appModel.identity.deviceName)")
+            SupportLinkRows()
         } header: {
             settingsHeader("About", .about)
         } footer: {

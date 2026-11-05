@@ -101,7 +101,8 @@ acceptance remain platform-specific even when the platforms share one purchase r
 must not be marked ready merely because another platform passed review.
 
 The earlier recorded App Store Connect state included the shared app information, free price
-schedule, a **Data Not Collected** privacy answer, platform descriptions, review contacts,
+schedule, a **Data Not Collected** privacy answer (since superseded; see the current audit below),
+platform descriptions, review contacts,
 build selections, manual-release settings, and one privacy-safe synthetic placeholder screenshot for
 each submitted device family. Those screenshots prove the capture and upload path, but they are not
 the intended public product-page set. In that recorded state, app availability was not enabled.
@@ -129,8 +130,9 @@ product interaction also declare personalization. The tvOS binary manifest omits
 summaries because that MetricKit path is absent on tvOS.
 
 This resolves the exercised blank-report generation problem, not every privacy or release
-gate. Received support storage outside GitHub and end-to-end demo database/log/edge/backup
-retention remain unverified. The updated Apple TV policy was saved for the next app version.
+gate. Since 2026-11-05, support and privacy email (`support@` and `privacy@labstream.app`) is
+stored outside GitHub in the maintainer's mailbox, kept until deletion is requested. The privacy
+policy discloses this. End-to-end demo database/log/edge/backup retention remains unverified. The updated Apple TV policy was saved for the next app version.
 All four App Store Connect version drafts now show 1.7.2, with descriptions that identify
 the separate optional demo service. On 2026-10-14 each draft was switched from the
 inherited 1.6.1 (build 2) binary to 1.7.2 (build 2); the drafts are still not
@@ -356,9 +358,14 @@ and App Store Connect state before relying on them for a new submission.
       iPhone, iPad, Mac, Apple TV, and Apple Vision Pro, and the exported files pass the repository
       size/privacy manifest validator before upload.
 - [ ] App Privacy: the shared label is published with seven data types linked to the user and
-      tracking off; the earlier **Data Not Collected** answer is superseded. Still open: verify
-      received support storage outside GitHub and end-to-end demo database/log/edge/backup
-      retention against the published answers
+      tracking off; the earlier **Data Not Collected** answer is superseded. Support email
+      (`support@`/`privacy@labstream.app`, kept in the maintainer's mailbox until deletion is
+      requested) is disclosed in the privacy policy and falls under the declared Customer Support
+      type. Contact Info ▸ Email Address is not declared. Today email is sent from the user's own
+      mail account outside the app, but if the app gains an in-app Email action
+      ([#426](https://github.com/jlipworth/Labstream/issues/426)), the owner must decide between
+      declaring Email Address and documenting the optional-disclosure conditions. Still open: verify
+      end-to-end demo database/log/edge/backup retention against the published answers
       ([#325](https://github.com/jlipworth/Labstream/issues/325) is closed, but its closure does
       not resolve these). See the [bounded privacy audit](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/audits/2026-09-16-review-service-privacy-audit.md) for
       the data-type mapping and owner approval gates. No App Store Connect answer is changed
