@@ -132,7 +132,10 @@ summaries because that MetricKit path is absent on tvOS.
 This resolves the exercised blank-report generation problem, not every privacy or release
 gate. Since 2026-11-05, support and privacy email (`support@` and `privacy@labstream.app`) is
 stored outside GitHub in the maintainer's mailbox, kept until deletion is requested. The privacy
-policy discloses this. End-to-end demo database/log/edge/backup retention remains unverified. The updated Apple TV policy was saved for the next app version.
+policy discloses this. End-to-end demo database/log/edge/backup retention remains unverified. Also on 2026-11-05, the App Review contact email on all four 1.7.2
+drafts was changed to `appstore@labstream.app`. The Apple TV privacy-policy text in App Store
+Connect replaced its "storage outside GitHub is not yet verified" sentence with the support/privacy
+email disclosure; App Store Connect releases that change with the next app version. The updated Apple TV policy was saved for the next app version.
 All four App Store Connect version drafts now show 1.7.2, with descriptions that identify
 the separate optional demo service. On 2026-10-14 each draft was switched from the
 inherited 1.6.1 (build 2) binary to 1.7.2 (build 2); the drafts are still not
