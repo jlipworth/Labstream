@@ -39,7 +39,7 @@ runtime client identity reads the bundle version and falls back to `0.0.0`.
 | Product | Current source | Latest processed (internal TestFlight) | Selected for the App Store version | Open acceptance |
 | --- | --- | --- | --- | --- |
 | Apple Vision Pro (`Labstream`) | 1.8.0 (build 2) | 1.8.0 (build 1654) | 1.8.0 (build 1654) | Physical TestFlight acceptance and review access. |
-| iPhone and iPad (`LabstreamMobile`) | 1.8.0 (build 2) | 1.8.0 (build 1654) | 1.8.0 (build 1654) | Physical iPhone, iPad and iPhone Duo acceptance; Duo App Store screenshots. |
+| iPhone and iPad (`LabstreamMobile`) | 1.8.0 (build 2) | 1.8.0 (build 1654) | 1.8.0 (build 1654) | Physical iPhone and iPad acceptance; Duo App Store screenshots. The maintainer has tested on a physical iPhone Duo (the 1649–1653 player-menu changes came from that testing). |
 | Apple TV (`LabstreamTV`) | 1.8.0 (build 2) | 1.8.0 (build 1654) | 1.8.0 (build 1654) | Physical Apple TV acceptance. |
 | Mac (`LabstreamMac`) | 1.8.0 (build 2) | 1.8.0 (build 1654) | 1.8.0 (build 1654) | Sandbox and live-host acceptance. A 1.6.1 (build 2) TestFlight install passed launch and receipt/signature checks; no later Mac TestFlight install is recorded. |
 
