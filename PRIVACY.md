@@ -1,6 +1,6 @@
 # Labstream — Privacy Policy
 
-_Last updated: 2026-10-04_
+_Last updated: 2026-11-05_
 
 Labstream is a personal media client with pre-release targets for Apple Vision Pro, iPhone/iPad,
 Apple TV, and Mac. It connects to a Plex Media Server, Jellyfin server, or Emby server **that you
@@ -146,9 +146,28 @@ an export sends it to the destination you choose. GitHub and other destinations 
 privacy and retention practices. Submitted issues may remain in project history; local report
 rotation or deleting the app does not delete those copies. Review the report and free-form note
 before every handoff. The project uses submitted feedback for support and troubleshooting, not
-advertising, cross-app tracking, or sale. Whether received reports or attachments are also
-stored outside GitHub has not yet been verified. No GitHub-only storage claim or fixed
-project-wide retention/deletion period is made.
+advertising, cross-app tracking, or sale. Reports you email to the project are stored outside
+GitHub, as described in the next section. No fixed project-wide retention/deletion period is made.
+
+## Email to the project
+
+You can email the project at <support@labstream.app>, <privacy@labstream.app>, or (for security
+reports) <security@labstream.app>. Labstream does not
+send email for you: you write the message from your own email account. Cloudflare Email Routing
+delivers it to a Google (Gmail) mailbox that the maintainer uses, and replies currently come from
+that mailbox rather than from an `@labstream.app` address.
+
+The project receives your email address, the name on your email account if one is set, your message
+and any attachments, plus the delivery information email providers normally record. These are used
+only to answer you and to troubleshoot the problem you describe. They are not used for
+advertising, marketing lists, or tracking, and they are not sold. A problem you report privately
+may be summarized in a public GitHub issue so it can be tracked. That summary never includes your
+name, your email address, or private details you sent.
+
+Messages are kept in that mailbox until you ask for them to be deleted; there is no fixed maximum
+retention period. To request deletion, email <privacy@labstream.app>. Cloudflare and Google process
+these messages under their own privacy policies. Do not email passwords, access tokens, or server
+addresses.
 
 ## Children
 
@@ -159,10 +178,11 @@ those optional paths are used.
 ## Contact
 
 For ordinary, non-sensitive privacy questions, open an issue at
-<https://github.com/jlipworth/Labstream/issues>. If a question includes private data or describes
-a possible vulnerability, use
-[GitHub private vulnerability reporting](https://github.com/jlipworth/Labstream/security/advisories/new)
-instead of a public issue.
+<https://github.com/jlipworth/Labstream/issues>. For privacy questions that include private data,
+and for deletion requests, email <privacy@labstream.app>. Report a possible vulnerability privately to
+<security@labstream.app> or through
+[GitHub private vulnerability reporting](https://github.com/jlipworth/Labstream/security/advisories/new),
+not in a public issue.
 
 ## Changes
 

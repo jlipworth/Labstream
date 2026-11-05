@@ -64,6 +64,10 @@ struct LoginView: View {
             if let errorMessage {
                 BackendAuthErrorBanner(message: errorMessage)
             }
+
+            #if !os(tvOS)
+            SignInSupportFooter()
+            #endif
         }
     }
 
@@ -99,6 +103,8 @@ struct LoginView: View {
                 if let errorMessage {
                     BackendAuthErrorBanner(message: errorMessage)
                 }
+
+                SignInSupportFooter()
             }
         }
             // The content column is capped and centred in the content region (folded
@@ -196,7 +202,10 @@ struct LoginView: View {
     private var tvLoginLayout: some View {
         GeometryReader { proxy in
             HStack(spacing: 100) {
-                LoginBrandHeader()
+                VStack(spacing: DS.Space.xl) {
+                    LoginBrandHeader()
+                    SignInSupportFooter()
+                }
                 .frame(maxWidth: 520)
                 .accessibilityElement(children: .contain)
 

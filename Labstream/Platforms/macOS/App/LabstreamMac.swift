@@ -48,6 +48,11 @@ struct LabstreamMac: App {
         .defaultLaunchBehavior(.presented)
         .commands {
             CommandGroup(replacing: .newItem) { }
+            CommandGroup(replacing: .help) {
+                Button("Labstream Support") { NSWorkspace.shared.open(LabstreamLinks.support) }
+                Button("Email Support…") { NSWorkspace.shared.open(LabstreamLinks.supportEmail) }
+                Button("Privacy Policy") { NSWorkspace.shared.open(LabstreamLinks.privacyPolicy) }
+            }
             if let runtime {
                 CommandMenu("Navigate") {
                     Button("Back") {

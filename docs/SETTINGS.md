@@ -101,6 +101,13 @@ full reporting steps.
 Shows the app **Version**, **Build**, build ID and date, operating system version, and the client
 name Labstream reports to your server. Include the version and build when reporting a problem.
 
+It also links to the **Privacy Policy**, the **Support** page, and the support email address,
+`support@labstream.app`. Apple TV cannot open a browser, so selecting Privacy Policy or Support there
+shows a QR code and the address instead. The sign-in screen has the same Privacy Policy and Support
+links, and on Mac they are also in the **Help** menu. `Labstream/Shared/UI/LabstreamLinks.swift`
+holds the URLs, and `scripts/tests/test_store_links.py` checks that they match the App Store
+metadata.
+
 ## Account
 
 | Setting | What it does | Backend | Platforms |

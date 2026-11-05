@@ -8,10 +8,16 @@ unofficial distributions are not supported release channels.
 
 ## Report a vulnerability privately
 
-Do **not** open a public issue or Discussion for a suspected vulnerability. Use
-[GitHub private vulnerability reporting](https://github.com/jlipworth/Labstream/security/advisories/new).
-If that form is unavailable, wait for it to be restored rather than posting sensitive details in
-public; ordinary support issues cannot provide a private security channel.
+Do **not** open a public issue or Discussion for a suspected vulnerability. Report it privately
+through either channel:
+
+1. **Email [security@labstream.app](mailto:security@labstream.app).** This works without a GitHub
+   account and is checked first.
+2. **[GitHub private vulnerability reporting](https://github.com/jlipworth/Labstream/security/advisories/new).**
+
+The same contacts are published at `https://labstream.app/.well-known/security.txt` once the
+project site is live. If neither channel works for you, wait rather than posting sensitive details
+in public; ordinary support issues cannot provide a private security channel.
 
 Include only the minimum information needed to reproduce the problem. Do not include real media
 titles, library paths, server names or addresses, usernames, access tokens, client identifiers,
