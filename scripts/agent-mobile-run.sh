@@ -153,7 +153,9 @@ attachments_dir=
 # display's device name is `primary`; the appResize session renders on `resizable`.
 capture_display=
 if [[ $platform == duo ]]; then
-  if [[ $duo_display == inner ]]; then capture_display=resizable; else capture_display=primary; fi
+  # The Resizable display exists only while an appResize session runs, so inner-proxy runs capture
+  # the outer display until the session starts (below) and switch to `resizable` afterwards.
+  capture_display=primary
 fi
 fixture_launch_args=(--ui-testing --ui-testing-backend "$backend" --ui-testing-fixture "$fixture"
   ${extra_launch_args[@]+"${extra_launch_args[@]}"})
@@ -351,10 +353,6 @@ installed_uuid=$(xcrun dwarfdump --uuid "$installed_app/Labstream" | awk '{print
 
 bounded_screenshot "$outdir/screen-start.png" >"$outdir/screenshot.log" 2>&1
 record_display=(${capture_display:+"--display=$capture_display"})
-if [[ $platform == duo && $duo_display == inner ]]; then
-  # The Resizable display only exists while an appResize session runs; record the outer display.
-  record_display=(--display=primary)
-fi
 xcrun simctl io "$simid" recordVideo ${record_display[@]+"${record_display[@]}"} \
   "$outdir/screen-recording.mp4" >"$outdir/record-video.log" 2>&1 &
 video_pid=$!
@@ -369,6 +367,8 @@ if [[ $platform == duo && $duo_display == inner ]]; then
   xcrun devicectl device appResize start --device "$simid" --preferred-size 669x951 \
     >"$outdir/appresize.log" 2>&1 &
   appresize_pid=$!
+  sleep 3
+  capture_display=resizable
 fi
 sleep "$duration"
 [[ $app_pid =~ ^[0-9]+$ ]] || { printf 'Launch did not return an app PID.\n' >&2; exit 1; }

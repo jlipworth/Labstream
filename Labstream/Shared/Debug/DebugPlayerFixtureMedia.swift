@@ -43,10 +43,15 @@ enum DebugPlayerFixtureMedia {
         }
         let url = caches.appendingPathComponent("player-fixture-\(width)x\(height)-\(durationSeconds)s.mp4")
         if FileManager.default.fileExists(atPath: url.path) { return url }
-        let target = url
+        // Write beside the cache path and move into place only after the writer completes: a
+        // launch terminated mid-write (agent runners stop the app on a fixed schedule) must not
+        // leave a truncated clip that every later launch reuses and fails to parse (-12848).
+        let partial = url.appendingPathExtension("partial")
         try await Task.detached(priority: .userInitiated) {
-            try writeVideo(to: target, width: width, height: height)
+            try writeVideo(to: partial, width: width, height: height)
         }.value
+        try? FileManager.default.removeItem(at: url)
+        try FileManager.default.moveItem(at: partial, to: url)
         return url
     }
 
