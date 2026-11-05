@@ -96,6 +96,28 @@ struct JellyfinBrowseService: MediaBrowserBrowseFacade {
         return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
     }
 
+    /// "More Like This" for a movie or show detail (`/Items/{id}/Similar`). Degrades to an
+    /// empty list so a failed or unsupported call simply leaves the rail absent.
+    func similarItems(itemId: String, limit: Int = 20) async -> [MediaItem] {
+        guard let context = try? context(),
+              let req = try? JellyfinLibrary.similarItemsRequest(server: context.server,
+                                                       token: context.token,
+                                                       identity: jellyfinIdentity,
+                                                       userId: context.userID,
+                                                       itemId: itemId,
+                                                       limit: limit),
+              let response = try? await send(req, as: JellyfinItemsResponse.self) else { return [] }
+        return response.items.compactMap { $0.toMediaItem() }
+    }
+
+    /// Every episode of a series, in season/episode order, with view state, for the show page's
+    /// resume action.
+    func showEpisodes(seriesId: String) async throws -> [MediaItem] {
+        try await items(parentId: seriesId, recursive: true, includeItemTypes: "Episode",
+                        fields: JellyfinLibrary.gridItemFields)
+            .sortedByEpisodeOrder()
+    }
+
     /// Playable related media for a detail page (#199): local trailers first, then special
     /// features. Both endpoints return a bare `BaseItemDto` ARRAY (not an Items envelope).
     /// Each endpoint degrades independently — a failed/unsupported call contributes an

@@ -3,13 +3,14 @@ import PMSKit
 import Testing
 @testable import Labstream
 
+@Suite(.downloadTestFiles)
 struct DownloadStoreFaultInjectionTests {
     @Test func lifecycleSubmissionReturnsWhileItsCommitIsBlockedAndCommitsLater() async throws {
         try await withTemporaryDirectory { directory in
             let blocked = DispatchSemaphore(value: 0)
             let release = DispatchSemaphore(value: 0)
             let writes = LockedFaultBox(0)
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in
                     let count = writes.withValue { value in value += 1; return value }
@@ -42,7 +43,7 @@ struct DownloadStoreFaultInjectionTests {
             release.signal()
             #expect(await store.flushPersistence(through: ticket, timeout: 1)
                 == .committed(revision: ticket.revision))
-            let restored = DownloadStore(baseDirectory: directory)
+            let restored = DownloadTestFiles.store(baseDirectory: directory)
             #expect(restored.status(for: key.ratingKey) == .paused)
         }
     }
@@ -51,7 +52,7 @@ struct DownloadStoreFaultInjectionTests {
         try await withTemporaryDirectory { directory in
             // This establishes ordering of two disjoint full-state submissions while older I/O
             // is blocked. It does not exercise the synchronous upsert wrapper's wait contract.
-            let seed = DownloadStore(baseDirectory: directory)
+            let seed = DownloadTestFiles.store(baseDirectory: directory)
             let firstID = try #require(DownloadAttemptID(rawValue: "first-attempt"))
             let secondID = try #require(DownloadAttemptID(rawValue: "second-attempt"))
             guard case .committed(let firstKey) = seed.createAttemptOwnedRecord(
@@ -65,7 +66,7 @@ struct DownloadStoreFaultInjectionTests {
             let releaseFirstWrite = DispatchSemaphore(value: 0)
             defer { releaseFirstWrite.signal() }
             let writeCount = LockedFaultBox(0)
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in
                     let count = writeCount.withValue { value in value += 1; return value }
@@ -96,7 +97,7 @@ struct DownloadStoreFaultInjectionTests {
             releaseFirstWrite.signal()
             try #require(await store.flushPersistence(through: secondTicket, timeout: 30)
                 == .committed(revision: secondTicket.revision))
-            let restored = DownloadStore(baseDirectory: directory)
+            let restored = DownloadTestFiles.store(baseDirectory: directory)
             #expect(Set(restored.records.map(\.ratingKey)) == ["plex:first", "plex:second"])
             #expect(restored.status(for: firstKey.ratingKey) == .paused)
             #expect(restored.status(for: secondKey.ratingKey) == .failed)
@@ -106,7 +107,7 @@ struct DownloadStoreFaultInjectionTests {
 
     @Test func concurrentDisjointMutationsRestoreOneCoherentFullSnapshot() async throws {
         try await withTemporaryDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             var attemptKeys: [Int: DownloadAttemptKey] = [:]
             for index in 0..<21 {
                 let id = DownloadAttemptID(uuid: UUID())
@@ -143,7 +144,7 @@ struct DownloadStoreFaultInjectionTests {
             // it captures even progress updates intentionally throttled during the stress fanout.
             store.setStatus(ratingKey: Self.key(20), .paused)
 
-            let restored = DownloadStore(baseDirectory: directory)
+            let restored = DownloadTestFiles.store(baseDirectory: directory)
             for index in 0..<5 {
                 let row = try #require(restored.record(for: Self.key(index)))
                 #expect(row.bytes == 10_000 + index)
@@ -168,17 +169,17 @@ struct DownloadStoreFaultInjectionTests {
         mode: IndexCommitFailureMode
     ) async throws {
         try await withTemporaryDirectory { directory in
-            let initial = DownloadStore(baseDirectory: directory)
+            let initial = DownloadTestFiles.store(baseDirectory: directory)
             initial.upsert(Self.record("plex:old", directory: directory, bytes: 1))
 
             let harness = StagedIndexCommitHarness(mode: mode, directory: directory)
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try harness.write(data, to: url) }
             )
             store.upsert(Self.record("plex:new", directory: directory, bytes: 2))
 
-            let afterFailure = DownloadStore(baseDirectory: directory)
+            let afterFailure = DownloadTestFiles.store(baseDirectory: directory)
             let keysAfterFailure = Set(afterFailure.records.map(\.ratingKey))
             if mode == .replaceThenThrow {
                 #expect(keysAfterFailure == ["plex:old", "plex:new"])
@@ -189,7 +190,7 @@ struct DownloadStoreFaultInjectionTests {
             let ticket = store.currentPersistenceTicket()
             #expect(await store.flushPersistence(through: ticket, timeout: 1)
                 == .committed(revision: ticket.revision))
-            #expect(Set(DownloadStore(baseDirectory: directory).records.map(\.ratingKey))
+            #expect(Set(DownloadTestFiles.store(baseDirectory: directory).records.map(\.ratingKey))
                 == ["plex:old", "plex:new"])
         }
     }
@@ -199,9 +200,9 @@ struct DownloadStoreFaultInjectionTests {
         code: CocoaError.Code
     ) async throws {
         try await withTemporaryDirectory { directory in
-            let initial = DownloadStore(baseDirectory: directory)
+            let initial = DownloadTestFiles.store(baseDirectory: directory)
             initial.upsert(Self.record("plex:old", directory: directory, bytes: 1))
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { _, _ in throw CocoaError(code) }
             )
@@ -216,7 +217,7 @@ struct DownloadStoreFaultInjectionTests {
             }
             #expect(revision == ticket.revision)
             #expect(stage == "commit")
-            #expect(Set(DownloadStore(baseDirectory: directory).records.map(\.ratingKey)) == ["plex:old"])
+            #expect(Set(DownloadTestFiles.store(baseDirectory: directory).records.map(\.ratingKey)) == ["plex:old"])
         }
     }
 
@@ -243,10 +244,10 @@ struct DownloadStoreFaultInjectionTests {
     }
 
     private func withTemporaryDirectory(_ body: (URL) async throws -> Void) async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("download-store-faults-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         try await body(directory)
     }
 }

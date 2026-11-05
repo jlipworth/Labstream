@@ -4,12 +4,11 @@ import Testing
 @testable import Labstream
 
 #if !os(tvOS)
-@Suite("Download keepalive coordinator")
+@Suite("Download keepalive coordinator", .downloadTestFiles)
 struct DownloadKeepaliveCoordinatorTests {
     @Test @MainActor
     func cancellingExactAttemptDoesNotCancelReplacementForSameRatingKey() async throws {
         let fixture = try Fixture("exact-cancel")
-        defer { fixture.remove() }
         let coordinator = fixture.coordinator
         let attemptA = key("attempt-A")
         let attemptB = key("attempt-B")
@@ -36,7 +35,6 @@ struct DownloadKeepaliveCoordinatorTests {
     @Test @MainActor
     func staleGenerationCannotRemoveReplacementTask() async throws {
         let fixture = try Fixture("generation-cas")
-        defer { fixture.remove() }
         let coordinator = fixture.coordinator
         let attempt = key("attempt-A")
         let oldTask = HeldKeepaliveTask()
@@ -67,7 +65,6 @@ struct DownloadKeepaliveCoordinatorTests {
     @Test @MainActor
     func backendTaskRegistriesRemainIndependent() async throws {
         let fixture = try Fixture("backend-slots")
-        defer { fixture.remove() }
         let coordinator = fixture.coordinator
         let attempt = key("attempt-A")
         let jellyfin = HeldKeepaliveTask()
@@ -90,26 +87,105 @@ struct DownloadKeepaliveCoordinatorTests {
         #expect(coordinator.activeCount(for: .emby) == 0)
     }
 
+    /// B60 / IC-4: a queued row whose exact attempt has no tracked transfer must not get a
+    /// keepalive from reconcile, for either backend.
+    @Test(arguments: [DownloadBackendKind.jellyfin, .emby]) @MainActor
+    func reconcileStartsKeepaliveOnlyForTrackedTransfer(backend: DownloadBackendKind) throws {
+        let fixture = try Fixture("tracking-gate-\(backend.rawValue)")
+        fixture.signIn(backend)
+        let coordinator = fixture.coordinator
+        let record = Self.keepaliveRecord(backend: backend, attempt: "attempt-A")
+        let attempt = try #require(record.attemptID.map {
+            DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: $0)
+        })
+        defer { coordinator.cancel(attempt) }
+
+        coordinator.reconcile(records: [record])
+        #expect(coordinator.activeCount(for: backend) == 0)
+        #expect(fixture.trackingQueries.contains(attempt))
+
+        fixture.trackedAttempts.insert(attempt)
+        coordinator.reconcile(records: [record])
+        #expect(coordinator.activeCount(for: backend) == 1)
+    }
+
+    /// The gate is exact-attempt: tracking a replacement attempt does not start one for the old.
+    @Test @MainActor
+    func reconcileGateIsExactAttempt() throws {
+        let fixture = try Fixture("tracking-gate-exact")
+        fixture.signIn(.jellyfin)
+        let coordinator = fixture.coordinator
+        let stale = Self.keepaliveRecord(backend: .jellyfin, attempt: "attempt-A")
+        fixture.trackedAttempts.insert(key("attempt-B"))
+        defer { coordinator.cancel(key("attempt-A")); coordinator.cancel(key("attempt-B")) }
+
+        coordinator.reconcile(records: [stale])
+        #expect(coordinator.activeCount(for: .jellyfin) == 0)
+    }
+
+    private static func keepaliveRecord(backend: DownloadBackendKind,
+                                        attempt: String) -> DownloadRecord {
+        let ratingKey = DownloadRecordIdentity.recordKey(for: "item", backend: backend)
+        let lane: DownloadLane = backend == .emby ? .compatibleRemux : .optimize
+        let metadata = OfflineMetadata(ratingKey: ratingKey,
+                                       title: "Title",
+                                       type: "movie",
+                                       duration: 12_345,
+                                       backendKind: backend,
+                                       mediaSourceID: "source",
+                                       playSessionID: "session",
+                                       downloadLane: lane,
+                                       resumeMode: .liveForwardOnly)
+        return DownloadRecord(ratingKey: ratingKey,
+                              attemptID: DownloadAttemptID(rawValue: attempt)!,
+                              title: "Title",
+                              localURL: URL(fileURLWithPath: "/tmp/labstream-keepalive-gate.mp4"),
+                              status: .queued,
+                              metadata: metadata)
+    }
+
     @MainActor
     private final class Fixture {
         let directory: URL
+        let appModel: AppModel
         let coordinator: DownloadKeepaliveCoordinator
+        private let tracking = TrackingProbe()
+        var trackedAttempts: Set<DownloadAttemptKey> {
+            get { tracking.tracked }
+            set { tracking.tracked = newValue }
+        }
+        var trackingQueries: Set<DownloadAttemptKey> { tracking.queries }
 
         init(_ label: String) throws {
-            directory = FileManager.default.temporaryDirectory
+            directory = DownloadTestFiles.temporaryDirectory
                 .appendingPathComponent("DownloadKeepaliveCoordinatorTests-\(label)-\(UUID().uuidString)",
                                         isDirectory: true)
             try FileManager.default.createDirectory(
                 at: directory, withIntermediateDirectories: true)
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let appModel = AppModel(identity: PlatformClientIdentity.make(
                 clientIdentifier: "keepalive-coordinator-tests"))
-            coordinator = DownloadKeepaliveCoordinator(appModel: appModel, store: store)
+            self.appModel = appModel
+            let tracking = self.tracking
+            coordinator = DownloadKeepaliveCoordinator(appModel: appModel, store: store,
+                                                       isTrackingTransfer: { tracking.query($0) })
         }
 
-        func remove() {
-            try? FileManager.default.removeItem(at: directory)
+        func signIn(_ backend: DownloadBackendKind) {
+            switch backend {
+            case .jellyfin:
+                appModel.jellyfinServerBaseURL = URL(string: "https://jellyfin.example.test")!
+                appModel.jellyfinAccessToken = "token"
+                appModel.jellyfinUserID = "user"
+            case .emby:
+                appModel.embyServerBaseURL = URL(string: "https://emby.example.test")!
+                appModel.embyAccessToken = "token"
+                appModel.embyUserID = "user"
+            case .plex:
+                break
+            }
         }
+
     }
 
     private func key(_ attempt: String) -> DownloadAttemptKey {
@@ -119,6 +195,18 @@ struct DownloadKeepaliveCoordinatorTests {
     }
 
 
+}
+
+/// Injected B60 transfer-tracking seam: records every exact-attempt query.
+@MainActor
+private final class TrackingProbe {
+    var tracked: Set<DownloadAttemptKey> = []
+    private(set) var queries: Set<DownloadAttemptKey> = []
+
+    func query(_ key: DownloadAttemptKey) -> Bool {
+        queries.insert(key)
+        return tracked.contains(key)
+    }
 }
 
 private final class HeldKeepaliveTask: @unchecked Sendable {

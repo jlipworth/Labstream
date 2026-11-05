@@ -8,67 +8,86 @@ query; verify them in App Store Connect again before any upload or submission.
 
 ## Current status
 
-The repository source is **1.7.2 (build 2)** across all four app targets, with a matching PMSKit
-fallback. Build 2 supersedes the never-uploaded build 1 source so the next archive set carries its
-own build number; the `v1.7.2` tag remains the build 1 source milestone. On 2026-10-14, clean
-Apple Distribution–signed **1.7.2 (build 2)** Release archives for all four targets were built
-from `ce97958f` with stable Xcode 27, validated as described in the
-[publication sequence](#coordinated-publication-sequence), and uploaded to App Store Connect
-through Xcode Organizer. All four uploads processed to **Ready to Submit**, are available to
-the internal TestFlight group, and were selected for their 1.7.2 platform versions on
-2026-10-14. Build 1 was never uploaded. Earlier local 1.7.2
-correction archives were signature-checked, but they are not the original tagged binaries.
-The pre-integration clean correction set was built from `07fba33d`; it must not be
-presented as a binary of the subsequently reconciled source. Local-main integration retains
-stop-item detachment, truthful proxy statistics, subtitle preference handling and safe
-plain-language error explanations. The older automatic P7 rewrite is superseded by the
-default-off DEBUG macOS experiment; prior local commits remain in history. Readable Xcode
-aggregate privacy reports were generated from the four exact build 2 archives. The reports agree
-with the published label, and every packaged app manifest declares SystemBootTime `35F9.1`.
-Prior archive sets are not substitutes for these checks.
-On 2026-10-15 the first command-line run of `scripts/testflight-release.py ship` built clean
-**1.7.2 (build 1490)** archives for all four targets from `4c8de88c`, using the commit-count
-build number (`--build-number auto`) without a version-bump commit. All four uploads processed
-to **VALID**, are in beta testing, and are in the internal TestFlight group. They are TestFlight
-builds only: every 1.7.2 platform version still has build 2 selected, and selecting 1490 instead
-needs separate approval. The Mac upload first failed because the `.pkg` export lacked the
-installer signing identity; after that fix landed it was retried from the same archive.
-On 2026-10-16 a second `ship` run built clean **1.7.2 (build 1501)** archives for all four
-targets from `4b65b353`, after the offline launch gate (#355), the iOS player chrome fix (#356),
-and the corrected App Review notes (#359) merged. All four uploads processed to **VALID**, are
-in beta testing, and are in the internal TestFlight group. They are TestFlight builds only and
-are not selected for the platform versions.
-A third `ship` run the same day built clean **1.7.2 (build 1503)** archives for all four targets
-from `b63d1757`, after the Emby/Plex season-download admission fix (#363) merged. All four
-processed to **VALID**, are in the internal TestFlight group, and were selected for their 1.7.2
-platform versions with `select-build --yes`, replacing build 2. Nothing was submitted for review.
-A fourth `ship` run the same day built clean **1.7.2 (build 1506)** archives for all four targets
-from `6faff16f`, after the player Stats signal-chain redesign (#367) merged. All four processed to
-**VALID** and are in the internal TestFlight group. They are TestFlight builds only and are not
-selected for the platform versions.
-A `ship` run on 2026-10-17 built clean **1.7.2 (build 1513)** archives for all four targets from
-`43196be4`, after the first performance pass (#372, #373, #377, #378) and the tvOS UI-test build fix
-(#370) merged. All four processed to **VALID** and are in the internal TestFlight group. They are
-TestFlight builds only and are not selected for the platform versions.
-The latest recorded processed distribution is the **1.7.2 (build 1513)** archive set at
-`43196be4`; the selected review candidate remains the **1.7.2 (build 1503)** set at `b63d1757`
-(the earlier candidate was build 2 at `ce97958f`), and
-the previous release was the **1.6.1 (build 2)** set at `abd1ddcac351`. Keep the source version
-and the processed binary version separate when reporting release status. Later `auto` builds
-and any hand-bumped `CURRENT_PROJECT_VERSION` for 1.7.2 must exceed 1513.
+The repository source is **1.8.0 (build 2)** across all four app targets. 1.8.0 is the downloads
+overhaul (P1–P7: download admission, cleanup and lifecycle durability, storage accounting, bounded
+background wakes, offline playback and shared download rows; see the
+[bugs-versus-main audit](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/2026-10-17-downloads-overhaul-bugs-vs-main.md))
+plus the work integrated on the same branch: iPhone Duo support and the Xcode 27.1 toolchain
+([#419](https://github.com/jlipworth/Labstream/issues/419)), the iOS player and Stats rework,
+Emby copy-lane fixes, bounded headless codec regression testing and Mac navigation fixes.
 
-| Product | Current source | Latest recorded processed distribution |
-| --- | --- | --- |
-| Apple Vision Pro (`Labstream`) | 1.7.2 (build 2) | **1.7.2 (build 1513):** a clean `43196be4` archive is processed and in the internal TestFlight group, not selected. **1.7.2 (build 1506):** a clean `6faff16f` archive is processed and in the internal TestFlight group, not selected. **1.7.2 (build 1503):** a clean `b63d1757` archive is processed, selected for the platform version, and in the internal TestFlight group. **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, previously selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` and **1.7.2 (build 1501)** from `4b65b353` are also processed and in the internal group, not selected. Physical TestFlight acceptance and review access remain pending. |
-| iPhone and iPad (`LabstreamMobile`) | 1.7.2 (build 2) | **1.7.2 (build 1513):** a clean `43196be4` archive is processed and in the internal TestFlight group, not selected. **1.7.2 (build 1506):** a clean `6faff16f` archive is processed and in the internal TestFlight group, not selected. **1.7.2 (build 1503):** a clean `b63d1757` archive is processed, selected for the platform version, and in the internal TestFlight group. **1.7.2 (build 2):** the repository records a clean `ce97958f` universal iOS archive uploaded and processed, previously selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` and **1.7.2 (build 1501)** from `4b65b353` are also processed and in the internal group, not selected. Physical iPhone and iPad acceptance remain pending. |
-| Apple TV (`LabstreamTV`) | 1.7.2 (build 2) | **1.7.2 (build 1513):** a clean `43196be4` archive is processed and in the internal TestFlight group, not selected. **1.7.2 (build 1506):** a clean `6faff16f` archive is processed and in the internal TestFlight group, not selected. **1.7.2 (build 1503):** a clean `b63d1757` archive is processed, selected for the platform version, and in the internal TestFlight group. **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, previously selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` and **1.7.2 (build 1501)** from `4b65b353` are also processed and in the internal group, not selected. Physical Apple TV acceptance remains pending. |
-| Mac (`LabstreamMac`) | 1.7.2 (build 2) | **1.7.2 (build 1513):** a clean `43196be4` archive is processed and in the internal TestFlight group, not selected. **1.7.2 (build 1506):** a clean `6faff16f` archive is processed and in the internal TestFlight group, not selected. **1.7.2 (build 1503):** a clean `b63d1757` archive is processed, selected for the platform version, and in the internal TestFlight group. **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, previously selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` and **1.7.2 (build 1501)** from `4b65b353` are also processed and in the internal group, not selected. A 1.7.2 TestFlight install on a Mac is not recorded; the earlier 1.6.1 (build 2) build was installed from TestFlight and passed launch and receipt/signature checks. Deeper sandbox and live-host acceptance remain pending. |
+The latest recorded processed distribution is **1.8.0 (build 1653)** for all four platforms,
+archived on 2026-11-02 from clean commit `f1efcae5`. Every 1.8.0 build below was archived from the
+`downloads/overhaul` integration branch before it landed on `main` (uploaded with
+`--allow-unpublished`), passed validation, processed to **VALID**, reached **IN_BETA_TESTING** and
+is available in the **Labstream Internal** TestFlight group. They are TestFlight builds only: no
+1.8.0 App Store version exists, no 1.8.0 build was selected, and nothing was submitted for review.
+The selected review candidate remains **1.7.2 (build 1503)** at `b63d1757`, and the previous
+release was **1.6.1 (build 2)** at `abd1ddcac351`. Keep the source version and the processed
+binary version separate when reporting release status. 1.8.0 device acceptance is tracked in
+[#403](https://github.com/jlipworth/Labstream/issues/403). PMSKit has no app-version constant; the
+runtime client identity reads the bundle version and falls back to `0.0.0`.
+
+| Product | Current source | Latest processed (internal TestFlight) | Selected for the App Store version | Open acceptance |
+| --- | --- | --- | --- | --- |
+| Apple Vision Pro (`Labstream`) | 1.8.0 (build 2) | 1.8.0 (build 1653) | 1.7.2 (build 1503) | Physical TestFlight acceptance and review access. |
+| iPhone and iPad (`LabstreamMobile`) | 1.8.0 (build 2) | 1.8.0 (build 1653) | 1.7.2 (build 1503) | Physical iPhone, iPad and iPhone Duo acceptance; Duo App Store screenshots. |
+| Apple TV (`LabstreamTV`) | 1.8.0 (build 2) | 1.8.0 (build 1653) | 1.7.2 (build 1503) | Physical Apple TV acceptance. |
+| Mac (`LabstreamMac`) | 1.8.0 (build 2) | 1.8.0 (build 1653) | 1.7.2 (build 1503) | Sandbox and live-host acceptance. A 1.6.1 (build 2) TestFlight install passed launch and receipt/signature checks; no later Mac TestFlight install is recorded. |
+
+### 1.8.0 internal TestFlight builds
+
+Newest first. Each row covers all four platforms; "Checked" is the recorded pre-upload
+verification, and none of it is physical-device or live-backend acceptance unless stated.
+
+| Date | Build | Commit | What it adds | Checked | Still open |
+| --- | --- | --- | --- | --- | --- |
+| 2026-11-02 | 1653 | `f1efcae5` | One Stats path palette on every platform (green for direct play, neutral gray for copy and encode); the Connection tile resolves the host on device and reports a VPN route for Tailscale and other tunnels instead of Unknown for custom domains. | 13 Stats summary tests, two mobile Stats UI tests, clean visionOS build and launch smoke, docs hygiene. | New colors on visionOS, tvOS and macOS; the VPN route on a real Tailscale connection. |
+| 2026-10-31 | 1651 | `ff57f33d` | iOS player menus: Quality, Subtitles, Audio, Chapters, Speed and Stats become labeled glass capsules when they fit (beside the title, else under the scrubber, else icon-only); Quality is always present and first; the More overflow is gone; the −30/+30 skips return outside ±10. | Clean Duo-simulator build, folded-display capture, 12-test mobile fixture UI suite. | Unfolded inner-display layout on screen; physical Duo; other platforms. |
+| 2026-10-31 | 1649 | `8de68dca` | Offline scrubber for Plex, Jellyfin and Emby server and transcoder logs; the iOS player tap scrim dims the whole picture and the bottom group no longer stacks its margin on the home-indicator inset. | Clean Duo-simulator `LabstreamMobile` build, three player-chrome fixture UI tests. | Physical Duo acceptance of the scrim fix; real folds. |
+| 2026-10-30 | 1646 | `cbaaf6a5` | Bounded headless audio and video codec regression testing ([#422](https://github.com/jlipworth/Labstream/issues/422)); Emby copy-lane deep seeks no longer race two server transcodes ([#421](https://github.com/jlipworth/Labstream/issues/421), [#420](https://github.com/jlipworth/Labstream/issues/420)): no segment-0 prewarm of a verified copy playlist, the seek-target segment is warmed before attach, and one automatic reopen precedes the video-transcode prompt. | Hermetic PMSKit, Mac hosted suite, four-platform builds, docs hygiene, 20-run Emby deep-seek soak. | Intermittent Emby 4.10.2 server restart loop after mid-file starts; lip sync. |
+| 2026-10-26 | 1639 | `484db0fb` | iPhone Duo support ([#419](https://github.com/jlipworth/Labstream/issues/419)): Xcode 27.1 / iOS 27.1 SDK, fold-aware mobile shell and player, two-column Settings in regular width (unfolded Duo, iPad), one Downloads list in every width with no detail page. | Hermetic PMSKit (including Linux CI), docs hygiene, four-platform builds, mobile hosted and UI smoke, Duo UI smoke lane, tvOS hosted and UI smoke. | Physical Duo; real Device Hub folds; cross-backend playback; Duo App Store screenshots. |
+| 2026-10-26 | 1569 | `81ece411` | Emby 4K video-copy audio no longer cuts in and out ([#420](https://github.com/jlipworth/Labstream/issues/420)): the fragmented-MP4 copy lane requests 2-second segments, and playback details report converted audio. | Hermetic PMSKit, docs hygiene, macOS host Emby start/resume/deep-seek. | Listening check; deep-seek reopen race (#421, fixed in 1646). |
+| 2026-10-24 | 1567 | `41f6f6dd` | Every Home video shelf uses 2:3 poster cards; episodes show season/show posters. | Hermetic PMSKit, Home shelf fixture unit and iPhone UI tests, iPhone runtime smoke. | Physical-device and live-backend acceptance. |
+| 2026-10-23 | 1565 | `76dbbd14` | Staged player transport status: show delay, minimum hold, spinner-to-card escalation, size-class card sizing on iPhone/iPad, centering between player chrome. | App tests, iPhone/iPad buffering-fixture UI test, hermetic PMSKit, four-platform builds, visionOS runtime smoke. | Physical-device and live-backend acceptance. |
+| 2026-10-22 | 1561 | `a9ab14f4` | Query-consistent Search presentation and bounded title ranking; owned download-test fixture cleanup. The keychain and download-backlog investigations do not change production behavior. | Two Mac hosted runs, iPhone/tvOS Search tests, four-platform runtime checks, repository hygiene. | Physical-device and live-backend acceptance. |
+| 2026-10-22 | 1555 | `00614949` | Mac navigation and window-close fixes, Home shelf layout corrections, workflow tooling. | Signing, entitlement, version and privacy-manifest checks. | Physical-device and live-backend acceptance. |
+| 2026-10-18 | 1545 | `6c14515d` | Aggregate download speed stays visible across static Range segment boundaries ([#416](https://github.com/jlipworth/Labstream/issues/416)). | — | Device acceptance (#403). |
+| 2026-10-18 | 1543 | `4dc82ede` | Restricted Offline status moves into navigation chrome (a "Server unreachable" subtitle or visionOS toolbar label plus a Reconnect action) ([#415](https://github.com/jlipworth/Labstream/issues/415)). | — | Device acceptance (#403). |
+| 2026-10-18 | 1541 | `25bc6917` | Every queued Plex optimize or Emby Convert job is submitted at once, so a batch renders while the app is suspended; finished renders wait for a transfer slot ([#414](https://github.com/jlipworth/Labstream/issues/414)). | — | Device acceptance (#403). |
+| 2026-10-18 | 1537 | `12466ea1` | Foreground recovery for crawling background range tasks ([#409](https://github.com/jlipworth/Labstream/issues/409)); fixed Pause All / Resume All for mixed queues ([#410](https://github.com/jlipworth/Labstream/issues/410)); posters for queued rows ([#412](https://github.com/jlipworth/Labstream/issues/412)); configurable simultaneous downloads ([#404](https://github.com/jlipworth/Labstream/issues/404)); aggregate speed after sleep ([#379](https://github.com/jlipworth/Labstream/issues/379)); single-line finished-row summary. | — | Device acceptance (#403). |
+| 2026-10-17 | 1523 | `49e186f0` | Downloads overhaul P1–P7. | — | Device acceptance (#403). |
+
+### 1.7.2 build history
+
+**1.7.2 (build 2)** supersedes the never-uploaded build 1 source; the `v1.7.2` tag remains the
+build 1 source milestone. On 2026-10-14, clean Apple Distribution–signed build 2 Release archives
+for all four targets were built from `ce97958f` with stable Xcode 27, validated as described in the
+[publication sequence](#coordinated-publication-sequence), uploaded through Xcode Organizer,
+processed to **Ready to Submit**, and selected for their 1.7.2 platform versions. Readable Xcode
+aggregate privacy reports from those exact archives agree with the published label, and every
+packaged app manifest declares SystemBootTime `35F9.1`. Earlier local correction archives
+(including the pre-integration set from `07fba33d`) are not the tagged binaries and must not be
+presented as such. Prior archive sets are not substitutes for these checks.
+
+Later `scripts/testflight-release.py ship` runs used commit-count build numbers
+(`--build-number auto`) without version-bump commits. All processed to **VALID** and are in the
+internal TestFlight group:
+
+| Date | Build | Commit | Notes |
+| --- | --- | --- | --- |
+| 2026-10-17 | 1513 | `43196be4` | First performance pass (#372, #373, #377, #378) and tvOS UI-test build fix (#370). Not selected. |
+| 2026-10-16 | 1506 | `6faff16f` | Player Stats signal-chain redesign (#367). Not selected. |
+| 2026-10-16 | 1503 | `b63d1757` | Emby/Plex season-download admission fix (#363). **Selected** for the 1.7.2 platform versions, replacing build 2; not submitted. |
+| 2026-10-16 | 1501 | `4b65b353` | Offline launch gate (#355), iOS player chrome fix (#356), corrected App Review notes (#359). Not selected. |
+| 2026-10-15 | 1490 | `4c8de88c` | First command-line `ship` run. The Mac upload was retried from the same archive after the `.pkg` export gained its installer signing identity. Not selected. |
 
 The 1.7.1 source milestone includes bounded DV/HDR delivery investigation and probe
 validation. The P7 HDR10-base candidate remains default-off and DEBUG-only on macOS;
 full-suite and cross-backend/hardware acceptance gates remain open in the
-[DV investigation](https://github.com/jlipworth/Labstream/blob/main/docs/research/dv-p7-decoder-boundary.md). No release tag, upload, or
-distribution is authorized by the version increment.
+[DV investigation](https://github.com/jlipworth/Labstream/blob/main/docs/research/dv-p7-decoder-boundary.md).
+
+### Product record and version numbers
 
 The four targets share the neutral `org.labstream.Labstream` bundle identifier and are intended
 for one App Store Connect universal-purchase record. The earlier private visionOS 1.6.0 build used
@@ -90,7 +109,7 @@ Licensed demo media, final screenshot capture and review, demo review access, re
 physical-platform acceptance, storefront scope, Digital Services Act status where applicable, and
 final submission remain open.
 
-`1.7.2` is the current source marketing version (`CFBundleShortVersionString`). The number in
+`1.8.0` is the current source marketing version (`CFBundleShortVersionString`). The number in
 parentheses is the App Store build number (`CFBundleVersion`). A new marketing version begins at
 build 1; each replacement upload for the same platform and marketing version must use a higher
 build number. The repository's

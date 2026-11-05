@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Bounded, credential-free tvOS XCUITest/XCUIRemote evidence runner.
 set -euo pipefail
+lease_original_args=("$@")
 
 usage() {
   cat <<'USAGE'
@@ -46,6 +47,10 @@ done
 
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
+# Hold the same host lease across build/install/UI/teardown, not just compilation.
+if ! python3 "$repo_root/scripts/xcodebuild-lease.py" held; then
+  exec python3 "$repo_root/scripts/xcodebuild-lease.py" run --lane agent-tvos-run -- "$repo_root/scripts/agent-tvos-run.sh" "${lease_original_args[@]}"
+fi
 simid=$(scripts/worktree-sim.sh --platform tvos id) || {
   printf 'No worktree-owned tvOS simulator. Acquire the lease before setup.\n' >&2
   exit 2

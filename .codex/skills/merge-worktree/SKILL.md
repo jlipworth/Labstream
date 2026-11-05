@@ -46,6 +46,29 @@ Comments may establish `implemented / pending validation` even when the issue bo
 3. partially implemented with a named successor; or
 4. not merge-ready.
 
+## Validation receipt and resume checkpoint
+
+Keep the closeout evidence in `build/workflow/state.json` with `scripts/workflow-state.py`.
+For each applicable validation gate, record its actual status and existing evidence path.
+Use `blocked` or `not-run` for missing checks; do not write `passed` based on a build alone.
+Record a docs receipt naming the canonical doc updated, or `not-needed` with the reason.
+Inspect the artifact: the receipt is an index, not independent proof of execution.
+
+```sh
+python3 scripts/workflow-state.py receipt validation --name mac-smoke --status passed --evidence build/mac-smoke/run.json
+python3 scripts/workflow-state.py receipt docs --name navigation-guide --status passed --evidence docs/MACOS.md
+python3 scripts/workflow-state.py show
+```
+
+Before compaction, handoff, or a long external wait, record a compact checkpoint: goal,
+source/base and current HEAD, PR/issues, completed checks, open review findings,
+already-authorized actions, remaining human/live gates, and one concrete next action.
+Use the [review ledger](../review-ledger/SKILL.md) when there are multiple review rounds.
+Do not infer authorization from a checkpoint or close an issue from a receipt alone.
+`show` flags source-state changes; rerun only the gates those changes invalidate.
+Preserve needed receipts and artifacts in the destination worktree before deleting the source.
+The final report should state docs and validation status even when a gate remains open.
+
 ## 2. Align documentation before the final merge
 
 Inspect all changed docs plus any plan/research file linked from the issue. Do not archive a document merely because a branch is merging.
@@ -139,14 +162,14 @@ scripts/worktree-sim.sh closeout "$WORKTREE"
 git worktree remove "$WORKTREE"
 git branch -d "$SOURCE_BRANCH"
 scripts/worktree-sim.sh prune
-xcrun simctl list devices | rg 'vpwt|iphonewt|ipadwt|tvwt|<branch-fragment>' || true
+xcrun simctl list devices | rg 'vpwt|iphonewt|duowt|ipadwt|tvwt|<branch-fragment>' || true
 ```
 
 Before removal, recheck the lane is clean. The Mac cleanup command is mandatory even when the lane was not primarily a macOS lane: app-code validation may have staged one or more `Labstream Dev — <identity>` builds under that worktree's `build/macos-host/`. It terminates and deletes every Mac app staged by the closing worktree, including any worktree-local production-identity staging, plus its worktree-local Mac build product. Verify that no `Labstream.app` remains below `$WORKTREE/build/macos-host/` and no process is executing from that path.
 
 This cleanup must not delete the canonical `/Applications/Labstream.app`, a Mac app staged from another active worktree, sandbox containers, or Keychain credentials. If `~/Library/Containers/org.labstream.Labstream.dev.*` contains an identity associated with the closing lane, classify it against all active worktrees before removal; delete only a confirmed stale development container, and never reset the production container during ordinary closeout.
 
-`closeout` must remove all of that linked worktree's visionOS/iPhone/iPad/tvOS simulators and `.simid*` ownership files without deleting main's golden visionOS simulator. Prefer `git branch -d`; use `-D` only after proving the exact source tip is an ancestor of main and only when Git's worktree/rebase bookkeeping makes `-d` reject an already-integrated branch. For a squash-merged PR, `-d` always refuses; use `git branch -D "$SOURCE_BRANCH"` once the PR's `MERGED` state (or the tree match above) is confirmed.
+`closeout` must remove all of that linked worktree's visionOS/iPhone/iPhone Duo/iPad/tvOS simulators and `.simid*` ownership files without deleting main's golden visionOS simulator. Prefer `git branch -d`; use `-D` only after proving the exact source tip is an ancestor of main and only when Git's worktree/rebase bookkeeping makes `-d` reject an already-integrated branch. For a squash-merged PR, `-d` always refuses; use `git branch -D "$SOURCE_BRANCH"` once the PR's `MERGED` state (or the tree match above) is confirmed.
 
 If the worktree was already removed, run `scripts/worktree-sim.sh prune` and verify no owned simulator remains. Also inspect the removed path's former `build/macos-host` identities and the live process list; if the path is gone, its staged apps are gone, but any matching stale development container still needs the active-worktree classification above.
 

@@ -46,6 +46,8 @@ final class PlaybackController {
     private var videoTranscodeConsentResumeMs: Int?
     private var preferEmbyVideoCopyHLS = false
     private var mediaBrowserVideoCopyEnforced = false
+    /// #421: one automatic reopen per Emby copy reopen target, never a loop.
+    private var embyCopyReopenRetryUsed = false
     private var usesEmbyHEVCSDRNativeTimeline = false
     private let embyReopenStopBarrier = EmbyReopenStopBarrier()
     private var embyReopenTransactionTail: Task<Void, Never>?
@@ -98,7 +100,10 @@ final class PlaybackController {
             visibleAttachment: debugVisibleAttachmentCount == 0 ? .detached
                 : debugVisibleWindowIsVisible.map { $0() ? .attached : .detached } ?? .unknown,
             positionBucketSeconds: position.isFinite ? Int(min(604_800, max(0, position))) / 5 * 5 : 0,
-            cleanupRequested: debugCleanupRequested, serverCleanup: "unknown")
+            cleanupRequested: debugCleanupRequested, serverCleanup: "unknown",
+            deliveryTransport: DebugPlaybackEvidence.deliveryTransport(
+                assetURL: (player.currentItem?.asset as? AVURLAsset)?.url,
+                originalFileRoute: remotePlayMethod == .directPlay))
     }
     #endif
 
@@ -121,12 +126,38 @@ final class PlaybackController {
     /// resolved next item. The PlayerView wires this to its `onRequestPlay`, which the
     /// DetailView turns into a presented-item swap (rebuilding this view/controller for the
     /// next episode). Nil for sessions with no advance handler (e.g. offline playback).
-    var onAdvanceToNext: ((MediaItem) -> Void)?
+    var onAdvanceToNext: ((MediaItem) -> Void)? {
+        didSet { presentationCallbackOwner = nil }
+    }
 
     /// Invoked when playback reaches EOF and there is no resolved Up Next item to advance to.
     /// Player presentations wire this to their close/dismiss action so completed movies and
     /// offline files return to the app instead of sitting on a paused final frame.
-    var onPlaybackEnded: (() -> Void)?
+    var onPlaybackEnded: (() -> Void)? {
+        didSet { presentationCallbackOwner = nil }
+    }
+
+    private var presentationCallbackOwner: UUID?
+
+    /// A presenter may clear only the callbacks it installed. Direct assignments by another
+    /// presenter revoke this lease, as does terminal stop.
+    func bindPresentationCallbacks(owner: UUID,
+                                   advance: @escaping (MediaItem) -> Void,
+                                   ended: @escaping () -> Void) {
+        onAdvanceToNext = advance
+        onPlaybackEnded = ended
+        presentationCallbackOwner = owner
+    }
+
+    func ownsPresentationCallbacks(_ owner: UUID) -> Bool {
+        presentationCallbackOwner == owner
+    }
+
+    func clearPresentationCallbacks(owner: UUID) {
+        guard ownsPresentationCallbacks(owner) else { return }
+        onAdvanceToNext = nil
+        onPlaybackEnded = nil
+    }
 
     /// Fired whenever the item reaches `.playing`. PlayerView uses it to dismiss the
     /// "Reconnecting…" overlay shown during a failure-recovery rebuild (GH #33): the overlay
@@ -174,7 +205,12 @@ final class PlaybackController {
     private var offlineSubtitleCuesByTrackID: [Int: [OfflineTextSubtitleCue]] = [:]
     private var selectedOfflineSubtitleTrackID: Int?
     private var offlineSubtitleSelectionAuthority = OfflineSubtitleSelectionAuthority()
-    private let offlineSubtitleCueLoader: OfflineSubtitleCueLoader
+    private var offlineSubtitleCueLoader: OfflineSubtitleCueLoader
+    #if DEBUG
+    func setOfflineSubtitleCueLoaderForP7Testing(_ loader: @escaping OfflineSubtitleCueLoader) {
+        offlineSubtitleCueLoader = loader
+    }
+    #endif
     /// Most recent structured Plex decision. Replaced on every stream rebuild so subtitle rows
     /// and Stats for Nerds describe the same active lane (#248).
     private var lastPlexDecision: DecisionResponse?
@@ -359,6 +395,8 @@ final class PlaybackController {
     private var playbackTask: Task<Void, Never>?
     private var upNextTask: Task<Void, Never>?
     private var playbackGeneration = 0
+    private var offlineObservedItemGeneration: Int?
+    private var offlinePlaybackClosed = false
     private lazy var lifecycleCallbacks = PlaybackLifecycleCallbackSink<Int> { [weak self] generation in
         self?.isCurrentPlaybackLifecycle(generation) == true
     }
@@ -997,6 +1035,9 @@ final class PlaybackController {
     /// How often (seconds) the periodic time observer fires.
     private let timelineIntervalSeconds: Double = 10
 
+    /// Track selections read and persist within the controller's preference domain.
+    @ObservationIgnored var trackPreferenceDefaults: UserDefaults
+
     // MARK: - Init
 
     /// Construct one controller from exactly one typed playback authority.
@@ -1010,7 +1051,9 @@ final class PlaybackController {
          initialAudioStreamIndex: Int? = nil,
          initialSubtitleStreamIndex: Int? = nil,
          offlineSubtitleCueLoader: @escaping OfflineSubtitleCueLoader = OfflineSubtitleCueLoading.live,
-         plexAudioStreamSelector: PlexAudioStreamSelector? = nil) {
+         plexAudioStreamSelector: PlexAudioStreamSelector? = nil,
+         trackPreferenceDefaults: UserDefaults = .standard) {
+        self.trackPreferenceDefaults = trackPreferenceDefaults
         self.item = item
         self.sessionSource = sessionSource
         self.identity = identity
@@ -1090,6 +1133,12 @@ final class PlaybackController {
     /// Tear down observers and report a final `stopped` timeline. Call from the
     /// view's `dismantle`.
     func stop() {
+        // Presentation closures can retain their view/session graph. Release them even when
+        // the stopped controller is intentionally kept alive for diagnostics or final reporting.
+        onAdvanceToNext = nil
+        onPlaybackEnded = nil
+        onPlaybackActive = nil
+        offlinePlaybackClosed = true
         failureRetryTask?.cancel()
         failureRetryTask = nil
         // Revoke both queued and in-flight audio mutations before any await can
@@ -1142,7 +1191,11 @@ final class PlaybackController {
             remoteHLSProxyGeneration = nil
         }
         timeline.report(state: .stopped, force: true, positionMs: terminalProgressMs)
-        recordLocalPlaybackPosition(terminalProgressMs)
+        if let close = offlineSession?.onPlaybackClose {
+            close(terminalProgressMs, item.duration)
+        } else {
+            localPlaybackProgress?(terminalProgressMs, item.duration)
+        }
         player.pause()
         removeObservers()
         player.replaceCurrentItem(with: nil)
@@ -1170,8 +1223,8 @@ final class PlaybackController {
         audioSession.deactivate()
     }
 
-    private func recordLocalPlaybackPosition(_ positionMs: Int? = nil) {
-        guard let localPlaybackProgress else { return }
+    func recordLocalPlaybackPosition(_ positionMs: Int? = nil) {
+        guard !offlinePlaybackClosed, let localPlaybackProgress else { return }
         localPlaybackProgress(positionMs ?? currentResumeMs, item.duration)
     }
 
@@ -1278,7 +1331,7 @@ final class PlaybackController {
     /// accessor (the synchronous `mediaSelectionGroup(forMediaCharacteristic:)` is
     /// deprecated on visionOS).
     func loadSubtitleTracks() async throws -> PlaybackTrackSnapshot<PlaybackSubtitleTrack>? {
-        if sessionSource.kind == .offline, !offlineTextSubtitles.isEmpty {
+        if sessionSource.kind == .offline {
             return await loadOfflineSubtitleTracks()
         }
         if supportsMetadataSubtitleSelection {
@@ -1357,22 +1410,43 @@ final class PlaybackController {
     }
 
     private func loadOfflineSubtitleTracks() async -> PlaybackTrackSnapshot<PlaybackSubtitleTrack>? {
-        var tracks: [PlaybackSubtitleTrack] = [makeSubtitleTrack(
-            displayName: "Off", mechanism: .offlineOff,
-            route: .offlineTextSidecar,
-            isCurrentSelection: selectedOfflineSubtitleTrackID == nil)]
-        for track in offlineTextSubtitles {
-            tracks.append(makeSubtitleTrack(
-                displayName: track.displayName,
-                mechanism: .offlineSidecar(track),
-                route: .offlineTextSidecar,
-                isCurrentSelection: selectedOfflineSubtitleTrackID == track.id))
+        let playerItem = player.currentItem
+        let generation = playbackGeneration
+        let itemGeneration = currentPlayerItemGeneration
+        let selectionGeneration = offlineSubtitleSelectionAuthority.generation
+        let group: AVMediaSelectionGroup?
+        if let playerItem { group = try? await playerItem.asset.loadMediaSelectionGroup(for: .legible) }
+        else { group = nil }
+        func current() -> Bool {
+            !Task.isCancelled && !offlinePlaybackClosed && player.currentItem === playerItem
+                && playbackGeneration == generation && currentPlayerItemGeneration == itemGeneration
+                && offlineSubtitleSelectionAuthority.generation == selectionGeneration
         }
-        guard tracks.count > 1 else { return nil }
-        let candidateID = selectedOfflineSubtitleTrackID.map(PlaybackSubtitleTrack.ID.offlineSidecar)
-            ?? .offlineOff
-        let selectedID = tracks.contains(where: { $0.id == candidateID }) ? candidateID : .offlineOff
-        return PlaybackTrackSnapshot(tracks: tracks, selectedID: selectedID)
+        guard current() else { return nil }
+        let embedded = group.flatMap { playerItem?.currentMediaSelection.selectedMediaOption(in: $0) }
+        let selectedID: PlaybackSubtitleTrack.ID = selectedOfflineSubtitleTrackID.map { .offlineSidecar($0) }
+            ?? embedded.flatMap { group?.options.firstIndex(of: $0).map { .avFoundation($0) } } ?? .offlineOff
+        var tracks = [makeSubtitleTrack(displayName: "Off", mechanism: .offlineOff,
+            route: .offlineTextSidecar, isCurrentSelection: selectedID == .offlineOff)]
+        var counts: [String: Int] = [:]
+        func unique(_ label: String) -> String {
+            let count = counts[label, default: 0] + 1
+            counts[label] = count
+            return count == 1 ? label : "\(label) \(count)"
+        }
+        for (index, option) in (group?.options ?? []).enumerated() {
+            let label = await Self.subtitleLabel(for: option)
+            guard current() else { return nil }
+            tracks.append(makeSubtitleTrack(displayName: unique(label),
+                mechanism: .avFoundation(index: index, option: option), route: .avFoundationSoft,
+                isCurrentSelection: selectedID == .avFoundation(index)))
+        }
+        for track in offlineTextSubtitles {
+            tracks.append(makeSubtitleTrack(displayName: unique(track.displayName),
+                mechanism: .offlineSidecar(track), route: .offlineTextSidecar,
+                isCurrentSelection: selectedID == .offlineSidecar(track.id)))
+        }
+        return tracks.count > 1 ? PlaybackTrackSnapshot(tracks: tracks, selectedID: selectedID) : nil
     }
 
     /// Parse one offline sidecar only when the viewer selects it. Opening the subtitle menu is now
@@ -1383,7 +1457,13 @@ final class PlaybackController {
             throw SubtitleTrackLoadError.selectionDidNotApply
         }
         let url = base.appendingPathComponent(track.relativePath)
+        let playerItem = player.currentItem
+        let generation = playbackGeneration
+        let selectionGeneration = offlineSubtitleSelectionAuthority.generation
         let cues = try await offlineSubtitleCueLoader(url)
+        guard generation == playbackGeneration, player.currentItem === playerItem,
+              selectionGeneration == offlineSubtitleSelectionAuthority.generation,
+              !Task.isCancelled, !offlinePlaybackClosed else { return }
         guard !cues.isEmpty else { throw SubtitleTrackLoadError.selectionDidNotApply }
         offlineSubtitleCuesByTrackID[track.id] = cues
     }
@@ -1419,7 +1499,7 @@ final class PlaybackController {
     }
 
     private func persistOfflineSubtitlePreference(for track: OfflineTextSubtitleTrack?) {
-        let defaults = UserDefaults.standard
+        let defaults = trackPreferenceDefaults
         guard let track else {
             defaults.set(true, forKey: SubtitlePrefKey.off)
             defaults.removeObject(forKey: SubtitlePrefKey.language)
@@ -1448,7 +1528,7 @@ final class PlaybackController {
             ?? BackendSubtitleSelection.mediaBrowserWireValue(
                 MediaBrowserPlaybackPreferencePolicy.preferredSubtitleStreamIndex(
                     for: item,
-                    mediaIndex: mediaIndex))
+                    mediaIndex: mediaIndex, defaults: trackPreferenceDefaults))
             ?? .off
         let route: SubtitleDeliveryRoute = mediaBrowserSession?.backend == .emby
             ? .embyEncodedSelection : .jellyfinMetadata
@@ -1634,7 +1714,7 @@ final class PlaybackController {
     /// chosen track's language code (or the "Off" flag) — NOT the option itself, which is
     /// non-`Sendable` and item-specific. Called from the Subtitles tab via `selectSubtitle`.
     private func persistSubtitlePreference(for option: AVMediaSelectionOption?) {
-        let defaults = UserDefaults.standard
+        let defaults = trackPreferenceDefaults
         guard let option else {
             // User picked "Off": remember that and clear any language preference.
             defaults.set(true, forKey: SubtitlePrefKey.off)
@@ -1666,7 +1746,7 @@ final class PlaybackController {
                                                        itemGeneration: Int,
                                                        observedPlaybackGeneration: Int) async {
         guard !didApplySavedSubtitle else { return }
-        let defaults = UserDefaults.standard
+        let defaults = trackPreferenceDefaults
         let wantsOff = defaults.bool(forKey: SubtitlePrefKey.off)
         let savedLang = defaults.string(forKey: SubtitlePrefKey.language)
         let mode = SubtitleAutoSelectMode(rawValue: defaults.string(forKey: PlaybackPreferences.Keys.subtitleAutoSelectMode) ?? "")
@@ -1674,7 +1754,9 @@ final class PlaybackController {
 
         // Load the legible group once. If the HLS carries no legible renditions, there's
         // nothing to apply on this item — mark applied so we don't re-probe each readyToPlay.
+        let selectionGeneration = offlineSubtitleSelectionAuthority.generation
         let loadedGroup = try? await playerItem.asset.loadMediaSelectionGroup(for: .legible)
+        guard sessionSource.kind != .offline || selectionGeneration == offlineSubtitleSelectionAuthority.generation else { return }
         guard isCurrentObservedItem(playerItem,
                                     itemGeneration: itemGeneration,
                                     observedPlaybackGeneration: observedPlaybackGeneration) else { return }
@@ -1710,27 +1792,42 @@ final class PlaybackController {
     /// switch on the live `AVPlayerItem` — no reload, no playhead snapshot needed.
     func selectSubtitle(_ track: PlaybackSubtitleTrack) async throws {
         switch track.mechanism {
-        case .offlineOff:
-            _ = offlineSubtitleSelectionAuthority.begin(trackID: nil)
+        case .offlineOff, .offlineSidecar:
+            guard sessionSource.kind == .offline else { return }
+            let playerItem = player.currentItem
+            let offlineTrack: OfflineTextSubtitleTrack?
+            if case .offlineSidecar(let descriptor) = track.mechanism { offlineTrack = descriptor }
+            else { offlineTrack = nil }
+            let token = offlineSubtitleSelectionAuthority.begin(trackID: offlineTrack?.id)
+            let generation = playbackGeneration
+            let itemGeneration = currentPlayerItemGeneration
             selectedOfflineSubtitleTrackID = nil
-            persistOfflineSubtitlePreference(for: nil)
-            updateOfflineSubtitleOverlay(at: player.currentTime().seconds)
-
-        case .offlineSidecar(let offlineTrack):
-            let token = offlineSubtitleSelectionAuthority.begin(trackID: offlineTrack.id)
-            do {
-                try await loadOfflineSubtitleCues(for: offlineTrack)
-            } catch {
-                guard offlineSubtitleSelectionAuthority.accepts(
-                    token,
-                    isCancelled: Task.isCancelled) else { return }
-                throw error
+            offlineSubtitleOverlay.set(nil)
+            didApplySavedSubtitle = true
+            func current() -> Bool {
+                !offlinePlaybackClosed && player.currentItem === playerItem
+                    && playbackGeneration == generation && currentPlayerItemGeneration == itemGeneration
+                    && offlineSubtitleSelectionAuthority.accepts(token, isCancelled: Task.isCancelled)
             }
-            guard offlineSubtitleSelectionAuthority.accepts(token,
-                                                             isCancelled: Task.isCancelled) else {
-                return
+            let group: AVMediaSelectionGroup?
+            if let playerItem {
+                do { group = try await playerItem.asset.loadMediaSelectionGroup(for: .legible) }
+                catch {
+                    guard current() else { return }
+                    throw SubtitleTrackLoadError.groupLoadFailed(error)
+                }
+            } else { group = nil }
+            guard current() else { return }
+            if let group { playerItem?.select(nil, in: group) }
+            if let offlineTrack {
+                do { try await loadOfflineSubtitleCues(for: offlineTrack) }
+                catch {
+                    guard current() else { return }
+                    throw error
+                }
+                guard current() else { return }
+                selectedOfflineSubtitleTrackID = offlineTrack.id
             }
-            selectedOfflineSubtitleTrackID = offlineTrack.id
             persistOfflineSubtitlePreference(for: offlineTrack)
             updateOfflineSubtitleOverlay(at: player.currentTime().seconds)
 
@@ -1785,17 +1882,28 @@ final class PlaybackController {
                                      intent: .subtitleTrackChange)
 
         case .avFoundationOff, .avFoundation:
-            guard let playerItem = player.currentItem else {
-                throw SubtitleTrackLoadError.playerNotReady
+            guard let playerItem = player.currentItem else { throw SubtitleTrackLoadError.playerNotReady }
+            let generation = playbackGeneration
+            let itemGeneration = currentPlayerItemGeneration
+            let token = offlineSubtitleSelectionAuthority.begin(trackID: nil)
+            if sessionSource.kind == .offline {
+                selectedOfflineSubtitleTrackID = nil
+                offlineSubtitleOverlay.set(nil)
+                didApplySavedSubtitle = true
             }
             guard let group = try? await playerItem.asset.loadMediaSelectionGroup(for: .legible),
-                  !group.options.isEmpty else {
-                throw SubtitleTrackLoadError.playerNotReady
-            }
+                  !group.options.isEmpty else { throw SubtitleTrackLoadError.playerNotReady }
+            guard !Task.isCancelled, player.currentItem === playerItem,
+                  playbackGeneration == generation, currentPlayerItemGeneration == itemGeneration,
+                  offlineSubtitleSelectionAuthority.accepts(token, isCancelled: Task.isCancelled),
+                  !offlinePlaybackClosed else { return }
             let requestedOption: AVMediaSelectionOption? = switch track.mechanism {
             case .avFoundationOff: nil
             case .avFoundation(_, let option): option
             default: nil
+            }
+            guard requestedOption.map({ group.options.contains($0) }) ?? true else {
+                throw SubtitleTrackLoadError.selectionDidNotApply
             }
             playerItem.select(requestedOption, in: group)
             let applied = playerItem.currentMediaSelection.selectedMediaOption(in: group)
@@ -1810,7 +1918,7 @@ final class PlaybackController {
 
     /// Persist a metadata-driven selection without exposing backend off sentinels to the picker.
     private func persistMetadataSubtitlePreference(_ selection: BackendSubtitleSelection) {
-        let defaults = UserDefaults.standard
+        let defaults = trackPreferenceDefaults
         guard case .stream(let streamIndex) = selection,
               let stream = streamingPart?.subtitleStreams.first(where: { $0.id == streamIndex }) else {
             defaults.set(true, forKey: SubtitlePrefKey.off)
@@ -1929,7 +2037,7 @@ final class PlaybackController {
         let code = MediaBrowserPlaybackPreferencePolicy.persistableLanguageCode(
             languageTag: option.extendedLanguageTag,
             languageCode: option.locale?.language.languageCode?.identifier)
-        let defaults = UserDefaults.standard
+        let defaults = trackPreferenceDefaults
         if let code {
             defaults.set(code, forKey: AudioPrefKey.language)
         } else {
@@ -1958,7 +2066,7 @@ final class PlaybackController {
             return
         }
         #endif
-        let savedLang = UserDefaults.standard.string(forKey: AudioPrefKey.language)
+        let savedLang = trackPreferenceDefaults.string(forKey: AudioPrefKey.language)
         // No preference saved: leave the HLS default and don't burn the one-shot gate yet, so a
         // future pick starts fresh.
         guard let savedLang, !savedLang.isEmpty else { return }
@@ -1976,7 +2084,7 @@ final class PlaybackController {
 
         // Select the first audible option whose language matches the saved code. No match →
         // leave the HLS default selection in place.
-        let desiredRole = UserDefaults.standard.string(forKey: AudioPrefKey.role)
+        let desiredRole = trackPreferenceDefaults.string(forKey: AudioPrefKey.role)
             .flatMap(AudioStreamRole.init(rawValue:)) ?? .main
         let match = group.options.first { option in
             Self.languageMatches(languageTag: option.extendedLanguageTag,
@@ -2000,11 +2108,11 @@ final class PlaybackController {
         BackendSubtitleSelection.mediaBrowserWireValue(
             MediaBrowserPlaybackPreferencePolicy.preferredSubtitleStreamIndex(
                 for: item,
-                mediaIndex: mediaIndex)) == .off
+                mediaIndex: mediaIndex, defaults: trackPreferenceDefaults)) == .off
     }
 
     private func selectedBurnSubtitleStreamIDForCurrentPreferences() -> Int? {
-        let defaults = UserDefaults.standard
+        let defaults = trackPreferenceDefaults
         let burnMode = SubtitleBurnMode(rawValue: defaults.string(forKey: PlaybackPreferences.Keys.subtitleBurnMode) ?? "")
             ?? .automatic
         guard burnMode != .automatic else { return nil }
@@ -2046,13 +2154,13 @@ final class PlaybackController {
     private func effectiveRemoteAudioStreamIndex() -> Int? {
         audioStreamIDOverride
             ?? MediaBrowserPlaybackPreferencePolicy.initialAudioStreamIndex(for: item,
-                                                                           mediaIndex: mediaIndex)
+                                                                           mediaIndex: mediaIndex, defaults: trackPreferenceDefaults)
     }
 
     private func effectiveRemoteSubtitleStreamIndex() -> Int? {
         subtitleSelectionOverride?.mediaBrowserWireValue
             ?? MediaBrowserPlaybackPreferencePolicy.preferredSubtitleStreamIndex(for: item,
-                                                                                 mediaIndex: mediaIndex)
+                                                                                 mediaIndex: mediaIndex, defaults: trackPreferenceDefaults)
     }
 
     private func sourcePartForCurrentMedia() -> Part? {
@@ -2141,7 +2249,7 @@ final class PlaybackController {
         // this shared prevents the checkmark from describing a different stream than PlaybackInfo.
         let candidateSelectedID = audioStreamIDOverride
             ?? MediaBrowserPlaybackPreferencePolicy.initialAudioStreamIndex(for: item,
-                                                                            mediaIndex: mediaIndex)
+                                                                            mediaIndex: mediaIndex, defaults: trackPreferenceDefaults)
         guard let selectedID = PlaybackTrackSelectionPolicy.resolvedMetadataAudioStreamID(
             candidate: candidateSelectedID,
             streams: streams) else { return nil }
@@ -2255,10 +2363,10 @@ final class PlaybackController {
         if let stream = part.audioStreams.first(where: { $0.id == streamID }),
            let lang = MediaBrowserPlaybackPreferencePolicy.persistableLanguageCode(
                languageTag: stream.languageTag, languageCode: stream.languageCode) {
-            UserDefaults.standard.set(lang, forKey: AudioPrefKey.language)
+            trackPreferenceDefaults.set(lang, forKey: AudioPrefKey.language)
         }
         if let stream = part.audioStreams.first(where: { $0.id == streamID }) {
-            UserDefaults.standard.set(stream.audioRole.rawValue, forKey: AudioPrefKey.role)
+            trackPreferenceDefaults.set(stream.audioRole.rawValue, forKey: AudioPrefKey.role)
         }
 
         // Restart/reopen where the viewer is — same UX as Quality reload. Plex persists the
@@ -2770,7 +2878,7 @@ final class PlaybackController {
         if audioStreamIDOverride == nil,
            let part = sourcePartForCurrentMedia(),
            let preferredAudioID = MediaBrowserPlaybackPreferencePolicy.preferredAudioStreamIndex(for: item,
-                                                                                                 mediaIndex: mediaIndex),
+                                                                                                 mediaIndex: mediaIndex, defaults: trackPreferenceDefaults),
            part.audioStreams.first(where: { $0.selected == true })?.id != preferredAudioID {
             do {
                 try await client.send(StreamSelectionRequest.selectAudioStream(server: server,
@@ -3059,7 +3167,7 @@ final class PlaybackController {
                                 decision: nil,
                                 server: nil,
                                 targetBitrateKbps: 0)
-        diagnostics.connectionHost = "Local file"
+        diagnostics.connectionHost = PlaybackConnectionRoute.downloadedHost
         var fields: [String: DiagnosticFieldValue] = [
             "path_mode": .label("local_file"),
             "stream_url_shape": .urlShape(url),
@@ -3321,19 +3429,37 @@ final class PlaybackController {
         } else {
             observer = nil
         }
-        let prewarm = await HLSSessionPrewarmer.prewarm(startURL: primedURL,
-                                                        headers: headers,
-                                                        budgetSeconds: 8,
-                                                        observe: observer)
-        guard !Task.isCancelled, generation == playbackGeneration else { return nil }
-        recordPlaybackDiagnostic("playback.remote_prewarm", fields: [
-            "outcome": .label(prewarm.outcome.rawValue),
-            "elapsed_ms": .int(Int(prewarm.elapsedSeconds * 1000)),
-            "polls": .int(prewarm.polls),
-            "target": .millisecondsBucket(resumeOffsetMs),
-        ])
-        NSLog("PlaybackController: remote transcode prewarm %@ after %.1fs (%d polls) (#196)",
-              prewarm.outcome.rawValue, prewarm.elapsedSeconds, prewarm.polls)
+        // #421: a verified Emby copy child is already a media playlist. The generic prewarm
+        // would request its segment 0 and start a transcode from zero that races the seek
+        // target. Instead serve the target segment itself, so the job already runs at the
+        // target when AVPlayer's init.mp4 request arrives (see warmTargetSegment).
+        if mediaBrowserSession?.backend == .emby, mediaBrowserVideoCopyEnforced {
+            let warm = await HLSSessionPrewarmer.warmTargetSegment(
+                mediaPlaylistURL: EmbyVideoCopyPolicy.fullTimelineURL(url) ?? url,
+                targetMs: resumeOffsetMs, headers: headers, budgetSeconds: 8, observe: observer)
+            guard !Task.isCancelled, generation == playbackGeneration else { return nil }
+            playbackLog.notice("remote.emby_copy_target_warm outcome=\(warm.outcome.rawValue, privacy: .public) polls=\(warm.polls, privacy: .public)")
+            recordPlaybackDiagnostic("playback.emby_copy_target_warm", fields: [
+                "outcome": .label(warm.outcome.rawValue),
+                "elapsed_ms": .int(Int(warm.elapsedSeconds * 1000)),
+                "polls": .int(warm.polls),
+                "target": .millisecondsBucket(resumeOffsetMs),
+            ])
+        } else {
+            let prewarm = await HLSSessionPrewarmer.prewarm(startURL: primedURL,
+                                                            headers: headers,
+                                                            budgetSeconds: 8,
+                                                            observe: observer)
+            guard !Task.isCancelled, generation == playbackGeneration else { return nil }
+            recordPlaybackDiagnostic("playback.remote_prewarm", fields: [
+                "outcome": .label(prewarm.outcome.rawValue),
+                "elapsed_ms": .int(Int(prewarm.elapsedSeconds * 1000)),
+                "polls": .int(prewarm.polls),
+                "target": .millisecondsBucket(resumeOffsetMs),
+            ])
+            NSLog("PlaybackController: remote transcode prewarm %@ after %.1fs (%d polls) (#196)",
+                  prewarm.outcome.rawValue, prewarm.elapsedSeconds, prewarm.polls)
+        }
 
         let proxy = MediaSessionProxy(strippedPlaylistQueryItemNames: ["starttimeticks"],
                                       injectedPlaylistStartTimeOffsetSeconds: Double(resumeOffsetMs) / 1000.0)
@@ -4210,8 +4336,7 @@ final class PlaybackController {
                       self.isCurrentObservedItem(playerItem,
                                                  itemGeneration: itemGeneration,
                                                  observedPlaybackGeneration: observedPlaybackGeneration) else { return }
-                self.handleTimeControlTransport(status: status)
-                self.handleTimeControlBuffering(status: status)
+                self.observeTimeControlStatus(status)
             }
         })
 
@@ -4257,6 +4382,18 @@ final class PlaybackController {
                 }
             }
         })
+    }
+
+    /// Current-item status delivery after the observer's generation fences. Callable by
+    /// deterministic local-player pins without depending on AVFoundation's scheduling.
+    func observeTimeControlStatus(_ status: AVPlayer.TimeControlStatus) {
+        if status == .playing, !offlinePlaybackClosed,
+           offlineObservedItemGeneration != currentPlayerItemGeneration {
+            offlineObservedItemGeneration = currentPlayerItemGeneration
+            offlineSession?.onPlaybackObserved?()
+        }
+        handleTimeControlTransport(status: status)
+        handleTimeControlBuffering(status: status)
     }
 
     /// Transport/diagnostics half of the merged `\.timeControlStatus` observation. Runs
@@ -4458,7 +4595,7 @@ final class PlaybackController {
 
     private func updateTransportStatus() {
         let nextStatus = resolvedTransportStatus()
-        transportStatus.set(nextStatus)
+        transportStatus.set(nextStatus, hasObservedPlayback: hasObservedPlayback)
         guard nextStatus != lastLoggedTransportStatus else { return }
         lastLoggedTransportStatus = nextStatus
         recordPlaybackDiagnostic("playback.transport_status", fields: [
@@ -4862,8 +4999,34 @@ final class PlaybackController {
         return true
     }
 
+    /// #421: Emby can race two transcodes on one copy session's init segment around a
+    /// seek-gap restart, and AVPlayer then fails to build its render pipeline (`fmt?`).
+    /// Reopen the same verified copy lane once before asking to encode video.
+    private func attemptEmbyCopyReopenRetry(_ failure: PlaybackFailure) -> Bool {
+        guard EmbyCopyReopenRetryPolicy.shouldRetry(
+                isEmby: mediaBrowserSession?.backend == .emby,
+                videoCopyEnforced: mediaBrowserVideoCopyEnforced,
+                bitrateCeilingKbps: maxVideoBitrateKbps,
+                videoTranscodeApproved: videoTranscodeApprovedForCurrentItem,
+                retryAlreadyUsed: embyCopyReopenRetryUsed,
+                failureIsTerminal: [.serverHTTP, .backendUnsupported, .authenticationRequired,
+                                    .connectionUnavailable].contains(failure.code))
+        else { return false }
+        let resume = playheadSnapshotForRestart(cause: .directPlayRuntimeFallback).positionMs
+        playbackLog.notice("remote.emby_copy_reopen_retry")
+        recordPlaybackDiagnostic("playback.emby_copy_reopen_retry", fields: [
+            "target": .millisecondsBucket(resume),
+            "failure": .label(failure.code.rawValue),
+        ])
+        playbackError.clear()
+        endReconnectStatus()
+        reopenRemoteStream(offsetMs: resume, bitrateKbps: 0, isEmbyCopyRetry: true)
+        return true
+    }
+
     /// Surface a playback failure to the UI. No silent auto-retry: a failed PMS stream must not
     /// become a hidden restart loop that can hammer the server. Retry is an explicit user action.
+    /// The only automatic reopens are Emby's one-shot copy fallback and copy reopen retry.
     private func handlePlaybackFailure(_ error: Error?,
                                        source: PlaybackFailureSource = .playerFailure,
                                        playerItem: AVPlayerItem? = nil,
@@ -4891,6 +5054,7 @@ final class PlaybackController {
             return
         }
         if attemptEmbyVideoCopyFallback() { return }
+        if attemptEmbyCopyReopenRetry(observedFailure) { return }
         if let backend = mediaBrowserSession?.backend,
            backend == .jellyfin || backend == .emby, maxVideoBitrateKbps <= 0,
            !videoTranscodeApprovedForCurrentItem {
@@ -5585,8 +5749,10 @@ final class PlaybackController {
 
     private func reopenRemoteStream(offsetMs: Int,
                                     bitrateKbps: Int,
-                                    preferShortRemoteHLSBuffer: Bool = true) {
+                                    preferShortRemoteHLSBuffer: Bool = true,
+                                    isEmbyCopyRetry: Bool = false) {
         guard let session = mediaBrowserSession else { return }
+        embyCopyReopenRetryUsed = isEmbyCopyRetry
         let remoteStreamReopener = session.reopener
         let predecessor = session.backend == .emby ? embyReopenTransactionTail : nil
         beginItemPreparation()
@@ -5995,31 +6161,94 @@ enum PlaybackTransportStatus: Equatable {
     }
 }
 
+extension PlaybackTransportStatus {
+    /// Buffering-class states: AVPlayer is waiting for media. These share the show delay,
+    /// minimum-visible hold, and staged spinner → card escalation.
+    var isWaitingForMedia: Bool {
+        switch self {
+        case .buffering, .pausedBuffering, .preparingLocal: true
+        case .none, .reconnecting, .failed: false
+        }
+    }
+
+    /// States that always present the full card. A paused wait means the viewer explicitly
+    /// paused and is engaged, so they get the "Resume when ready" affordance at once;
+    /// reconnect and failure need their Close/Retry actions.
+    var presentsCardImmediately: Bool {
+        switch self {
+        case .pausedBuffering, .reconnecting, .failed: true
+        case .preparingLocal(let isPaused, _): isPaused
+        case .none, .buffering: false
+        }
+    }
+}
+
+/// How much of a visible transport status is rendered. Stage 1 is a lightweight spinner over
+/// the picture; stage 2 is the full card with copy and the Pause / "Resume when ready" action.
+enum PlaybackTransportStatusStage: Equatable {
+    case spinner
+    case card
+}
+
+/// Presentation state machine for the transport status (see PLAYBACK-ARCHITECTURE.md,
+/// "Buffering and stalls"). The controller feeds the raw resolved status on every change; this
+/// object owns every timer so views only render `status` + `stage`:
+///
+/// - Buffering-class waits publish nothing until `showDelay` elapses, so short waits never flash.
+///   The one exception is a remote wait before the current item has played any frame (black
+///   surface, nothing to cover), which shows the spinner at once.
+/// - Once shown, a wait stays visible for at least `minimumVisible` so waiting ↔ playing chatter
+///   cannot flicker.
+/// - A continuous wait starts as the spinner and escalates to the card after `escalation`
+///   (measured from the start of the wait). Paused waits present the card directly. A wait
+///   never demotes from the card back to the spinner.
+/// - `.reconnecting` / `.failed` publish immediately and preempt any pending timer.
 @Observable
 @MainActor
 final class PlaybackTransportStatusState {
-    static let localInitialPreparationDelay: Duration = .milliseconds(750)
+    struct Timing: Equatable {
+        var showDelay: Duration = .milliseconds(600)
+        var minimumVisible: Duration = .milliseconds(600)
+        var escalation: Duration = .milliseconds(3_500)
 
+        static let standard = Timing()
+    }
+
+    /// Schedules `action` after `delay` on the main actor and returns its cancellation.
+    typealias Scheduler = @MainActor (Duration, @escaping @MainActor () -> Void) -> (@MainActor () -> Void)
+
+    static let taskScheduler: Scheduler = { delay, action in
+        let task = Task { @MainActor in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard !Task.isCancelled else { return }
+            action()
+        }
+        return { task.cancel() }
+    }
+
+    /// The presented status (`.none` while hidden or while a wait is still inside its show delay).
     private(set) var status: PlaybackTransportStatus = .none
-    @ObservationIgnored private var pendingStatus: PlaybackTransportStatus?
-    @ObservationIgnored private var pendingStatusTask: Task<Void, Never>?
-    @ObservationIgnored private let initialPreparationDelay: Duration
-    @ObservationIgnored private let preparationSleep: @Sendable (Duration) async throws -> Void
+    /// The presented stage; meaningful only while `status != .none`.
+    private(set) var stage: PlaybackTransportStatusStage = .spinner
 
-    init(initialPreparationDelay: Duration = localInitialPreparationDelay) {
-        self.initialPreparationDelay = initialPreparationDelay
-        self.preparationSleep = { try await Task.sleep(for: $0) }
-    }
-
+    /// The latest status requested by the controller, before presentation timing.
+    @ObservationIgnored private(set) var requestedStatus: PlaybackTransportStatus = .none
+    @ObservationIgnored private let timing: Timing
+    @ObservationIgnored private let scheduler: Scheduler
+    @ObservationIgnored private var cancelShowTimer: (@MainActor () -> Void)?
+    @ObservationIgnored private var cancelMinimumVisibleTimer: (@MainActor () -> Void)?
+    @ObservationIgnored private var cancelEscalationTimer: (@MainActor () -> Void)?
+    @ObservationIgnored private var isWaitActive = false
+    @ObservationIgnored private var hasEscalated = false
+    @ObservationIgnored private var isMinimumVisibleSatisfied = true
     #if DEBUG
-    init(initialPreparationDelay: Duration,
-         preparationSleep: @escaping @Sendable (Duration) async throws -> Void) {
-        self.initialPreparationDelay = initialPreparationDelay
-        self.preparationSleep = preparationSleep
-    }
-
-    var pendingPreparationForTesting: Task<Void, Never>? { pendingStatusTask }
+    @ObservationIgnored private var heldStatusForTesting: PlaybackTransportStatus?
     #endif
+
+    init(timing: Timing = .standard, scheduler: @escaping Scheduler = PlaybackTransportStatusState.taskScheduler) {
+        self.timing = timing
+        self.scheduler = scheduler
+    }
 
     var activeStatus: PlaybackTransportStatus? {
         status == .none ? nil : status
@@ -6029,29 +6258,137 @@ final class PlaybackTransportStatusState {
         status.keepsChromeVisible
     }
 
-    func set(_ value: PlaybackTransportStatus) {
-        if case .preparingLocal(_, false) = value {
-            guard status != value else { return }
-            guard pendingStatus != value else { return }
-            pendingStatusTask?.cancel()
-            pendingStatus = value
-            if status != .none { status = .none }
-            let delay = initialPreparationDelay
-            let sleep = preparationSleep
-            pendingStatusTask = Task { @MainActor [weak self] in
-                try? await sleep(delay)
-                guard !Task.isCancelled, let self, self.pendingStatus == value else { return }
-                self.pendingStatus = nil
-                self.pendingStatusTask = nil
-                if self.status != value { self.status = value }
-            }
-            return
-        }
+    /// Feed the controller's resolved status. `hasObservedPlayback` is whether the current item
+    /// has rendered playback yet; it only matters for remote waits (local preparation carries
+    /// its own flag and always honors the show delay so an instant local open never flashes).
+    func set(_ value: PlaybackTransportStatus, hasObservedPlayback: Bool = true) {
+        #if DEBUG
+        if heldStatusForTesting != nil { return }
+        #endif
+        apply(value, hasObservedPlayback: hasObservedPlayback)
+    }
 
-        pendingStatusTask?.cancel()
-        pendingStatusTask = nil
-        pendingStatus = nil
+    #if DEBUG
+    /// Debug fixtures: pin the requested status (ignoring controller updates) while still
+    /// running it through the real presentation timing, so reviews see both stages.
+    func holdForTesting(_ value: PlaybackTransportStatus) {
+        heldStatusForTesting = nil
+        apply(value, hasObservedPlayback: true)
+        heldStatusForTesting = value
+    }
+    #endif
+
+    private func apply(_ value: PlaybackTransportStatus, hasObservedPlayback: Bool) {
+        requestedStatus = value
+        switch value {
+        case .none:
+            cancel(&cancelShowTimer)
+            if status == .none {
+                endWait()
+            } else if isMinimumVisibleSatisfied || !status.isWaitingForMedia {
+                hide()
+            }
+            // Otherwise the minimum-visible timer hides it, unless waiting resumes first.
+        case .reconnecting, .failed:
+            cancel(&cancelShowTimer)
+            cancel(&cancelMinimumVisibleTimer)
+            endWait()
+            isMinimumVisibleSatisfied = true
+            publish(value, stage: .card)
+        case .buffering, .pausedBuffering, .preparingLocal:
+            if !isWaitActive { beginWait() }
+            if status != .none {
+                publish(value, stage: waitingStage(for: value))
+            } else if cancelShowTimer == nil {
+                if showsWithoutDelay(value, hasObservedPlayback: hasObservedPlayback) {
+                    show()
+                } else {
+                    cancelShowTimer = scheduler(timing.showDelay) { [weak self] in
+                        self?.showDelayElapsed()
+                    }
+                }
+            }
+            // A pending show publishes whatever `requestedStatus` is when it fires.
+        }
+    }
+
+    private func showsWithoutDelay(_ value: PlaybackTransportStatus, hasObservedPlayback: Bool) -> Bool {
+        switch value {
+        case .buffering, .pausedBuffering: !hasObservedPlayback
+        default: false
+        }
+    }
+
+    /// A wait never demotes from the card back to the spinner: once a paused wait (or the
+    /// escalation timer) has shown the card, the rest of that continuous wait keeps it.
+    private func waitingStage(for value: PlaybackTransportStatus) -> PlaybackTransportStatusStage {
+        if value.presentsCardImmediately { hasEscalated = true }
+        return hasEscalated ? .card : .spinner
+    }
+
+    private func beginWait() {
+        isWaitActive = true
+        hasEscalated = false
+        cancel(&cancelEscalationTimer)
+        cancelEscalationTimer = scheduler(timing.escalation) { [weak self] in
+            self?.escalationElapsed()
+        }
+    }
+
+    private func endWait() {
+        cancel(&cancelShowTimer)
+        cancel(&cancelEscalationTimer)
+        isWaitActive = false
+        hasEscalated = false
+    }
+
+    private func showDelayElapsed() {
+        cancelShowTimer = nil
+        guard requestedStatus.isWaitingForMedia, status == .none else { return }
+        show()
+    }
+
+    private func show() {
+        cancel(&cancelShowTimer)
+        publish(requestedStatus, stage: waitingStage(for: requestedStatus))
+        isMinimumVisibleSatisfied = false
+        cancel(&cancelMinimumVisibleTimer)
+        cancelMinimumVisibleTimer = scheduler(timing.minimumVisible) { [weak self] in
+            self?.minimumVisibleElapsed()
+        }
+    }
+
+    private func minimumVisibleElapsed() {
+        cancelMinimumVisibleTimer = nil
+        isMinimumVisibleSatisfied = true
+        if requestedStatus == .none, status != .none { hide() }
+    }
+
+    private func escalationElapsed() {
+        cancelEscalationTimer = nil
+        guard isWaitActive else { return }
+        hasEscalated = true
+        if status.isWaitingForMedia, requestedStatus.isWaitingForMedia, stage != .card {
+            stage = .card
+        }
+    }
+
+    private func hide() {
+        cancel(&cancelMinimumVisibleTimer)
+        endWait()
+        isMinimumVisibleSatisfied = true
+        if status != .none { status = .none }
+        if stage != .spinner { stage = .spinner }
+    }
+
+    private func publish(_ value: PlaybackTransportStatus, stage newStage: PlaybackTransportStatusStage) {
         if status != value { status = value }
+        if stage != newStage { stage = newStage }
+    }
+
+    private func cancel(_ timer: inout (@MainActor () -> Void)?) {
+        timer?()
+        timer = nil
     }
 }
 

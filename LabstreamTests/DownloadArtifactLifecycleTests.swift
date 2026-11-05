@@ -3,7 +3,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
-@Suite("Download artifact lifecycle")
+@Suite("Download artifact lifecycle", .downloadTestFiles)
 struct DownloadArtifactLifecycleTests {
     @Test func zeroWatermarkCompletesWithoutRangeTrap() async {
         let coordinator = DownloadArtifactLifecycleCoordinator()
@@ -178,7 +178,7 @@ struct DownloadArtifactLifecycleTests {
                 removeItem: { url, fm in try fm.removeItem(at: url) },
                 fileExists: { url, fm in fm.fileExists(atPath: url.path) }
             )
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory, artifactFilesystem: filesystem)
             let hostile = "attempt/../../raw token ? secret"
             let attempt = try #require(DownloadAttemptID(rawValue: hostile))
@@ -203,7 +203,7 @@ struct DownloadArtifactLifecycleTests {
             #expect(await signal(writeStarted, timeout: 1))
             #expect(store.record(for: key)?.metadata?.resumeDataRelativePath == nil)
             releaseWrite.signal()
-            #expect(store.resolveSynchronously(.accepted(ticket: ticket)) == .applied)
+            #expect(await store.resolve(DownloadStore.AttemptResumeDataSubmission.accepted(ticket: ticket), deadline: .after(30)) == .applied)
             let relative = try #require(store.record(for: key)?.metadata?.resumeDataRelativePath)
             #expect(!relative.contains(hostile))
             #expect(!relative.contains("/"))
@@ -230,7 +230,7 @@ struct DownloadArtifactLifecycleTests {
                 removeItem: { url, fm in try fm.removeItem(at: url) },
                 fileExists: { url, fm in fm.fileExists(atPath: url.path) }
             )
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory, artifactFilesystem: filesystem)
             let attempt = try #require(DownloadAttemptID(rawValue: "attempt"))
             let key = DownloadAttemptKey(ratingKey: "plex:resume-retry", attemptID: attempt)
@@ -243,7 +243,7 @@ struct DownloadArtifactLifecycleTests {
             guard case .committed = store.createAttemptOwnedRecord(record, attemptID: attempt) else {
                 Issue.record("seed failed"); return
             }
-            guard case .artifactWriteFailed = store.setResumeData(for: key, Data("blob".utf8)) else {
+            guard case .artifactWriteFailed = await store.resolve(store.submitResumeData(for: key, Data("blob".utf8)), deadline: .after(30)) else {
                 Issue.record("expected injected write failure"); return
             }
             let watermark = store.currentArtifactLifecycleWatermark()
@@ -272,8 +272,8 @@ struct DownloadArtifactLifecycleTests {
             let seam = FailOnceThenSignalResumeWrite()
             let store = try seededStore(directory: directory, failure: seam.failure)
             let key = try resumeKey()
-            guard case .artifactWriteFailed = store.setResumeData(
-                for: key, Data("first".utf8)) else {
+            guard case .artifactWriteFailed = await store.resolve(store.submitResumeData(
+                for: key, Data("first".utf8)), deadline: .after(30)) else {
                 Issue.record("expected injected write failure"); return
             }
             // The failed head stays durably queued but inactive. The successor submission is the
@@ -287,7 +287,7 @@ struct DownloadArtifactLifecycleTests {
                 guard await signal(seam.retried, timeout: 2) else {
                     Issue.record("successor submission never restarted the failed head"); return
                 }
-                #expect(store.resolveSynchronously(.accepted(ticket: second)) == .applied)
+                #expect(await store.resolve(DownloadStore.AttemptResumeDataSubmission.accepted(ticket: second), deadline: .after(30)) == .applied)
                 let relative = try #require(
                     store.record(for: key)?.metadata?.resumeDataRelativePath)
                 #expect(try Data(contentsOf: directory.appendingPathComponent(relative))
@@ -299,7 +299,7 @@ struct DownloadArtifactLifecycleTests {
                 guard await signal(seam.retried, timeout: 2) else {
                     Issue.record("clear submission never restarted the failed head"); return
                 }
-                #expect(store.resolveArtifactSynchronously(clear) == .completed)
+                #expect(await store.resolveArtifact(clear, deadline: .after(30)) == .completed)
                 #expect(store.record(for: key)?.metadata?.resumeDataRelativePath == nil)
                 #expect(resumeArtifacts(in: directory).isEmpty)
             }
@@ -318,11 +318,11 @@ struct DownloadArtifactLifecycleTests {
             }
             #expect(await signal(gate.started, timeout: 1))
             gate.release.signal()
-            #expect(store.resolveSynchronously(.accepted(ticket: replace)) == .applied)
-            #expect(store.resolveArtifactSynchronously(clear) == .completed)
+            #expect(await store.resolve(DownloadStore.AttemptResumeDataSubmission.accepted(ticket: replace), deadline: .after(30)) == .applied)
+            #expect(await store.resolveArtifact(clear, deadline: .after(30)) == .completed)
             #expect(store.record(for: key)?.metadata?.resumeDataRelativePath == nil)
             #expect(resumeArtifacts(in: directory).isEmpty)
-            #expect(DownloadStore(baseDirectory: directory)
+            #expect(DownloadTestFiles.store(baseDirectory: directory)
                 .record(for: key)?.metadata?.resumeDataRelativePath == nil)
         }
     }
@@ -340,12 +340,12 @@ struct DownloadArtifactLifecycleTests {
             }
             #expect(await signal(gate.started, timeout: 1))
             gate.release.signal()
-            #expect(store.resolveSynchronously(.accepted(ticket: first)) == .applied)
-            #expect(store.resolveSynchronously(.accepted(ticket: second)) == .applied)
+            #expect(await store.resolve(DownloadStore.AttemptResumeDataSubmission.accepted(ticket: first), deadline: .after(30)) == .applied)
+            #expect(await store.resolve(DownloadStore.AttemptResumeDataSubmission.accepted(ticket: second), deadline: .after(30)) == .applied)
             let files = resumeArtifacts(in: directory)
             #expect(files.count == 1)
             #expect(try Data(contentsOf: #require(files.first)) == Data("second".utf8))
-            let restored = DownloadStore(baseDirectory: directory)
+            let restored = DownloadTestFiles.store(baseDirectory: directory)
             #expect(restored.resumeData(for: key) == Data("second".utf8))
             #expect(resumeArtifacts(in: directory).count == 1)
         }
@@ -354,7 +354,7 @@ struct DownloadArtifactLifecycleTests {
     @Test func failedHeadRetriesBeforeQueuedSuccessorWithoutPoisoningIt() async throws {
         try await withDirectory { directory in
             let gate = FailFirstResumeWriteGate()
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory, artifactFilesystem: gate.filesystem)
             let key = try resumeKey()
             let record = DownloadRecord(
@@ -375,15 +375,15 @@ struct DownloadArtifactLifecycleTests {
                 Issue.record("successor submission failed"); return
             }
             gate.release.signal()
-            guard case .artifactWriteFailed = store.resolveSynchronously(
-                .accepted(ticket: first)) else {
+            guard case .artifactWriteFailed = await store.resolve(DownloadStore.AttemptResumeDataSubmission
+                .accepted(ticket: first), deadline: .after(30)) else {
                 Issue.record("expected first process attempt failure"); return
             }
             let watermark = store.currentArtifactLifecycleWatermark()
             guard case .committed = await store.flushLifecycleAndPersistence(
                 through: store.currentPersistenceTicket(),
                 artifactWatermark: watermark,
-                timeout: 1) else {
+                timeout: 10) else {
                 Issue.record("head/successor retry did not drain"); return
             }
             #expect(store.resumeData(for: key) == Data("second".utf8))
@@ -396,10 +396,10 @@ struct DownloadArtifactLifecycleTests {
             let index = ArmableTerminalIndexFailure()
             let seed = try seededStore(directory: directory)
             let key = try resumeKey()
-            #expect(seed.setResumeData(for: key, Data("old".utf8)) == .applied)
+            #expect(await seed.resolve(seed.submitResumeData(for: key, Data("old".utf8)), deadline: .after(30)) == .applied)
             let old = try #require(seed.record(for: key)?.metadata?.resumeDataRelativePath)
             let removal = TerminalRemovalGate(target: old, index: index)
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try index.write(data, to: url) },
                 artifactFilesystem: removal.filesystem)
@@ -408,7 +408,7 @@ struct DownloadArtifactLifecycleTests {
             }
             #expect(await signal(removal.started, timeout: 1))
             removal.release.signal()
-            guard case .failed(.persistence) = store.resolveArtifactSynchronously(clear) else {
+            guard case .failed(.persistence) = await store.resolveArtifact(clear, deadline: .after(30)) else {
                 Issue.record("expected terminal clear failure"); return
             }
             let watermark = store.currentArtifactLifecycleWatermark()
@@ -425,11 +425,11 @@ struct DownloadArtifactLifecycleTests {
         try await withDirectory { directory in
             let seed = try seededStore(directory: directory)
             let key = try resumeKey()
-            #expect(seed.setResumeData(for: key, Data("old".utf8)) == .applied)
+            #expect(await seed.resolve(seed.submitResumeData(for: key, Data("old".utf8)), deadline: .after(30)) == .applied)
             let old = try #require(seed.record(for: key)?.metadata?.resumeDataRelativePath)
             let index = BlockingTerminalIndexFailure()
             let removal = BlockingTerminalRemovalGate(target: old, index: index)
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try index.write(data, to: url) },
                 artifactFilesystem: removal.filesystem)
@@ -452,8 +452,8 @@ struct DownloadArtifactLifecycleTests {
             try await Task.sleep(for: .milliseconds(30))
             #expect(removal.writeCount == 1)
             index.releaseTerminal.signal()
-            guard case .persistenceFailed = store.resolveSynchronously(
-                .accepted(ticket: first)) else {
+            guard case .persistenceFailed = await store.resolve(DownloadStore.AttemptResumeDataSubmission
+                .accepted(ticket: first), deadline: .after(30)) else {
                 Issue.record("expected blocked terminal failure"); return
             }
             let retryWatermark = store.currentArtifactLifecycleWatermark()
@@ -469,14 +469,14 @@ struct DownloadArtifactLifecycleTests {
         }
     }
 
-    @Test func startupCleansOnlyAgedGenerationSiblingTemps() throws {
-        try withDirectorySync { directory in
+    @Test func startupCleansOnlyAgedGenerationSiblingTemps() async throws {
+        try await withDirectory { directory in
             let capture = CaptureFailingResumeWrite()
             do {
                 let store = try seededStore(directory: directory, failure: capture.failure)
                 let key = try resumeKey()
-                guard case .artifactWriteFailed = store.setResumeData(
-                    for: key, Data("blob".utf8)) else {
+                guard case .artifactWriteFailed = await store.resolve(store.submitResumeData(
+                    for: key, Data("blob".utf8)), deadline: .after(30)) else {
                     Issue.record("expected captured write failure"); return
                 }
             }
@@ -493,7 +493,7 @@ struct DownloadArtifactLifecycleTests {
             try Data("fresh".utf8).write(to: freshTemp)
             try Data("unrelated".utf8).write(to: unrelatedOld)
             try Data("near".utf8).write(to: nearPatternOld)
-            let firstRelaunch = DownloadStore(baseDirectory: directory)
+            let firstRelaunch = DownloadTestFiles.store(baseDirectory: directory)
             _ = firstRelaunch.resolveArtifactSynchronouslyForTests(
                 through: firstRelaunch.currentArtifactLifecycleWatermark())
             #expect(FileManager.default.fileExists(atPath: oldTemp.path))
@@ -503,7 +503,7 @@ struct DownloadArtifactLifecycleTests {
                     [.modificationDate: Date().addingTimeInterval(-7_200)],
                     ofItemAtPath: url.path)
             }
-            _ = DownloadStore(baseDirectory: directory)
+            _ = DownloadTestFiles.store(baseDirectory: directory)
             #expect(!FileManager.default.fileExists(atPath: oldTemp.path))
             #expect(FileManager.default.fileExists(atPath: freshTemp.path))
             #expect(FileManager.default.fileExists(atPath: unrelatedOld.path))
@@ -511,36 +511,36 @@ struct DownloadArtifactLifecycleTests {
         }
     }
 
-    @Test func reinitPreparedMissingGenerationPreservesPreviousAuthority() throws {
-        try withDirectorySync { directory in
+    @Test func reinitPreparedMissingGenerationPreservesPreviousAuthority() async throws {
+        try await withDirectory { directory in
             let key = try resumeKey()
             // Publish an old generation using the live primitive first.
             let live = try seededStore(directory: directory)
-            #expect(live.setResumeData(for: key, Data("old".utf8)) == .applied)
+            #expect(await live.resolve(live.submitResumeData(for: key, Data("old".utf8)), deadline: .after(30)) == .applied)
             let failure = ResumeFilesystemFailure(failWrite: true)
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory, artifactFilesystem: failure.filesystem)
-            guard case .artifactWriteFailed = store.setResumeData(for: key, Data("new".utf8)) else {
+            guard case .artifactWriteFailed = await store.resolve(store.submitResumeData(for: key, Data("new".utf8)), deadline: .after(30)) else {
                 Issue.record("expected prepared write failure"); return
             }
-            let restored = DownloadStore(baseDirectory: directory)
+            let restored = DownloadTestFiles.store(baseDirectory: directory)
             let watermark = restored.currentArtifactLifecycleWatermark()
             _ = restored.resolveArtifactSynchronouslyForTests(through: watermark)
             #expect(restored.resumeData(for: key) == Data("old".utf8))
         }
     }
 
-    @Test func reinitPublishedMissingGenerationRollsBackToDurablePredecessor() throws {
-        try withDirectorySync { directory in
+    @Test func reinitPublishedMissingGenerationRollsBackToDurablePredecessor() async throws {
+        try await withDirectory { directory in
             let live = try seededStore(directory: directory)
             let key = try resumeKey()
-            #expect(live.setResumeData(for: key, Data("old".utf8)) == .applied)
+            #expect(await live.resolve(live.submitResumeData(for: key, Data("old".utf8)), deadline: .after(30)) == .applied)
             let oldRelative = try #require(live.record(for: key)?.metadata?.resumeDataRelativePath)
             let failure = ResumeFilesystemFailure(failRemovalOf: oldRelative)
-            let failing = DownloadStore(
+            let failing = DownloadTestFiles.store(
                 baseDirectory: directory, artifactFilesystem: failure.filesystem)
-            guard case .artifactWriteFailed = failing.setResumeData(
-                for: key, Data("new".utf8)) else {
+            guard case .artifactWriteFailed = await failing.resolve(failing.submitResumeData(
+                for: key, Data("new".utf8)), deadline: .after(30)) else {
                 Issue.record("expected predecessor removal failure"); return
             }
             let newRelative = try #require(
@@ -548,7 +548,7 @@ struct DownloadArtifactLifecycleTests {
             #expect(newRelative != oldRelative)
             try FileManager.default.removeItem(
                 at: directory.appendingPathComponent(newRelative))
-            let restored = DownloadStore(baseDirectory: directory)
+            let restored = DownloadTestFiles.store(baseDirectory: directory)
             let watermark = restored.currentArtifactLifecycleWatermark()
             _ = restored.resolveArtifactSynchronouslyForTests(through: watermark)
             #expect(restored.record(for: key)?.metadata?.resumeDataRelativePath == oldRelative)
@@ -559,19 +559,11 @@ struct DownloadArtifactLifecycleTests {
     private func withDirectory(
         _ body: (URL) async throws -> Void
     ) async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("artifact-lifecycle-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try await body(directory)
-    }
 
-    private func withDirectorySync(_ body: (URL) throws -> Void) throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("artifact-lifecycle-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try body(directory)
+        try await body(directory)
     }
 
     private func resumeKey() throws -> DownloadAttemptKey {
@@ -586,7 +578,7 @@ struct DownloadArtifactLifecycleTests {
         failure: ResumeFilesystemFailure? = nil
     ) throws -> DownloadStore {
         let filesystem = writeGate?.filesystem ?? failure?.filesystem ?? .live
-        let store = DownloadStore(baseDirectory: directory, artifactFilesystem: filesystem)
+        let store = DownloadTestFiles.store(baseDirectory: directory, artifactFilesystem: filesystem)
         let key = try resumeKey()
         if store.record(for: key) == nil {
             let record = DownloadRecord(

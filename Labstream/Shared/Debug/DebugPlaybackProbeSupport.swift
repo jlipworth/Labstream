@@ -13,6 +13,16 @@ import PMSKit
 /// drifting.
 @MainActor
 enum DebugPlaybackProbeSupport {
+    enum StartupStage: String {
+        case contentTaskEntered, restoreSkipped, restoreBegin, restoreDone
+        case backendSwitchBegin, backendSwitchDone, jellyfinEntry, optionsReady, admitted
+        case discoveryPrepared, discoveryBlocked
+    }
+    static func recordStartupStage(_ stage: StartupStage) {
+        guard ProcessInfo.processInfo.arguments.contains("--vp-probe-jellyfin-playback") else { return }
+        Logger(subsystem: "org.labstream.Labstream", category: "PlaybackEvidence")
+            .notice("evidence.startup stage=\(stage.rawValue, privacy: .public) cancelled=\(Task.isCancelled, privacy: .public)")
+    }
     struct LaunchOptions {
         let query: String
         let bitrateKbps: Int

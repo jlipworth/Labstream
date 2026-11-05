@@ -7,20 +7,26 @@ small policy seams where behavior is genuinely identical, while keeping wire beh
 ```mermaid
 flowchart TD
   accTitle: Plex and MediaBrowser backend boundaries
-  accDescr: Shared app screens select either the separate Plex request family or thin Jellyfin and Emby facades. Jellyfin and Emby reuse a bounded MediaBrowser model and browse core, but retain separate authentication, playback, cleanup, and download wire behavior.
+  accDescr: Shared app screens select the Plex request family or Jellyfin and Emby facades. MediaBrowser models, browse core and download negotiation are shared, while authentication, download profiles, routes and cleanup wire behavior remain backend-specific.
   UI[Shared browse, detail, search, and music UI] --> Select{Active backend session}
   Select --> Plex[Plex services and request family]
   Select --> JF[Jellyfin facade]
   Select --> Emby[Emby facade]
   JF --> Shared[MediaBrowser DTOs, browse core, and shared policies]
   Emby --> Shared
-  Shared --> JFWire[Jellyfin-specific auth, playback, and downloads]
+  Shared --> Negotiate[Shared download negotiation boundary]
+  Negotiate --> JFWire[Jellyfin-specific auth, playback, and downloads]
   Shared --> EmbyWire[Emby-specific auth, playback, and downloads]
+  Negotiate --> EmbyWire
   Plex --> Canonical[Canonical presentation models]
   JFWire --> Canonical
   EmbyWire --> Canonical
   Canonical --> UI
 ```
+
+The diagram separates shared decisions from backend-native requests. The browse core remains
+browse-only; download negotiation is its own boundary. Shared UI never grants an active backend
+permission to reinterpret a persisted download owned by another server session.
 
 ## Backend comparison
 
@@ -46,6 +52,33 @@ and HTTP 403 as an account the server refuses (for example disabled or locked ou
 remote access). Saved-session restore keeps the same split: only a 401 retires a saved credential,
 and neither status opens the Offline launch surface. The full restore outcome table is in
 [Downloads and offline playback](DOWNLOADS-OFFLINE.md).
+
+## Download negotiation and lifecycle
+
+The app's shared MediaBrowser download negotiator handles PlaybackInfo transport, HTTP validation,
+decode and typed verdicts. Jellyfin and Emby keep their own request profiles and route decisions.
+Captured owning sessions, exact media-source IDs and selected audio are rechecked after awaits;
+a disappeared requested source fails closed instead of selecting another edition. PlaybackInfo
+source size feeds the shared storage policy. One container policy uses the first comma-separated
+token, trimmed and lowercased, consistently for Original eligibility, static requests and destination
+extensions; a persisted static retry extension remains stable across seed replacement.
+
+Emby Convert keeps original text-subtitle source identity independently of its output media source.
+Fresh conversion, existing-version reuse, relaunch and retry preserve that optional v5 metadata.
+Media/BIF use the output; text repair resolves the proven original by ID, never a synthetic media
+index or reordered array position. Ambiguous historical rows retain playable media and cached
+sidecars with repair skipped.
+
+One keepalive lifecycle owns each backend/exact-attempt transfer and its credential generation.
+It starts only for a tracked transfer, skips the first untracked tick and stops after a second;
+Pause, Delete, completion and sign-out revoke that ownership. Stale suspended work cannot publish
+under a replacement session. Emby remains Ping-only. Jellyfin retains fixed-zero Playing/Progress
+as interim containment: Ping-only D3 A/B is blocked, so watch-state neutrality is **not** established.
+Server teardown is durable cleanup work and is distinct from keeping an active transfer alive.
+
+Plex remains a separate optimizer/static path. Keep `X-Plex-Client-Profile-Name=Generic` exactly;
+the explicit extra profile augments it and does not replace the built-in profile name. Downloads
+neither changes that streaming invariant nor makes a cross-backend live-acceptance claim.
 
 ## Canonical models and MediaBrowser sharing
 
@@ -121,9 +154,18 @@ cancellation fences. Other Plex request descriptors, canonical response DTOs,
 timeline, optimizer, and universal-transcode APIs remain spread across the root PMSKit
 folders rather than a `Plex/` directory.
 
-For MediaBrowser Home artwork (Jellyfin and Emby), synthetic season/series Primary sources are
-treated as portrait posters; Thumb and Backdrop fallbacks retain 16:9 request and presentation
-geometry. Automated policy, request, mapping, and hosted checks cover this shared policy.
+Home video shelves all use 2:3 portrait cards — movie, show, episode-only (On Deck), and mixed
+(Continue Watching) shelves alike — independently of individual source-image aspects and of
+which item sorts first. Episodes show season, then show, Primary posters and fall back to a
+cropped episode still only when no poster exists; stills remain on season detail and search. Images
+are requested at their source aspect when known and cropped with aspect-preserving fill into
+the shelf frame; they are not stretched. Each shelf reserves its artwork and scaled caption
+height before lazy horizontal realization, so mixed artwork and missing years cannot overlap
+its own or the following header. Music/photo shelves retain their existing presentation.
+
+The expanded View All artwork policy remains separate: synthetic season/series Primary sources
+can use portrait presentation, while Thumb/Backdrop fallbacks retain landscape presentation.
+Search, library/detail cards, and playback keep their existing artwork and video aspect rules.
 
 ## Package boundary
 

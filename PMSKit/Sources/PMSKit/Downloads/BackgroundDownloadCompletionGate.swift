@@ -78,6 +78,17 @@ public struct BackgroundDownloadCompletionGate: Sendable, Equatable {
         return [batch]
     }
 
+    /// Treats every awaiting identifier as finished. Used when startup activation failed after the
+    /// transport was constructed: owned callbacks can still be running, so their operations keep
+    /// deferring the release exactly as a delivered `urlSessionDidFinishEvents` would.
+    public mutating func finishAllAwaitingEvents() -> [BackgroundDownloadCompletionReleaseBatch] {
+        var batches: [BackgroundDownloadCompletionReleaseBatch] = []
+        for identifier in awaitingTokensByIdentifier.keys.sorted() {
+            batches += finishEvents(identifier: identifier)
+        }
+        return batches
+    }
+
     /// Fail-closed startup may be unable to instantiate/admit the background session, so no
     /// `urlSessionDidFinishEvents` callback can arrive. After the startup durability attempt has
     /// failed or timed out observably, release every stored handler rather than retaining an OS

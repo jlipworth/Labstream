@@ -78,6 +78,31 @@ struct DownloadMediaSelectionPolicyTests {
         #expect(override?.displayName == "English · AAC 2.0")
     }
 
+    @Test("B43: an override matched by Stream.index resolves to that stream's Stream.id")
+    func audioOverrideByIndexResolvesToStreamID() {
+        let part = Part(id: 1, key: "/fixture", streams: [
+            Stream(id: 101, streamType: StreamType.audio.rawValue, index: 1, displayTitle: "A"),
+            Stream(id: 102, streamType: StreamType.audio.rawValue, index: 2, displayTitle: "B"),
+        ])
+        // Plex's audioStreamID is Stream.id: a container index must never be sent raw.
+        let byIndex = DownloadAudioSelectionPolicy.selectedAudioTrack(part: part, overrideStreamIndex: 2)
+        #expect(byIndex?.streamIndex == 102)
+        #expect(byIndex?.displayName == "B")
+        #expect(DownloadAudioSelectionPolicy.matchedAudioStream(part: part, streamIdentifier: 2)?.id == 102)
+        #expect(DownloadAudioSelectionPolicy.matchedAudioStream(part: part, streamIdentifier: 101)?.id == 101)
+        #expect(DownloadAudioSelectionPolicy.matchedAudioStream(part: part, streamIdentifier: 9) == nil)
+        #expect(DownloadAudioSelectionPolicy.matchedAudioStream(part: nil, streamIdentifier: 1) == nil)
+
+        // When one stream's id equals another stream's index, the exact id match wins.
+        let ambiguous = Part(id: 2, key: "/fixture", streams: [
+            Stream(id: 7, streamType: StreamType.audio.rawValue, index: 2, displayTitle: "Index two"),
+            Stream(id: 2, streamType: StreamType.audio.rawValue, index: 3, displayTitle: "Id two"),
+        ])
+        #expect(DownloadAudioSelectionPolicy.selectedAudioTrack(
+            part: ambiguous, overrideStreamIndex: 2)?.displayName == "Id two")
+        #expect(DownloadAudioSelectionPolicy.matchedAudioStream(part: ambiguous, streamIdentifier: 2)?.id == 2)
+    }
+
     @Test("Download audio override survives sparse metadata")
     func audioOverrideWithoutStreams() {
         let selected = DownloadAudioSelectionPolicy.selectedAudioTrack(part: nil, overrideStreamIndex: 7)

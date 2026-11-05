@@ -160,6 +160,76 @@ struct JellyfinPlaybackTests {
         #expect(decision.transcodeReasons == ["ContainerNotSupported"])
     }
 
+    /// B58: remux audio-copy eligibility must follow the user-selected audio track, not the
+    /// source's first audio stream. A TrueHD-first source with a selected AC3 track copies AC3.
+    @Test func downloadDecisionUsesSelectedAudioStreamCodec() throws {
+        let response = try JellyfinPlaybackInfoResponse.decode(from: Data(#"""
+        {
+          "PlaySessionId": "download-play-1",
+          "MediaSources": [{
+            "Id": "source-1",
+            "Container": "mkv",
+            "SupportsDirectStream": true,
+            "MediaStreams": [
+              { "Index": 0, "Type": "Video", "Codec": "hevc" },
+              { "Index": 1, "Type": "Audio", "Codec": "truehd" },
+              { "Index": 2, "Type": "Audio", "Codec": "ac3" }
+            ]
+          }]
+        }
+        """#.utf8))
+
+        let selected = try JellyfinPlayback.downloadDecision(response: response,
+                                                            preferredMediaSourceId: "source-1",
+                                                            audioStreamIndex: 2)
+        #expect(selected.audioCodec == "ac3")
+        let eligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
+            videoCodec: selected.videoCodec, audioCodec: selected.audioCodec,
+            sourceContainer: selected.container)
+        #expect(eligibility.copiesAudio)
+
+        let unselected = try JellyfinPlayback.downloadDecision(response: response,
+                                                              preferredMediaSourceId: "source-1")
+        #expect(unselected.audioCodec == "truehd")
+
+        // An index that names no audio stream keeps the first-audio fallback.
+        let unknown = try JellyfinPlayback.downloadDecision(response: response,
+                                                           preferredMediaSourceId: "source-1",
+                                                           audioStreamIndex: 9)
+        #expect(unknown.audioCodec == "truehd")
+    }
+
+    /// B59: a requested download version that PlaybackInfo no longer returns must fail closed
+    /// instead of silently downloading the first DirectStream source (a different edition).
+    @Test func downloadDecisionRejectsMissingPreferredMediaSource() throws {
+        let response = try JellyfinPlaybackInfoResponse.decode(from: Data(#"""
+        {
+          "PlaySessionId": "download-play-1",
+          "MediaSources": [
+            { "Id": "version-a", "Container": "mkv", "SupportsDirectStream": true,
+              "MediaStreams": [{ "Index": 0, "Type": "Video", "Codec": "hevc" }] },
+            { "Id": "version-c", "Container": "mp4", "SupportsDirectPlay": true,
+              "MediaStreams": [{ "Index": 0, "Type": "Video", "Codec": "h264" }] }
+          ]
+        }
+        """#.utf8))
+
+        #expect(throws: JellyfinPlaybackError.preferredMediaSourceUnavailable("version-b-old")) {
+            _ = try JellyfinPlayback.downloadDecision(response: response,
+                                                      preferredMediaSourceId: "version-b-old")
+        }
+        // An exact match on a non-first source is honoured.
+        let exact = try JellyfinPlayback.downloadDecision(response: response,
+                                                          preferredMediaSourceId: "version-c")
+        #expect(exact.mediaSourceId == "version-c")
+        // Without a requested version, the DirectStream-first server choice still applies.
+        let unpinned = try JellyfinPlayback.downloadDecision(response: response)
+        #expect(unpinned.mediaSourceId == "version-a")
+        let emptyPin = try JellyfinPlayback.downloadDecision(response: response,
+                                                             preferredMediaSourceId: "")
+        #expect(emptyPin.mediaSourceId == "version-a")
+    }
+
     @Test func resolvesServerRelativeTranscodingURLFromPlaybackInfoWithStableHLSOverrides() throws {
         let response = try JellyfinPlaybackInfoResponse.decode(from: Data(#"""
         {

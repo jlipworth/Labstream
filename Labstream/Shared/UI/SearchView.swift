@@ -21,11 +21,13 @@ struct SearchView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismissSearch) private var dismissSearch
 
+    #if DEBUG
+    @State private var internalQuery = DebugUITestLaunchConfiguration.initialSearchQuery ?? ""
+    #else
     @State private var internalQuery = ""
-    @State private var results: SearchResults = .empty
+    #endif
+    @State private var display = SearchDisplayState()
     @State private var loadState: BrowseLoadState = .idle
-    /// The query the current results were fetched for (pop-back no-op guard).
-    @State private var loadedQuery: SearchLoadIdentity?
     /// Drives programmatic focus of the `.searchable` field for ⌘F (RootView).
     @FocusState private var searchFieldFocused: Bool
 
@@ -53,7 +55,9 @@ struct SearchView: View {
         .navigationDestination(for: RailViewAllDestination.self) { destination in
             RailViewAllView(destination: destination)
         }
-        #if !os(tvOS)
+        // iPhone/iPad have no toolbar Clear: the field's own clear button and Cancel already do it
+        // (a third control read as three clear buttons in regular width).
+        #if os(macOS) || os(visionOS)
         .toolbar {
             if externalQuery == nil, showsClearSearchButton {
                 #if os(macOS)
@@ -140,7 +144,8 @@ struct SearchView: View {
         Group {
             if externalQuery == nil {
                 searchResultsContent
-                    .searchable(text: queryBinding, prompt: "Movies, shows, music…")
+                    .searchable(text: queryBinding, placement: Self.searchFieldPlacement,
+                                prompt: "Movies, shows, music…")
                     .searchFocused($searchFieldFocused)
             } else {
                 searchResultsContent
@@ -151,7 +156,7 @@ struct SearchView: View {
 
     private var searchResultsContent: some View {
         ScrollView {
-            switch loadState {
+            switch visibleLoadState {
             case .idle:
                 ContentUnavailableView("Search your libraries",
                                        systemImage: "magnifyingglass",
@@ -167,18 +172,18 @@ struct SearchView: View {
                                        description: Text(message))
                 .frame(maxWidth: .infinity, minHeight: 300)
             case .loaded:
-                if results.presentationGroups.isEmpty {
-                    ContentUnavailableView.search(text: queryText)
+                if display.groups.isEmpty {
+                    ContentUnavailableView.search(text: display.identity?.query ?? "")
                         .frame(maxWidth: .infinity, minHeight: 300)
                 } else {
                     LazyVStack(alignment: .leading, spacing: DS.Space.xxxl) {
-                        ForEach(results.presentationGroups) { group in
+                        ForEach(display.groups) { group in
                             SearchLibrarySection(group: group,
-                                                 query: queryText,
+                                                 query: display.identity?.query ?? "",
                                                  backend: appModel.activeBackend,
                                                  sessionIdentity: appModel.activeBrowseSessionKey,
                                                  isMeasurementMilestone:
-                                                    group.id == results.presentationGroups.first?.id)
+                                                    group.id == display.groups.first?.id)
                         }
                     }
                     .padding(.vertical, DS.Space.xl)
@@ -187,11 +192,31 @@ struct SearchView: View {
         }
     }
 
+    // Retain a previous query during debounce only within the same authenticated
+    // session. Never expose an old backend's navigation targets while a task restarts.
+    private var visibleLoadState: BrowseLoadState {
+        guard !searchTaskID.query.isEmpty else { return .idle }
+        if case .loaded = loadState,
+           !display.isVisible(in: searchTaskID) { return .loading }
+        return loadState
+    }
+
     private var queryBinding: Binding<String> { externalQuery ?? $internalQuery }
     private var queryText: String { queryBinding.wrappedValue }
 
     private var searchTaskID: SearchLoadIdentity {
         SearchLoadIdentity(appModel: appModel, query: queryText)
+    }
+
+    /// iPhone/iPad keep the field under the large title in every width. The automatic placement
+    /// moved it into the regular-width navigation bar, which then showed an inline "Search" title
+    /// beside the large one.
+    private static var searchFieldPlacement: SearchFieldPlacement {
+        #if os(iOS)
+        .navigationBarDrawer(displayMode: .always)
+        #else
+        .automatic
+        #endif
     }
 
     private var showsClearSearchButton: Bool {
@@ -205,8 +230,7 @@ struct SearchView: View {
 
     private func clearSearch() {
         queryBinding.wrappedValue = ""
-        results = .empty
-        loadedQuery = nil
+        display.clear()
         loadState = .idle
         searchFieldFocused = false
         dismissSearch()
@@ -220,14 +244,14 @@ struct SearchView: View {
     private func runSearch() async {
         let trimmed = queryText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            results = .empty
+            display.clear()
             loadState = .idle
             return
         }
         // `.task(id:)` re-fires on pop-back from a result with the query unchanged;
         // re-running then would flash the spinner and dump the scroll position.
         let searchKey = SearchLoadIdentity(appModel: appModel, query: trimmed)
-        if searchKey == loadedQuery, case .loaded = loadState { return }
+        if searchKey == display.identity, case .loaded = loadState { return }
         // Light debounce so we don't fire a request per keystroke.
         try? await Task.sleep(for: .milliseconds(300))
         guard SearchRequestAuthority.accepts(capturedKey: searchKey,
@@ -236,8 +260,8 @@ struct SearchView: View {
         #if DEBUG
         if let fixture = DebugUIFixtureCatalog.searchResults(query: trimmed,
                                                              backend: appModel.activeBackend) {
-            results = fixture
-            loadedQuery = searchKey
+            display.publish(fixture, for: searchKey, current: currentSearchAuthorityKey,
+                            isCancelled: Task.isCancelled)
             loadState = .loaded
             return
         }
@@ -262,8 +286,8 @@ struct SearchView: View {
                     span.end(result: Task.isCancelled ? "cancelled" : "superseded")
                     return
                 }
-                results = searchResults
-                loadedQuery = searchKey
+                display.publish(searchResults, for: searchKey, current: currentSearchAuthorityKey,
+                                isCancelled: Task.isCancelled)
                 loadState = .loaded
                 span.end(fields: searchPerformanceFields(searchResults))
             } catch {
@@ -305,8 +329,8 @@ struct SearchView: View {
                 span.end(result: Task.isCancelled ? "cancelled" : "superseded")
                 return
             }
-            results = combined
-            loadedQuery = searchKey
+            display.publish(combined, for: searchKey, current: currentSearchAuthorityKey,
+                            isCancelled: Task.isCancelled)
             loadState = .loaded
             span.end(fields: searchPerformanceFields(combined))
         } catch {
@@ -343,6 +367,30 @@ struct SearchLoadIdentity: Hashable {
     init(appModel: AppModel, query: String) {
         browse = AuthenticatedBrowseLoadIdentity(appModel: appModel)
         self.query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+/// One atomic publication owns both the rendered projection and its request identity.
+/// In particular, View All must use this query throughout the next query's debounce.
+struct SearchDisplayState {
+    private(set) var identity: SearchLoadIdentity?
+    private(set) var groups: [SearchPresentationGroup] = []
+
+    mutating func publish(_ results: SearchResults, for captured: SearchLoadIdentity,
+                          current: SearchLoadIdentity, isCancelled: Bool) {
+        guard SearchRequestAuthority.accepts(capturedKey: captured, currentKey: current,
+                                             isCancelled: isCancelled) else { return }
+        groups = results.presentationGroups(query: captured.query)
+        identity = captured
+    }
+
+    func isVisible(in current: SearchLoadIdentity) -> Bool {
+        !current.query.isEmpty && identity?.browse == current.browse
+    }
+
+    mutating func clear() {
+        identity = nil
+        groups = []
     }
 }
 
@@ -392,7 +440,7 @@ private struct SearchLibrarySection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.xl) {
             Text(group.title)
-                .font(compactWidth ? .title2.bold() : .title.bold())
+                .font(groupTitleFont)
                 .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
                 .macSearchResultMeasurementMilestone(isMeasurementMilestone)
 
@@ -404,10 +452,30 @@ private struct SearchLibrarySection: View {
                     SearchSongsSection(tracks: section.items)
                 case .standard:
                     SearchHubSection(section: section,
-                                     destination: destination(for: section))
+                                     destination: destination(for: section),
+                                     showsHeader: showsHeader(for: section))
                 }
             }
         }
+    }
+
+    private var groupTitleFont: Font {
+        #if os(iOS)
+        // iPhone/iPad type scale: one Title style for section headers (Duo design, Color & type).
+        .title3.weight(.semibold)
+        #else
+        compactWidth ? .title2.bold() : .title.bold()
+        #endif
+    }
+
+    /// iPhone/iPad: a hub titled like its library ("Movies" in "Movies") repeats the header right
+    /// above it, so it drops its own title unless that header carries a View All link.
+    private func showsHeader(for section: SearchPresentationSection) -> Bool {
+        #if os(iOS)
+        return section.title != group.title || destination(for: section) != nil
+        #else
+        return true
+        #endif
     }
 
     /// MediaBrowser (Jellyfin/Emby) search hubs get a "View All" paging destination
@@ -457,18 +525,30 @@ private extension View {
 private struct SearchHubSection: View {
     let section: SearchPresentationSection
     let destination: RailViewAllDestination?
+    var showsHeader = true
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
+    @State private var railViewportWidth: CGFloat?
+    @State private var firstVisibleItemID: String?
+
+    private var posterWidth: CGFloat {
+        DS.Poster.measuredRailWidth(viewport: railViewportWidth,
+                                    compact: compactWidth,
+                                    margin: DS.Scroll.railHorizontalMargin(compact: compactWidth),
+                                    gutter: compactWidth ? DS.Space.md : DS.Space.xl)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: compactWidth ? DS.Space.sm : DS.Space.lg) {
-            RailSectionHeader(title: section.title, destination: destination)
+            if showsHeader {
+                RailSectionHeader(title: section.title, destination: destination)
+            }
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
                     ForEach(section.items) { item in
                         NavigationLink(value: item) {
-                            RailMediaCell(item: item)
+                            RailMediaCell(item: item, posterWidth: posterWidth)
                         }
                         .cardLink()
                         .videoCardContextMenu(for: item)
@@ -483,11 +563,14 @@ private struct SearchHubSection: View {
                     }
                     #endif
                 }
+                .railScrollTargetLayout()
                 .padding(.vertical, DS.Space.sm)
             }
             // contentMargins, not .padding on the lazy content — see the hit-region
             // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes left).
             .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth))
+            .railScrollAnchor($firstVisibleItemID)
+            .railViewportWidth($railViewportWidth)
             #if os(tvOS)
             // Declared focus row (see HubRail): whole-rail target for vertical moves.
             .focusSection()
@@ -515,11 +598,20 @@ private struct SearchMusicRail: View {
     let libraryID: String?
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
+    @State private var railViewportWidth: CGFloat?
+    @State private var firstVisibleItemID: String?
+
+    private var posterWidth: CGFloat {
+        DS.Poster.measuredRailWidth(viewport: railViewportWidth,
+                                    compact: compactWidth,
+                                    margin: DS.Scroll.railHorizontalMargin(compact: compactWidth),
+                                    gutter: compactWidth ? DS.Space.md : DS.Space.xl)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: compactWidth ? DS.Space.sm : DS.Space.lg) {
             Text(section.title)
-                .font(compactWidth ? .title3.bold() : .title2.bold())
+                .font(DS.railSectionTitleFont(compact: compactWidth))
                 .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -527,14 +619,17 @@ private struct SearchMusicRail: View {
                     ForEach(section.items) { item in
                         NavigationLink(value: SearchMusicDestination(item: item,
                                                                      libraryID: libraryID)) {
-                            RailMediaCell(item: item)
+                            RailMediaCell(item: item, posterWidth: posterWidth)
                         }
                         .cardLink()
                     }
                 }
+                .railScrollTargetLayout()
                 .padding(.vertical, DS.Space.sm)
             }
             .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth))
+            .railScrollAnchor($firstVisibleItemID)
+            .railViewportWidth($railViewportWidth)
             #if os(tvOS)
             // Declared focus row (see HubRail): whole-rail target for vertical moves.
             .focusSection()
@@ -572,7 +667,7 @@ private struct SearchSongsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.lg) {
             Text("Songs")
-                .font(compactWidth ? .title3.bold() : .title2.bold())
+                .font(DS.railSectionTitleFont(compact: compactWidth))
                 .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
 
             VStack(spacing: 0) {
@@ -722,7 +817,7 @@ private struct SearchTrackRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
-                    .font(.body)
+                    .font(songTitleFont)
                     .foregroundStyle(isCurrent ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
                     .lineLimit(1)
                 // On a *track*, `grandparentTitle` is the artist and `parentTitle`
@@ -739,7 +834,7 @@ private struct SearchTrackRow: View {
 
             if let duration = track.duration {
                 Text(formatTrackDuration(milliseconds: duration))
-                    .font(.subheadline.monospacedDigit())
+                    .font(songDurationFont)
                     .foregroundStyle(.secondary)
             }
 
@@ -754,6 +849,23 @@ private struct SearchTrackRow: View {
         // a custom ButtonStyle misroutes pinches to neighboring rows (DEVELOPMENT.md).
         // The outer inset keeps the row highlight clear of the card's corner curve.
         .padding(.horizontal, DS.Space.sm)
+    }
+
+    /// iPhone/iPad: Body title and Caption duration (three-style type pass).
+    private var songTitleFont: Font {
+        #if os(iOS)
+        .subheadline
+        #else
+        .body
+        #endif
+    }
+
+    private var songDurationFont: Font {
+        #if os(iOS)
+        .caption.monospacedDigit()
+        #else
+        .subheadline.monospacedDigit()
+        #endif
     }
 
     private var subtitle: String {

@@ -47,6 +47,29 @@ struct PlexOriginalFallbackPolicyTests {
                                                           hasPlexSession: true))
     }
 
+    @Test("B36: an explicitly chosen existing Plex Version never falls back to an optimize")
+    func existingVersionNeverFallsBack() {
+        // #112: an existing-version download is the exact server-prepared file the user picked;
+        // a failed local probe must not start a fresh optimize at the default preset.
+        let existingVersion = record(backend: .plex,
+                                     serverPreparedVersion: DownloadChoicePolicy
+                                        .isServerPreparedVersion(for: .existingVersion))
+        #expect(!PlexOriginalFallbackPolicy.shouldFallback(record: existingVersion,
+                                                          ratingKey: existingVersion.ratingKey,
+                                                          isTranscodeSourced: false,
+                                                          hasServerPrepQueueTitle: false,
+                                                          hasPlexSession: true))
+        // A true original (explicitly not server-prepared) stays eligible.
+        let original = record(backend: .plex,
+                              serverPreparedVersion: DownloadChoicePolicy
+                                .isServerPreparedVersion(for: .original))
+        #expect(PlexOriginalFallbackPolicy.shouldFallback(record: original,
+                                                         ratingKey: original.ratingKey,
+                                                         isTranscodeSourced: false,
+                                                         hasServerPrepQueueTitle: false,
+                                                         hasPlexSession: true))
+    }
+
     @Test("Fallback target uses only explicit download presets before defaulting")
     func fallbackTarget() {
         #expect(PlexOriginalFallbackPolicy.fallbackTarget(storedPreference: " 720p 4 Mbps ",
@@ -60,7 +83,8 @@ struct PlexOriginalFallbackPolicyTests {
     }
 
     private func record(backend: DownloadBackendKind,
-                        optimizeTargetName: String? = nil) -> DownloadRecord {
+                        optimizeTargetName: String? = nil,
+                        serverPreparedVersion: Bool? = nil) -> DownloadRecord {
         let ratingKey = DownloadRecordIdentity.recordKey(for: "item-1", backend: backend)
         let metadata = OfflineMetadata(ratingKey: ratingKey,
                                        title: "Title",
@@ -68,7 +92,8 @@ struct PlexOriginalFallbackPolicyTests {
                                        optimizeTargetName: optimizeTargetName,
                                        backendKind: backend,
                                        downloadLane: .original,
-                                       resumeMode: .staticByteRange)
+                                       resumeMode: .staticByteRange,
+                                       serverPreparedVersion: serverPreparedVersion)
         return DownloadRecord(ratingKey: ratingKey,
                               title: "Title",
                               localURL: url,

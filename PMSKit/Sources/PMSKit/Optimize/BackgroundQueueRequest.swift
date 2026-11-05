@@ -237,6 +237,28 @@ public struct BackgroundTranscodeJobs: Decodable, Sendable, Equatable {
         let matches = jobs.filter { $0.matchesTitle(mediaTitle) }
         return matches.count == 1 ? matches.first : nil
     }
+
+    /// The background job attributable to THIS row, or `nil` when attribution is ambiguous:
+    /// 1. the job whose per-job `ratingKey` matches;
+    /// 2. else the unique exact title match;
+    /// 3. else, when the conversion queue marks this item as the active conversion
+    ///    (`isActiveConversion`), the single background job (PMS shapes whose job carries
+    ///    progress/speed but no per-job ratingKey).
+    /// There is deliberately NO "one job and one active Labstream download" fallback: that lone
+    /// job may be another client's transcode while our row is still queued. Tiers 2 and 3 only
+    /// consider jobs that carry no rating key: a job naming a different item is never ours, even
+    /// when a conversion-queue snapshot taken at another moment says this row is active.
+    public func attributedJob(ratingKey: String, title mediaTitle: String?,
+                              isActiveConversion: Bool) -> Job? {
+        if let exact = job(ratingKey: ratingKey) { return exact }
+        let unidentified = jobs.filter {
+            ($0.ratingKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
+        }
+        let titleMatches = unidentified.filter { $0.matchesTitle(mediaTitle) }
+        if titleMatches.count == 1 { return titleMatches.first }
+        return (jobs.count == 1 && unidentified.count == 1 && isActiveConversion)
+            ? unidentified.first : nil
+    }
 }
 
 /// `GET /playQueues/1` → the ordered conversion queue. Lenient: degrades to `[]`. We surface

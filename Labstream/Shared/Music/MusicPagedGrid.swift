@@ -107,10 +107,10 @@ struct MusicPagedGrid: View {
                 }
             }
             .padding(.horizontal, DS.pagePadding(compact: compactWidth))
-            // On compact the 16-pt page padding leaves the last column under the
-            // A–Z section index, which intercepts taps while scrubbing — reserve
-            // the rail's narrow strip instead of overlapping (same fix as the
-            // video LibraryGridView). macOS also reserves the floating rail so the
+            // The page padding alone leaves the last column under the A–Z section
+            // index, which intercepts taps while scrubbing — reserve the rail's
+            // narrow strip instead of overlapping, in compact and regular width
+            // (same fix as the video LibraryGridView). macOS also reserves the floating rail so the
             // denser desktop music grid doesn't tuck its final album/artist card
             // underneath the index.
             .padding(.trailing, alphabetRailGridReservation)
@@ -134,12 +134,16 @@ struct MusicPagedGrid: View {
 
     private var alphabetRailGridReservation: CGFloat {
         guard paging.alphabetBuckets.count > 1 else { return 0 }
-        #if os(visionOS)
+        #if os(visionOS) || os(tvOS)
         return 0
         #elseif os(macOS)
         return MusicArt.macAlphabetRailGridReservation
         #else
-        return compactWidth ? LibraryAlphabetRail.compactGridTrailingReservation : 0
+        // Reserve the rail strip in every width: a regular-width window (a wide iPad pane,
+        // the unfolded iPhone Duo inner display) otherwise leaves its last column under the rail.
+        return compactWidth
+            ? LibraryAlphabetRail.compactGridTrailingReservation
+            : LibraryAlphabetRail.regularGridTrailingReservation(pagePadding: DS.pagePadding(compact: false))
         #endif
     }
 

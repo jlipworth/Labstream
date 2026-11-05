@@ -164,6 +164,17 @@ unknown facts, transforms, and HDR are excluded. This avoids the reproduced visu
 on the offset-primed quality-reopen path, without asserting a shared cause with the H.264
 starvation issue ([evidence and limits](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/audits/2026-09-13-emby-hevc-sdr-timeline.md)).
 
+The fragmented-MP4 copy lane requests `SegmentLength=2` (#420). Emby muxes each fMP4 segment as one
+fragment, with every video sample ahead of the segment's audio. At the 6-second default, a 4K
+segment is about 30 MB. Labstream's HDR render path back-pressures the video, so AVPlayer reaches
+that audio seconds after its presentation time, discards it, and resyncs. The result is audible
+dropouts every few seconds, with copied AC-3 or converted DTS/TrueHD alike, worst after Emby's
+`-ss` transcode restarts. Two-second segments bound how far audio trails its video. Mac acceptance
+recorded zero audio-queue resyncs for converted audio (DTS→AAC; shipping AC-3 also converts via the
+workaround above) across start, deep seek, resume and restarts. An intermediate AC-3-copy build was
+also clean. With 6-second segments, the same scenario produced dozens of resyncs per few
+minutes. The MPEG-TS static-recovery lane keeps its existing segmenting.
+
 Verified Emby copy HLS reopens retain their 12-second buffer target but keep automatic
 waiting enabled, so buffer exhaustion does not strand AVPlayer at rate zero. Verified
 Jellyfin copy reopens use the same exception; approved video-encode settings remain unchanged. AC-3 copy
@@ -171,6 +182,16 @@ transport also uses AAC as a narrow delivery workaround. Unknown transforms and 
 burn require consent; Maximum explicitly authorizes video encoding. This fallback is
 video-copy Original (Direct Stream), not byte-for-byte original-file Direct Play. Native-file starvation
 itself remains unresolved; the scoped recovery passed Mac playback and deep-seek acceptance.
+
+Emby can still race two transcodes on one copy session: an `init.mp4` request that lands
+while a seek-gap restart has the job unregistered starts a second writer for the same init and
+segments, and AVPlayer can then fail to build its render pipeline (`fmt?`). Emby 4.10 can also
+lose a mid-file job's absolute position after a few segments and restart the encoder on every
+following request; the client does not trigger that, and it is tracked as a server-side gate in
+#421. A verified Emby copy failure that is not a server, authentication or connection error therefore reopens the
+same copy lane once at the playhead before the encode-consent prompt (#421). The budget resets
+only when a seek, quality change or other reopen starts a new target, so a persistent failure
+still reaches consent.
 
 A reopened result arriving after cancellation must still stop its exact server session.
 `stopAndWaitIgnoringCancellation()` isolates that cleanup from the cancelled preparation
@@ -192,7 +213,14 @@ Current invariants:
 - `HLSSessionPrewarmer` is lane-specific rather than a universal HLS prerequisite. Plex uses
   its full 20-second budget only when the selected quality is Original (Direct Stream).
   Outside native full-timeline lanes, Emby gives nonzero transcode resume/reopen targets
-  an 8-second head start. Absent/zero-resume AV1 transcodes instead warm the same session
+  an 8-second head start. A verified fragmented-MP4 copy child uses a target warm instead (#421).
+  The child is already a media playlist, so the generic prewarm would request segment 0 and start
+  a transcode from zero that races AVPlayer's seek target; the prewarmer now refuses any
+  non-master start playlist. The target warm reads the full-timeline playlist, then fully fetches
+  the segment containing the target, so Emby's job already runs there when AVPlayer requests
+  `init.mp4`. Without it, an `init.mp4` and a target-segment request arriving together started a
+  job from zero, stalled the target for about 20 seconds, and restarted the encoder on every
+  later segment, dropping audio each time (#420). Absent/zero-resume AV1 transcodes instead warm the same session
   for up to 20 seconds without the proxy ([evidence and limits](https://github.com/jlipworth/Labstream/blob/main/docs/research/emby-av1-startup.md)).
   Jellyfin skips legacy priming and client-seeks its VOD timeline.
   All prewarm outcomes are soft and AVPlayer still gets a chance to load.
@@ -240,6 +268,45 @@ stall and later upshift after healthy playback. It never silently converts an ex
 adaptive bitrate is enabled, it may move among bounded transcode rungs below that cap. The requested
 forward-buffer duration remains a hint, not a guarantee; a full server throttle window, a
 single-rendition copy stream, or AVPlayer's realized buffer is not itself an adaptive bitrate ladder.
+
+### Transport-status presentation
+
+`PlaybackController` resolves one `PlaybackTransportStatus` from AVPlayer state, user intent,
+retry lifecycle, and surfaced failures, and feeds it to `PlaybackTransportStatusState`. That
+object owns every presentation timer; the chrome renders only its published `status` and
+`stage`, so no view owns a buffering timer. The contract:
+
+- **Show delay (600 ms).** Buffering-class states (`.buffering`, `.pausedBuffering`,
+  `.preparingLocal`) publish nothing until the wait has lasted 600 ms, so short waits never
+  flash an overlay. This is the single delay mechanism; local preparation (including the
+  initial Offline open) uses it too. The one exception: a remote wait before the current item
+  has played any frame (black surface, nothing to cover) shows the spinner immediately.
+- **Minimum visible (600 ms).** Once shown, a wait stays up for at least 600 ms. A clear inside
+  that hold is deferred, and waiting that resumes within it continues the same presentation,
+  so waiting ↔ playing chatter cannot flicker.
+- **Staged escalation (3.5 s).** A continuous wait first shows stage 1, a spinner on a subtle
+  dark disc with no platter. After 3.5 s from the start of the wait it escalates to stage 2,
+  the full card with title, detail copy, and the Pause / "Resume when ready" action. First
+  start and rebuffers share the same stages and timer. A paused wait (`.pausedBuffering`,
+  paused local preparation) presents the card directly, because the viewer explicitly paused
+  and needs "Resume when ready". A wait never demotes from card back to spinner.
+- **Preemption.** `.reconnecting` and `.failed` publish immediately as cards, cancelling any
+  pending show and the minimum-visible hold. Their clear is immediate. Retry from a failure
+  replaces the card with the stage-1 spinner without a blank gap.
+
+On iOS/iPadOS the card is sized by layout: regular width uses a 420 pt card with `.title3`
+title and `.subheadline` detail; compact width scales with the viewport (up to 380 pt); compact
+height (iPhone landscape) uses a tighter rhythm and smaller controls so it clears the scrubber.
+tvOS, visionOS, and macOS keep their established card sizes. When chrome is visible, the
+overlay centers in the free space between the measured top bar and bottom controls. When chrome
+is hidden, it centers in the chrome's safe-area frame. On iOS the frame is
+`MobilePlayerArrangement.statusFrame`: the video rectangle in a Fit portrait scene, the trailing
+group after a book hinge, or the picture half in tabletop. Appear/disappear and the
+spinner → card transition animate with an opacity and scale change. On iOS the center
+play/pause stays hidden while any status is presented. The pre-controller startup spinner in
+`CustomPlayerView` uses the same stage-1 view, so startup reads as one indicator. The
+`--ui-testing-player-buffering` fixture (add `--ui-testing-player-paused` for the paused card)
+pins the status through the real timing for deterministic review.
 
 ## Seeking and restart budgets
 
@@ -290,7 +357,8 @@ row carries exactly one mechanism—AVFoundation, Plex stream, MediaBrowser stre
 sidecar—and subtitle Off is a lane-specific typed choice. Plex's `0` and MediaBrowser's `-1` Off
 values exist only in the controller's backend adapter immediately next to wire-facing requests.
 
-Offline subtitle menus read only the downloaded track metadata. The controller opens and parses
+Offline subtitle menus combine embedded AVFoundation tracks and downloaded sidecar metadata
+with one Off choice. The controller opens and parses
 the selected SRT/VTT sidecar off the main actor when the viewer chooses it; opening the menu no
 longer parses every sidecar up front. Offline subtitle and metadata-audio selections are
 generation-fenced: a later track or Off choice invalidates stale async parse/PUT completions before
@@ -314,13 +382,64 @@ system profile's supported font, size, colors, opacity, edge, window, and corner
 
 ## Local/offline playback
 
+Detail and the Offline library use one manager-owned `OfflinePlaybackLaunchFactory`. After
+orientation, it admits the captured exact attempt, rejects deletion/nonterminal/missing files and
+superseded presentation requests, and constructs an immutable local launch for the shared player.
+Metadata chooses the backend/assets; only legacy metadata without backend identity uses a prefix fallback. Local
+position takes precedence over the captured server position and resume rewind applies once.
+Rejection never falls back to remote playback; orientation must be restored when launch is refused.
+
+A bound event sink keeps the playing attempt and an independent playback-session generation.
+Position alone (including initial seek/resume) cannot verify a download: only the current item's
+actual playing observation can clear eligible probe-miss/background-deferred warnings. Known
+repeated truncation stays unverified. Saves use one resolving async commit and one latest pending
+sample, including a captured close sample; reopening supersedes old callbacks and terminal samples.
+Timeout/failure is not an acknowledged save and close never blocks MainActor on a flush. Readable
+blocked recovery allows playback with mutations disabled. Cold-launch availability is derived by
+generation-tagged off-main scans, and Play rechecks the actual file after orientation.
+
 Completed downloads play from local file URLs. Local playback has no remote progress stream,
 server session, or transcode cleanup path. Its playhead is persisted on the offline record,
 and its typed offline session still shares player UI, diagnostics, chapters/subtitles, Cinema,
 and error surfaces with remote playback. Transport-status presentation is source-aware:
 `PlaybackTransportPresentationPolicy` maps AVPlayer's shared waiting state to local-preparation
 wording for `.localFile` sessions instead of remote buffering language, while stall-watchdog
-mechanics remain shared with remote playback.
+mechanics and the [presentation timing](#transport-status-presentation) remain shared with
+remote playback.
+
+## iOS presentation geometry
+
+On iPhone, iPad and iPhone Duo a rotation, an iPad window resize, or a Duo fold or unfold is a
+layout event only. The same `PlaybackController` generation, `AVPlayer` and `AVPlayerLayer`
+survive it: nothing stops, reloads, reopens, changes quality, renegotiates a transcode session,
+resets a seek hold or spends restart budget. `videoGravity` is mutated in place on the one live
+layer, only when it changes and without an implicit animation. The transport-status timers stay in
+the controller, so a re-layout does not reset the staged show delay.
+
+The presenter's `.fullScreenCover` (Detail, Offline library) stays mounted across these changes;
+`player.view_disappear` is recorded if it is ever dropped. `MobilePlayerSceneGeometryReader`, an
+invisible view inside the player, reports the player's own window scene to
+`MobilePlayerOrientationCoordinator`, which re-decides the phone-class landscape lock from that
+scene's measured geometry (`MobilePlayerOrientationLockPolicy`). Releasing the lock widens the mask
+without forcing a rotation. The chrome re-derives its branch from the measured viewport
+(`MobilePlayerChromeLayoutPolicy`) and its arrangement (`MobilePlayerArrangement`: overlay, video
+rectangle, book or tabletop) from the measured geometry and the foldable pose, and cancels an
+open scrub when either changes. In tabletop the one `AVPlayerLayer` only changes its frame to the
+half above the hinge; it is never replaced.
+
+Video pauses on `didEnterBackground`. On iOS a resign-active pauses only after 400 ms and is
+cancelled by `didBecomeActive`, so a transient inactive phase (a fold, Control Center, the start
+of automatic Picture in Picture) does not stall playback; PiP and external playback are honoured
+before pausing. PiP rebinds its content source if a different layer attaches while PiP is
+inactive, and restoring from PiP returns to the still-presented player.
+
+Diagnostics for judging a fold run from bounded evidence (all `.playback`): `player.geometry_change`
+(scene and screen size, size classes, orientation, display class, lock decision, scene activation,
+safe-area insets, hinge status and vertical-bar edge on iOS 27.1), `player.orientation_lock`,
+`player.orientation_request_failed`, `player.hinge_status`, `player.chrome_branch_change`,
+`player.arrangement_change`,
+`player.lifecycle_pause` (reason and outcome), `player.pip_state`, `player.pip_rebind`,
+`player.view_disappear`, and the existing `playback.session_stop`.
 
 ## HDR and Dolby Vision
 
@@ -436,18 +555,30 @@ lease path. tvOS compiles neither `VideoNowPlayingCore` nor the visionOS
 
 The player Stats panel (#331) opens on a compact summary: the path title and one reason line,
 then a signal chain from the server file to this device (video, HDR, audio), then Buffer,
-Bitrate, Connection, Audio, and Subtitles tiles. The path color means only how the server
-handles the stream (direct, copy, encode). A device-side value is drawn in that color only when
-the server converted it. Delivered values come from runtime facts
+Bitrate, Connection, Audio, and Subtitles tiles. The path color is the same on every platform:
+green means only "plays as-is" (direct), and copy and encode are neutral gray, told apart by the
+path title and the link label, because cyan or orange would read as the amber "selected" accent.
+A device-side value is drawn on a path-tinted chip only when the server converted it. Delivered values come from runtime facts
 (`AVPlayerItem.presentationSize` and the asset probe's codec and HDR), never from a guess, so an
 encode shows "—" until they arrive. Red is used only for real stalls. **See more** switches
 the same panel to Video / Audio / Network sections. These keep every diagnostic row, and the
 remembered compact/expanded choice persists. Copy writes a plain-text summary with no track
-titles. The player never shows the server host, only Local / Remote / Downloaded / Unknown.
+titles. The player never shows the server host, only Local / VPN / Remote / Downloaded / Unknown.
+The route first comes from the host alone (a private or `plex.direct` literal, an mDNS or `.lan`
+name). Opening Stats then resolves the host on the device and compares the address with the
+device's interfaces (`PlaybackConnectionRouteResolver`): the subnet of a physical interface is
+Local; a tunnel subnet, the 100.64.0.0/10 overlay range, or Tailscale's IPv6 range is VPN; any
+other private address is VPN while a tunnel interface carries an address (a subnet router) and
+Local otherwise; a public address is Remote. A custom domain is therefore Unknown only when it
+cannot be resolved.
 
 The reason line and the expanded Decision rows come from `PlaybackExplanation`: one lane
 headline and at most two useful reasons, with provenance (backend-reported, app-requested, or
 inferred).
+A MediaBrowser server can name only a container reason while still converting audio (Emby
+reports `ContainerNotSupported` for DTS converted to AAC). When the rendered audio codec family
+differs from the source, the explanation is refined to "Video is copied; audio is converted"
+(an inferred audio-transcode fact), so the device card no longer repeats the source codec.
 The normal player must not show raw backend reason arrays, IDs, or URLs. Emby Profile 5 is
 blocked rather than forced through a tone-map, so an Emby no-fallback DV open should refuse; it
 is not a requested tone-map explanation.
@@ -471,7 +602,11 @@ offline return. The player window detaches only after both the platform open res
 immersive generation's appearance have succeeded; a failed or missing appearance leaves it in
 place. Window disappearance during the accepted handoff is not an exit and preserves the same
 controller, `AVPlayer`, and audio path. Stale scaffold generations cannot bind player callbacks,
-maintain SharePlay attachment, tick, or finalize. Do not restore a hidden second player or
+maintain SharePlay attachment, tick, or finalize. Cinema binds presentation callbacks once per
+scaffold/controller pair using weak controller and session references. Queued delivery checks both
+the binding owner and Cinema generation; disappearing scaffolds clear only their own binding.
+Terminal controller stop releases all presentation callbacks. These lifetime guards preserve the
+same controller during window-to-Cinema handoff. Do not restore a hidden second player or
 reintroduce an AVKit-only control surface.
 
 ## Restart and cleanup principles

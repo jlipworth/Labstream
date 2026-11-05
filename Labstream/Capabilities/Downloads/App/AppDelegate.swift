@@ -35,10 +35,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         AppDiagnostics.record(.downloads, "downloads.background_events_received", fields: [
             "session": .label(identifier),
         ])
-        // The completion handler must be invoked on the main thread once events drain.
-        Task { @MainActor in
-            BackgroundDownloadCompletionRegistry.shared.store(identifier: identifier,
-                                                              completion: completionHandler)
+        // The completion handler must be invoked on the main thread once events drain. B11: UIKit
+        // calls this on the main thread, so store the handler synchronously. Hopping through
+        // `Task { @MainActor }` let `urlSessionDidFinishEvents` claim an empty batch first, leaving
+        // this handler to wait for the next wake while the OS wake timed out.
+        MainActor.assumeIsolated {
+            _ = BackgroundDownloadCompletionRegistry.shared.store(identifier: identifier,
+                                                                  completion: completionHandler)
         }
     }
 }

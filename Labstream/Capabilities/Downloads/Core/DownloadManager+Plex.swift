@@ -76,7 +76,7 @@ extension DownloadManager {
                                             downloadLane: DownloadChoicePolicy.downloadLane(for: choice),
                                             serverPreparedVersion: DownloadChoicePolicy.isServerPreparedVersion(for: choice))
         let seedDestination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
-        guard persistAttemptSeed(
+        guard await persistAttemptSeed(
             DownloadRecord(ratingKey: ratingKey, attemptID: startAttempt.attemptID,
                            title: item.title, localURL: seedDestination,
                            bytes: 0, progress: 0, metadata: metadata),
@@ -148,7 +148,7 @@ extension DownloadManager {
                 fallbackOptimizeTarget: Self.originalFallbackOptimizeTarget()
             ) {
             case .staticOriginal:
-                startStaticPlexPartDownload(ratingKey: ratingKey, item: item, part: part, url: url,
+                await startStaticPlexPartDownload(ratingKey: ratingKey, item: item, part: part, url: url,
                                             metadata: metadata, choiceLabel: "original",
                                             attemptID: startAttempt.attemptID,
                                             choice: choice, mediaIndex: mediaIndex, partIndex: partIndex,
@@ -158,6 +158,17 @@ extension DownloadManager {
                     "download_id": .identifier(ratingKey),
                     "target": .label(fallback),
                 ])
+                // P4.5: the fallback creates a server job; it needs room in the prep lane.
+                guard admissionMayEnterServerPrep(ratingKey) else {
+                    releaseInFlight(for: attemptKey)
+                    return
+                }
+                if rejectOptimizeFallbackOverStorageLimit(
+                    ratingKey: ratingKey, item: item, target: fallback,
+                    mediaIndex: mediaIndex, partIndex: partIndex) {
+                    releaseInFlight(for: attemptKey)
+                    return
+                }
                 await selectPlexAudioForPreparedDownloadIfNeeded(
                     part: part, audioStreamIndex: audioStreamIndex,
                     server: server, token: token)
@@ -177,7 +188,7 @@ extension DownloadManager {
                 return
             }
             let url = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
-            startStaticPlexPartDownload(ratingKey: ratingKey, item: item, part: part, url: url,
+            await startStaticPlexPartDownload(ratingKey: ratingKey, item: item, part: part, url: url,
                                         metadata: metadata, choiceLabel: "existing_version",
                                         attemptID: startAttempt.attemptID,
                                         choice: choice, mediaIndex: mediaIndex, partIndex: partIndex,
@@ -199,14 +210,15 @@ extension DownloadManager {
     private func selectPlexAudioForPreparedDownloadIfNeeded(
         part: Part?, audioStreamIndex: Int?, server: URL, token: String
     ) async {
+        // B43: send the matched stream's Stream.id, never the raw value (it may be a container
+        // index, which Plex would reject or resolve to a different stream).
         guard let part, let audioStreamIndex,
-              part.audioStreams.contains(where: {
-                  $0.id == audioStreamIndex || $0.index == audioStreamIndex
-              }) else { return }
+              let match = DownloadAudioSelectionPolicy.matchedAudioStream(
+                part: part, streamIdentifier: audioStreamIndex) else { return }
         do {
             try await appModel.client.send(StreamSelectionRequest.selectAudioStream(
                 server: server, token: token, identity: appModel.identity,
-                partID: part.id, audioStreamID: audioStreamIndex))
+                partID: part.id, audioStreamID: match.id))
         } catch {
             recordDownloadDiagnostic("downloads.audio_preference_fallback", fields: [
                 "backend": .label("Plex"),
@@ -223,7 +235,7 @@ extension DownloadManager {
                                              metadata: OfflineMetadata, choiceLabel: String,
                                              attemptID: DownloadAttemptID,
                                              choice: DownloadChoice, mediaIndex: Int, partIndex: Int,
-                                             server: URL, token: String) {
+                                             server: URL, token: String) async {
         let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
         let expectedBytes = estimatedBytes(for: item, choice: choice,
                                            mediaIndex: mediaIndex,
@@ -242,8 +254,15 @@ extension DownloadManager {
         let record = DownloadRecord(ratingKey: ratingKey, attemptID: attemptID, title: item.title,
                                     localURL: destination, bytes: 0, progress: 0,
                                     metadata: metadata)
-        switch store.createAttemptOwnedRecord(record, attemptID: attemptID) {
+        let fence = managerActionGenerations[ratingKey, default: 0]
+        let result = await store.createAttemptOwnedRecordAsync(record, attemptID: attemptID)
+        guard managerContinuationIsCurrent(attemptKey, fence: fence),
+              startAttempts.isCurrent(ratingKey, id: attemptID) else { return }
+        switch result {
         case .committed(let committed) where committed == attemptKey:
+            guard managerContinuationIsCurrent(attemptKey, fence: fence),
+                  startAttempts.isCurrent(ratingKey, id: attemptID), inFlightAttempts.owns(attemptKey),
+                  session.rangeRequestRebuildIsCurrent(for: ratingKey) else { return }
             break
         case .committed, .rejectedOwnership:
             recordDownloadDiagnostic("downloads.start_superseded_after_await", fields: [
@@ -256,7 +275,10 @@ extension DownloadManager {
         case .failed:
             lastError[ratingKey] = .transferFailed(
                 "The download could not be saved safely. Check storage and try again.")
-            _ = setAttemptStatus(.failed, for: attemptKey, context: "plex_static_publish")
+            let failureFence = managerActionGenerations[attemptKey.ratingKey, default: 0]
+            _ = await applyLifecycleEvent(
+                .transferFailed(.internalError), for: attemptKey, context: "plex_static_publish")
+            guard !Task.isCancelled, managerActionGenerations[attemptKey.ratingKey, default: 0] == failureFence, store.ownsAttempt(attemptKey) else { return }
             if store.ownsAttempt(attemptKey) { releaseInFlight(for: attemptKey) }
             refreshRecords()
             return
@@ -300,8 +322,16 @@ extension DownloadManager {
             hasPlexSession: backendSession != nil),
             let metadata = record?.metadata,
             let backendSession else { return }
+        // P4.5: the fallback creates a server job; without prep-lane room the row keeps its
+        // validation failure and a later Retry takes the fallback through admission.
+        guard admissionMayEnterServerPrep(ratingKey) else { return }
         let item = metadata.makeMediaItem()
         let target = Self.originalFallbackOptimizeTarget()
+        if rejectOptimizeFallbackOverStorageLimit(
+            ratingKey: ratingKey, item: item, target: target,
+            mediaIndex: metadata.mediaIndex ?? 0, partIndex: metadata.partIndex ?? 0) {
+            return
+        }
         recordDownloadDiagnostic("downloads.original_validation_fallback", fields: [
             "download_id": .identifier(ratingKey),
             "target": .label(target),
@@ -312,6 +342,17 @@ extension DownloadManager {
         await triggerOptimizeAndDownload(item: item, targetName: target,
                                          metadata: metadata, session: backendSession,
                                          attemptKey: attemptKey)
+    }
+
+    /// B41 (P5): both original → optimize fallbacks check the storage cap with the optimize
+    /// estimate before asking the server to render.
+    func rejectOptimizeFallbackOverStorageLimit(ratingKey: String, item: MediaItem, target: String,
+                                                mediaIndex: Int, partIndex: Int) -> Bool {
+        rejectIfOverStorageLimit(
+            ratingKey: ratingKey, backend: "Plex",
+            expectedBytes: estimatedBytes(for: item, choice: .optimize(targetName: target),
+                                          mediaIndex: mediaIndex, partIndex: partIndex,
+                                          backend: .plex))
     }
 
     static func originalFallbackOptimizeTarget(defaults: UserDefaults = .standard) -> String {

@@ -76,6 +76,28 @@ class PlaybackEvidenceTests(unittest.TestCase):
                 self.assertNotIn("private-sentinel", result.stdout + result.stderr)
 
 class PlaybackReportTests(unittest.TestCase):
+    def test_non_object_snapshot_is_rejected_as_invalid_evidence(self):
+        for value in (None, 7, "private-sentinel", []):
+            report = dict(schemaVersion=1, evidenceKind="liveController", scenario="original",
+                          status="passed", reason="completed", snapshots=[value])
+            with self.subTest(value=value), self.assertRaises(evidence.InvalidEvidence):
+                evidence.validate_report(report)
+
+    def test_delivery_transport_is_allowlisted_without_rejecting_old_reports(self):
+        snapshot = dict(buildNumber=1, phase="stopped", bufferBucketSeconds=0, renderedFormat="avc1",
+                        schemaVersion=1, generation=1, backend="jellyfin", qualityKbps=0,
+                        videoDecision="copy", videoProvenance="serverDecision", audioDecision="copy",
+                        consent="notPending", visibleAttachment="attached", positionBucketSeconds=0,
+                        cleanupRequested=True, serverCleanup="unknown")
+        report = dict(schemaVersion=1, evidenceKind="liveController", scenario="original",
+                      status="passed", reason="completed", snapshots=[snapshot])
+        evidence.validate_report(report)
+        for value in ("hlsPlaylistURL", "remoteOriginalFileRoute", "localFileURL", "unknown"):
+            snapshot["deliveryTransport"] = value
+            evidence.validate_report(report)
+        snapshot["deliveryTransport"] = "https://private-sentinel"
+        with self.assertRaises(evidence.InvalidEvidence):
+            evidence.validate_report(report)
     def test_missing_admission_is_valid_blocked_evidence(self):
         report = dict(schemaVersion=1, evidenceKind="liveController", scenario="original",
                       status="blocked", reason="missingAdmission", snapshots=[])

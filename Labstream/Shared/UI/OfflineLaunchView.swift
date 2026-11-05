@@ -6,6 +6,7 @@ import SwiftUI
 struct OfflineLaunchView: View {
     let runtime: AppRuntime
 
+    @State private var offlineFocus = OfflineReturnFocus()
     @State private var reconnecting = false
     @State private var showingSignIn = false
     @State private var showingSettings = false
@@ -32,6 +33,9 @@ struct OfflineLaunchView: View {
                 NavigationStack {
                     SettingsView(authManager: authManager,
                                  catalogRepository: runtime.libraryCatalogRepository)
+                        #if os(iOS)
+                        .mobileSettingsSheetChrome { showingSettings = false }
+                        #endif
                 }
                 .environment(appModel)
                 .environment(downloadManager)
@@ -39,6 +43,8 @@ struct OfflineLaunchView: View {
                 .environment(\.artworkPipeline, runtime.artworkPipeline)
                 .environment(\.artworkShimmerClock, runtime.artworkShimmerClock)
             }
+            .task { consumeOfflineReturn() }
+            .onChange(of: SystemEntryRouter.shared.offlinePending) { _, _ in consumeOfflineReturn() }
             .accessibilityIdentifier("labstream.offline-launch.root")
     }
 
@@ -65,42 +71,66 @@ struct OfflineLaunchView: View {
     private var offlineNavigation: some View {
         NavigationStack {
             #if os(visionOS)
-            OfflineLibraryView(manager: downloadManager, focusedRatingKey: .constant(nil))
+            // visionOS has no navigation subtitle; the status rides in the toolbar ornament.
+            OfflineLibraryView(manager: downloadManager, focusedRatingKey: $offlineFocus.ratingKey)
                 .toolbar { launchToolbar }
             #else
             OfflineLibraryView(manager: downloadManager)
+                .navigationSubtitle(Self.offlineStatus)
                 .toolbar { launchToolbar }
             #endif
         }
-        .safeAreaInset(edge: .top) {
-            offlineStatusBanner
-        }
     }
 
-    private var offlineStatusBanner: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "wifi.slash")
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Offline mode")
-                    .font(.headline)
-                Text("Your server could not be reached. Completed downloads remain available.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button(reconnecting ? "Connecting…" : "Reconnect") {
-                reconnect()
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(reconnecting)
-        }
-        .padding(.horizontal)
-        .padding(.vertical, 10)
-        .background(.regularMaterial)
+    /// Restricted surface's current focus adapter, callable on the host without immersive UI.
+    static func offlineFocusBinding(router: SystemEntryRouter) -> Binding<String?> {
+        let focus = OfflineReturnFocus()
+        focus.consume(router: router)
+        return Binding(get: { focus.ratingKey }, set: { focus.ratingKey = $0 })
     }
+
+    private func consumeOfflineReturn() {
+        offlineFocus.consume(router: SystemEntryRouter.shared)
+    }
+
+    /// #415: the offline state lives in native navigation chrome (subtitle + toolbar action) so
+    /// it can never overlap the title or hide Sign In/Settings, as the old top inset did.
+    private static let offlineStatus = "Server unreachable"
+    private static let offlineExplanation = "Your server could not be reached. Completed downloads remain available."
 
     @ToolbarContentBuilder
     private var launchToolbar: some ToolbarContent {
+        #if os(visionOS)
+        ToolbarItem(placement: .primaryAction) {
+            Label(Self.offlineStatus, systemImage: "wifi.slash")
+                .labelStyle(.titleAndIcon)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Offline. \(Self.offlineExplanation)")
+        }
+        #endif
+        #if os(iOS)
+        // iPhone/iPad: Reconnect is an ordinary neutral toolbar item in the same group and style
+        // as its siblings, so the system can move the group into the vertical bar (amber means
+        // "selected" only).
+        ToolbarItemGroup {
+            reconnectButton
+            Button {
+                showingSignIn = true
+            } label: {
+                Label("Sign In", systemImage: "person.crop.circle")
+            }
+            Button {
+                showingSettings = true
+            } label: {
+                Label("Settings", systemImage: "gearshape")
+            }
+        }
+        #else
+        ToolbarItem(placement: .primaryAction) {
+            reconnectButton
+                .labstreamGlassProminentButtonStyle()
+        }
         ToolbarItemGroup {
             Button {
                 showingSignIn = true
@@ -113,6 +143,23 @@ struct OfflineLaunchView: View {
                 Label("Settings", systemImage: "gearshape")
             }
         }
+        #endif
+    }
+
+    private var reconnectButton: some View {
+        Button {
+            reconnect()
+        } label: {
+            if reconnecting {
+                ProgressView()
+            } else {
+                Label("Reconnect", systemImage: "arrow.clockwise")
+            }
+        }
+        .disabled(reconnecting)
+        .accessibilityLabel(reconnecting ? "Connecting" : "Reconnect")
+        .accessibilityHint(Self.offlineExplanation)
+        .accessibilityIdentifier("labstream.offline-launch.reconnect")
     }
 
     private func reconnect() {
@@ -122,6 +169,17 @@ struct OfflineLaunchView: View {
             _ = await authManager.restoreSession()
             reconnecting = false
         }
+    }
+}
+/// Real restricted-surface state, independent of browse metadata and immersive APIs.
+@Observable @MainActor
+final class OfflineReturnFocus {
+    var ratingKey: String?
+
+    func consume(router: SystemEntryRouter) {
+        guard let route = router.offlinePending else { return }
+        ratingKey = route.ratingKey
+        router.acknowledgeOfflineReturn(route)
     }
 }
 #endif

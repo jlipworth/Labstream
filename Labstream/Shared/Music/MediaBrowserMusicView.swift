@@ -249,11 +249,21 @@ private struct MediaBrowserMusicTrackRail: View {
 
     @Environment(MusicPlayerController.self) private var player
     @Environment(\.labstreamCompactWidth) private var compactWidth
+    /// Measured rail viewport (content region): whole square cells plus a cue (rule 7).
+    @State private var railViewportWidth: CGFloat?
+    @State private var firstVisibleItemID: String?
+
+    private var railArtSize: CGFloat {
+        DS.Poster.measuredRailWidth(viewport: railViewportWidth,
+                                    compact: compactWidth,
+                                    margin: DS.Scroll.railHorizontalMargin(compact: compactWidth),
+                                    gutter: compactWidth ? DS.Space.md : DS.Space.xl)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: compactWidth ? DS.Space.sm : DS.Space.lg) {
             Text(title)
-                .font(compactWidth ? .title3.bold() : .title2.bold())
+                .font(DS.railSectionTitleFont(compact: compactWidth))
                 .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -263,17 +273,20 @@ private struct MediaBrowserMusicTrackRail: View {
                             player.play(tracks: Array(tracks.prefix(20)), startingAt: index)
                         } label: {
                             SquareArtCell(item: track,
-                                          size: MusicArt.railSize(compact: compactWidth),
+                                          size: railArtSize,
                                           subtitle: track.grandparentTitle)
                         }
                         .cardLink()
                     }
                 }
+                .railScrollTargetLayout()
                 .padding(.vertical, DS.Space.sm)
             }
             // contentMargins, not .padding on the lazy content — see the hit-region
             // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes left).
             .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth))
+            .railScrollAnchor($firstVisibleItemID)
+            .railViewportWidth($railViewportWidth)
             #if os(tvOS)
             // Declared focus row (see HubRail): whole-rail target for vertical moves.
             .focusSection()

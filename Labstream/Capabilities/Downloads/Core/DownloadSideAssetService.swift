@@ -45,10 +45,16 @@ private struct DownloadSideAssetSourceKey: Hashable, Sendable {
 
 /// Exact retry authority for one optional payload class. A replacement attempt or selected source
 /// receives a fresh budget; neither can inherit a predecessor's failures.
+///
+/// The source-metadata refresh is one request that serves every discovery kind (Plex BIF and
+/// text subtitles), so it is budgeted once per (attempt, source), never once per kind (B25).
 struct DownloadSideAssetRetryIdentity: Hashable, Sendable {
+    static let sourceMetadataResource = "source-metadata"
+
     let attemptKey: DownloadAttemptKey
     private let source: DownloadSideAssetSourceKey
-    let kind: DownloadSideAssetKind
+    /// Nil for the shared source-metadata refresh.
+    let kind: DownloadSideAssetKind?
     let resource: String?
 
     init(attemptKey: DownloadAttemptKey,
@@ -57,7 +63,7 @@ struct DownloadSideAssetRetryIdentity: Hashable, Sendable {
          resource: String? = nil) {
         self.attemptKey = attemptKey
         self.source = DownloadSideAssetSourceKey(source)
-        self.kind = kind
+        self.kind = resource == Self.sourceMetadataResource ? nil : kind
         self.resource = resource
     }
 }
@@ -166,13 +172,13 @@ enum DownloadSideAssetRepairInventory {
             return [nil]
         case .plexBIF:
             // Plex does not persist Part/BIF availability; every repair begins with source detail.
-            return ["source-metadata"]
+            return [DownloadSideAssetRetryIdentity.sourceMetadataResource]
         case .jellyfinTrickPlay:
             // The playlist is the manifest required to discover/rebuild every missing tile.
             return ["playlist"]
         case .textSubtitles:
             // Source detail is required to rediscover both never-cached and missing tracks.
-            return ["source-metadata"]
+            return [DownloadSideAssetRetryIdentity.sourceMetadataResource]
         case .chapterImages:
             let chapters = metadata.makeMediaItem().chapters ?? []
             return chapters.enumerated().compactMap { index, chapter in

@@ -99,7 +99,43 @@ class NativeTestMatrixTests(unittest.TestCase):
             self.manifest,
             ["LabstreamMobileUITests/LabstreamMobileFixtureUITests.swift"],
         )
-        self.assertEqual(lanes, ["mobile-build", "mobile-ui-smoke"])
+        self.assertEqual(lanes, ["mobile-build", "mobile-ui-smoke", "duo-ui-smoke"])
+
+    def test_mobile_platform_root_selects_duo_lane_but_not_other_platforms(self) -> None:
+        lanes = matrix.affected_lanes(
+            self.manifest, ["Labstream/Platforms/Mobile/UI/MobileRootShell.swift"]
+        )
+        self.assertEqual(
+            lanes, ["mobile-build", "mobile-hosted", "mobile-ui-smoke", "duo-ui-smoke"]
+        )
+
+    def test_shared_app_root_selects_duo_lane(self) -> None:
+        lanes = matrix.affected_lanes(self.manifest, ["Labstream/Shared/UI/DetailView.swift"])
+        self.assertIn("duo-ui-smoke", lanes)
+
+    def test_duo_lane_targets_the_duo_simulator_placeholder(self) -> None:
+        lane = self.manifest["lanes"]["duo-ui-smoke"]
+        self.assertEqual(lane["simulator"], "duo")
+        self.assertIn("platform=iOS Simulator,id={duo_sim_id}", lane["command"])
+        blocked = matrix.render_lane(
+            "duo-ui-smoke", lane, output_dir=Path("/tmp/out"),
+            iphone_sim_id="IPHONE", tvos_sim_id="TV",
+        )
+        self.assertFalse(blocked["executable"])
+        self.assertIn("--duo-sim-id", blocked["reason"])
+        ready = matrix.render_lane(
+            "duo-ui-smoke", lane, output_dir=Path("/tmp/out"),
+            iphone_sim_id=None, tvos_sim_id=None, duo_sim_id="DUO-1",
+        )
+        self.assertTrue(ready["executable"])
+        self.assertIn("platform=iOS Simulator,id=DUO-1", ready["command"])
+
+    def test_duo_simulator_execution_reads_the_duo_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            (repo / ".simid-duo").write_text("DUO-SIM\n")
+            with self.assertRaisesRegex(matrix.MatrixError, "not this worktree's .simid-duo"):
+                matrix.require_worktree_simulator("duo", "OTHER-SIM", repo)
 
     def test_download_capability_excludes_tvos_lanes(self) -> None:
         lanes = matrix.affected_lanes(

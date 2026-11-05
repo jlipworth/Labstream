@@ -75,50 +75,21 @@ struct SeasonDownloadPlanningPolicyTests {
         #expect(summary.unknownCount == 2)
     }
 
-    @Test func admissionIsBoundedAndLaneAware() {
-        let pending = [
-            SeasonDownloadAdmissionCandidate(id: "prep-1", lane: .serverPreparation),
-            .init(id: "prep-2", lane: .serverPreparation),
-            .init(id: "static-1", lane: .staticFile),
-            .init(id: "live-1", lane: .liveForward),
-        ]
-        let admitted = SeasonDownloadAdmissionPolicy.admitted(pending: pending, active: [])
-        #expect(admitted.map(\.id) == ["prep-1", "static-1", "live-1"])
-        #expect(admitted.count == SeasonDownloadAdmissionPolicy.maximumTotal)
-    }
-
-    /// #362: an in-progress server preparation (Emby Convert / Plex optimize) occupies only its
-    /// own lane. Static and live-forward rows stay admissible up to their caps, and rows whose
-    /// starts are still in flight count as active so repeated passes cannot over-admit.
-    @Test func serverPreparationOccupiesOnlyItsOwnLane() {
-        let pending = [
-            SeasonDownloadAdmissionCandidate(id: "prep-2", lane: .serverPreparation),
-            .init(id: "static-1", lane: .staticFile),
-            .init(id: "static-2", lane: .staticFile),
-            .init(id: "static-3", lane: .staticFile),
-        ]
-        let active = [SeasonDownloadAdmissionCandidate(id: "prep-1", lane: .serverPreparation)]
-        #expect(SeasonDownloadAdmissionPolicy.admitted(pending: pending, active: active).map(\.id)
-            == ["static-1", "static-2"])
-
-        let inFlight = active + [
-            SeasonDownloadAdmissionCandidate(id: "static-1", lane: .staticFile),
-            .init(id: "static-2", lane: .staticFile),
-        ]
-        #expect(SeasonDownloadAdmissionPolicy.admitted(
-            pending: [.init(id: "static-3", lane: .staticFile)], active: inFlight).isEmpty)
-    }
-
-    @Test func backendLanesPreserveExistingTransferBehavior() {
-        #expect(SeasonDownloadAdmissionPolicy.lane(backend: .plex, downloadLane: .optimize)
-            == .serverPreparation)
-        #expect(SeasonDownloadAdmissionPolicy.lane(backend: .emby, downloadLane: .optimize)
-            == .serverPreparation)
-        #expect(SeasonDownloadAdmissionPolicy.lane(backend: .jellyfin, downloadLane: .optimize)
-            == .liveForward)
-        for backend in [DownloadBackendKind.plex, .jellyfin, .emby] {
-            #expect(SeasonDownloadAdmissionPolicy.lane(backend: backend, downloadLane: .original)
-                == .staticFile)
-        }
+    /// B69: a transient probe failure is not an "unsupported" verdict. (Lane admission moved
+    /// to `DownloadAdmissionPolicy` in P4; see `DownloadAdmissionPolicyTests`.)
+    @Test func aFailedProbeIsPlannedNotFailedAsUnsupported() {
+        #expect(SeasonDownloadOriginalQualityPolicy.shouldStartUnmatchedOriginal(probeFailed: true))
+        #expect(!SeasonDownloadOriginalQualityPolicy.shouldStartUnmatchedOriginal(probeFailed: false))
+        let P = SeasonDownloadOriginalQualityPolicy.self
+        #expect(P.resolve(hasOriginal: true, plexOriginalPreset: "orig", hasCompatibleRemux: true,
+                          probeFailed: true) == .original)
+        #expect(P.resolve(hasOriginal: false, plexOriginalPreset: "orig", hasCompatibleRemux: true,
+                          probeFailed: false) == .optimize(targetName: "orig"))
+        #expect(P.resolve(hasOriginal: false, plexOriginalPreset: nil, hasCompatibleRemux: true,
+                          probeFailed: true) == .compatibleRemux)
+        #expect(P.resolve(hasOriginal: false, plexOriginalPreset: nil, hasCompatibleRemux: false,
+                          probeFailed: true) == .unresolved)
+        #expect(P.resolve(hasOriginal: false, plexOriginalPreset: nil, hasCompatibleRemux: false,
+                          probeFailed: false) == .unsupported)
     }
 }

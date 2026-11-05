@@ -31,6 +31,19 @@ public struct DownloadBackendRetryIntent: Sendable {
 }
 
 public enum DownloadBackendRetryIntentPolicy {
+    /// The optimize target a failed Plex row must retry with: the user's persisted requested
+    /// target (#194), never the global default preset. `nil` when the row recorded no target
+    /// (a true original or legacy row), in which case the caller keeps its re-probe path.
+    public static func plexPersistedOptimizeTarget(for record: DownloadRecord) -> String? {
+        guard let metadata = record.metadata,
+              metadata.resolvedBackendKind(ratingKey: record.ratingKey) == .plex,
+              let target = metadata.optimizeTargetName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !target.isEmpty else {
+            return nil
+        }
+        return target
+    }
+
     public static func jellyfinIntent(for record: DownloadRecord,
                                       fallbackItemID: String,
                                       fallbackOriginalIsLocallyPlayable: Bool) -> DownloadBackendRetryIntent {

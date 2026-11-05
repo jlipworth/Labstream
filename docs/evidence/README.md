@@ -14,3 +14,8 @@ Do not put active implementation plans here (`docs/plans/`), unresolved question
 Use `YYYY-MM-DD-<topic>.md`, adding a short commit or environment label only when it distinguishes comparable observations. Keep raw or sensitive artifacts outside git. If later work changes the conclusion, preserve the original observation and add a dated correction or status banner rather than rewriting history.
 
 Promote durable conclusions into the relevant current published page. Evidence normally remains in this lane for comparison and auditability; move it to the archive only when it is no longer useful as active evidence, and keep any live navigation working after the move.
+
+## Evidence index
+
+- [Downloads overhaul: bugs versus main](2026-10-17-downloads-overhaul-bugs-vs-main.md) —
+  frozen P1–P7 defect dispositions at `0e7bae0f`, named guards, deferred work and open acceptance gates.

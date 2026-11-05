@@ -9,7 +9,9 @@ import Foundation
 public enum OfflineLibrarySnapshotBuilder {
     public static func make(records: [DownloadRecord],
                             isQueuePaused: Bool,
-                            downloadSpeed: [String: Double],
+                            aggregateSpeedBytesPerSecond: Double?,
+                            phase: (DownloadRecord) -> DownloadJobPhase? = { _ in nil },
+                            displayFraction: (DownloadRecord) -> DownloadProgressDisplay.Fraction? = { _ in nil },
                             displayBytes: (DownloadRecord) -> Int? = { _ in nil },
                             trustworthyExpectedBytes: (DownloadRecord) -> Int? = { _ in nil },
                             errorMessage: (DownloadRecord) -> String?,
@@ -55,7 +57,15 @@ public enum OfflineLibrarySnapshotBuilder {
                 errorMessage: errorMessage(record),
                 displayProgress: displayProgress(record),
                 statusCaption: statusCaption(record, backend),
-                isRetrying: isRetrying(record.ratingKey)
+                isRetrying: isRetrying(record.ratingKey),
+                lifecycle: record.lifecycle,
+                isWaitingForAdmission: record.lifecycle == .planned
+                    || ((record.lifecycle == .paused || record.lifecycle == .failed)
+                        && record.admissionIntent == .retryRequested),
+                progressIsEstimated: DownloadDisplayClassifier.isLiveTranscoderSourced(record)
+                    && record.progress <= 0 && record.bytes > 0,
+                phase: phase(record),
+                displayFraction: displayFraction(record)
             )
         }
 
@@ -76,11 +86,15 @@ public enum OfflineLibrarySnapshotBuilder {
             rows: rows,
             queueToolbarAction: DownloadQueueToolbarPolicy.action(
                 isQueuePaused: isQueuePaused,
-                statuses: records.map(\.status)
+                // Admission deliberately preserves paused/failed status while a retry waits.
+                // Retry presentation also covers the async interval before its active write.
+                statuses: rows.map { row in
+                    row.isWaitingForAdmission || row.isRetrying ? .queued : row.status
+                }
             ),
             isQueuePaused: isQueuePaused,
             aggregateStats: OfflineDownloadAggregateStats.make(records: records,
-                                                               speedsByRatingKey: downloadSpeed,
+                                                               activeSpeedBytesPerSecond: aggregateSpeedBytesPerSecond,
                                                                displayBytesByRatingKey: displayBytesByRatingKey),
             activeTransferPercentage: activeTransferPercentage,
             sidebarStatus: OfflineSidebarStatusPolicy.presentation(activeSamples)

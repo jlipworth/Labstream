@@ -3,6 +3,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
+@Suite(.downloadTestFiles)
 struct DownloadStoreLookupTests {
     @Test func embyBIFHydratesCountsAuditsAndDeletesWithItsRecord() throws {
         try withTemporaryDirectory { directory in
@@ -19,7 +20,7 @@ struct DownloadStoreLookupTests {
             ]).write(to: directory.appendingPathComponent("index.json"), options: .atomic)
             try Data([1, 2, 3]).write(to: directory.appendingPathComponent("item.mp4"))
             try Data([4, 5, 6, 7]).write(to: directory.appendingPathComponent(bifName))
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
 
             let record = try #require(store.record(for: "emby:item"))
             #expect(record.embyBIFURL?.lastPathComponent == bifName)
@@ -53,7 +54,7 @@ struct DownloadStoreLookupTests {
                         title: "Title", relativePath: "media.mp4",
                         bytes: 0, progress: 0, status: .queued, metadata: metadata),
             ]).write(to: directory.appendingPathComponent("index.json"), options: .atomic)
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let destination = directory.appendingPathComponent(relative)
             let owner = DownloadAttemptKey(
                 ratingKey: "emby:item", attemptID: attemptID)
@@ -119,7 +120,7 @@ struct DownloadStoreLookupTests {
             let sharedURL = directory.appendingPathComponent(shared)
             try Data([1, 2, 3]).write(to: sharedURL)
 
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
 
             #expect(store.metadata(for: "plex:stale")?.posterRelativePath == nil)
             #expect(FileManager.default.fileExists(atPath: sharedURL.path))
@@ -146,7 +147,7 @@ struct DownloadStoreLookupTests {
             let orphanSubtitle = directory.appendingPathComponent("plex_valid-owner.sub-7.srt")
             try Data("orphan predecessor".utf8).write(to: orphanSubtitle)
 
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
 
             #expect(store.metadata(for: ratingKey)?.posterRelativePath == "current.poster.jpg")
             #expect(store.metadata(for: ratingKey)?.offlineTextSubtitles == nil)
@@ -172,7 +173,7 @@ struct DownloadStoreLookupTests {
             try DownloadIndexCoding.encode(rows).write(
                 to: directory.appendingPathComponent("index.json"), options: .atomic
             )
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
 
             #expect(store.record(for: "complete") == store.records.first { $0.ratingKey == "complete" })
             #expect(store.record(for: "complete")?.status == .complete)
@@ -203,7 +204,7 @@ struct DownloadStoreLookupTests {
                 to: directory.appendingPathComponent("index.json"), options: .atomic
             )
             let fileManager = CountingFileManager()
-            let store = DownloadStore(baseDirectory: directory, fileManager: fileManager)
+            let store = DownloadTestFiles.store(baseDirectory: directory, fileManager: fileManager)
             try body(store, fileManager, directory)
         }
     }
@@ -224,10 +225,10 @@ struct DownloadStoreLookupTests {
     }
 
     private func withTemporaryDirectory(_ body: (URL) throws -> Void) throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("download-store-lookups-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         try body(directory)
     }
 }

@@ -131,4 +131,46 @@ struct DownloadRetryPreparationPolicyTests {
                                                                    rowIsPresent: true,
                                                                    rowStatus: .paused))
     }
+
+    /// B44/B49: the launch/backend-switch cleanup sweep must never retire Convert authority that
+    /// a Retry of the same row would resume, or the sweep deletes the live server job (B44) or
+    /// races crash-window recovery for it (B49).
+    @Test("Launch cleanup keeps Convert authority that retry would resume")
+    func launchCleanupKeepsResumableConvertAuthority() {
+        func keeps(_ status: DownloadStatus,
+                   resumeMode: DownloadResumeMode? = .serverPrepThenStatic,
+                   isEmbyRecord: Bool = true,
+                   jobID: Bool = false,
+                   recoveryIdentity: Bool = false) -> Bool {
+            DownloadRetryPreparationPolicy.shouldKeepEmbyConvertAuthorityForRetry(
+                status: status, resumeMode: resumeMode, isEmbyRecord: isEmbyRecord,
+                hasEmbyConvertJobID: jobID, hasEmbyConvertRecoveryIdentity: recoveryIdentity)
+        }
+        // Failed rows that still own a job id or a crash-window identity resume on Retry.
+        #expect(keeps(.failed, jobID: true))
+        #expect(keeps(.failed, recoveryIdentity: true))
+        // Terminal outcomes that retry cannot resume still get their Convert cleanup.
+        #expect(!keeps(.complete, jobID: true))
+        #expect(!keeps(.unverified, jobID: true))
+        #expect(!keeps(.complete, recoveryIdentity: true))
+        #expect(!keeps(.failed))
+        #expect(!keeps(.failed, resumeMode: .staticByteRange, jobID: true))
+        #expect(!keeps(.failed, isEmbyRecord: false, jobID: true))
+
+        // The sweep exclusion and the retry gate are one predicate for every failed row.
+        for mode in [DownloadResumeMode.serverPrepThenStatic, .staticByteRange, .liveForwardOnly] {
+            for emby in [true, false] {
+                for job in [true, false] {
+                    for recovery in [true, false] {
+                        #expect(keeps(.failed, resumeMode: mode, isEmbyRecord: emby,
+                                      jobID: job, recoveryIdentity: recovery)
+                            == DownloadRetryPreparationPolicy.shouldResumePausedEmbyConvert(
+                                status: .failed, resumeMode: mode, isEmbyRecord: emby,
+                                hasEmbyConvertJobID: job,
+                                hasEmbyConvertRecoveryIdentity: recovery))
+                    }
+                }
+            }
+        }
+    }
 }

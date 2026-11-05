@@ -33,7 +33,8 @@ ownership belongs in the matching platform root.
 
 ## Build and test
 
-Install a compatible tvOS simulator runtime, then use the worktree-owned Apple TV simulator; never
+The deployment target is tvOS 26.0; Xcode 27.1 builds it against its bundled tvOS 27.0 SDK. Install
+a compatible tvOS simulator runtime (tvOS 27.0 with Xcode 27.1), then use the worktree-owned Apple TV simulator; never
 target an arbitrary `booted` simulator. The direct setup, build, install, launch, fixture, test, and
 shutdown commands live in
 [Development setup: Build for an Apple TV simulator](DEVELOPMENT.md#build-for-an-apple-tv-simulator).

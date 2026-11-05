@@ -23,8 +23,20 @@ public enum BackgroundDownloadTransientRetryDecision: Sendable, Equatable {
 /// authenticated request still to be in memory.
 public enum BackgroundDownloadTransientRetryPolicy {
     public static let defaultMaxRetries = 3
+    /// Four transport retries realize the complete 1, 2, 4, 8 second backoff sequence.
+    public static let defaultMaxRangeTransportRetries = 4
     public static let defaultMaxRangeMoveRetries = 3
     public static let defaultMaxRangeRehydrations = 3
+
+    /// Delay bounded retries without an immediate refetch loop during network flaps.
+    public static func rangeRetryDelay(nextAttempt: Int) -> TimeInterval {
+        switch nextAttempt {
+        case ..<2: return 1
+        case 2: return 2
+        case 3: return 4
+        default: return 8
+        }
+    }
 
     /// HTTP statuses where repeating the identical Range request is unlikely to help, but rebuilding
     /// the backend/playback negotiation can mint a fresh authorized static-file request.
@@ -81,7 +93,7 @@ public enum BackgroundDownloadTransientRetryPolicy {
                                      errorCode: Int,
                                      hasRequest: Bool,
                                      currentRetryCount: Int,
-                                     maxRetries: Int = defaultMaxRetries) -> BackgroundDownloadTransientRetryDecision {
+                                     maxRetries: Int = defaultMaxRangeTransportRetries) -> BackgroundDownloadTransientRetryDecision {
         guard isTransientURLError(domain: errorDomain, code: errorCode) else {
             return .reject(.nonTransientError)
         }

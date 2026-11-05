@@ -25,15 +25,21 @@ struct OfflinePlaybackSession {
     let textSubtitles: [OfflineTextSubtitleTrack]
     let chapterImageURLs: [Int: URL]
     let onPlaybackProgress: ((Int, Int?) -> Void)?
+    let onPlaybackObserved: (() -> Void)?
+    let onPlaybackClose: ((Int, Int?) -> Void)?
 
     init(fileURL: URL,
          textSubtitles: [OfflineTextSubtitleTrack] = [],
          chapterImageURLs: [Int: URL] = [:],
-         onPlaybackProgress: ((Int, Int?) -> Void)? = nil) {
+         onPlaybackProgress: ((Int, Int?) -> Void)? = nil,
+         onPlaybackObserved: (() -> Void)? = nil,
+         onPlaybackClose: ((Int, Int?) -> Void)? = nil) {
         self.fileURL = fileURL
         self.textSubtitles = textSubtitles
         self.chapterImageURLs = chapterImageURLs
         self.onPlaybackProgress = onPlaybackProgress
+        self.onPlaybackObserved = onPlaybackObserved
+        self.onPlaybackClose = onPlaybackClose
     }
 
     var subtitleBaseURL: URL {

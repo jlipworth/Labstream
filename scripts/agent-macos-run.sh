@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Bounded, credential-free native macOS fixture scenario.
 set -euo pipefail
+lease_original_args=("$@")
 
 usage() {
   cat <<'USAGE'
@@ -38,6 +39,10 @@ done
 
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
+# Hold the same host lease across build/install/UI/teardown, not just compilation.
+if ! python3 "$repo_root/scripts/xcodebuild-lease.py" held; then
+  exec python3 "$repo_root/scripts/xcodebuild-lease.py" run --lane agent-macos-run -- "$repo_root/scripts/agent-macos-run.sh" "${lease_original_args[@]}"
+fi
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 log_start=$(date '+%Y-%m-%d %H:%M:%S')

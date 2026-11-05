@@ -138,4 +138,26 @@ struct EmbyDownloadRouterTests {
             #expect(route == .transcode)
         }
     }
+
+    // B53 (not reproducible): the static original destination falls back to "mp4" only when
+    // PlaybackInfo omits Container. That fallback is unreachable for a non-mp4 original: a static
+    // route needs a locally playable part (mp4/m4v/mov) or a negotiated mp4-family container. A
+    // retry item rebuilt without media and an empty Container fails closed instead of writing a
+    // new `<key>.mp4` next to an existing `<key>.mkv` checkpoint. Pin that invariant so a routing
+    // change cannot silently reopen the orphaned-checkpoint path.
+    @Test func leanRetryWithoutNegotiatedContainerNeverRoutesStatic() {
+        for container in [nil, ""] as [String?] {
+            #expect(EmbyDownloadRouter.route(intent: .original, supportsDirectPlay: true,
+                                             container: container, videoCodec: "hevc",
+                                             audioCodec: "aac", part: nil) == .transcode)
+            #expect(EmbyDownloadRouter.route(intent: .existingVersion, supportsDirectPlay: true,
+                                             container: container, videoCodec: "h264",
+                                             audioCodec: "aac", part: nil) == .transcode)
+            // An MKV original never routes static either, so no `<key>.mkv` destination exists.
+            #expect(EmbyDownloadRouter.route(intent: .original, supportsDirectPlay: true,
+                                             container: container, videoCodec: "hevc",
+                                             audioCodec: "aac",
+                                             part: part(container: "mkv")) == .transcode)
+        }
+    }
 }

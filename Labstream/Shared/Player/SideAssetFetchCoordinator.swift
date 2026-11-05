@@ -127,6 +127,28 @@ enum SideAssetTransportPolicy {
 actor SideAssetFetchCoordinator {
     static let shared = SideAssetFetchCoordinator()
 
+    // Tickets are reserved synchronously at the MainActor call boundary, before any Task/hook.
+    // Actor delivery accepts only the latest ticket and cancellation is terminal for this owner.
+    nonisolated let downloadControlOrder = OptionalSideAssetControlOrder()
+    private var downloadControlVersions: [SideAssetOwner: UInt64] = [:]
+    private var cancelledDownloadOwners: Set<SideAssetOwner> = []
+
+    func applyDownloadControl(_ command: OptionalSideAssetControl, owner: SideAssetOwner,
+                              version: UInt64, registration: Bool = false) {
+        guard version > downloadControlVersions[owner, default: 0] else { return }
+        downloadControlVersions[owner] = version
+        // A later, explicit hydration pass (for example completed-row repair) may register new
+        // work. Old fetch-entry deliveries and ordinary Resume commands cannot reopen it.
+        if registration { cancelledDownloadOwners.remove(owner) }
+        guard !cancelledDownloadOwners.contains(owner) else { return }
+        switch command {
+        case .park(let parked): setParked(parked, for: owner)
+        case .cancel:
+            cancelledDownloadOwners.insert(owner)
+            cancel(owner: owner)
+        }
+    }
+
     typealias FetchOperation = @Sendable () async throws -> Data
     typealias TransportAdmission = @Sendable () async throws -> Void
 
@@ -206,6 +228,7 @@ actor SideAssetFetchCoordinator {
         operation: @escaping FetchOperation
     ) async throws -> Data {
         try Task.checkCancellation()
+        guard !cancelledDownloadOwners.contains(owner) else { throw CancellationError() }
         if let existingFile,
            let data = try? Data(contentsOf: existingFile),
            !data.isEmpty {
@@ -375,6 +398,8 @@ actor SideAssetFetchCoordinator {
     }
 
 #if DEBUG
+    func isParkedForP7Testing(_ owner: SideAssetOwner) -> Bool { parkedOwners.contains(owner) }
+
     func activeCountForTesting(origin: SideAssetOrigin) -> Int {
         origins[origin]?.activeCount ?? 0
     }
@@ -674,6 +699,16 @@ enum SideAssetFetchError: Error, Equatable, Sendable {
     case transportFailure(code: Int?)
 }
 
+enum OptionalSideAssetControl: Equatable, Sendable { case park(Bool), cancel }
+
+/// Lightweight order authority stored by the coordinator, with no manager-global registry.
+@MainActor
+final class OptionalSideAssetControlOrder: Sendable {
+    private var nextVersion: UInt64 = 0
+    nonisolated init() {}
+    func reserve() -> UInt64 { nextVersion += 1; return nextVersion }
+}
+
 #if !os(tvOS)
 extension DownloadManager {
     nonisolated static func sideAssetOwner(for key: DownloadAttemptKey) -> SideAssetOwner {
@@ -690,12 +725,22 @@ extension DownloadManager {
                                 kind: DownloadSideAssetKind,
                                 resource: String? = nil) async throws -> Data {
         let owner = Self.sideAssetOwner(for: key)
-        if isQueuePaused { await sideAssetFetchCoordinator.setParked(true, for: owner) }
+        let version = sideAssetFetchCoordinator.downloadControlOrder.reserve()
+        let parked = store.record(for: key)?.lifecycle == .paused
+            || (isQueuePaused && !admission.isExempt(key.ratingKey))
+        await deliverOptionalSideAssetControl(.park(parked), owner: owner,
+                                              fetchEntry: true, version: version)
 
         let policyRequest = Self.sideAssetRequest(applyingCellularPolicy: request)
+        #if DEBUG
+        let transport = optionalSideAssetSessionForTesting ?? SideAssetTransportPolicy.sharedSession
+        #else
+        let transport = SideAssetTransportPolicy.sharedSession
+        #endif
         return try await sideAssetFetchCoordinator.fetch(
             request: policyRequest,
             owner: owner,
+            session: transport,
             onTransportAdmission: { [weak self] in
                 guard let self else { throw SideAssetFetchError.retryBudgetExhausted }
                 let admitted = await MainActor.run {
@@ -709,16 +754,29 @@ extension DownloadManager {
             })
     }
 
+    /// Hooks can delay delivery, but cannot reorder authority. A newer owner command wins even
+    /// while an older hook is suspended; network fetch lifetime is never part of this sequence.
+    func deliverOptionalSideAssetControl(_ command: OptionalSideAssetControl, owner: SideAssetOwner,
+                                         fetchEntry: Bool, version: UInt64) async {
+        await optionalSideAssetControlWillDeliver?(command, owner, fetchEntry)
+        await sideAssetFetchCoordinator.applyDownloadControl(
+            command, owner: owner, version: version, registration: fetchEntry)
+        optionalSideAssetControlDidDeliver?(command, owner, fetchEntry)
+    }
+
     func setOptionalSideAssetHydrationParked(_ parked: Bool, for key: DownloadAttemptKey) {
-        let coordinator = sideAssetFetchCoordinator
         let owner = Self.sideAssetOwner(for: key)
-        Task { await coordinator.setParked(parked, for: owner) }
+        let version = sideAssetFetchCoordinator.downloadControlOrder.reserve()
+        Task { await self.deliverOptionalSideAssetControl(.park(parked), owner: owner,
+                                                         fetchEntry: false, version: version) }
     }
 
     func cancelOptionalSideAssetHydration(for key: DownloadAttemptKey) {
-        let coordinator = sideAssetFetchCoordinator
         let owner = Self.sideAssetOwner(for: key)
-        Task { await coordinator.cancel(owner: owner) }
+        let version = sideAssetFetchCoordinator.downloadControlOrder.reserve()
+        Task { await self.deliverOptionalSideAssetControl(.cancel, owner: owner,
+                                                         fetchEntry: false, version: version) }
     }
+
 }
 #endif

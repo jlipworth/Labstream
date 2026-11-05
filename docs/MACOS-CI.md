@@ -60,7 +60,8 @@ behavior, and cleanup must be validated after the physical runner exists.
 
 The runner-provisioning repository owns:
 
-- current stable Xcode 27 or newer and its first-launch components;
+- Xcode 27.1 or newer and its first-launch components (the iOS 27.1 SDK is required for the
+  iPhone Duo layout; visionOS, tvOS and macOS still build on the bundled 27.0 SDKs);
 - current iOS/iPadOS and visionOS simulator SDKs/runtimes;
 - Git, Swift, Xcode Command Line Tools, and at least 100 GB free space;
 - the Woodpecker agent and mandatory labels;

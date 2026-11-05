@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+lease_original_args=("$@")
 
 usage() {
   cat <<'USAGE'
@@ -59,6 +60,10 @@ esac
 
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
+# Hold the same host lease across build/install/UI/teardown, not just compilation.
+if ! python3 "$repo_root/scripts/xcodebuild-lease.py" held; then
+  exec python3 "$repo_root/scripts/xcodebuild-lease.py" run --lane agent-sim-run -- "$repo_root/scripts/agent-sim-run.sh" "${lease_original_args[@]}"
+fi
 derived_data="$repo_root/build/DerivedData-agent-visionos"
 
 simid=$(scripts/worktree-sim.sh --platform visionos id) || { echo "failed to resolve visionOS worktree simulator" >&2; exit 2; }

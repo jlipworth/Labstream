@@ -205,11 +205,10 @@ public struct Activities: Decodable, Sendable, Equatable {
     /// 1. an optimize-typed activity whose `Context.ratingKey` == `ratingKey` (reliable);
     /// 2. else, if EXACTLY ONE optimize-typed activity matches the bare title, take it
     ///    (uniqueness guards against `"Alien"`/`"Aliens"` collisions and concurrent jobs);
-    /// 3. else, ONLY when `allowSoleFallback` (caller asserts this client has a single active
-    ///    optimize job) AND exactly one optimize activity is running, take it.
+    /// There is no "sole optimizer" fallback: live PMS can run several background transcodes
+    /// while `/activities` exposes only one, so a lone activity may belong to another job.
     /// Returns `nil` when nothing UNAMBIGUOUSLY matches (caller keeps current behavior).
-    public func optimizeActivity(ratingKey: String?, title: String?,
-                                 allowSoleFallback: Bool = false) -> PlexActivity? {
+    public func optimizeActivity(ratingKey: String?, title: String?) -> PlexActivity? {
         let optimizers = activities.filter { $0.looksLikeOptimize }
         if let r = ratingKey?.trimmingCharacters(in: .whitespacesAndNewlines), !r.isEmpty,
            let exact = optimizers.first(where: {
@@ -221,18 +220,15 @@ public struct Activities: Decodable, Sendable, Equatable {
             let titleMatches = optimizers.filter { $0.matchesTitle(title) }
             if titleMatches.count == 1 { return titleMatches.first }
         }
-        if allowSoleFallback, optimizers.count == 1 { return optimizers.first }
         return nil
     }
 
     /// Redaction-safe shape descriptor of the raw decode for the live PMS probe.
     /// Emits ONLY structural facts (counts, field-presence flags, numeric progress,
     /// dotted types) — NEVER any `title`/`subtitle` VALUE. Safe to log.
-    public func probeShape(ratingKey: String?, title: String?,
-                           allowSoleFallback: Bool = false) -> [String: String] {
+    public func probeShape(ratingKey: String?, title: String?) -> [String: String] {
         let optimizers = activities.filter { $0.looksLikeOptimize }
-        let match = optimizeActivity(ratingKey: ratingKey, title: title,
-                                     allowSoleFallback: allowSoleFallback)
+        let match = optimizeActivity(ratingKey: ratingKey, title: title)
         var out: [String: String] = [
             "activity_count": String(activities.count),
             "optimize_count": String(optimizers.count),

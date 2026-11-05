@@ -130,5 +130,55 @@ struct RootNavigationCoordinatorTests {
         MobileSettingsPresentationPolicy.action(selection: .offline, isCompact: true)
           == .unchanged)
     }
+
+    @Test func regularResizeHandsAnOpenSettingsSheetBackToTheTab() {
+      #expect(
+        MobileSettingsPresentationPolicy.action(
+          selection: .home, isCompact: false, isSettingsSheetPresented: true)
+          == .dismissSheet(selecting: .settings))
+      #expect(
+        MobileSettingsPresentationPolicy.action(
+          selection: .music, isCompact: false, isSettingsSheetPresented: true)
+          == .dismissSheet(selecting: .settings))
+    }
+
+    @Test func compactResizeIgnoresTheSheetFlagWhenSettingsIsNotSelected() {
+      #expect(
+        MobileSettingsPresentationPolicy.action(
+          selection: .home, isCompact: true, isSettingsSheetPresented: true)
+          == .unchanged)
+    }
+  }
+
+  /// Global rule 9: a fold/unfold moves Settings between the sheet (one form) and the tab (two
+  /// columns) keeping the user's place; only an explicit toolbar open starts fresh.
+  @MainActor
+  struct MobileSettingsNavigationStateTests {
+    @Test func unfoldingSelectsTheSectionTheFormWasShowing() {
+      var state = MobileSettingsNavigationState()
+      state.takeOverFromForm(showing: .audioSubtitles)
+      #expect(state.category == .audioSubtitles)
+    }
+
+    @Test func unfoldingOnAPushedScreenSelectsTheCategoryThatOwnsIt() {
+      var state = MobileSettingsNavigationState(path: [.libraryVisibility])
+      state.takeOverFromForm(showing: .playback)
+      #expect(state.category == .libraries)
+      #expect(state.path == [.libraryVisibility])
+    }
+
+    @Test func foldingKeepsTheSelectedCategoryAndPathForTheSheet() {
+      let state = MobileSettingsNavigationState(path: [.libraryVisibility], category: .libraries)
+      let action = MobileSettingsPresentationPolicy.action(selection: .settings, isCompact: true)
+      #expect(action == .presentSheet(selecting: .home))
+      #expect(state.category == .libraries)
+      #expect(state.path == [.libraryVisibility])
+    }
+
+    @Test func aToolbarOpenStartsAtTheSettingsRoot() {
+      var state = MobileSettingsNavigationState(path: [.libraryVisibility], category: .downloads)
+      state.beginFreshVisit()
+      #expect(state == MobileSettingsNavigationState())
+    }
   }
 #endif

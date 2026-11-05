@@ -98,6 +98,12 @@ struct DownloadIndexFileCommitter: Sendable {
         }
     }
 
+    /// Re-syncs the directory entry for `destination`. A journal that finds its value already
+    /// visible after an ambiguous earlier commit must make that rename durable before relying on it.
+    func syncContainingDirectory(of destination: URL) throws {
+        try syncDirectory(destination.deletingLastPathComponent())
+    }
+
     /// Startup-only recovery for abandoned temps. A minimum age prevents a second live store or
     /// process from unlinking a sibling commit that is still being written.
     static func cleanupAbandonedTemps(

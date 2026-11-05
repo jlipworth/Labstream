@@ -37,7 +37,7 @@ struct RootView: View {
         guard let route else { return }
         handleSystemEntry(route)
       }
-      #if os(visionOS)
+      #if !os(tvOS)
         .onChange(of: SystemEntryRouter.shared.offlinePending) { _, route in
           guard let route else { return }
           navigation.consumeOfflineReturn(route)
@@ -49,7 +49,7 @@ struct RootView: View {
         if let route = SystemEntryRouter.shared.pending {
           handleSystemEntry(route)
         }
-        #if os(visionOS)
+        #if !os(tvOS)
           if let route = SystemEntryRouter.shared.offlinePending {
             navigation.consumeOfflineReturn(route)
           }

@@ -24,8 +24,8 @@ public struct JellyfinDownloadKeepaliveCandidate: Equatable, Sendable {
 /// Pure Jellyfin keepalive predicates for active transcoding downloads.
 ///
 /// The app layer still owns live session lookup, server-match checks, request construction, and the
-/// task lifetime. This policy pins which persisted rows are allowed to start a keepalive and how
-/// progress maps to Jellyfin ticks.
+/// task lifetime. This policy pins which persisted rows are allowed to start a keepalive and the
+/// position the keepalive reports (fixed at 0 while decision D3 is pending).
 public enum JellyfinDownloadKeepalivePolicy {
     public static let intervalSeconds: Double = 20
 
@@ -48,49 +48,15 @@ public enum JellyfinDownloadKeepalivePolicy {
             durationMs: metadata.duration)
     }
 
-    public static func positionTicks(progress: Double, durationMs: Int?) -> Int {
-        guard let durationMs, durationMs > 0, progress.isFinite else { return 0 }
-        let ticks = Double(durationMs) * 10_000 * max(0, min(progress, 1))
-        return ticks.isFinite ? max(0, Int(ticks.rounded())) : 0
-    }
-
-    /// N2/F2c: the advancing position a keepalive should report for a forward-only transcode
-    /// download. Such rows have no exact progress fraction (`record.progress` stays 0 — no
-    /// Content-Length), so a keepalive built on it pings PositionTicks=0 forever and the server
-    /// sees a stationary session it may idle-kill mid-download. Derive an honest, advancing
-    /// position instead, in preference order:
-    /// 1. the exact fraction when the lane has one (`progress > 0`),
-    /// 2. received bytes against the duration×bitrate estimate (the same estimate the progress
-    ///    bar uses) — advances exactly when the transfer does,
-    /// 3. elapsed wall clock — a transcode is produced at least at playback rate, so elapsed time
-    ///    is a lower bound on the encoded position, never an overstatement.
-    /// The result is capped at the source duration and clamped monotonic against
-    /// `lastReportedTicks` so switching signal sources can never report the session moving
-    /// backwards.
-    public static func reportedPositionTicks(progress: Double,
-                                             bytes: Int,
-                                             estimatedTotalBytes: Int?,
-                                             elapsedSeconds: Double,
-                                             durationMs: Int?,
-                                             lastReportedTicks: Int) -> Int {
-        var candidate = 0
-        if let durationMs, durationMs > 0 {
-            if progress.isFinite, progress > 0 {
-                candidate = positionTicks(progress: progress, durationMs: durationMs)
-            } else if let estimatedTotalBytes, estimatedTotalBytes > 0, bytes > 0 {
-                let fraction = min(1, Double(bytes) / Double(estimatedTotalBytes))
-                candidate = positionTicks(progress: fraction, durationMs: durationMs)
-            }
-        }
-        if candidate == 0, elapsedSeconds.isFinite, elapsedSeconds > 0 {
-            let elapsedTicks = (elapsedSeconds * 10_000_000).rounded()
-            candidate = elapsedTicks.isFinite ? Int(elapsedTicks) : 0
-            if let durationMs, durationMs > 0 {
-                candidate = min(candidate, durationMs * 10_000)
-            }
-        }
-        return max(max(0, lastReportedTicks), candidate)
-    }
+    /// D3 interim: the PositionTicks every download keepalive Playing/Progress report carries.
+    ///
+    /// The superseded N2/F2c policy reported an ADVANCING position (bytes vs estimate, else wall
+    /// clock) so the server would not see a stationary session. That moved the user's real resume
+    /// point for what is only a file download (B55). Decision D3 — whether the keepalive becomes
+    /// Ping-only — is pending the live A/B probe
+    /// (`LiveJellyfinDownloadKeepaliveProbeTests`). Until it lands, keep Playing/Progress but
+    /// report a fixed position of 0.
+    public static let reportedPositionTicks = 0
 
     private static func trimmedNonEmpty(_ value: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),

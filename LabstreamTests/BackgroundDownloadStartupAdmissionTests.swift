@@ -3,6 +3,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
+@Suite(.downloadTestFiles)
 struct BackgroundDownloadStartupAdmissionTests {
     @Test func purgeWindowAdmitsOnlyHealthyCurrentExactOwnerCallbacks() throws {
         let healthy = DownloadAttemptKey(
@@ -22,9 +23,39 @@ struct BackgroundDownloadStartupAdmissionTests {
             hasCurrentMarker: true, taskKey: healthy, ownsAttempt: true))
     }
 
+    /// B07: after an activation fails once the URLSession is built, the live session's callbacks
+    /// for healthy current-attempt tasks must not be cancelled and have their bodies deleted while
+    /// the manager waits to retry. Non-owned callbacks are still rejected.
+    @Test func failedPostConstructionActivationStillAdmitsOnlyOwnedCallbacks() throws {
+        let healthy = DownloadAttemptKey(
+            ratingKey: "plex:healthy",
+            attemptID: try #require(DownloadAttemptID(rawValue: "healthy-attempt")))
+        #expect(BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: false, isPurging: false, isPermanentlyRejected: false,
+            hasCurrentMarker: true, taskKey: healthy, ownsAttempt: true,
+            isDormantAfterFailedActivation: true))
+        #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: false, isPurging: false, isPermanentlyRejected: false,
+            hasCurrentMarker: true, taskKey: healthy, ownsAttempt: false,
+            isDormantAfterFailedActivation: true))
+        #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: false, isPurging: false, isPermanentlyRejected: false,
+            hasCurrentMarker: false, taskKey: healthy, ownsAttempt: true,
+            isDormantAfterFailedActivation: true))
+        #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: false, isPurging: false, isPermanentlyRejected: true,
+            hasCurrentMarker: true, taskKey: healthy, ownsAttempt: true,
+            isDormantAfterFailedActivation: true))
+        // A never-activated dormant session keeps rejecting everything.
+        #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: false, isPurging: false, isPermanentlyRejected: false,
+            hasCurrentMarker: true, taskKey: healthy, ownsAttempt: true,
+            isDormantAfterFailedActivation: false))
+    }
+
     @Test func dormantSessionRejectsStartWithoutCreatingWork() throws {
         try withTemporaryDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
             let ratingKey = "plex:dormant"
@@ -50,7 +81,7 @@ struct BackgroundDownloadStartupAdmissionTests {
 
     @Test func currentStoreActivationOpensAdmissionOnce() async throws {
         try await withTemporaryDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
 
@@ -62,9 +93,45 @@ struct BackgroundDownloadStartupAdmissionTests {
         }
     }
 
+    /// B05: a runtime block (for example an indeterminate season persist) must not abort the
+    /// ACTIVE session's background-completion gate; only a dormant session has no finish-events
+    /// callback to wait for.
+    @Test func startupFailureReleaseKeepsActiveSessionWakeOwnership() async throws {
+        try await withTemporaryDirectory { directory in
+            let store = DownloadTestFiles.store(baseDirectory: directory)
+            let session = BackgroundDownloadSession(
+                store: store, protocolClasses: [], releaseBackgroundCompletion: { _ in })
+            defer { session.invalidateInjectedSessionForTesting() }
+            #expect(await activate(session) == .activated(cancelledTaskCount: 0))
+            session.noteBackgroundCompletionHandlerStored(
+                identifier: BackgroundDownloadSession.identifier)
+
+            session.releaseBackgroundCompletionAfterStartupFailure()
+
+            #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false)
+                .backgroundCompletionHandlerCount == 1)
+        }
+    }
+
+    @Test func startupFailureReleaseDrainsDormantSessionWake() throws {
+        try withTemporaryDirectory { directory in
+            let store = DownloadTestFiles.store(baseDirectory: directory)
+            let session = BackgroundDownloadSession(
+                store: store, protocolClasses: [], releaseBackgroundCompletion: { _ in })
+            defer { session.invalidateInjectedSessionForTesting() }
+            session.noteBackgroundCompletionHandlerStored(
+                identifier: BackgroundDownloadSession.identifier)
+
+            session.releaseBackgroundCompletionAfterStartupFailure()
+
+            #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false)
+                .backgroundCompletionHandlerCount == 0)
+        }
+    }
+
     @Test func activeStaticTransferCheckpointsOnlyInAttemptWorkingFile() async throws {
         try await withTemporaryDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
             #expect(await activate(session) == .activated(
@@ -97,12 +164,60 @@ struct BackgroundDownloadStartupAdmissionTests {
         }
     }
 
+    /// B54 containment: the second consecutive truncation parks a forward-only row `.unverified`
+    /// and keeps its bytes. The kept body must be published at the row's stable path through the
+    /// validated-promotion path, exactly as a probe-miss `.unverified` is, not left in staging.
+    @Test func truncatedSecondStrikeParkPublishesBodyAtStablePath() async throws {
+        try await withTemporaryDirectory { directory in
+            let store = DownloadTestFiles.store(baseDirectory: directory)
+            let session = BackgroundDownloadSession(
+                store: store, protocolClasses: [],
+                playbackValidator: { _, _ in
+                    BackgroundDownloadSession.PlaybackValidation(
+                        played: true, reason: "played", durationMs: 60_000, detail: nil)
+                })
+            defer { session.invalidateInjectedSessionForTesting() }
+            #expect(await activate(session) == .activated(cancelledTaskCount: 0))
+            session.onFinalizerRequest = { [weak session] request in
+                Task { await session?.executeFinalizerRequest(request) }
+            }
+
+            let attemptID = try #require(DownloadAttemptID(rawValue: "truncated-park-a"))
+            let key = DownloadAttemptKey(ratingKey: "jellyfin:truncated-park", attemptID: attemptID)
+            let stable = store.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
+            let record = DownloadRecord(
+                ratingKey: key.ratingKey, attemptID: attemptID, title: "Truncated",
+                localURL: stable, status: .downloading,
+                metadata: OfflineMetadata(
+                    ratingKey: key.ratingKey, title: "Truncated", type: "movie",
+                    duration: 3_600_000,
+                    backendKind: .jellyfin,
+                    resumeMode: .liveForwardOnly))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: attemptID) == .committed(key))
+            let working = try #require(store.attemptWorkingFileURL(for: key))
+            let body = Data(repeating: 0x5A, count: 4_096)
+            try body.write(to: working)
+            // The first strike already happened in this process.
+            session.seedTruncationFailureCountForTesting(1, ratingKey: key.ratingKey)
+
+            #expect(session.finalizeCompletedStaticRangeFile(
+                ratingKey: key.ratingKey, validationLabel: "test"))
+            for _ in 0..<500 where store.record(for: key)?.status != .unverified {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+
+            #expect(store.record(for: key)?.status == .unverified)
+            #expect((try? Data(contentsOf: stable)) == body)
+            #expect(!FileManager.default.fileExists(atPath: working.path))
+        }
+    }
+
     @Test func rangeErrorCompletionAfterDeletionReservationCannotMutateOrPurge() async throws {
         try await withTemporaryDirectory { directory in
             let gate = HeldRangeFailureGate()
             HeldRangeFailureURLProtocol.configure(gate)
             defer { HeldRangeFailureURLProtocol.configure(nil) }
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let session = BackgroundDownloadSession(
                 store: store, protocolClasses: [HeldRangeFailureURLProtocol.self])
             defer { session.invalidateInjectedSessionForTesting() }
@@ -128,15 +243,16 @@ struct BackgroundDownloadStartupAdmissionTests {
             let working = try #require(store.attemptWorkingFileURL(for: key))
             let workingBytes = Data(repeating: 0xA5, count: 15)
             try workingBytes.write(to: working)
-            #expect(store.setResumeData(
-                for: key, Data("original-resume".utf8), displayBytes: 15) == .applied)
+            #expect(await store.resolve(store.submitResumeData(
+                for: key, Data("original-resume".utf8), displayBytes: 15), deadline: .after(30)) == .applied)
             let held = OfflineHeldRangeSegment(
                 offset: 30, length: 4, relativePath: "pending-held.body")
             let heldURL = directory.appendingPathComponent(held.relativePath)
             try Data([1, 2, 3, 4]).write(to: heldURL)
-            guard case .accepted = store.persistHeldRangeSegment(for: key, segment: held) else {
+            guard case .accepted(let heldSeed1) = store.submitHeldRangeSegment(for: key, segment: held) else {
                 Issue.record("Expected held manifest persistence"); return
             }
+            #expect(await store.resolveArtifact(heldSeed1.ticket, deadline: .after(30)) == .completed)
 
             try session.start(
                 ratingKey: key.ratingKey,
@@ -173,7 +289,7 @@ struct BackgroundDownloadStartupAdmissionTests {
 
     @Test func reattachSweepsOnlyUnreferencedAttemptStaging() async throws {
         try await withTemporaryDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let owner = DownloadAttemptKey(
                 ratingKey: "plex:owned-stage",
                 attemptID: try #require(DownloadAttemptID(rawValue: "owner-a")))
@@ -195,7 +311,7 @@ struct BackgroundDownloadStartupAdmissionTests {
 
             // The sweep is launch-scoped: only staging present in the Store's initial inventory is
             // eligible, so work created after admission can never race deletion.
-            let relaunchedStore = DownloadStore(baseDirectory: directory)
+            let relaunchedStore = DownloadTestFiles.store(baseDirectory: directory)
             let session = BackgroundDownloadSession(store: relaunchedStore, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
             #expect(await activate(session) == .activated(
@@ -217,7 +333,7 @@ struct BackgroundDownloadStartupAdmissionTests {
     // is terminal (`.complete`) by the time `reattach`'s completion (which drives reconcile) fires.
     @Test func reattachFinalizesPendingValidatedPromotionBeforeReportingCompletion() async throws {
         try await withTemporaryDirectory { directory in
-            let seed = DownloadStore(baseDirectory: directory)
+            let seed = DownloadTestFiles.store(baseDirectory: directory)
             let key = DownloadAttemptKey(
                 ratingKey: "plex:reattach-pending-promotion",
                 attemptID: try #require(DownloadAttemptID(rawValue: "attempt-a")))
@@ -244,7 +360,7 @@ struct BackgroundDownloadStartupAdmissionTests {
             object["rows"] = rows
             try JSONSerialization.data(withJSONObject: object).write(to: indexURL, options: .atomic)
 
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
             #expect(await activate(session) == .activated(
@@ -271,7 +387,7 @@ struct BackgroundDownloadStartupAdmissionTests {
     // park immediately. Cancel must now clear it too.
     @Test func haltClearsConsecutiveTruncationBudgetForReDownload() async throws {
         try await withTemporaryDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
             #expect(await activate(session) == .activated(
@@ -301,7 +417,7 @@ struct BackgroundDownloadStartupAdmissionTests {
 
     @Test func invalidHeldManifestCommitFailurePreservesBodyAndManifestAcrossRelaunch() async throws {
         try await withTemporaryDirectory { directory in
-            let initial = DownloadStore(baseDirectory: directory)
+            let initial = DownloadTestFiles.store(baseDirectory: directory)
             let key = DownloadAttemptKey(
                 ratingKey: "plex:invalid-held-commit",
                 attemptID: try #require(DownloadAttemptID(rawValue: "attempt-a")))
@@ -320,12 +436,13 @@ struct BackgroundDownloadStartupAdmissionTests {
                 offset: 64, length: 4, relativePath: "invalid-held-commit.body")
             let body = directory.appendingPathComponent(manifest.relativePath)
             try Data([1, 2, 3]).write(to: body) // length mismatch makes launch restoration discard
-            guard case .accepted = initial.persistHeldRangeSegment(for: key, segment: manifest) else {
+            guard case .accepted(let heldSeed2) = initial.submitHeldRangeSegment(for: key, segment: manifest) else {
                 Issue.record("Expected manifest"); return
             }
+            #expect(await initial.resolveArtifact(heldSeed2.ticket, deadline: .after(30)) == .completed)
 
             let writes = StartupFailFirstIndexWrite()
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
@@ -337,7 +454,7 @@ struct BackgroundDownloadStartupAdmissionTests {
             }
 
             #expect(FileManager.default.fileExists(atPath: body.path))
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.record(for: key)?.metadata?.heldRangeSegments == [manifest])
             #expect(FileManager.default.fileExists(atPath: body.path))
         }
@@ -345,7 +462,7 @@ struct BackgroundDownloadStartupAdmissionTests {
 
     @Test func invalidHeldManifestDeleteFaultRetainsIntentUntilHealthyRelaunch() async throws {
         try await withTemporaryDirectory { directory in
-            let initial = DownloadStore(baseDirectory: directory)
+            let initial = DownloadTestFiles.store(baseDirectory: directory)
             let key = DownloadAttemptKey(
                 ratingKey: "jellyfin:invalid-held-delete",
                 attemptID: try #require(DownloadAttemptID(rawValue: "attempt-a")))
@@ -363,12 +480,13 @@ struct BackgroundDownloadStartupAdmissionTests {
                 offset: 64, length: 4, relativePath: "invalid-held-delete.body")
             let body = directory.appendingPathComponent(manifest.relativePath)
             try Data([9, 8, 7]).write(to: body)
-            guard case .accepted = initial.persistHeldRangeSegment(for: key, segment: manifest) else {
+            guard case .accepted(let heldSeed3) = initial.submitHeldRangeSegment(for: key, segment: manifest) else {
                 Issue.record("Expected manifest"); return
             }
+            #expect(await initial.resolveArtifact(heldSeed3.ticket, deadline: .after(30)) == .completed)
 
             let failingFiles = StartupSelectiveRemovalFailureFileManager(blockedPath: body.path)
-            let store = DownloadStore(baseDirectory: directory, fileManager: failingFiles)
+            let store = DownloadTestFiles.store(baseDirectory: directory, fileManager: failingFiles)
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
             #expect(await activate(session) == .activated(
@@ -393,7 +511,7 @@ struct BackgroundDownloadStartupAdmissionTests {
                 return
             }
 
-            let healthyRelaunch = DownloadStore(baseDirectory: directory)
+            let healthyRelaunch = DownloadTestFiles.store(baseDirectory: directory)
             _ = healthyRelaunch.resolveArtifactSynchronouslyForTests(
                 through: healthyRelaunch.currentArtifactLifecycleWatermark())
             #expect(healthyRelaunch.deferredHeldRangeBodyDeletionRelativePaths(for: key) == [])
@@ -403,7 +521,7 @@ struct BackgroundDownloadStartupAdmissionTests {
 
     @Test func finalizerAdmissionRejectsDuplicateAndAbandonBalancesGate() async throws {
         try await withTemporaryDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
             #expect(await activate(session) == .activated(
@@ -462,11 +580,22 @@ struct BackgroundDownloadStartupAdmissionTests {
             let cleanupSentinel = authority.appendingPathComponent("cleanup-sentinel")
             try Data("survive".utf8).write(to: cleanupSentinel)
 
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             #expect(store.startupIndexProbe == .unsupported(schemaVersion: 2))
             // Construction is a pure admission probe for an unsupported root.
             #expect(try Data(contentsOf: partialURL) == legacyBytes)
             #expect(try Data(contentsOf: directory.appendingPathComponent("index.json")) == originalIndex)
+
+            // Observe directory mutations before activation so even a fast reclamation is retained.
+            let cleanupEvents = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            let parentFD = open(directory.deletingLastPathComponent().path, O_EVTONLY)
+            try #require(parentFD >= 0)
+            let cleanupSource = DispatchSource.makeFileSystemObjectSource(fileDescriptor: parentFD,
+                eventMask: .write, queue: DispatchQueue(label: "test.unsupported-root-cleanup"))
+            cleanupSource.setEventHandler { cleanupEvents.continuation.yield(()) }
+            cleanupSource.setCancelHandler { close(parentFD); cleanupEvents.continuation.finish() }
+            cleanupSource.activate()
+            defer { cleanupSource.cancel() }
 
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
@@ -475,7 +604,7 @@ struct BackgroundDownloadStartupAdmissionTests {
 
             let indexData = try Data(contentsOf: directory.appendingPathComponent("index.json"))
             let index = try #require(JSONSerialization.jsonObject(with: indexData) as? [String: Any])
-            #expect(index["schemaVersion"] as? Int == 4)
+            #expect(index["schemaVersion"] as? Int == DownloadIndexCoding.currentSchemaVersion)
             #expect((index["rows"] as? [Any])?.isEmpty == true)
             #expect(!FileManager.default.fileExists(atPath: partialURL.path))
             #expect(try Data(contentsOf: cleanupSentinel) == Data("survive".utf8))
@@ -484,16 +613,15 @@ struct BackgroundDownloadStartupAdmissionTests {
 
             let quarantinedRoot = directory.deletingLastPathComponent().appendingPathComponent(
                 ".\(directory.lastPathComponent)-unsupported-reset-pending")
-            // The complete hosted matrix schedules hundreds of Swift Testing cases concurrently.
-            // Keep cleanup verification bounded without treating scheduler contention as failure.
-            let cleanupDeadline = ContinuousClock.now.advanced(by: .seconds(10))
-            while FileManager.default.fileExists(atPath: quarantinedRoot.path),
-                  ContinuousClock.now < cleanupDeadline {
-                try await Task.sleep(for: .milliseconds(10))
+            // Utility-queue reclamation can wait behind unrelated resets under parallel tests.
+            // Await its filesystem acknowledgement instead of assigning the scheduler a deadline.
+            var cleanupIterator = cleanupEvents.stream.makeAsyncIterator()
+            while FileManager.default.fileExists(atPath: quarantinedRoot.path) {
+                _ = await cleanupIterator.next()
             }
             #expect(!FileManager.default.fileExists(atPath: quarantinedRoot.path))
 
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
             #expect(relaunched.startupIndexProbe == .current)
             #expect(relaunched.startupIndexAdmission() == .current)
             #expect(relaunched.records.isEmpty)
@@ -507,7 +635,7 @@ struct BackgroundDownloadStartupAdmissionTests {
                 directory: directory)
             let index = directory.appendingPathComponent("index.json")
             let original = try Data(contentsOf: index)
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 indexPersistence: .init(atomicWrite: { _, _ in
                     throw CocoaError(.fileWriteOutOfSpace)
@@ -537,6 +665,8 @@ struct BackgroundDownloadStartupAdmissionTests {
         case malformedCurrentRow
         /// Bytes that are not JSON at all.
         case notJSON
+        /// A newer schema written by a later app version, then downgraded: keep it, never reset.
+        case newerSchema
 
         func bytes() throws -> Data {
             switch self {
@@ -547,11 +677,16 @@ struct BackgroundDownloadStartupAdmissionTests {
                 ])
             case .notJSON:
                 return Data("not-json".utf8)
+            case .newerSchema:
+                return try JSONSerialization.data(withJSONObject: [
+                    "schemaVersion": DownloadIndexCoding.currentSchemaVersion + 1,
+                    "rows": [],
+                ])
             }
         }
     }
 
-    @Test(arguments: [UnreadableIndex.malformedCurrentRow, .notJSON])
+    @Test(arguments: [UnreadableIndex.malformedCurrentRow, .notJSON, .newerSchema])
     func unreadableIndexFailsClosedUntouchedAndCannotRequestDestructiveReset(
         _ input: UnreadableIndex
     ) throws {
@@ -561,7 +696,7 @@ struct BackgroundDownloadStartupAdmissionTests {
             try bytes.write(to: index)
             let before = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
 
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             #expect(store.startupIndexProbe == .unreadable)
             #expect(store.startupIndexAdmission() == .unreadableIndex)
             #expect(store.records.isEmpty)
@@ -604,12 +739,12 @@ struct BackgroundDownloadStartupAdmissionTests {
 
     @Test @MainActor
     func malformedStartupReleasesHeldBackgroundCompletion() async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("background-startup-malformed-\(UUID().uuidString)",
                                   isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-            let seed = DownloadStore(baseDirectory: directory)
+
+            let seed = DownloadTestFiles.store(baseDirectory: directory)
             let attemptID = DownloadAttemptID(rawValue: "top-level-owner")!
             let key = DownloadAttemptKey(ratingKey: "plex:malformed-startup", attemptID: attemptID)
             let record = DownloadRecord(
@@ -629,7 +764,7 @@ struct BackgroundDownloadStartupAdmissionTests {
             envelope["rows"] = rows
             try JSONSerialization.data(withJSONObject: envelope).write(to: indexURL, options: .atomic)
 
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let releases = AsyncStream.makeStream(of: String.self)
             let session = BackgroundDownloadSession(
                 store: store,
@@ -641,7 +776,7 @@ struct BackgroundDownloadStartupAdmissionTests {
             defer { session.invalidateInjectedSessionForTesting() }
             session.noteBackgroundCompletionHandlerStored(
                 identifier: BackgroundDownloadSession.identifier)
-            let manager = DownloadManager(
+            let manager = DownloadTestFiles.manager(
                 appModel: AppModel(identity: PlatformClientIdentity.make(
                     clientIdentifier: "malformed-startup")),
                 store: store, session: session, registerForBackgroundEvents: false)
@@ -660,12 +795,12 @@ struct BackgroundDownloadStartupAdmissionTests {
     ) throws {
         // Own the parent too: quarantine reclamation enumerates siblings and durable
         // cleanup authority lives beside the media root, not inside it.
-        let parent = FileManager.default.temporaryDirectory
+        let parent = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("background-startup-admission-\(UUID().uuidString)",
                                   isDirectory: true)
         let directory = parent.appendingPathComponent("Downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: parent) }
+
         try body(directory)
     }
 
@@ -674,12 +809,12 @@ struct BackgroundDownloadStartupAdmissionTests {
     ) async throws {
         // Own the parent too: quarantine reclamation enumerates siblings and durable
         // cleanup authority lives beside the media root, not inside it.
-        let parent = FileManager.default.temporaryDirectory
+        let parent = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("background-startup-admission-\(UUID().uuidString)",
                                   isDirectory: true)
         let directory = parent.appendingPathComponent("Downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: parent) }
+
         try await body(directory)
     }
 }
@@ -812,15 +947,16 @@ private final class StartupSelectiveRemovalFailureFileManager: FileManager, @unc
     }
 }
 
+@Suite(.downloadTestFiles)
 struct UnverifiedRevalidationLifecycleTests {
     @MainActor
     @Test func inactiveOvertakingBrokerRegistrationNeverStartsProbeAndActiveRetriesOnce() async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("unverified-broker-overtake-\(UUID().uuidString)",
                                   isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let key = try seedUnverified("plex:broker-overtake", in: store)
         let validator = HeldRevalidationValidator()
         await validator.allowSuccess()
@@ -828,7 +964,7 @@ struct UnverifiedRevalidationLifecycleTests {
             store: store, protocolClasses: [],
             playbackValidator: { _, _ in await validator.validate() })
         defer { session.invalidateInjectedSessionForTesting() }
-        let manager = DownloadManager(
+        let manager = DownloadTestFiles.manager(
             appModel: AppModel(identity: PlatformClientIdentity.make(
                 clientIdentifier: "broker-overtake-test")),
             store: store, session: session, registerForBackgroundEvents: false)
@@ -867,19 +1003,19 @@ struct UnverifiedRevalidationLifecycleTests {
 
     @MainActor
     @Test func activeToInactiveCancelsOnlyHeldRevalidationAndActiveRetriesExactlyOnce() async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("unverified-inactive-cancel-\(UUID().uuidString)",
                                   isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let key = try seedUnverified("plex:inactive-cancel", in: store)
         let validator = HeldRevalidationValidator()
         let session = BackgroundDownloadSession(
             store: store, protocolClasses: [],
             playbackValidator: { _, _ in await validator.validate() })
         defer { session.invalidateInjectedSessionForTesting() }
-        let manager = DownloadManager(
+        let manager = DownloadTestFiles.manager(
             appModel: AppModel(identity: PlatformClientIdentity.make(
                 clientIdentifier: "inactive-cancel-test")),
             store: store, session: session, registerForBackgroundEvents: false)
@@ -928,16 +1064,16 @@ struct UnverifiedRevalidationLifecycleTests {
 
     @MainActor
     @Test func inactiveSessionChangeAfterGateDrainCreatesNoFinalizerRequest() async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("unverified-inactive-manager-\(UUID().uuidString)",
                                   isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let store = DownloadStore(baseDirectory: directory)
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
         let key = try seedUnverified("plex:inactive-manager", in: store)
         let session = BackgroundDownloadSession(store: store, protocolClasses: [])
         defer { session.invalidateInjectedSessionForTesting() }
-        let manager = DownloadManager(
+        let manager = DownloadTestFiles.manager(
             appModel: AppModel(identity: PlatformClientIdentity.make(
                 clientIdentifier: "inactive-revalidation-test")),
             store: store, session: session, registerForBackgroundEvents: false)
@@ -1134,39 +1270,46 @@ struct UnverifiedRevalidationLifecycleTests {
         #expect(!duplicateFire)
     }
 
-    @Test func pendingBackgroundHandlerDefersWithoutClaimingProbeAndDrainPublishesExactKeysOnce() throws {
-        try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
-            let session = BackgroundDownloadSession(store: store, protocolClasses: [])
-            defer { session.invalidateInjectedSessionForTesting() }
-            let first = try seedUnverified("plex:first", in: store)
-            let second = try seedUnverified("plex:second", in: store)
-            let drained = LockedRevalidationDrainBox()
-            session.onBackgroundCompletionGateDrained = { drained.append($0) }
-            session.noteBackgroundCompletionHandlerStored(identifier: "wake")
+    @Test func pendingBackgroundHandlerDefersWithoutClaimingProbeAndDrainPublishesExactKeysOnce() async throws {
+        let directory = DownloadTestFiles.temporaryDirectory.appendingPathComponent("wake-proof-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-            #expect(session.revalidateCompletedDownload(
-                ratingKey: first.ratingKey, validationLabel: "test") == .deferredForBackgroundWake)
-            #expect(session.revalidateCompletedDownload(
-                ratingKey: second.ratingKey, validationLabel: "test") == .deferredForBackgroundWake)
-            #expect(session.backgroundDeferredRevalidationKeysForTesting() == [first, second])
-
-            // Models scene-active arriving during the same wake: it remains a cheap exact-key
-            // deferral, not an AVFoundation finalizer claim or a second drain notification.
-            #expect(session.revalidateCompletedDownload(
-                ratingKey: first.ratingKey, validationLabel: "scene") == .deferredForBackgroundWake)
-            session.finishBackgroundEventsForTesting(identifier: "wake")
-            #expect(drained.values == [[first, second]])
-            #expect(session.backgroundDeferredRevalidationKeysForTesting().isEmpty)
-
-            session.finishBackgroundEventsForTesting(identifier: "wake")
-            #expect(drained.values == [[first, second]])
+        let store = DownloadTestFiles.store(baseDirectory: directory)
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+        defer { session.invalidateInjectedSessionForTesting() }
+        let first = try seedUnverified("plex:first", in: store)
+        let second = try seedUnverified("plex:second", in: store)
+        let drained = LockedRevalidationDrainBox()
+        let releaseEligible = DispatchSemaphore(value: 0)
+        session.onBackgroundCompletionGateDrained = {
+            drained.append($0)
+            releaseEligible.signal()
         }
+        session.noteBackgroundCompletionHandlerStored(identifier: "wake")
+
+        #expect(session.revalidateCompletedDownload(
+            ratingKey: first.ratingKey, validationLabel: "test") == .deferredForBackgroundWake)
+        #expect(session.revalidateCompletedDownload(
+            ratingKey: second.ratingKey, validationLabel: "test") == .deferredForBackgroundWake)
+        #expect(session.backgroundDeferredRevalidationKeysForTesting() == [first, second])
+
+        // Models scene-active arriving during the same wake: it remains a cheap exact-key
+        // deferral, not an AVFoundation finalizer claim or a second drain notification.
+        #expect(session.revalidateCompletedDownload(
+            ratingKey: first.ratingKey, validationLabel: "scene") == .deferredForBackgroundWake)
+        session.finishBackgroundEventsForTesting(identifier: "wake")
+        // Finish-events now retains supervision through the covering persistence proof.
+        #expect(await p6Signal(releaseEligible, seconds: 10))
+        #expect(drained.values == [[first, second]])
+        #expect(session.backgroundDeferredRevalidationKeysForTesting().isEmpty)
+
+        session.finishBackgroundEventsForTesting(identifier: "wake")
+        #expect(drained.values == [[first, second]])
     }
 
     @Test func realProbeAdmissionDeduplicatesUntilExactClaimReleases() throws {
         try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
             let key = try seedUnverified("plex:dedupe", in: store)
@@ -1209,10 +1352,10 @@ struct UnverifiedRevalidationLifecycleTests {
     }
 
     private func withDirectory(_ body: (URL) throws -> Void) throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("unverified-revalidation-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         try body(directory)
     }
 }
@@ -1301,17 +1444,17 @@ private final class LockedFinalizerRequestBox: @unchecked Sendable {
 /// returns. Without a nested gate operation spanning that completion, the gate hits zero in the
 /// gap, the OS handler fires, and the app suspends before the train slot is refilled — the
 /// reopened #212 off-head stall.
-@Suite("Held-range body completion gate")
+@Suite("Held-range body completion gate", .downloadTestFiles)
 struct HeldRangeBodyCompletionGateTests {
-    @Test @MainActor
+    @Test
     func heldBodyLifecycleHoldsCompletionGateUntilTrainSlotIsReplanned() async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("held-body-gate-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
 
         let writes = BlockingIndexWriteGate()
-        let store = DownloadStore(
+        let store = DownloadTestFiles.store(
             baseDirectory: directory,
             indexPersistence: .init { data, url in try writes.write(data, to: url) })
         let attemptID = try #require(DownloadAttemptID(rawValue: "held-gate-a"))
@@ -1323,26 +1466,32 @@ struct HeldRangeBodyCompletionGateTests {
             metadata: OfflineMetadata(
                 ratingKey: key.ratingKey, title: "Held Gate", type: "movie",
                 resumeMode: .staticByteRange))
-        #expect(store.createAttemptOwnedRecord(record, attemptID: attemptID) == .committed(key))
+        #expect(await store.createAttemptOwnedRecordAsync(record, attemptID: attemptID) == .committed(key))
         let working = try #require(store.attemptWorkingFileURL(for: key))
         try Data(repeating: 0x5A, count: 8).write(to: working)
 
-        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
-        defer { session.invalidateInjectedSessionForTesting() }
+        // This pin proves operation overlap, not wake expiry. Keep its clock fixed while
+        // the writer is deliberately held; P6's manual-clock pins separately exercise expiry.
+        let clock = DownloadWakeClockHooks(now: { 0 }, register: { _, _ in },
+                                           terminalAcknowledged: { _ in })
+        let registry = await MainActor.run { BackgroundDownloadCompletionRegistry(clockHooks: clock) }
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [],
+            wakeClockHooks: clock, releaseBackgroundCompletion: { registry.fireCompletions(in: $0) })
+        defer { writes.release.signal(); session.invalidateInjectedSessionForTesting() }
         let rebuildNeeded = DispatchSemaphore(value: 0)
-        session.onRangeRequestNeeded = { _, _ in rebuildNeeded.signal() }
+        session.onRangeRequestNeeded = { _, _, _ in rebuildNeeded.signal() }
 
         // A stored (unfired) OS background-completion handler is the precondition: the gate is
         // what keeps it — and the app — alive until the next task/hold exists.
         let identifier = "held-gate-\(UUID().uuidString)"
         let fired = DispatchSemaphore(value: 0)
-        let completionToken = BackgroundDownloadCompletionRegistry.shared.store(
-            identifier: identifier, completion: { fired.signal() })
+        let completionToken = await MainActor.run {
+            registry.store(identifier: identifier, completion: { fired.signal() })
+        }
         defer {
-            BackgroundDownloadCompletionRegistry.shared.fireCompletions(in: .init(
-                identifier: identifier,
-                tokens: [completionToken]
-            ))
+            Task { @MainActor in
+                registry.fireCompletions(in: .init(identifier: identifier, tokens: [completionToken]))
+            }
         }
         session.noteBackgroundCompletionHandlerStored(
             identifier: identifier,
@@ -1366,23 +1515,22 @@ struct HeldRangeBodyCompletionGateTests {
         #expect(await waitForSignal(writes.entered, timeout: 5))
         #expect(await waitForSignal(applied, timeout: 5))
         #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false).pendingBackgroundCompletionOperationCount == 1)
-        #expect(await waitForSignal(fired, timeout: 0) == false)
+        #expect(!hasFired(fired))
 
         // Releasing the writer lets the lifecycle complete; its completion replans the train
         // (request rebuild grace) BEFORE ending the nested operation, so the gate never drains.
         writes.release.signal()
         #expect(await waitForSignal(rebuildNeeded, timeout: 5))
-        var settled = false
-        for _ in 0..<200 {
-            if session.diagnosticSnapshot(includePendingTempCleanupBytes: false).pendingBackgroundCompletionOperationCount == 1 {
-                settled = true
-                break
-            }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(settled, "rebuild-grace hold must overlap the held-lifecycle completion")
-        #expect(await waitForSignal(fired, timeout: 0) == false)
+        await session.drainRangeIOForTesting()
+        #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false).pendingBackgroundCompletionOperationCount == 1,
+                "rebuild-grace hold must overlap the held-lifecycle completion")
+        #expect(!hasFired(fired))
         #expect(store.metadata(for: key.ratingKey)?.heldRangeSegments?.map(\.offset) == [30])
+    }
+
+    /// A synchronous, nonblocking peek; queuing this check can cross the wake deadline.
+    private func hasFired(_ semaphore: DispatchSemaphore) -> Bool {
+        semaphore.wait(timeout: .now()) == .success
     }
 
     private func waitForSignal(
@@ -1390,7 +1538,7 @@ struct HeldRangeBodyCompletionGateTests {
         timeout: TimeInterval
     ) async -> Bool {
         await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
+            Thread.detachNewThread {
                 continuation.resume(returning: semaphore.wait(timeout: .now() + timeout) == .success)
             }
         }

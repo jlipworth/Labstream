@@ -30,6 +30,24 @@ public enum DownloadRetryPreparationPolicy {
         return (status == .paused || status == .failed) && hasEmbyConvertRecoveryIdentity
     }
 
+    /// B44/B49 containment: whether the launch/backend-switch cleanup sweep must leave a terminal
+    /// row's Emby Convert authority (job id or crash-window identity) alone because Retry would
+    /// resume it. Cleaning it up would DELETE a still-rendering job and clear its id (B44), or
+    /// race crash-window recovery for the same job (B49). Defined through the retry gate so the
+    /// two can never disagree. Deleted and abandoned rows take the deletion path instead.
+    public static func shouldKeepEmbyConvertAuthorityForRetry(status: DownloadStatus,
+                                                              resumeMode: DownloadResumeMode?,
+                                                              isEmbyRecord: Bool,
+                                                              hasEmbyConvertJobID: Bool,
+                                                              hasEmbyConvertRecoveryIdentity: Bool) -> Bool {
+        status == .failed && shouldResumePausedEmbyConvert(
+            status: status,
+            resumeMode: resumeMode,
+            isEmbyRecord: isEmbyRecord,
+            hasEmbyConvertJobID: hasEmbyConvertJobID,
+            hasEmbyConvertRecoveryIdentity: hasEmbyConvertRecoveryIdentity)
+    }
+
     public static func shouldResumePersistedURLSessionData(status: DownloadStatus,
                                                            supportsPersistedResumeData: Bool,
                                                            hasResumeData: Bool) -> Bool {

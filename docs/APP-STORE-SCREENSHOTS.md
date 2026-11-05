@@ -27,6 +27,9 @@ channels. Apple's current accepted capture sizes relevant to the preferred Labst
 A 6.3-inch capture alone does **not** satisfy the required iPhone set: supply a 6.9-inch
 set or the 6.5-inch fallback. Likewise, use the required 13-inch iPad set, not only 11-inch.
 The exporter checks accepted dimensions, not required display-class coverage.
+iPhone Duo outer- and inner-display sizes are not in the checked set; Duo store screenshots remain
+an open gate ([#419](https://github.com/jlipworth/Labstream/issues/419)) until Apple's accepted
+sizes for them are verified and recorded in the spec file.
 
 The machine-readable checked set and verification date live in
 `scripts/app-store-screenshot-specs.json`. Recheck it before each release against Apple's

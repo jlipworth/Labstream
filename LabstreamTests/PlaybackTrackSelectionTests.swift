@@ -6,15 +6,10 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct PlaybackTrackSelectionTests {
+    private let preferences = TestUserDefaults()
     @Test func plexPickerIgnoresStickyMetadataWhenPreferencesAreOff() async throws {
-        let defaults = UserDefaults.standard
-        let key = PlaybackPreferences.Keys.subtitleAutoSelectMode
-        let prior = defaults.object(forKey: key)
-        defaults.set(SubtitleAutoSelectMode.manual.rawValue, forKey: key)
-        defer {
-            if let prior { defaults.set(prior, forKey: key) }
-            else { defaults.removeObject(forKey: key) }
-        }
+        preferences.defaults.set(SubtitleAutoSelectMode.manual.rawValue,
+                                 forKey: PlaybackPreferences.Keys.subtitleAutoSelectMode)
         let item = MediaItem(ratingKey: "fixture", title: "Fixture", type: "movie", media: [
             Media(id: 1, part: [Part(id: 10, key: "/part/10", streams: [
                 PlexStream(id: 7, streamType: StreamType.subtitle.rawValue, selected: true),
@@ -28,7 +23,8 @@ struct PlaybackTrackSelectionTests {
                 sessionSource: .plex(PlexPlaybackSession(
                     server: try #require(URL(string: "https://media.invalid")), token: "fixture")),
                 identity: identity, client: PlexClient(identity: identity),
-                initialSubtitleStreamIndex: explicitSelection)
+                initialSubtitleStreamIndex: explicitSelection,
+                trackPreferenceDefaults: preferences.defaults)
             let snapshot = try #require(try await controller.loadSubtitleTracks())
             #expect(snapshot.selectedID == (explicitSelection == 7 ? .plexStream(7) : .plexOff))
         }
@@ -94,7 +90,8 @@ struct PlaybackTrackSelectionTests {
                 fileURL: directory.appendingPathComponent("video.mkv"),
                 textSubtitles: [valid, missing])),
             identity: identity,
-            client: PlexClient(identity: identity))
+            client: PlexClient(identity: identity),
+            trackPreferenceDefaults: preferences.defaults)
 
         let loaded = try #require(try await controller.loadSubtitleTracks())
         #expect(loaded.tracks.count == 3)
@@ -129,7 +126,7 @@ struct PlaybackTrackSelectionTests {
         let snapshot = try #require(try await controller.loadSubtitleTracks())
         #expect(snapshot.selectedID == .offlineSidecar(2))
         #expect(controller.offlineSubtitleOverlay.text == "French")
-        #expect(UserDefaults.standard.string(
+        #expect(preferences.defaults.string(
             forKey: PlaybackPreferences.Keys.preferredSubtitleLanguage) == "fr")
     }
 
@@ -148,7 +145,7 @@ struct PlaybackTrackSelectionTests {
         let snapshot = try #require(try await controller.loadSubtitleTracks())
         #expect(snapshot.selectedID == .offlineOff)
         #expect(controller.offlineSubtitleOverlay.text == nil)
-        #expect(UserDefaults.standard.bool(forKey: PlaybackPreferences.Keys.subtitlesOff))
+        #expect(preferences.defaults.bool(forKey: PlaybackPreferences.Keys.subtitlesOff))
     }
 
     @Test func staleMetadataAudioIDFallsBackToCurrentSelectedDefaultThenFirst() {
@@ -265,7 +262,7 @@ struct PlaybackTrackSelectionTests {
             client: PlexClient(identity: identity),
             plexAudioStreamSelector: { partID, streamID in
                 try await gate.select(partID: partID, streamID: streamID)
-            })
+            }, trackPreferenceDefaults: preferences.defaults)
         let initial = try #require(controller.loadAudioStreamChoices())
         return (controller, initial)
     }
@@ -296,7 +293,8 @@ struct PlaybackTrackSelectionTests {
                 textSubtitles: tracks)),
             identity: identity,
             client: PlexClient(identity: identity),
-            offlineSubtitleCueLoader: { url in try await gate.load(url) })
+            offlineSubtitleCueLoader: { url in try await gate.load(url) },
+            trackPreferenceDefaults: preferences.defaults)
         let snapshot = try #require(try await controller.loadSubtitleTracks())
         return (controller, snapshot.tracks)
     }

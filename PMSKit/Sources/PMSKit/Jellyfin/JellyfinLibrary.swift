@@ -139,6 +139,25 @@ public enum JellyfinLibrary {
                                 relationPath: "LocalTrailers")
     }
 
+    /// `GET /Items/{itemId}/Similar` — the "More Like This" items for a movie or show, as a
+    /// `QueryResult` (`Items`, `TotalRecordCount`).
+    public static func similarItemsRequest(server: URL,
+                                           token: String,
+                                           identity: JellyfinClientIdentity,
+                                           userId: String,
+                                           itemId: String,
+                                           limit: Int = 20) throws -> URLRequest {
+        let dialect = requestFactory.dialect
+        let url = try url(server: server, path: "/Items/\(itemId)/Similar", queryItems: [
+            dialect.queryItem(.userId, value: userId),
+            dialect.queryItem(.limit, value: String(max(limit, 1))),
+            dialect.queryItem(.fields, value: gridItemFields),
+            dialect.queryItem(.enableUserData, value: "true"),
+            dialect.queryItem(.enableImages, value: "true"),
+        ])
+        return get(url: url, token: token, identity: identity)
+    }
+
     /// `GET /Items/{itemId}/SpecialFeatures` — playable special features/extras.
     public static func specialFeaturesRequest(server: URL,
                                               token: String,
@@ -312,7 +331,7 @@ public enum JellyfinLibrary {
                                        itemId: String,
                                        mediaSourceId: String?,
                                        container: String?) throws -> URLRequest {
-        let cleanContainer = (container ?? "mp4")
+        let cleanContainer = (MediaBrowserDownloadContainer.token(container) ?? "mp4")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
             .filter { $0.isLetter || $0.isNumber }

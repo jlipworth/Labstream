@@ -184,14 +184,13 @@ struct BackendSelectionPicker: View {
     let onSelect: (MediaBackendKind) -> Void
 
     var body: some View {
-        Picker("Media Server", selection: Binding(
-            get: { selection },
-            set: { backend in onSelect(backend) })) {
-                ForEach(MediaBackendKind.allCases) { backend in
-                    Text(backend.displayName).tag(backend)
-                }
-            }
-            .pickerStyle(.segmented)
+        LabstreamSegmentedPicker(
+            title: "Media Server",
+            selection: Binding(
+                get: { selection },
+                set: { backend in onSelect(backend) }),
+            options: MediaBackendKind.allCases,
+            label: \.displayName)
             #if os(tvOS)
             .accessibilityIdentifier("tv.login.backendPicker")
             #endif
@@ -299,7 +298,7 @@ struct PlexLinkCodeView: View {
         }
             .buttonStyle(.plain)
             .fontWeight(.semibold)
-            .foregroundStyle(DS.Brand.amber)
+            .foregroundStyle(signInLinkStyle)
             .accessibilityHint("Opens Plex sign-in in your default browser")
         #endif
     }
@@ -467,7 +466,7 @@ struct EmbyConnectPinCodeView: View {
         }
             .buttonStyle(.plain)
             .fontWeight(.semibold)
-            .foregroundStyle(DS.Brand.amber)
+            .foregroundStyle(signInLinkStyle)
             .accessibilityHint("Opens Emby Connect sign-in in your default browser")
         #endif
     }
@@ -1037,4 +1036,14 @@ struct EmbyConnectServerPicker: View {
                 .disabled(isWorking || selectingServerID != nil)
         }
     }
+}
+
+/// Sign-in address links (semibold): label color on iPhone/iPad, where amber means
+/// "selected" only; the brand amber elsewhere.
+private var signInLinkStyle: AnyShapeStyle {
+    #if os(iOS)
+    AnyShapeStyle(.primary)
+    #else
+    AnyShapeStyle(DS.Brand.amber)
+    #endif
 }

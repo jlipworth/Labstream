@@ -1,3 +1,4 @@
+import PMSKit
 import SwiftUI
 
 /// The app's shared visual language — one place that defines the spacing scale,
@@ -18,6 +19,16 @@ enum DS {
         static let amber = Color(red: 1.00, green: 0.72, blue: 0.20)
         static let deepTeal = Color(red: 0.03, green: 0.28, blue: 0.34)
         static let midnight = Color(red: 0.02, green: 0.09, blue: 0.13)
+        /// The "stream" half of the wordmark. iPhone/iPad keep it in the label color because amber
+        /// means "selected" there (iPhone Duo design, global color rule); the other platforms keep
+        /// the two-tone brand wordmark.
+        static var wordmarkAccent: Color {
+            #if os(iOS)
+            .primary
+            #else
+            amber
+            #endif
+        }
 
         static var iconPlateGradient: LinearGradient {
             LinearGradient(colors: [
@@ -141,6 +152,20 @@ enum DS {
         80
         #else
         compact ? Space.lg : Space.xl
+        #endif
+    }
+
+    /// Section title over a rail, a song list or a result group. iPhone/iPad use the single
+    /// Title style of the three-style type pass (`.title3` semibold, iPhone Duo design spec,
+    /// Color & type); tvOS and visionOS/macOS keep their authored sizes.
+    static func railSectionTitleFont(compact: Bool) -> Font {
+        #if os(tvOS)
+        // TV type sizes run big: title3 (48pt) dwarfs the cards beneath it.
+        .headline
+        #elseif os(iOS)
+        .title3.weight(.semibold)
+        #else
+        compact ? .title3.bold() : .title2.bold()
         #endif
     }
 
@@ -422,10 +447,14 @@ extension View {
         #endif
     }
 
-    /// Prominent variant of `labstreamGlassButtonStyle`. Do not force a global label
+    /// Prominent variant of `labstreamGlassButtonStyle`. Do not force a hard-coded label
     /// foreground here: `.glassProminent` and `.borderedProminent` derive contrast
     /// from the active tint/material context, and hard-coded black is wrong for dark
     /// platform surfaces.
+    ///
+    /// iPhone/iPad: the prominent capsule (Play/Resume, sign-in, Reconnect) is filled with the
+    /// label color with the background color as its text — the TV app's white Play capsule in
+    /// dark mode — because amber means "selected" only (iPhone Duo design spec, Color & type).
     @ViewBuilder
     func labstreamGlassProminentButtonStyle() -> some View {
         #if os(visionOS)
@@ -436,6 +465,8 @@ extension View {
         self.buttonStyle(.borderedProminent)
         #else
         self.buttonStyle(.glassProminent)
+            .tint(.primary)
+            .foregroundStyle(Color(uiColor: .systemBackground))
         #endif
     }
 
@@ -444,10 +475,93 @@ extension View {
     /// With no explicit margin the modifier resolves the compact-aware default from the
     /// environment, so a bare `.mediaRailScrollStyle()` can't silently burn the 32-pt
     /// regular margin on a 390-pt phone.
+    ///
+    /// iPhone/iPad (iPhone Duo design spec, global rule 6, Resolved decision 1): the rail's
+    /// viewport is its own layout frame, which is the content region — the vertical bar's inset
+    /// is already outside it on whichever edge carries the bar. Cards are clipped there
+    /// horizontally, so at rest no card, title or year rests under the bar, while the leading
+    /// and trailing content margins stay equal so the last card scrolls fully into view and stops
+    /// one margin short of the bar. Vertically the rail keeps drawing past its frame (shadows,
+    /// hover lift) through `verticalOverflow`. `clipDisabled: false` keeps a hard clip on all
+    /// four edges. Other platforms keep their authored pass-through behaviour.
     func mediaRailScrollStyle(horizontalMargin: CGFloat? = nil,
                               clipDisabled: Bool = true) -> some View {
         modifier(MediaRailScrollStyleModifier(horizontalMargin: horizontalMargin,
                                               clipDisabled: clipDisabled))
+    }
+
+    /// Reports a rail viewport's measured width (the content region a rail lays out in) for
+    /// `DS.Poster.measuredRailWidth`.
+    func railViewportWidth(_ width: Binding<CGFloat?>) -> some View {
+        onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { newWidth in
+            if width.wrappedValue != newWidth { width.wrappedValue = newWidth }
+        }
+    }
+
+    /// Keeps a rail's first visible card across a fold, unfold or resize (global rule 9). The
+    /// rail's stack must carry `.railScrollTargetLayout()`. iPhone/iPad only; other platforms
+    /// keep their authored focus/scroll behaviour.
+    @ViewBuilder
+    func railScrollAnchor(_ id: Binding<String?>) -> some View {
+        #if os(iOS)
+        self.scrollPosition(id: id, anchor: .leading)
+        #else
+        self
+        #endif
+    }
+
+    /// Marks a rail's lazy stack as the scroll-target layout for `railScrollAnchor`.
+    @ViewBuilder
+    func railScrollTargetLayout() -> some View {
+        #if os(iOS)
+        self.scrollTargetLayout()
+        #else
+        self
+        #endif
+    }
+}
+
+extension DS.Poster {
+    /// Rail poster width from the measured rail viewport (global rule 7: whole cards plus a
+    /// ~30% cue, clamped per family). Falls back to the authored constant before the first
+    /// measurement and on every non-iOS platform, whose rails keep their authored widths.
+    static func measuredRailWidth(viewport: CGFloat?, compact: Bool,
+                                  margin: CGFloat, gutter: CGFloat) -> CGFloat {
+        #if os(iOS)
+        guard let viewport, viewport > 0 else { return railWidth(compact: compact) }
+        let metrics = RailCardMetrics.metrics(viewportWidth: Double(viewport),
+                                              margin: Double(margin),
+                                              gutter: Double(gutter),
+                                              family: .poster(compact: compact))
+        return CGFloat(metrics.cardWidth)
+        #else
+        return railWidth(compact: compact)
+        #endif
+    }
+
+    /// 16:9 landscape rail card width from the measured viewport (global rule 7, landscape
+    /// family). `fallback` is the authored width used before the first measurement.
+    static func measuredLandscapeRailWidth(viewport: CGFloat?, compact: Bool,
+                                           margin: CGFloat, gutter: CGFloat,
+                                           fallback: CGFloat) -> CGFloat {
+        guard let viewport, viewport > 0 else { return fallback }
+        let metrics = RailCardMetrics.metrics(viewportWidth: Double(viewport),
+                                              margin: Double(margin),
+                                              gutter: Double(gutter),
+                                              family: .landscape(compact: compact))
+        return CGFloat(metrics.cardWidth)
+    }
+}
+
+/// Clips a rail at its layout frame horizontally while letting it draw `verticalOverflow`
+/// points above and below (poster shadows and lift).
+private struct RailViewportClip: Shape {
+    let verticalOverflow: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        Path(rect.insetBy(dx: 0, dy: -verticalOverflow))
     }
 }
 
@@ -458,11 +572,23 @@ private struct MediaRailScrollStyleModifier: ViewModifier {
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
     func body(content: Content) -> some View {
-        content
+        let margined = content
             .contentMargins(.horizontal,
                             horizontalMargin ?? DS.Scroll.railHorizontalMargin(compact: compactWidth),
                             for: .scrollContent)
+        #if os(iOS)
+        margined
+            .scrollClipDisabled(true)
+            .clipShape(RailViewportClip(verticalOverflow: clipDisabled ? DS.Space.xxxl : 0))
+            // A clip shape does not clip hit testing: the clipped cue card stayed tappable
+            // through the empty stretch of the vertical bar's column. Hit-test the rail's own
+            // layout frame (the content region) only, without the shadow overflow, so the
+            // overflow never steals taps from the header above or the next shelf.
+            .contentShape(Rectangle())
+        #else
+        margined
             .scrollClipDisabled(clipDisabled)
+        #endif
     }
 }
 

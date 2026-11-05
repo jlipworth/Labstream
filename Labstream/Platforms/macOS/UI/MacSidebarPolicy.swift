@@ -156,6 +156,62 @@ enum MacSidebarDestination: Hashable {
     }
 }
 
+/// Explicit user intent is separate from restoration/system-entry selection changes.
+/// These effects deliberately leave music playback and selected-library context alone.
+enum MacNavigationPolicy {
+    struct CommandAvailability: Equatable {
+        var canNavigateBack = false
+        var canSelectDestination = false
+    }
+
+    static func destination(for selection: MacSidebarDestination) -> AppDestination {
+        switch selection {
+        case .home: .home
+        case .library: .libraries
+        case .music: .music
+        case .offline: .offline
+        }
+    }
+
+    @MainActor
+    static func activate(_ selection: MacSidebarDestination,
+                         from previous: MacSidebarDestination,
+                         navigation: RootNavigationCoordinator) {
+        switch selection {
+        case .home, .music:
+            navigation.resetPath(for: destination(for: selection))
+        case .library where selection != previous:
+            navigation.resetPath(for: .libraries)
+        default:
+            break
+        }
+        navigation.resetPath(for: .search)
+        navigation.selection = destination(for: selection)
+    }
+
+    @MainActor
+    static func availability(isAuthenticated: Bool, isPlayingVideo: Bool,
+                             isSearching: Bool, selection: MacSidebarDestination,
+                             navigation: RootNavigationCoordinator) -> CommandAvailability {
+        let canSelect = isAuthenticated && !isPlayingVideo
+        return CommandAvailability(
+            canNavigateBack: canSelect && (isSearching || navigation.canNavigateBack(in: destination(for: selection))),
+            canSelectDestination: canSelect)
+    }
+
+    /// Back pops a result before leaving Search. Escape uses explicit dismissal instead.
+    @MainActor
+    static func navigateBack(isSearching: Bool, selection: MacSidebarDestination,
+                             navigation: RootNavigationCoordinator) -> Bool {
+        let destination = isSearching ? AppDestination.search : Self.destination(for: selection)
+        if navigation.canNavigateBack(in: destination) {
+            navigation.navigateBack(in: destination)
+            return false
+        }
+        return isSearching
+    }
+}
+
 /// Small per-server persistence adapter. Keeping one route per stable server identity preserves
 /// the user's place when switching backends without ever applying a route to the wrong server.
 struct MacSidebarSelectionStore {

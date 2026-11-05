@@ -3,15 +3,16 @@ import PMSKit
 import Testing
 @testable import Labstream
 
+@Suite(.downloadTestFiles)
 struct BackgroundCompletionPersistenceBarrierTests {
     @Test func dirtyRevisionRetriesBeforeHandlerRelease() async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("background-completion-flush-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
 
         let writes = BlockingRetryWriter()
-        let store = DownloadStore(
+        let store = DownloadTestFiles.store(
             baseDirectory: directory,
             indexPersistence: .init { data, url in try writes.write(data, to: url) }
         )
@@ -73,13 +74,13 @@ struct BackgroundCompletionPersistenceBarrierTests {
     }
 
     @Test func blockedRetryTimesOutBeforeReleaseAndCanStillCommitLater() async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("background-completion-timeout-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
 
         let writes = BlockingRetryWriter()
-        let store = DownloadStore(
+        let store = DownloadTestFiles.store(
             baseDirectory: directory,
             indexPersistence: .init { data, url in try writes.write(data, to: url) }
         )

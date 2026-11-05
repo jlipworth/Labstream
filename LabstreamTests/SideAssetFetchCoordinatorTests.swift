@@ -4,7 +4,7 @@ import XCTest
 import os
 @testable import Labstream
 
-final class SideAssetFetchCoordinatorTests: XCTestCase {
+final class SideAssetFetchCoordinatorTests: DownloadFileTestCase {
     func testNonpersistentTransportPolicyDisablesCredentialStores() {
         let configuration = SideAssetTransportPolicy.nonpersistentConfiguration()
 
@@ -610,7 +610,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
     }
 
     func testExistingNonemptyFileBypassesNetwork() async throws {
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let file = downloadTestFiles.root.appendingPathComponent(UUID().uuidString)
         try Data([4, 2]).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
         let calls = TestCounter()
@@ -692,7 +692,9 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
                 return Data([8])
             }
         }
-        await Task.yield()
+        await waitUntil {
+            await coordinator.waiterCountForTesting(origin: .init(rawValue: "origin"), requestKey: request) == 1
+        }
         let second = Task {
             try await coordinator.fetch(
                 origin: .init(rawValue: "origin"), owner: active, requestKey: request
@@ -828,7 +830,7 @@ private final class SideAssetCancellationURLProtocol: URLProtocol, @unchecked Se
     }
 }
 
-final class DownloadSideAssetRetryBudgetTests: XCTestCase {
+final class DownloadSideAssetRetryBudgetTests: DownloadFileTestCase {
     private let source = OfflineSideAssetSourceIdentity(
         backendKind: .plex, backendBaseURLString: "https://one.example",
         backendServerID: "server", mediaSourceID: "source", mediaIndex: 0,
@@ -870,14 +872,98 @@ final class DownloadSideAssetRetryBudgetTests: XCTestCase {
         otherSource.mediaSourceID = "replacement-source"
         XCTAssertTrue(budget.canDispatch(identity(source: otherSource), maximum: 1))
     }
+
+    /// B25: Plex BIF and text-subtitle repair both start with the same source-metadata fetch.
+    /// One (attempt, source) gets one source-metadata budget, not one per discovery kind.
+    func testSourceMetadataDiscoverySharesOneBudgetAcrossKinds() {
+        var budget = DownloadSideAssetRetryBudget()
+        let bif = identity(kind: .plexBIF, resource: "source-metadata")
+        let subtitles = identity(kind: .textSubtitles, resource: "source-metadata")
+        XCTAssertTrue(budget.chargeDispatch(bif, maximum: 2))
+        XCTAssertTrue(budget.chargeDispatch(subtitles, maximum: 2))
+        XCTAssertFalse(budget.canDispatch(bif, maximum: 2))
+        XCTAssertFalse(budget.canDispatch(subtitles, maximum: 2))
+        // Payload resources keep their own kind-scoped budgets.
+        XCTAssertTrue(budget.canDispatch(identity(kind: .plexBIF), maximum: 2))
+        XCTAssertTrue(budget.canDispatch(
+            identity(attempt: "attempt-b", kind: .textSubtitles, resource: "source-metadata"),
+            maximum: 2))
+    }
 }
 
-final class DownloadSideAssetServiceTests: XCTestCase {
+/// B25: completed Plex rows refresh `/library/metadata` before BIF and subtitle repair. That
+/// refresh must go through the side-asset coordinator's per-origin pacing, so a foreground edge
+/// over many completed rows cannot burst one unpaced request per row.
+@MainActor
+final class DownloadSideAssetPlexRepairPacingTests: DownloadFileTestCase {
+    func testCompletedPlexRowMetadataRefreshIsAdmittedByTheCoordinator() async throws {
+        let directory = downloadTestFiles.root.appendingPathComponent(
+            "side-asset-plex-repair-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+
+        let store = DownloadTestFiles.store(baseDirectory: directory)
+        let serverURL = "https://plex.example.invalid:32400"
+        var owners: Set<String> = []
+        for ratingKey in ["101", "102"] {
+            let attemptID = DownloadAttemptID.generated()
+            let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+            // A completed row needs its published media file, or startup reconcile correctly
+            // demotes it to failed before the repair scan runs.
+            let localURL = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
+            try Data([0]).write(to: localURL)
+            let record = DownloadRecord(
+                ratingKey: ratingKey, attemptID: attemptID, title: "Item",
+                localURL: localURL,
+                bytes: 1, progress: 1, status: .complete,
+                metadata: OfflineMetadata(
+                    ratingKey: ratingKey, title: "Item", type: "movie",
+                    backendKind: .plex, backendBaseURLString: serverURL))
+            XCTAssertEqual(store.createAttemptOwnedRecord(record, attemptID: attemptID),
+                           .committed(key))
+            owners.insert(DownloadManager.sideAssetOwner(for: key).rawValue)
+        }
+        let model = AppModel(identity: PlatformClientIdentity.make(
+            clientIdentifier: "side-asset-plex-repair"), activeBackend: .plex)
+        model.serverBaseURL = URL(string: serverURL)!
+        model.serverToken = "token"
+        let coordinator = SideAssetFetchCoordinator(policy: SideAssetRequestPolicy(
+            maximumRequestStartsPerSecond: 1_000, maximumConcurrentRequests: 4))
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+        defer { session.invalidateInjectedSessionForTesting() }
+        let manager = DownloadTestFiles.manager(
+            appModel: model, store: store, session: session,
+            cleanupIntentJournal: DownloadCleanupIntentJournal(directory: directory),
+            sideAssetFetchCoordinator: coordinator,
+            registerForBackgroundEvents: false)
+        for _ in 0..<100 where manager.startupRecoveryState != .ready {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(manager.startupRecoveryState, .ready)
+        XCTAssertFalse(manager.isQueuePaused)
+        XCTAssertEqual(store.records.filter(\.isComplete).count, 2)
+
+        manager.rehydrateMissingOptionalSideAssetsForCompletedRows(reason: "test")
+
+        // Admission hops through unstructured tasks and the coordinator actor; give a loaded
+        // simulator host a generous deadline while still exiting as soon as both rows are admitted.
+        var admitted: Set<String> = []
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < deadline {
+            admitted = Set(await coordinator.recordedAdmissionsForTesting().map(\.owner.rawValue))
+            if admitted == owners { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(admitted, owners)
+    }
+}
+
+final class DownloadSideAssetServiceTests: DownloadFileTestCase {
     func testPreparationValidatesOffMainBeforeWriting() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+        let directory = downloadTestFiles.root.appendingPathComponent(
             "side-asset-service-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
 
         let invalidURL = directory.appendingPathComponent("invalid.jpg")
         let rejected = await DownloadSideAssetService.prepare(

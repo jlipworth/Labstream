@@ -101,10 +101,19 @@ public enum DownloadRowDisplayPolicy {
     public static func completeCaption(isUnverified: Bool,
                                        bytes: Int,
                                        sideAssetBytes: Int = 0,
-                                       resolutionLabel: String?) -> String {
-        var parts = isUnverified ? ["Downloaded — playback not verified"] : []
-        parts.append(contentsOf: byteBreakdown(mediaBytes: bytes, sideAssetBytes: sideAssetBytes))
-        if let resolutionLabel { parts.append(resolutionLabel) }
+                                       resolutionLabel: String?,
+                                       durationMs: Int? = nil) -> String {
+        var parts = [isUnverified ? "Not verified" : "Downloaded"]
+        if let resolution = resolutionLabel?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !resolution.isEmpty { parts.append(resolution) }
+        if let kbps = averageDownloadedBitrateKbps(bytes: bytes, durationMs: durationMs),
+           let bitrate = bitrateText(kbps: kbps) { parts.append("\(bitrate) avg") }
+        var size = bytes > 0 ? byteString(bytes) : ""
+        if sideAssetBytes > 0 {
+            if !size.isEmpty { size += " + " }
+            size += "\(byteString(sideAssetBytes)) extras"
+        }
+        if !size.isEmpty { parts.append(size) }
         return parts.joined(separator: " • ")
     }
 
@@ -134,17 +143,12 @@ public enum DownloadRowDisplayPolicy {
     /// A selected bitrate preset is a video-encoder ceiling, while a backend `Media.bitrate`
     /// value may describe the source (and Emby can retain that source value on a converted
     /// MediaSource). Do not mix either value with the finished artifact's bitrate under one
-    /// ambiguous `Bitrate:` label. Active rows show the persisted user intent; successful rows
-    /// derive an average whole-file bitrate from the actual local media bytes and runtime.
+    /// ambiguous `Bitrate:` label. Active rows show the persisted user intent; finished rows
+    /// include the local artifact average in their single status summary instead.
     public static func downloadQualityText(for record: DownloadRecord) -> String? {
         switch record.status {
         case .complete, .unverified:
-            guard let kbps = averageDownloadedBitrateKbps(bytes: record.bytes,
-                                                          durationMs: record.metadata?.duration),
-                  let bitrate = bitrateText(kbps: kbps) else {
-                return nil
-            }
-            return "Downloaded: \(bitrate) avg"
+            return nil
         case .queued, .preparing, .downloading, .failed, .paused:
             return requestedProfileText(record.metadata?.requestedProfileLabel)
         }

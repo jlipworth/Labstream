@@ -81,6 +81,37 @@ enum DebugPlaybackScenario {
         throw Blocked(reason: .deadline)
     }
 
+    private static func captureSignalsIfRequested(player: AVPlayer, arguments: [String], label: String) async throws {
+        let tapRequested = arguments.contains("--vp-probe-observe-tap")
+        guard tapRequested || arguments.contains("--vp-probe-observe-signals") else { return }
+        guard !(tapRequested && arguments.contains("--vp-probe-observe-signals")),
+              let raw = DebugPlaybackProbeSupport.value(after: tapRequested ? "--vp-probe-observe-tap" : "--vp-probe-observe-signals", in: arguments),
+              let runID = UUID(uuidString: raw) else { throw Blocked(reason: .invalidOptions) }
+        #if os(visionOS) || os(macOS)
+        if #available(visionOS 27, macOS 27, *) {
+            let directory = URL.documentsDirectory.appendingPathComponent("ProbeSignalCaptures")
+                .appendingPathComponent(runID.uuidString).appendingPathComponent(label)
+            if tapRequested {
+                do {
+                    try await DebugPlaybackSignalCapture.observeTapWindow(player: player, runID: runID,
+                        directory: directory, label: label,
+                        mode: DebugPlaybackProbeSupport.value(after: "--vp-probe-tap-track", in: arguments) ?? "mixed")
+                } catch DebugPlaybackSignalCapture.CaptureError.unsupportedPCM {
+                    throw Blocked(reason: .unsupportedTrack)
+                } catch DebugPlaybackSignalCapture.CaptureError.invalidTime {
+                    throw Blocked(reason: .evidenceUnavailable)
+                } catch let error as NSError where error.domain == "SignalAudioTapConflict" {
+                    throw Blocked(reason: .evidenceUnavailable)
+                }
+                return
+            }
+            try await DebugPlaybackSignalCapture.observe(player: player, runID: runID.uuidString, directory: directory)
+        } else { throw Blocked(reason: .invalidOptions) }
+        #else
+        throw Blocked(reason: .invalidOptions)
+        #endif
+    }
+
     static func run(_ controller: PlaybackController, options: DebugPlaybackProbeSupport.LaunchOptions,
                     arguments: [String], backendIsCurrent: () -> Bool, log: Logger) async throws {
         guard let scenario = name(arguments), admitted(arguments, bitrateKbps: options.bitrateKbps) else {
@@ -125,6 +156,7 @@ enum DebugPlaybackScenario {
                 snapshots.append(controller.debugEvidenceSnapshot())
                 let captureBackend = controller.debugEvidenceSnapshot().backend.rawValue
                 await DebugPlaybackFrameCapture.captureIfRequested(from: controller.player, label: captureBackend + "-initial", log: log)
+                try await captureSignalsIfRequested(player: controller.player, arguments: arguments, label: captureBackend + "-initial")
                 guard backendIsCurrent() else { throw Blocked(reason: .backendChanged) }
                 let priorItem = controller.player.currentItem
                 var requiresReplacement = [.capped, .maximum].contains(scenario)
@@ -206,6 +238,7 @@ enum DebugPlaybackScenario {
                     throw Blocked(reason: .decisionUnknown)
                 }
                 await DebugPlaybackFrameCapture.captureIfRequested(from: controller.player, label: captureBackend + "-postseek", log: log)
+                try await captureSignalsIfRequested(player: controller.player, arguments: arguments, label: captureBackend + "-postseek")
                 status = .passed; reason = .completed
             } catch let blocked as Blocked {
                 // Capture the gate before stop() clears generation-scoped consent.

@@ -16,13 +16,16 @@ public enum DownloadStallRecoveryPolicy {
     /// Only forward-only MediaBrowser streams should be auto-restarted. Static byte-range downloads
     /// already have durable checkpoint/range recovery, and Plex optimize phase 2 is a static Part once
     /// it exists.
+    ///
+    /// B61: classified from the persisted route (`liveForwardOnly`), not the display classifier.
+    /// The display classifier hides compatible-remux rows that report a Content-Length, which left
+    /// a stalled remux with a known size outside the watchdog.
     public static func isForwardOnlyMediaBrowserStream(_ record: DownloadRecord) -> Bool {
-        guard record.status == .downloading,
-              DownloadDisplayClassifier.isLiveTranscoderSourced(record) else { return false }
+        guard record.status == .downloading else { return false }
         let backend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
             ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
         guard backend == .jellyfin || backend == .emby else { return false }
-        return record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) != .staticByteRange
+        return record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .liveForwardOnly
     }
 
     public static func shouldRestartForwardOnlyStream(record: DownloadRecord,

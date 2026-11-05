@@ -3,13 +3,14 @@ import PMSKit
 import Testing
 @testable import Labstream
 
+@Suite(.downloadTestFiles)
 struct DownloadFileStatTests {
     @Test func largeSparseFileReportsLogicalSizeWithoutReadingItsBody() throws {
         let fileManager = FileManager.default
-        let directory = fileManager.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("download-file-stat-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? fileManager.removeItem(at: directory) }
+
 
         let file = directory.appendingPathComponent("large-error-body.tmp")
         #expect(fileManager.createFile(atPath: file.path, contents: nil))
@@ -31,7 +32,7 @@ struct DownloadFileStatTests {
 
     @Test func zeroByteFileReportsZero() throws {
         let fileManager = FileManager.default
-        let file = fileManager.temporaryDirectory
+        let file = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("download-file-stat-empty-\(UUID().uuidString)")
         #expect(fileManager.createFile(atPath: file.path, contents: nil))
         defer { try? fileManager.removeItem(at: file) }
@@ -40,7 +41,7 @@ struct DownloadFileStatTests {
     }
 
     @Test func missingOrFailedStatReturnsUnknownSize() {
-        let missing = FileManager.default.temporaryDirectory
+        let missing = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("download-file-stat-missing-\(UUID().uuidString)")
         #expect(DownloadFileStat.logicalSize(at: missing) == nil)
 

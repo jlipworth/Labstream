@@ -46,11 +46,7 @@ struct MacPlayerFixtureView: View {
         .task(id: controller != nil) {
             guard let controller else { return }
             if DebugUITestLaunchConfiguration.playerFixtureStartsBuffering {
-                let deadline = ContinuousClock.now.advanced(by: .seconds(120))
-                while !Task.isCancelled, ContinuousClock.now < deadline, !closed {
-                    controller.transportStatus.set(.buffering)
-                    try? await Task.sleep(for: .milliseconds(250))
-                }
+                controller.transportStatus.holdForTesting(.buffering)
             }
         }
     }

@@ -12,6 +12,20 @@ spec.loader.exec_module(corpus)
 
 
 class MediaCorpusTests(unittest.TestCase):
+    def test_codec_counts_distinguish_files_tracks_artwork_and_failures(self):
+        records = [
+            {'facts': {'streams': [
+                {'codec_type': 'video', 'codec_name': 'hevc'},
+                {'codec_type': 'video', 'codec_name': 'mjpeg', 'disposition': {'attached_pic': 1}},
+                {'codec_type': 'audio', 'codec_name': 'aac', 'channels': 2, 'channel_layout': 'stereo'},
+                {'codec_type': 'audio', 'codec_name': 'aac', 'channels': 6, 'channel_layout': '5.1'}]}},
+            {'error': 'failed', 'facts': {'streams': [{'codec_type': 'audio', 'codec_name': 'bad'}]}}]
+        result = corpus.codec_summary(records)
+        self.assertEqual(result['video_codecs'], {'hevc': 1})
+        self.assertEqual(result['audio_codecs'], {'aac': 2})
+        self.assertEqual(result['audio_codec_files'], {'aac': 1})
+        self.assertEqual(result['audio_layouts']['aac | 6 channels | 5.1'], 1)
+
     def test_stratification_interleaves_roots_and_retains_full_inventory(self):
         rows = [{'path': '/movies/b'}, {'path': '/tv/b'}, {'path': '/movies/a'}, {'path': '/tv/a'}, {'path': '/movies/c'}]
         ordered = corpus.stratified(rows, ['/movies', '/tv'])

@@ -180,54 +180,32 @@ public enum SeasonDownloadStoragePolicy {
     }
 }
 
-public enum SeasonDownloadAdmissionLane: String, Sendable, Equatable, Codable {
-    case staticFile
-    case serverPreparation
-    case liveForward
-}
-
-public struct SeasonDownloadAdmissionCandidate: Sendable, Equatable {
-    public let id: String
-    public let lane: SeasonDownloadAdmissionLane
-
-    public init(id: String, lane: SeasonDownloadAdmissionLane) {
-        self.id = id
-        self.lane = lane
-    }
-}
-
-public enum SeasonDownloadAdmissionPolicy {
-    public static let maximumTotal = 3
-    public static let maximumByLane: [SeasonDownloadAdmissionLane: Int] = [
-        .staticFile: 2,
-        .serverPreparation: 1,
-        .liveForward: 1,
-    ]
-
-    public static func lane(backend: DownloadBackendKind,
-                            downloadLane: DownloadLane) -> SeasonDownloadAdmissionLane {
-        switch downloadLane {
-        case .original: return .staticFile
-        case .compatibleRemux: return .liveForward
-        case .optimize:
-            return backend == .jellyfin ? .liveForward : .serverPreparation
-        }
+/// Original quality for an episode with no locally playable original, no Plex original preset
+/// and no compatible remux (B69).
+public enum SeasonDownloadOriginalQualityPolicy {
+    public enum Resolution: Sendable, Equatable {
+        case original
+        case optimize(targetName: String)
+        case compatibleRemux
+        /// The probe failed: plan the row with its route unresolved and resolve it at admission.
+        case unresolved
+        /// A definitive verdict: no offline-playable original, Plex original preset or remux.
+        case unsupported
     }
 
-    public static func admitted(pending: [SeasonDownloadAdmissionCandidate],
-                                active: [SeasonDownloadAdmissionCandidate])
-        -> [SeasonDownloadAdmissionCandidate] {
-        var counts = Dictionary(grouping: active, by: \.lane).mapValues(\.count)
-        var total = active.count
-        var result: [SeasonDownloadAdmissionCandidate] = []
-        for candidate in pending {
-            guard total < maximumTotal else { break }
-            let limit = maximumByLane[candidate.lane] ?? 1
-            guard counts[candidate.lane, default: 0] < limit else { continue }
-            result.append(candidate)
-            counts[candidate.lane, default: 0] += 1
-            total += 1
-        }
-        return result
+    /// The Original-quality route for one episode, in the sheet's order: a locally playable
+    /// original, a Plex original-quality preset, a compatible remux. A failed probe proves
+    /// nothing (B69), so it never becomes an "unsupported" failed row.
+    public static func resolve(hasOriginal: Bool, plexOriginalPreset: String?,
+                               hasCompatibleRemux: Bool, probeFailed: Bool) -> Resolution {
+        if hasOriginal { return .original }
+        if let plexOriginalPreset { return .optimize(targetName: plexOriginalPreset) }
+        if hasCompatibleRemux { return .compatibleRemux }
+        return probeFailed ? .unresolved : .unsupported
+    }
+
+    public static func shouldStartUnmatchedOriginal(probeFailed: Bool) -> Bool {
+        resolve(hasOriginal: false, plexOriginalPreset: nil, hasCompatibleRemux: false,
+                probeFailed: probeFailed) == .unresolved
     }
 }

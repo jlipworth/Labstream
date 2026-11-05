@@ -90,11 +90,23 @@ public struct SearchResults: Sendable {
     /// Pure, deterministic UI projection. It deliberately preserves group and
     /// hub order: Plex callers supply discovery order, while MediaBrowser callers
     /// supply stable user-view order. Music stays inside its source library.
+    /// Rank only within the returned library/type section, without filtering backend
+    /// hits (which may match metadata other than title) or changing library scope.
+    public func presentationGroups(query: String) -> [SearchPresentationGroup] {
+        groups.map { group in
+            SearchPresentationGroup(id: group.id, libraryID: group.libraryID,
+                                    title: group.title,
+                                    sections: group.hubs.map {
+                                        SearchPresentationSection(hub: $0, query: query)
+                                    })
+        }
+    }
+
     public var presentationGroups: [SearchPresentationGroup] {
         groups.map { group in
             SearchPresentationGroup(id: group.id, libraryID: group.libraryID,
                                     title: group.title,
-                                    sections: group.hubs.map(SearchPresentationSection.init))
+                                    sections: group.hubs.map { SearchPresentationSection(hub: $0) })
         }
     }
 }
@@ -150,10 +162,10 @@ public struct SearchPresentationSection: Identifiable, Sendable {
     public let kind: SearchPresentationKind
     public let items: [MediaItem]
 
-    fileprivate init(hub: Hub) {
+    fileprivate init(hub: Hub, query: String? = nil) {
         id = hub.id
         title = hub.title
-        items = hub.metadata
+        items = query.map { SearchTitleRanking.ranked(hub.metadata, query: $0) } ?? hub.metadata
         switch hub.metadata.first?.kind {
         case .artist: kind = .artists
         case .album: kind = .albums

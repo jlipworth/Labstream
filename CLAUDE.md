@@ -62,7 +62,7 @@ The mobile app target/scheme is `LabstreamMobile`; its product/display name is
 `Labstream` and it shares the bundle id `org.labstream.Labstream`.
 
 ```sh
-PLATFORM=iphone                    # change to ipad for the regular-width path
+PLATFORM=iphone                    # ipad for the regular-width path; duo for the iPhone Duo foldable
 printf '%s\n' "$PLATFORM" > .simplatform # gitignored per-worktree default
 SIMID=$(scripts/worktree-sim.sh --platform "$PLATFORM" id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
@@ -79,9 +79,11 @@ xcrun simctl terminate "$SIMID" org.labstream.Labstream 2>/dev/null || true
 xcrun simctl launch "$SIMID" org.labstream.Labstream
 ```
 
-Mobile simulator builds require an iOS Simulator runtime compatible with the installed
-iOS SDK. If Xcode reports the iOS platform/runtime is missing, install the matching
-runtime in Xcode Settings before treating `LabstreamMobile` as broken.
+The required toolchain is Xcode 27.1 (iOS 27.1 SDK; its visionOS, tvOS and macOS SDKs are
+27.0). Deployment targets are iOS/iPadOS 26.1 and visionOS/tvOS/macOS 26.0. Mobile simulator
+builds require an iOS Simulator runtime compatible with the installed iOS SDK; the iPhone Duo
+device type needs the iOS 27.1 runtime. If Xcode reports the iOS platform/runtime is missing,
+install the matching runtime in Xcode Settings before treating `LabstreamMobile` as broken.
 
 ### Building the native Apple TV target
 
@@ -150,7 +152,7 @@ sequence plus repository redaction and tooling tests. Any time you change app co
 a workflow / subagent — also use `scripts/native-test-matrix.py affected` to identify the
 affected targets, then headlessly verify the applicable product actually *runs* on **this
 worktree's own simulator** (or through the isolated Mac host path). Resolve the selected
-platform with `scripts/worktree-sim.sh id` or `--platform visionos|iphone|ipad|tvos`; boot it
+platform with `scripts/worktree-sim.sh id` or `--platform visionos|iphone|ipad|tvos|duo`; boot it
 first because worktree simulators are created Shutdown, and never target `booted`. The
 command below is the minimum visionOS smoke; use the exact mobile/tvOS equivalents in
 `docs/DEVELOPMENT.md` for those products. Claude self-serves this passive half of the
@@ -204,6 +206,9 @@ script backs both the git hook and these agent steps.
   visionOS golden. Use `LABSTREAM_SIM_PLATFORM=iphone` or `ipad`,
   `scripts/worktree-sim.sh --platform iphone|ipad ...`, or a gitignored `.simplatform`
   containing `iphone` or `ipad`; iPhone UDIDs live in `.simid-iphone`, iPad UDIDs in `.simid-ipad`.
+- iPhone Duo (foldable) work uses `--platform duo` / `.simplatform` `duo`: a fresh `duowt-*`
+  simulator (UDID in `.simid-duo`) that only ever selects the iPhone Duo device type (Xcode 27.1+
+  with the iOS 27.1+ runtime) and never falls back to a slab iPhone.
 - tvOS work uses a fresh Apple TV simulator rather than cloning the visionOS golden. Select it
   with `LABSTREAM_SIM_PLATFORM=tvos`, `scripts/worktree-sim.sh --platform tvos ...`, or a
   gitignored `.simplatform` containing `tvos`; its UDID lives in `.simid-tvos`.
@@ -215,10 +220,11 @@ scripts/worktree-sim.sh install-hook   # one-time: post-checkout auto-clones on 
 scripts/worktree-sim.sh setup          # provision this worktree's sim (idempotent; clone bounces the golden briefly)
 scripts/worktree-sim.sh teardown       # delete this worktree's clone + .simid (run before removing the worktree)
 scripts/worktree-sim.sh teardown --all # delete every sim owned by this linked worktree
-scripts/worktree-sim.sh closeout PATH  # teardown PATH if present, then prune orphaned vpwt-*/iphonewt-*/ipadwt-*/tvwt-* sims
+scripts/worktree-sim.sh closeout PATH  # teardown PATH if present, then prune orphaned vpwt-*/iphonewt-*/duowt-*/ipadwt-*/tvwt-* sims
 scripts/worktree-sim.sh prune          # sweep worktree sims whose worktree is gone (backstop after a bare `git worktree remove`)
 scripts/worktree-sim.sh --platform visionos id
 scripts/worktree-sim.sh --platform iphone id
+scripts/worktree-sim.sh --platform duo id
 scripts/worktree-sim.sh --platform ipad id
 scripts/worktree-sim.sh --platform tvos id
 ```
@@ -232,18 +238,26 @@ prefer `scripts/worktree-sim.sh closeout PATH` from any repo worktree, or run
 `git worktree remove`. Use `prune` immediately afterward if removal already happened.
 visionOS `setup` clones from the golden sim, which `simctl` can only do while the golden
 is **shut down**, so it briefly bounces your booted main sim — expect a ~10s blip in the
-main worktree's simulator when a new visionOS worktree sim is provisioned. iPhone/iPad and tvOS
-setup create fresh simulators from the newest compatible installed runtime instead.
+main worktree's simulator when a new visionOS worktree sim is provisioned. iPhone/iPhone Duo/iPad
+and tvOS setup create fresh simulators from the newest compatible installed runtime instead.
 
 **Booted sims are NOT free — use a strict one-at-a-time queue.** Never run multiple
 simulators simultaneously. This is especially important when parallel agents are working
 in separate worktrees: source work and unit tests may proceed in parallel, but simulator
 build/install/launch/visual-verification turns must be serialized by the lead agent. An
-agent must obtain the current simulator lease before booting any visionOS, iPhone, iPad, or tvOS
-simulator; all other agents wait with their simulators shut down. A leased agent may use
+agent must obtain the current simulator lease before booting any visionOS, iPhone, iPhone Duo,
+iPad, or tvOS simulator; all other agents wait with their simulators shut down. A leased agent may use
 only one simulator at a time, must shut it down before switching platforms, and must release
 the lease before another agent boots a simulator. Do not leave the golden simulator booted
 while a linked-worktree simulator is running.
+
+**Xcode host lease.** `scripts/xcodebuild-versioned.sh` and the `agent-*-run.sh` runners hold a
+per-user OS lock (`~/.cache/labstream/xcode.lease`) shared by every worktree; wrap other Xcode
+work in `scripts/xcodebuild-lease.py run --lane NAME -- ...`. Exit 75 means the bounded wait
+timed out. Never delete the lock file to break a live lease. `scripts/workspace-status.py`,
+`issues.py`, `ci-wait.py` and `workflow-state.py` give read-only cross-worktree status, issue
+search, exact-commit CI and local receipts; see
+`docs/DEVELOPMENT.md#workflow-status-and-review-evidence`.
 
 **Shut the leased sim down immediately when its verification turn ends** —
 `xcrun simctl shutdown $(scripts/worktree-sim.sh id)` from inside the worktree (or
@@ -259,7 +273,7 @@ clone anyway.
 Never call worktree cleanup done until the linked simulator is gone. Preferred flow:
 
 ```sh
-# Before removing a linked worktree that may own both visionOS and iPad simulators:
+# Before removing a linked worktree that may own visionOS plus iPhone/Duo/iPad/tvOS simulators:
 cd <worktree>
 scripts/worktree-sim.sh teardown --all
 cd <main>
@@ -271,11 +285,11 @@ scripts/worktree-sim.sh closeout <worktree>
 
 # If the worktree was already removed or you are unsure:
 scripts/worktree-sim.sh prune
-xcrun simctl list devices | rg 'vpwt|iphonewt|ipadwt|tvwt|<branch-fragment>' || true
+xcrun simctl list devices | rg 'vpwt|iphonewt|duowt|ipadwt|tvwt|<branch-fragment>' || true
 ```
 
 Closeout invariant: only the main worktree owns the golden sim; linked-worktree closeout
-must remove the relevant `vpwt-*`, `iphonewt-*`, `ipadwt-*`, and/or `tvwt-*` simulator and must not
+must remove the relevant `vpwt-*`, `iphonewt-*`, `duowt-*`, `ipadwt-*`, and/or `tvwt-*` simulator and must not
 remove the golden sim.
 
 **Close out on merge — don't leave merged worktrees behind.** A linked worktree is finished
@@ -383,6 +397,14 @@ SourceKit diagnostics like "No such module 'PMSKit'/'UIKit'" are phantom noise i
 project — `xcodebuild` is the only truth.
 
 Manual test plan: `TESTING-CHECKLIST.md` (keep it updated as fixes ship).
+
+**Keep growing the headless tooling.** Treat `scripts/` (and the in-app probes and hermetic
+tests they drive) as a continuously improved asset. Whenever a task needed a manual, ad hoc, or
+user-driven step that a script, probe, fixture, or hermetic test could have covered, or a bug
+slipped past the existing headless coverage, say so in the close-out: name the gap and recommend
+the concrete script/test extension. Build it in the same change when it is small and clearly in
+scope; otherwise file or update an issue for it. Document new tooling in `scripts/README.md`
+and the owning testing doc (server-free codec/playback regressions: `docs/HEADLESS-PLAYBACK-TESTING.md`).
 
 ## Corpus-backed playback and release evidence
 

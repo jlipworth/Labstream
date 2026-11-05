@@ -4,11 +4,17 @@ This page is the shortest path from a clean checkout to a running Labstream buil
 
 ## Requirements
 
-- macOS with Xcode and the visionOS SDK installed for the `Labstream` target.
-- The iOS/iPadOS 26.1+ SDK/runtime for the `LabstreamMobile` target.
-- The tvOS 26+ SDK and an installed tvOS simulator runtime for the `LabstreamTV` target.
-- macOS 26 on an Apple-silicon host when testing the `LabstreamMac` target.
-- A visionOS 26 or newer Apple Vision Pro simulator runtime compatible with the active Xcode.
+- macOS with Xcode 27.1 (27A9275). It ships the iOS 27.1 SDK and the visionOS, tvOS, and macOS
+  27.0 SDKs; see [the toolchain note](#build-for-an-iphone-or-ipad-simulator) below.
+- Deployment targets (from `Labstream.xcodeproj`, not changed by the toolchain): visionOS 26.0,
+  iOS/iPadOS 26.1, tvOS 26.0, and macOS 26.0. `PMSKit` declares the same iOS, tvOS, and visionOS
+  floors; its own macOS floor is 15, below the Mac app target.
+- An iOS Simulator runtime for the `LabstreamMobile` target; the iPhone Duo device type needs the
+  iOS 27.1 runtime.
+- An installed tvOS simulator runtime (27.0 with Xcode 27.1) for the `LabstreamTV` target.
+- macOS 26 or later on an Apple-silicon host when testing the `LabstreamMac` target.
+- A visionOS 26 or newer Apple Vision Pro simulator runtime compatible with the active Xcode
+  (visionOS 27.0 with Xcode 27.1).
 - Swift Package Manager for `PMSKit` tests (included with Xcode).
 - Python 3.11+ and [`uv`](https://docs.astral.sh/uv/getting-started/installation/) for the repository's
   documentation and Python tooling checks.
@@ -152,7 +158,7 @@ or iPad simulator without a pre-existing golden simulator. Select the platform e
 `.simplatform` file is optional convenience, not a prerequisite:
 
 ```sh
-PLATFORM=iphone                    # change to ipad for the regular-width path
+PLATFORM=iphone                    # ipad for the regular-width path; duo for the iPhone Duo foldable
 scripts/worktree-sim.sh --platform "$PLATFORM" setup
 SIMID=$(scripts/worktree-sim.sh --platform "$PLATFORM" id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
@@ -174,6 +180,40 @@ test -x "$APP/Labstream"
 If Xcode says the iOS platform/runtime is missing or warns that the deployment target is newer than
 the installed SDK, install the matching iOS Simulator runtime/platform in Xcode Settings. A newer
 simulator runtime may not be usable with an older installed iOS SDK.
+
+`PLATFORM=duo` creates a `duowt-*` simulator from the `iPhone Duo`
+(`com.apple.CoreSimulator.SimDeviceType.iPhone-Duo`) device type, which requires Xcode 27.1 and an
+iOS 27.1 or later simulator runtime (`xcodebuild -downloadPlatform iOS`). The script never falls back
+to a non-foldable iPhone for this platform. Simulator folding/unfolding is not proof of physical
+iPhone Duo behavior; the hardware gate stays open.
+
+Verified on Xcode 27.1 with the Duo simulator (2026-10-26):
+
+- The iOS 27.1 simulator runtime supports only the iPhone Duo device type. iPhone and iPad
+  worktree simulators are created on the newest runtime that lists their device type (iOS 27.0),
+  which `scripts/worktree-sim.sh` selects automatically.
+- `XCUIDevice.shared.orientation` changes the reported device orientation but never rotates the
+  folded Duo app. Folded-landscape evidence uses the DEBUG `--ui-testing-orientation
+  landscape-left|landscape-right` capture route (a scene geometry request).
+- A plain `simctl io screenshot` targets the inner `LCD-1` display, which is black while folded.
+  Capture the outer display by its UUID (`simctl io <id> enumerate`, the 1398x2034 port) and an
+  `appResize` session with `--display=Resizable`.
+- While `devicectl device appResize` has moved the app to the Resizable display, XCUITest still
+  reports the outer-display window (466x678), so inner-size and resize-during-playback runs are
+  judged from screenshots and `AppDiagnostics`, not XCUITest. The `appResize` session also uses
+  horizontal bars, so the inner display's vertical bar is not reproduced.
+- Setting `UISegmentedControl.appearance().selectedSegmentTintColor` turns the iOS 27.1 tab
+  bar's selected item system blue (the accent is lost), so do not tint segmented pickers through
+  the appearance proxy.
+
+Xcode 27.1 (27A9275) is the required toolchain for every target. It ships the iOS 27.1 SDK, which
+opts `LabstreamMobile` into the full iPhone Duo inner display and the vertical tab bar/toolbars on
+the trailing edge. The visionOS, tvOS and macOS SDKs bundled with it remain 27.0. Every target
+uses an unversioned `SDKROOT`, so the move is a toolchain change only; deployment targets are
+unchanged. Duo-specific SwiftUI API (for example `toolbarVerticalEdge`) is `anyAppleOS 27.1`, so
+shared code must guard it with `#if os(iOS)` and `if #available(iOS 27.1, *)` or the 27.0-SDK
+targets stop compiling. The Duo UI lane is `duo-ui-smoke` in `scripts/native-test-matrix.py`
+(`--duo-sim-id "$(scripts/worktree-sim.sh --platform duo id)"`).
 
 All four production targets use `org.labstream.Labstream` on their respective platforms; ordinary
 Mac host development is the documented exception and uses an isolated worktree identity. A
@@ -249,6 +289,10 @@ xcrun simctl launch "$SIMID" org.labstream.Labstream \
   --ui-testing --ui-testing-backend plex --ui-testing-fixture browse
 ```
 
+`--ui-testing-fixture offline` (not tvOS) opens the restricted cold-launch Offline surface with no
+server, so its navigation subtitle and Reconnect/Sign In/Settings toolbar can be screenshot-tested
+headlessly. It shows whatever completed downloads exist in the simulator, or the empty state.
+
 ## Install and observe a simulator smoke
 
 After either simulator build above, `$SIMID` and `$APP` identify the exact simulator and product.
@@ -294,9 +338,41 @@ scripts/agent-mobile-run.sh ipad fixture-detail-semantic --allow-simulator
 Shutting down preserves the simulator and its app state. Do not use `teardown` for the main
 worktree's golden visionOS simulator.
 
+## Search matching and result identity
+
+Search uses the server's retrieval capabilities: Plex `/hubs/search`, and Jellyfin/Emby
+recursive `SearchTerm` requests scoped to each allowed user-view library (50 initial hits
+per library, at most four library requests concurrently). The 300 ms debounce suppresses
+requests while typing. No library download or alternate-query fanout is performed.
+
+Each accepted response publishes its trimmed query, authenticated session identity, and
+presentation groups together. During the next debounce, visible rows and MediaBrowser
+**View All** continue to use the query that produced them. Clearing hides results immediately;
+backend/session changes hide old results, and cancelled or superseded responses cannot publish.
+Library discovery order, type sections, music navigation, and native search/keyboard controls
+remain intact, including the existing command-F stack-reset policy.
+
+Within each returned library/type section, shared title ranking folds case, diacritics and
+width, treats punctuation as word separators, and ranks exact title, title prefix, all-word
+prefix matches (any order), substring, then one-edit word matches. For example, `cafe moon`
+ranks `Café—Moon` as exact; `pap moo` matches `Paper Moon`; `horizno`, `horizn`, and `horixon`
+can rank `Horizon` through a transposition, deletion, or substitution. Typo matching requires
+at least four query characters per fuzzy word and is bounded to 16 query words, 64 title
+words, and 64 characters per fuzzy word. Equal title matches sort by normalized title then
+item ID; non-title matches retain server relevance order. No returned hit is removed, since
+servers may match people or other metadata. Rankings never move items across libraries/types.
+
+These examples describe **ranking of returned hits**, not corpus-wide fuzzy recall. A server
+may omit a typo, accent, punctuation, or prefix match before the app can rank it, and the
+initial MediaBrowser page is limited and server-sorted. View All retains server pagination
+and ordering. Reliable corpus-wide typo recall would need a backend-supported fuzzy query
+or a separately designed, incremental, permission-scoped index; it must not be simulated by
+fetching entire libraries or sending multiple queries on every keystroke. Live backend recall
+and physical keyboard/headset behavior remain separate acceptance checks from fixture tests.
+
 ## Linked-worktree simulator cleanup
 
-Linked worktrees own their `vpwt-*`, `iphonewt-*`, `ipadwt-*`, and `tvwt-*` simulators. Before removing a
+Linked worktrees own their `vpwt-*`, `iphonewt-*`, `duowt-*`, `ipadwt-*`, and `tvwt-*` simulators. Before removing a
 linked worktree, delete all of its simulators and then remove the worktree:
 
 ```sh
@@ -345,6 +421,10 @@ uv run python scripts/check-doc-links.py --site-dir site
 # Validate that every published Mermaid fence rendered.
 uv run python scripts/check-docs-mermaid.py
 ```
+
+PMSKit geometry helpers and their tests conditionally import `CoreGraphics` where available;
+Linux uses Foundation geometry types. Keep these helpers in the portable test lane rather than
+excluding pose or player-arrangement coverage from Linux CI.
 
 `PMSKit/Tests/PMSKitTests` is the portable package suite. App-owned deterministic tests live in
 `LabstreamTests/` and are hosted by platform-specific Xcode test targets over the same test sources:
@@ -626,6 +706,12 @@ Where a current topic page owns the invariant, the bullet points there instead o
 
 ### Backends and downloads
 
+Download correctness uses the [P-phase pin suites](TESTING-STRATEGY.md#downloads-overhaul-pin-suites).
+The `macos-hosted` matrix lane runs deterministic app-level downloads without a simulator. Keep
+one Xcode lane active and use the normal manifest/parallelism for the full combined gate; focused
+serial diagnosis does not close that gate. Product smokes and live/device acceptance remain
+separate. tvOS builds shared policies/player code but no Downloads capability.
+
 - **Emby stream URLs carry the access token as an `api_key` query value.** Besides the
   `Authorization: Emby …` and `X-Emby-Token` headers, server-generated HLS and direct-stream URLs
   embed the token, so any logged Emby URL must have `api_key` (and `X-Emby-Token`) redacted. Emby
@@ -726,3 +812,131 @@ report or signed archive validation. For each exact signed Release archive, insp
 the archived app and dependency manifests and generate/review Xcode's privacy report
 before release. Keep that gate open when only unsigned builds were inspected.
 Required-reason API declarations do not settle App Store collection disclosures.
+
+## Workflow status and review evidence
+
+Use `python3 scripts/workspace-status.py` to recover local worktree/branch state and
+GitHub PR references and explicit issue-number candidates from recent commit subjects.
+These references are candidates, not proof of remaining work. `--offline` skips GitHub; `--issue N` includes the complete issue
+and its comments in JSON output, with outstanding body checklist items labelled as
+reported rather than authoritative. Release excerpts are repository records, not live
+App Store Connect state. The command never fetches, checks out, pulls, merges or writes
+remote state. Failed or incomplete API inventories are errors, not proof of no work.
+
+For duplicate discovery, use `python3 scripts/issues.py find home navigation` or
+`python3 scripts/issues.py show 417`. The finder combines all open issues with issues
+closed in the last 90 days (`--closed-days`), ranks title/body matches, and searches
+comments for additional candidates. It retrieves full comments for the selected results.
+Use `--json` before the subcommand for structured output. These tools use the current
+`gh` login and issue only GET requests; they never file, comment on, or close an issue.
+
+Wait on the exact commit after an authorized push:
+
+```sh
+python3 scripts/ci-wait.py --commit HEAD --branch my-branch
+python3 scripts/ci-wait.py --commit HEAD --branch my-branch --require ci/woodpecker/push/hygiene --require ci/woodpecker/push/pmskit --require ci/woodpecker/push/docs
+```
+
+The default required contexts are the Woodpecker push hygiene and PMSKit checks. Explicit
+`--require` options replace that set. Add docs or other contexts when required by the change.
+The waiter reads GitHub's mirrored statuses/checks rather than a Woodpecker token. It does
+not independently verify the upstream event type. It refuses branch-head drift rather than
+substituting a newer commit. Missing checks remain pending; skipped, neutral and cancelled
+checks are unverified. Exit codes: 0 passed, 1 failed, 2 API/usage error, 3 unverified or
+branch drift, 4 pending at timeout (or `--once`). No remote pipeline is restarted.
+
+### Shared Xcode host lease
+
+`scripts/xcodebuild-versioned.sh` acquires an OS-backed lock for the Xcode command.
+The four `agent-*-run.sh` platform runners hold the same lease across build, install,
+UI work and teardown. Nested calls reuse an inherited descriptor; the bounded runner
+and native matrix preserve it. This supplements, rather than replaces, simulator
+identity and sole-booted checks. Manually booted simulators still need the usual lease
+coordination; commands bypassing these wrappers do not participate.
+
+```sh
+python3 scripts/xcodebuild-lease.py status
+python3 scripts/xcodebuild-lease.py run --lane manual-verification --wait-timeout 300 -- scripts/agent-macos-run.sh fixture-detail
+```
+
+The default lock is per-user at `~/.cache/labstream/xcode.lease`, shared by all worktrees.
+`--lock PATH` (or `LABSTREAM_XCODE_LEASE_PATH`) isolates tests; use the same path in every
+cooperating process. Exit 75 means the wait timed out. Stale metadata is not an active
+lease: the kernel lock decides ownership. Never delete a lock file to break a live lease.
+The runner forwards an interrupted command through normal process-group cleanup and
+releases the lock on exit; status does not reveal command arguments or credentials.
+
+### Receipts, checkpoints and review findings
+
+`scripts/workflow-state.py` records local evidence references in ignored
+`build/workflow/state.json`; `--file PATH` selects an explicit alternative store outside the repository or under a
+gitignored path, so the receipt never hashes its own changes.
+Keep the store private and preserve it with required artifacts before worktree removal.
+A source fingerprint includes HEAD plus tracked/untracked edits, so a receipt becomes stale
+when the source changes. `show` also flags stale checkpoints and stale verified findings;
+the latter reappear in `pending_review` without changing their historical disposition.
+Finding history retains each resolution commit and evidence path when reopened. A receipt is a human/agent claim with evidence, not proof a command
+ran successfully. Inspect the named log/result and distinguish simulation from hardware.
+
+```sh
+python3 scripts/workflow-state.py receipt validation --name hygiene --status passed --evidence build/hygiene.log
+python3 scripts/workflow-state.py receipt docs --name development-guide --status passed --evidence docs/DEVELOPMENT.md
+python3 scripts/workflow-state.py receipt docs --name no-user-visible-change --status not-needed --note 'Internal refactor only; existing behavior remains accurate'
+python3 scripts/workflow-state.py checkpoint --goal 'Finish review' --base main --issue 123 --next-action 'Review F2 and inspect Mac smoke' --authorized 'Local edits and tests' --gate 'Physical headset check'
+python3 scripts/workflow-state.py finding add F2 --summary 'Stale callback replaces newer state' --severity high
+python3 scripts/workflow-state.py finding set F2 --status fixed --commit HEAD --note 'Generation guard added'
+python3 scripts/workflow-state.py show
+```
+
+Stable finding IDs survive review rounds. `fixed` means awaiting review; `verified`
+requires an existing evidence file and a resolution commit reachable from current HEAD.
+Reopened, rejected or deferred findings retain their history. Authorization fields record
+existing user decisions, never grant permission. The mirrored `merge-worktree` and
+`review-ledger` skills use these records without changing push, merge or issue-close gates.
+
+## Experimental headless signal measurement
+
+For the bounded routine command, optional codec/channel sweeps, inventory coverage,
+and result interpretation, use [Headless playback testing](HEADLESS-PLAYBACK-TESTING.md).
+`uv run scripts/playback-regression.py run` packages the generated-fixture and
+standalone-host checks without starting a simulator.
+
+The headless audio/video signal experiment (repository notes:
+`docs/research/2026-10-26-headless-av-signal-lab.md`) generates local H.264/AAC HLS fixtures and captures decoded audio/video from a
+Debug-only visionOS 27 AVPlayer probe or standalone macOS 27 run-loop host. It needs
+no server authentication. `uv run scripts/playback-signal-lab.py run-host` compiles a
+small host around the shared capture method; with an `NSApplication` event loop,
+AVPlayer advanced and delivered audio/video without a window or simulator. Six
+controlled clean/defect cases passed the detector suite on that host. This is not a
+LabstreamMac application acceptance run. Use it to
+investigate capture methods and deliberately injected signal defects; it does not
+establish backend playback acceptance, physical audio output, or HDR accuracy.
+Direct pixel-buffer copying avoids the first-use Core Image stall observed in the
+initial experiment. Keep simulator runs serialized and all generated evidence private.
+
+The experimental codec sweep is `uv run scripts/playback-signal-matrix.py generate`
+followed by `uv run scripts/playback-signal-matrix.py run`. It requires the six-case
+detector suite to pass before testing fourteen generated SDR/stereo HLS combinations.
+Its private manifest fingerprints the media; results distinguish generation/capture
+failures from signal mismatches and preserve explicit untested codec families.
+
+
+Set `SIGNAL_LAB_AUDIO_TAP=1` for the host suite to require a second audio check through
+an OS-27 mixed-track audio tap. It captures player-mix samples, not speakers. Use
+`scripts/playback-signal-compare.py` to compare pre/post-effects measurements and
+fixture controls; API timing offsets remain unresolved, so these results do not
+establish absolute A/V synchronization. The research notes retain observed limitations.
+
+
+For 5.1 tone fixtures and separately measured stereo downmixes, use
+`uv run scripts/playback-multichannel-lab.py generate` then `run`. The runner verifies
+encoded fixtures with FFmpeg and retains unverified channel layouts as explicit
+non-passing outcomes. See the research notes for current codec/packaging limits.
+
+On visionOS 27 or macOS 27, admitted backend playback scenarios may add
+`--vp-probe-observe-signals <UUID>` to capture their existing controller player at
+initial and post-scenario points. The observer never starts, pauses, seeks or replaces
+the player item and does not install an audio-mix tap. Private output goes to
+`Documents/ProbeSignalCaptures/<UUID>/`. Summarize a copied capture using
+`uv run scripts/playback-observation-report.py <directory> --run-id <UUID>`;
+coverage and audio levels are evidence, not a quality verdict for unknown content.

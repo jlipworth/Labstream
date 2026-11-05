@@ -148,7 +148,7 @@ struct LibraryAlphabetJumpButton: View {
 /// long-term ideal for `List`/`Section` content, but these browse surfaces are paged
 /// `LazyVGrid`s. Until the grids move to a native sectioned container, keep this custom
 /// control visually close to UIKit's section index on iOS/iPadOS: a compact trailing
-/// stack of tinted glyphs with just enough backing/outline to read over posters. visionOS
+/// stack of secondary glyphs with just enough backing/outline to read over posters. visionOS
 /// keeps a material backing because gaze needs a stronger acquisition target in space.
 ///
 /// A full A–Z+# rail is taller than iPhone landscape or a short iPad Split View pane,
@@ -167,6 +167,15 @@ struct LibraryAlphabetRail: View {
         #else
         30
         #endif
+    }
+
+    /// Extra trailing room any other (regular-width) grid must reserve so its last column
+    /// clears the rail. The rail's footprint from the trailing safe edge is the compact grid's
+    /// 12-pt inset plus its reservation; a grid whose own padding already covers part of that
+    /// reserves only the remainder. The rail is laid out inside the safe area, so the iOS 27.1
+    /// vertical bar's trailing inset is already excluded and needs no extra term here.
+    static func regularGridTrailingReservation(pagePadding: CGFloat) -> CGFloat {
+        max(0, 12 + compactGridTrailingReservation - pagePadding)
     }
 
     var body: some View {
@@ -292,8 +301,21 @@ private struct AlphabetRailColumn: View {
         #endif
     }
 
+    /// Letters are the secondary label on visionOS and iPhone/iPad (where amber means
+    /// "selected" only, which here is the active letter's highlight). macOS keeps its authored
+    /// accent letters.
     private var labelForeground: AnyShapeStyle {
-        #if os(visionOS)
+        #if os(macOS)
+        AnyShapeStyle(.tint)
+        #else
+        AnyShapeStyle(.secondary)
+        #endif
+    }
+
+    /// Callout and backdrop outlines: neutral on iPhone/iPad (amber = selected only), the
+    /// authored accent outline elsewhere.
+    fileprivate static var outlineStyle: AnyShapeStyle {
+        #if os(iOS)
         AnyShapeStyle(.secondary)
         #else
         AnyShapeStyle(.tint)
@@ -357,7 +379,7 @@ private struct AlphabetRailColumn: View {
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: calloutSize / 3, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: calloutSize / 3, style: .continuous)
-                    .strokeBorder(.tint.opacity(0.32), lineWidth: 1)
+                    .strokeBorder(Self.outlineStyle.opacity(0.32), lineWidth: 1)
             }
             .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
     }
@@ -398,7 +420,7 @@ private extension View {
         background(.thinMaterial, in: Capsule())
             .overlay {
                 Capsule()
-                    .strokeBorder(.tint.opacity(0.24), lineWidth: 0.75)
+                    .strokeBorder(AlphabetRailColumn.outlineStyle.opacity(0.24), lineWidth: 0.75)
             }
             .contentShape(Rectangle())
         #endif

@@ -21,6 +21,44 @@ struct DetailRelatedMediaShelf: View {
     private static let compactCardWidth: CGFloat = 200
     private static let clipAspect = 16.0 / 9.0
 
+    #if os(iOS)
+    @State private var railViewportWidth: CGFloat?
+    @State private var firstVisibleItemID: String?
+
+    private var railMargin: CGFloat { DS.Scroll.railHorizontalMargin(compact: compactWidth) }
+    private var gutter: CGFloat { compactWidth ? DS.Space.md : DS.Space.xl }
+
+    /// iPhone/iPad: measured from the rail viewport (global rule 7, landscape family).
+    private var cardWidth: CGFloat {
+        DS.Poster.measuredLandscapeRailWidth(viewport: railViewportWidth, compact: compactWidth,
+                                             margin: railMargin, gutter: gutter,
+                                             fallback: compactWidth ? Self.compactCardWidth : Self.cardWidth)
+    }
+
+    /// iPhone/iPad: the same rail and type rules as Cast and More Like This (iPhone Duo design
+    /// spec, global rules 6 and 7, Color & type): the shared section header, a viewport that is
+    /// the content region with equal content margins, measured cards, Body title and Caption.
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
+            RailSectionHeader(title: "Trailers & Extras", destination: nil)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: gutter) {
+                    ForEach(items) { item in
+                        card(for: item)
+                    }
+                }
+                .railScrollTargetLayout()
+                .padding(.vertical, DS.Space.sm)
+            }
+            .mediaRailScrollStyle(horizontalMargin: railMargin)
+            .railScrollAnchor($firstVisibleItemID)
+            .railViewportWidth($railViewportWidth)
+        }
+    }
+
+    private var titleFont: Font { .subheadline.weight(.semibold) }
+    private var captionFont: Font { .caption }
+    #else
     private var cardWidth: CGFloat { compactWidth ? Self.compactCardWidth : Self.cardWidth }
 
     var body: some View {
@@ -37,6 +75,10 @@ struct DetailRelatedMediaShelf: View {
             }
         }
     }
+
+    private var titleFont: Font { .headline }
+    private var captionFont: Font { .subheadline }
+    #endif
 
     private func card(for item: MediaItem) -> some View {
         Button {
@@ -56,10 +98,10 @@ struct DetailRelatedMediaShelf: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.title)
-                        .font(.headline)
+                        .font(titleFont)
                         .lineLimit(1)
                     Text(subtitle(for: item))
-                        .font(.subheadline)
+                        .font(captionFont)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }

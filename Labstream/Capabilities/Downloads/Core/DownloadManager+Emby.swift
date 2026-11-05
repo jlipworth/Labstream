@@ -31,6 +31,7 @@ extension DownloadManager {
                              partIndex: Int = 0,
                              audioStreamIndex: Int? = nil,
                              mediaSourceIDOverride: String? = nil,
+                             textSubtitleSourceMediaSourceIDOverride: String? = nil,
                              deferStaticStartWhenQueuePaused: Bool = false,
                              requestedProfileLabelOverride: String? = nil,
                              allowReplacingExistingActiveRow: Bool = false) async {
@@ -50,6 +51,12 @@ extension DownloadManager {
         }
         let server = backendSession.baseURL
         let token = backendSession.token
+        let previousRecord = store.record(for: ratingKey)
+        let previousMetadata = previousRecord?.metadata.flatMap {
+            backendSession.matchesPersistedServer($0) ? $0 : nil
+        }
+        let existingOriginalPath = previousMetadata?.resolvedDownloadLane() == .original
+            ? previousRecord?.localURL.lastPathComponent : nil
         guard let startAttempt = acquireStartAttempt(ratingKey: ratingKey,
                                                      backend: "Emby",
                                                      allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) else { return }
@@ -89,8 +96,11 @@ extension DownloadManager {
                                             audioStreamIndex: audioStreamIndex,
                                             downloadLane: DownloadChoicePolicy.downloadLane(for: choice),
                                             serverPreparedVersion: DownloadChoicePolicy.isServerPreparedVersion(for: choice))
+        metadata.textSubtitleSourceMediaSourceID = textSubtitleSourceMediaSourceIDOverride
+            ?? previousMetadata?.textSubtitleSourceMediaSourceID
+            ?? (previousMetadata?.isServerPreparedVersion == true ? nil : embyMediaSourceHint)
         let seedDestination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
-        guard persistAttemptSeed(
+        guard await persistAttemptSeed(
             DownloadRecord(ratingKey: ratingKey, attemptID: startAttempt.attemptID,
                            title: item.title, localURL: seedDestination,
                            bytes: 0, progress: 0, metadata: metadata),
@@ -108,6 +118,8 @@ extension DownloadManager {
             mediaIndex: mediaIndex,
             partIndex: partIndex
         ))
+        guard mediaBrowserSessionIsCurrent(backendSession),
+              startAttemptStillCurrent(startAttempt, backend: "Emby", phase: "seed_committed") else { return }
         let identity = appModel.identity.emby
         // Authoritative negotiation: POST the DOWNLOAD device profile and read the negotiated
         // verdict. ~200 Mbps ceiling so a high-bitrate-but-compatible file still qualifies for an
@@ -132,20 +144,13 @@ extension DownloadManager {
                     maxStaticBitrate: 200_000_000,
                     audioStreamIndex: audioStreamIndex)
             }
-            let (data, response) = try await URLSession.shared.data(for: infoReq)
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                recordDownloadDiagnostic("downloads.playback_info_failed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "backend": .label("Emby"),
-                    "status_code": .int(http.statusCode),
-                    "phase": .label("download_negotiation"),
-                ])
-                throw DownloadError.transferFailed("PlaybackInfo HTTP \(http.statusCode)")
-            }
-            let info = try EmbyPlaybackInfoResponse.decode(from: data)
-            decision = try EmbyPlayback.downloadDecision(response: info,
-                                                         preferredMediaSourceId: embyMediaSourceHint)
+            decision = try await MediaBrowserDownloadNegotiator.negotiate(
+                request: { infoReq }, send: { try await self.embyConvertSession.data(for: $0) },
+                decode: EmbyPlaybackInfoResponse.decode,
+                decide: { try EmbyPlayback.downloadDecision(response: $0,
+                    preferredMediaSourceId: embyMediaSourceHint, audioStreamIndex: audioStreamIndex) })
         } catch {
+            guard mediaBrowserSessionIsCurrent(backendSession), store.ownsAttempt(attemptKey) else { return }
             recordDownloadDiagnostic("downloads.start_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "backend": .label("Emby"),
@@ -154,7 +159,11 @@ extension DownloadManager {
             ])
             lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "playback_info")
+            let failureFence = managerActionGenerations[attemptKey.ratingKey, default: 0]
+            _ = await applyLifecycleEvent(
+                .transferFailed((error as? DownloadError).map(Self.lifecycleFailureReason) ?? .server),
+                for: attemptKey, context: "emby_playback_info")
+            guard !Task.isCancelled, managerActionGenerations[attemptKey.ratingKey, default: 0] == failureFence, store.ownsAttempt(attemptKey) else { return }
             clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(for: attemptKey)
             refreshRecords()
@@ -165,9 +174,10 @@ extension DownloadManager {
         // delete/pause landing during it used to be fully undone (the row was re-seeded, the
         // minted PlaySessionId persisted, and the transfer started). Exit WITHOUT touching the
         // store; best-effort release of the session the negotiation just minted.
-        guard startAttemptStillCurrent(startAttempt, backend: "Emby",
+        guard mediaBrowserSessionIsCurrent(backendSession),
+              startAttemptStillCurrent(startAttempt, backend: "Emby",
                                        phase: "playback_info") else {
-            stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
+            await stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                               playSessionID: decision.playSessionId,
                                               backendKind: .emby,
                                               backendSession: backendSession)
@@ -182,10 +192,12 @@ extension DownloadManager {
             explicitOverride: mediaSourceIDOverride,
             decidedMediaSourceID: decision.mediaSourceId
         ) else {
-            stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
+            await stopSupersededMediaBrowserEncoder(attemptKey: attemptKey, ratingKey: ratingKey,
                                               playSessionID: decision.playSessionId,
                                               backendKind: .emby,
                                               backendSession: backendSession)
+            guard mediaBrowserSessionIsCurrent(backendSession),
+                  startAttemptStillCurrent(startAttempt, backend: "Emby", phase: "cleanup_handoff") else { return }
             recordDownloadDiagnostic("downloads.start_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "backend": .label("Emby"),
@@ -193,13 +205,20 @@ extension DownloadManager {
             ])
             lastError[ratingKey] = .transferFailed(
                 "The requested server version is no longer available. Choose another version and retry.")
-            _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "source_mismatch")
+            let failureFence = managerActionGenerations[attemptKey.ratingKey, default: 0]
+            _ = await applyLifecycleEvent(
+                .transferFailed(.sourceMissing), for: attemptKey, context: "emby_source_mismatch")
+            guard !Task.isCancelled, managerActionGenerations[attemptKey.ratingKey, default: 0] == failureFence, store.ownsAttempt(attemptKey) else { return }
             clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(for: attemptKey)
             refreshRecords()
             return
         }
 
+        metadata.mediaSourceID = decision.mediaSourceId
+        if mediaSourceIDOverride == nil, previousMetadata?.isServerPreparedVersion != true {
+            metadata.textSubtitleSourceMediaSourceID = decision.mediaSourceId
+        }
         // The resolution label built above came from the item's PRIMARY media — wrong for a
         // server-prepared version, which downloads the CONVERTED source (e.g. a 1080p-class
         // 1920x800 copy of a 4K original). Persist the negotiated source's width-aware canonical
@@ -250,6 +269,11 @@ extension DownloadManager {
         case .startTransfer:
             break
         case .rerouteConvert(let targetName):
+            // P4.5: a Convert is server-prep work; it needs room in the prep lane.
+            guard admissionMayEnterServerPrep(ratingKey) else {
+                releaseInFlight(for: attemptKey)
+                return
+            }
             await triggerConvertAndDownload(item: item, targetName: targetName,
                                             metadata: metadata, session: backendSession,
                                             attemptKey: attemptKey,
@@ -271,7 +295,10 @@ extension DownloadManager {
             }
             recordDownloadDiagnostic(event, fields: fields)
             lastError[ratingKey] = .transferFailed(reason.userMessage)
-            _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "route_rejected")
+            let failureFence = managerActionGenerations[attemptKey.ratingKey, default: 0]
+            _ = await applyLifecycleEvent(
+                .transferFailed(.server), for: attemptKey, context: "emby_route_rejected")
+            guard !Task.isCancelled, managerActionGenerations[attemptKey.ratingKey, default: 0] == failureFence, store.ownsAttempt(attemptKey) else { return }
             clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(for: attemptKey)
             refreshRecords()
@@ -287,7 +314,10 @@ extension DownloadManager {
         do {
             switch route {
             case .original:
-                let ext = decision.container.flatMap { $0.isEmpty ? nil : $0 }
+                let ext = existingOriginalPath.flatMap {
+                    let ext = ($0 as NSString).pathExtension
+                    return ext.isEmpty ? nil : ext
+                } ?? MediaBrowserDownloadContainer.token(decision.container)
                     ?? DownloadMediaSelectionPolicy.containerExtension(selection: selection)
                 destination = store.destinationURL(ratingKey: ratingKey, ext: ext)
                 request = try EmbyLibrary.downloadOriginalRequest(
@@ -334,6 +364,7 @@ extension DownloadManager {
                                                              videoBitrateBps: profile.videoBitrateBps)
             }
         } catch {
+            guard mediaBrowserSessionIsCurrent(backendSession), store.ownsAttempt(attemptKey) else { return }
             recordDownloadDiagnostic("downloads.start_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "backend": .label("Emby"),
@@ -341,14 +372,25 @@ extension DownloadManager {
             ])
             lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "request_build")
+            let failureFence = managerActionGenerations[attemptKey.ratingKey, default: 0]
+            _ = await applyLifecycleEvent(
+                .transferFailed((error as? DownloadError).map(Self.lifecycleFailureReason)
+                                ?? .internalError),
+                for: attemptKey, context: "emby_request_build")
+            guard !Task.isCancelled, managerActionGenerations[attemptKey.ratingKey, default: 0] == failureFence, store.ownsAttempt(attemptKey) else { return }
             clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(for: attemptKey)
             refreshRecords()
             return
         }
 
-        guard persistEmbyAttemptRecord(
+        // B56 (P5): the negotiated MediaSource's size is authoritative for a static original or a
+        // converted copy (a Convert handoff downloads a different file than the item's primary
+        // source), so it replaces the item-derived size that completeness checks would read.
+        if route == .original, let negotiatedSize = decision.size, negotiatedSize > 0 {
+            metadata.sourcePartSize = negotiatedSize
+        }
+        guard await persistEmbyAttemptRecord(
             DownloadRecord(ratingKey: ratingKey, attemptID: startAttempt.attemptID,
                            title: item.title,
                            localURL: destination, bytes: 0, progress: 0,
@@ -360,7 +402,7 @@ extension DownloadManager {
         // #84: the authoritative media-source id comes from the PlaybackInfo decision; persist it
         // (replacing the pre-decision hint) so a retry can re-issue without re-deriving.
         if !decision.mediaSourceId.isEmpty, decision.mediaSourceId != embyMediaSourceHint {
-            guard updateEmbyAttemptMetadata(
+            guard await updateEmbyAttemptMetadata(
                 for: attemptKey, context: "media_source", mutate: {
                     $0.mediaSourceID = decision.mediaSourceId
                 }) else {
@@ -368,6 +410,8 @@ extension DownloadManager {
                 return
             }
         }
+        guard mediaBrowserSessionIsCurrent(backendSession),
+              startAttemptStillCurrent(startAttempt, backend: "Emby", phase: "side_assets") else { return }
         refreshRecords()
         // #102: cache the poster locally (best-effort) so artwork shows offline. The Emby image
         // endpoint needs the authenticated request (token + userId in the header), unlike Plex.
@@ -386,15 +430,20 @@ extension DownloadManager {
         // MediaSource when this call is a convert-then-static override; otherwise use the
         // negotiated download source. This mirrors Jellyfin's sidecar path without relying on the
         // server to bake subtitles into the optimized MP4.
-        let subtitleMediaSourceID = mediaSourceIDOverride == nil ? decision.mediaSourceId
-            : (selection.mediaSourceID ?? decision.mediaSourceId)
-        cacheEmbyTextSubtitles(for: attemptKey, itemId: itemId,
-                               mediaSourceId: subtitleMediaSourceID, part: part,
-                               server: server, token: token, identity: identity, userId: userId)
+        if let subtitlePart = Self.subtitleRepairPart(item: item, metadata: metadata) {
+            cacheEmbyTextSubtitles(for: attemptKey, itemId: itemId,
+                mediaSourceId: Self.subtitleSourceID(metadata), part: subtitlePart,
+                server: server, token: token, identity: identity, userId: userId)
+        } else if let record = store.record(for: attemptKey) {
+            _ = rehydrateMissingOptionalSideAssets(record: record, attemptKey: attemptKey,
+                                                   kinds: [.textSubtitles], reason: "resolved_source")
+        }
 
-        if deferStaticStartWhenQueuePaused, isQueuePaused, route == .original {
-            guard setEmbyAttemptStatus(
-                .paused, for: attemptKey, context: "queue_paused") else { return }
+        // emby-33: a Convert handoff parks while the queue is paused, unless the user resumed this
+        // row during the pause (P4.6 exemption).
+        if deferStaticStartWhenQueuePaused, isQueuePaused, route == .original,
+           !admission.isExempt(ratingKey) {
+            guard await applyQueuePause(for: attemptKey, context: "emby_queue_paused") else { return }
             lastError[ratingKey] = .interruptedResumable
             releaseInFlight(for: attemptKey)
             recordDownloadDiagnostic("downloads.start_deferred_queue_paused", fields: [
@@ -408,6 +457,22 @@ extension DownloadManager {
             return
         }
 
+        if useServerSession {
+            // Transcode/remux download: rate is encoder-gated (served as it renders), forward-only
+            // (not range-resumable), and the minted PlaySessionId MUST be torn down on terminal
+            // transition. #84: persist it onto the row so a hard app kill can still tear the
+            // encoder down on next launch.
+            transcodeSourcedDownloads.insert(attemptKey)
+            embyPlaySessionByAttempt[attemptKey] = decision.playSessionId
+            guard await updateEmbyAttemptMetadata(
+                for: attemptKey, context: "play_session", mutate: {
+                    $0.playSessionID = decision.playSessionId
+                }) else {
+                return
+            }
+        }
+        guard mediaBrowserSessionIsCurrent(backendSession),
+              startAttemptStillCurrent(startAttempt, backend: "Emby", phase: "transfer_persistence") else { return }
         beginBackgroundTransfer(DownloadTransferStartPlan(
             attemptKey: attemptKey,
             backendLabel: "Emby",
@@ -419,21 +484,7 @@ extension DownloadManager {
             expectedBytes: expectedBytes,
             releaseInFlightOnFailure: true
         )) {
-            if useServerSession {
-                // Transcode/remux download: rate is encoder-gated (served as it renders), forward-only
-                // (not range-resumable), and the minted PlaySessionId MUST be torn down on terminal
-                // transition. #84: persist it onto the row so a hard app kill can still tear the
-                // encoder down on next launch.
-                transcodeSourcedDownloads.insert(attemptKey)
-                embyPlaySessionByAttempt[attemptKey] = decision.playSessionId
-                guard updateEmbyAttemptMetadata(
-                    for: attemptKey, context: "play_session", mutate: {
-                        $0.playSessionID = decision.playSessionId
-                    }) else {
-                    throw DownloadError.transferFailed(
-                        "Download ownership changed before transfer start.")
-                }
-            }
+            guard mediaBrowserSessionIsCurrent(backendSession) else { throw CancellationError() }
             try session.start(ratingKey: ratingKey,
                               with: request,
                               expectedBytes: expectedBytes,
@@ -449,39 +500,15 @@ extension DownloadManager {
     }
 
     @discardableResult
-    func setEmbyAttemptStatus(
-        _ status: DownloadStatus,
-        for key: DownloadAttemptKey,
-        context: String
-    ) -> Bool {
-        switch store.setStatus(for: key, status) {
-        case .applied, .noChange:
-            return true
-        case .staleOrMissing:
-            recordDownloadDiagnostic("downloads.emby_status_owner_stale", fields: [
-                "download_id": .identifier(key.ratingKey),
-                "context": .label(context),
-            ])
-            return false
-        case .persistenceFailed(let failure):
-            recordDownloadDiagnostic("downloads.emby_status_persist_failed", fields: [
-                "download_id": .identifier(key.ratingKey),
-                "context": .label(context),
-                "failure": .label(String(describing: failure)),
-            ])
-            return false
-        }
-    }
-
-    @discardableResult
     func updateEmbyAttemptMetadata(
         for key: DownloadAttemptKey,
         context: String,
         mutate: (inout OfflineMetadata) -> Void
-    ) -> Bool {
-        switch store.updateMetadata(for: key, mutate: mutate) {
+    ) async -> Bool {
+        let fence = managerActionGenerations[key.ratingKey, default: 0]
+        switch await store.updateMetadataAsync(for: key, mutate: mutate) {
         case .applied, .noChange:
-            return true
+            return managerContinuationIsCurrent(key, fence: fence)
         case .staleOrMissing:
             recordDownloadDiagnostic("downloads.emby_metadata_owner_stale", fields: [
                 "download_id": .identifier(key.ratingKey), "context": .label(context),
@@ -500,10 +527,11 @@ extension DownloadManager {
         _ record: DownloadRecord,
         for key: DownloadAttemptKey,
         context: String
-    ) -> Bool {
-        switch store.createAttemptOwnedRecord(record, attemptID: key.attemptID) {
+    ) async -> Bool {
+        let fence = managerActionGenerations[key.ratingKey, default: 0]
+        switch await store.createAttemptOwnedRecordAsync(record, attemptID: key.attemptID) {
         case .committed:
-            return true
+            return managerContinuationIsCurrent(key, fence: fence)
         case .rejectedOwnership:
             recordDownloadDiagnostic("downloads.emby_record_owner_stale", fields: [
                 "download_id": .identifier(key.ratingKey), "context": .label(context),

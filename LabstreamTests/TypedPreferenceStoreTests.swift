@@ -28,6 +28,25 @@ struct TypedPreferenceStoreTests {
         #expect(store.value(for: label) == "saved")
     }
 
+    @Test func simultaneousDownloadsDefaultsRoundTripsAndBoundsStoredValues() throws {
+        let suiteName = "DownloadConcurrencyPreferences-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        #expect(PlaybackPreferences.simultaneousDownloads(defaults: defaults) == 3)
+        let key = PreferenceKey<Int>.integer(PlaybackPreferences.Keys.simultaneousDownloads,
+                                             default: PlaybackPreferences.defaultSimultaneousDownloads)
+        for total in 1...5 {
+            TypedPreferenceStore(defaults: defaults).set(total, for: key)
+            let reopened = try #require(UserDefaults(suiteName: suiteName))
+            #expect(PlaybackPreferences.simultaneousDownloads(defaults: reopened) == total)
+            #expect(reopened.integer(forKey: key.name) == total)
+        }
+        defaults.set(0, forKey: key.name)
+        #expect(PlaybackPreferences.simultaneousDownloads(defaults: defaults) == 1)
+        defaults.set(6, forKey: key.name)
+        #expect(PlaybackPreferences.simultaneousDownloads(defaults: defaults) == 5)
+    }
+
     @Test
     func playbackPreferenceDefaultsAndLegacyRemoteFallbackRemainStable() {
         let suiteName = "TypedPlaybackPreferenceTests-\(UUID().uuidString)"

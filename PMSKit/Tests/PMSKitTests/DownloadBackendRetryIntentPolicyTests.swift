@@ -81,6 +81,34 @@ struct DownloadBackendRetryIntentPolicyTests {
                                                            fallbackItemID: "fallback").choice == .original)
     }
 
+    @Test("B34: a failed Plex optimize row retries its persisted requested target, not the default")
+    func plexFailedOptimizeRetryKeepsRequestedTarget() {
+        // e.g. the 24 h deadline, completed_part_missing or optimize_status_failed.
+        let failedOptimize = record(metadata: metadata(backend: .plex,
+                                                       optimizeTargetName: "Original video quality",
+                                                       lane: .optimize,
+                                                       resumeMode: .serverPrepThenStatic))
+        #expect(DownloadBackendRetryIntentPolicy.plexPersistedOptimizeTarget(for: failedOptimize)
+            == "Original video quality")
+        let padded = record(metadata: metadata(backend: .plex,
+                                               optimizeTargetName: "  720p 4 Mbps ",
+                                               lane: .optimize,
+                                               resumeMode: .serverPrepThenStatic))
+        #expect(DownloadBackendRetryIntentPolicy.plexPersistedOptimizeTarget(for: padded) == "720p 4 Mbps")
+
+        // No persisted target (a true original, or a blank legacy value) keeps the re-probe path.
+        let original = record(metadata: metadata(backend: .plex, lane: .original,
+                                                 resumeMode: .staticByteRange))
+        #expect(DownloadBackendRetryIntentPolicy.plexPersistedOptimizeTarget(for: original) == nil)
+        let blank = record(metadata: metadata(backend: .plex, optimizeTargetName: "  ",
+                                              lane: .optimize, resumeMode: .serverPrepThenStatic))
+        #expect(DownloadBackendRetryIntentPolicy.plexPersistedOptimizeTarget(for: blank) == nil)
+        #expect(DownloadBackendRetryIntentPolicy.plexPersistedOptimizeTarget(for: record(metadata: nil)) == nil)
+        // Other backends own their own retry intents.
+        let jellyfin = record(metadata: metadata(backend: .jellyfin, optimizeTargetName: "720p 4 Mbps"))
+        #expect(DownloadBackendRetryIntentPolicy.plexPersistedOptimizeTarget(for: jellyfin) == nil)
+    }
+
     private func record(metadata: OfflineMetadata?) -> DownloadRecord {
         DownloadRecord(ratingKey: metadata?.ratingKey ?? "jellyfin:legacy",
                        title: metadata?.title ?? "Legacy",

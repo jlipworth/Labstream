@@ -59,39 +59,115 @@ struct AlbumDetailView: View {
         return nil
     }
 
+    #if os(iOS)
+    /// First visible track, kept across the stack-to-columns reflow.
+    @State private var trackAnchor: String?
+    #endif
+
     var body: some View {
         ZStack {
             artBackdrop
 
+            #if os(iOS)
+            MusicDetailScaffold(trackAnchor: $trackAnchor) { mode in
+                centeredHeader(mode)
+            } tracks: {
+                trackSection
+            }
+            #else
             ScrollView {
                 VStack(alignment: .leading, spacing: DS.Space.xxl) {
                     header
-
-                    switch loadState {
-                    case .idle, .loading:
-                        trackSkeleton
-                    case .failed(let message):
-                        ContentUnavailableView("Couldn’t load \(album.title)",
-                                               systemImage: "exclamationmark.triangle",
-                                               description: Text(message))
-                            .frame(maxWidth: .infinity, minHeight: 240)
-                    case .loaded:
-                        if tracks.isEmpty {
-                            ContentUnavailableView("No tracks",
-                                                   systemImage: "music.note",
-                                                   description: Text("Nothing to show for \(album.title)."))
-                                .frame(maxWidth: .infinity, minHeight: 240)
-                        } else {
-                            trackList
-                        }
-                    }
+                    trackSection
                 }
                 .padding(.horizontal, DS.pagePadding(compact: compactWidth))
                 .padding(.vertical, DS.Space.xl)
             }
+            #endif
         }
         .navigationTitle(album.title)
         .task { await load() }
+    }
+
+    @ViewBuilder
+    private var trackSection: some View {
+        switch loadState {
+        case .idle, .loading:
+            trackSkeleton
+        case .failed(let message):
+            ContentUnavailableView("Couldn’t load \(album.title)",
+                                   systemImage: "exclamationmark.triangle",
+                                   description: Text(message))
+                .frame(maxWidth: .infinity, minHeight: 240)
+        case .loaded:
+            if tracks.isEmpty {
+                ContentUnavailableView("No tracks",
+                                       systemImage: "music.note",
+                                       description: Text("Nothing to show for \(album.title)."))
+                    .frame(maxWidth: .infinity, minHeight: 240)
+            } else {
+                trackList
+            }
+        }
+    }
+
+    #if os(iOS)
+    /// Centred title block and actions (iPhone Duo design spec, Music): the cover, title,
+    /// artist and year, then Play/Shuffle; the leading column adds the album description.
+    private func centeredHeader(_ mode: MusicDetailHeaderMode) -> some View {
+        MusicDetailCenteredHeader(mode: mode,
+                                  art: album.thumb,
+                                  title: album.title,
+                                  caption: album.year.map { "Album · \($0)" },
+                                  description: album.summary) {
+            if let artist = albumArtist, !artist.isEmpty {
+                if let artistItem {
+                    NavigationLink(value: artistItem) {
+                        Text(artist)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .hoverEffect(.highlight)
+                } else {
+                    Text(artist)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } actions: {
+            playActions
+        }
+    }
+    #endif
+
+    private var playActions: some View {
+        HStack(spacing: DS.Space.lg) {
+            Button {
+                player.play(tracks: tracks, startingAt: 0)
+            } label: {
+                Label("Play", systemImage: "play.fill")
+                    .font(actionFont.weight(.semibold))
+            }
+            .labstreamGlassProminentButtonStyle()
+
+            Button {
+                player.playAlbumShuffled(tracks: tracks)
+            } label: {
+                Label("Shuffle", systemImage: "shuffle")
+                    .font(actionFont)
+            }
+            .labstreamGlassButtonStyle()
+        }
+        .disabled(tracks.isEmpty)
+    }
+
+    private var actionFont: Font {
+        #if os(iOS)
+        .subheadline
+        #else
+        .title3
+        #endif
     }
 
     // MARK: - Backdrop
@@ -189,25 +265,8 @@ struct AlbumDetailView: View {
                     .foregroundStyle(.tertiary)
             }
 
-            HStack(spacing: DS.Space.lg) {
-                Button {
-                    player.play(tracks: tracks, startingAt: 0)
-                } label: {
-                    Label("Play", systemImage: "play.fill")
-                        .font(.title3.weight(.semibold))
-                }
-                .labstreamGlassProminentButtonStyle()
-
-                Button {
-                    player.playAlbumShuffled(tracks: tracks)
-                } label: {
-                    Label("Shuffle", systemImage: "shuffle")
-                        .font(.title3)
-                }
-                .labstreamGlassButtonStyle()
-            }
-            .disabled(tracks.isEmpty)
-            .padding(.top, DS.Space.md)
+            playActions
+                .padding(.top, DS.Space.md)
         }
         // Cap the metadata column to a readable measure on regular-width iPad so the title
         // and actions don't stretch across a 13" landscape pane (no-op on compact/visionOS).
@@ -240,6 +299,9 @@ struct AlbumDetailView: View {
                 }
             }
         }
+        #if os(iOS)
+        .scrollTargetLayout()
+        #endif
         .padding(.vertical, DS.Space.sm)
         .background(.regularMaterial,
                     in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
@@ -297,12 +359,12 @@ private struct TrackRow: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .font(.subheadline.monospacedDigit())
+            .font(trackCaptionFont)
             .frame(width: DS.Space.xxl, alignment: .trailing)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
-                    .font(.body)
+                    .font(trackTitleFont)
                     .foregroundStyle(isCurrent ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
                     .lineLimit(1)
                 // On a *track*, `grandparentTitle` is the artist (artist → album → track).
@@ -318,7 +380,7 @@ private struct TrackRow: View {
 
             if let duration = track.duration {
                 Text(formatTrackDuration(milliseconds: duration))
-                    .font(.subheadline.monospacedDigit())
+                    .font(trackCaptionFont)
                     .foregroundStyle(.secondary)
             }
         }
@@ -330,5 +392,21 @@ private struct TrackRow: View {
         // The outer inset keeps the row highlight clear of the card's corner curve.
         .padding(.horizontal, DS.Space.sm)
     }
-}
 
+    /// iPhone/iPad: Body title, Caption number and duration (three-style type pass).
+    private var trackTitleFont: Font {
+        #if os(iOS)
+        .subheadline
+        #else
+        .body
+        #endif
+    }
+
+    private var trackCaptionFont: Font {
+        #if os(iOS)
+        .caption.monospacedDigit()
+        #else
+        .subheadline.monospacedDigit()
+        #endif
+    }
+}

@@ -3,6 +3,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
+@Suite(.downloadTestFiles)
 struct EmbyCleanupTombstonePersistenceTests {
     private func cleanupAuthority(for root: URL) -> URL {
         root.deletingLastPathComponent().appendingPathComponent(
@@ -15,7 +16,7 @@ struct EmbyCleanupTombstonePersistenceTests {
             let releaseRead = DispatchSemaphore(value: 0)
             let loadFinished = DispatchSemaphore(value: 0)
             let indexReadFinished = DispatchSemaphore(value: 0)
-            let store = DownloadStore(
+            let store = DownloadTestFiles.store(
                 baseDirectory: directory,
                 embyCleanupPersistence: .init(
                     read: { _ in
@@ -24,7 +25,7 @@ struct EmbyCleanupTombstonePersistenceTests {
                         return nil
                     },
                     encode: { try JSONEncoder().encode($0) },
-                    atomicWrite: { data, url in try data.write(to: url, options: .atomic) }
+                    commit: { data, url in try data.write(to: url, options: .atomic) }
                 )
             )
 
@@ -52,35 +53,14 @@ struct EmbyCleanupTombstonePersistenceTests {
         }
     }
 
-    @Test func concurrentAddsRemainOneSerializedReadModifyWriteQueue() throws {
-        try withTemporaryDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
-            let tombstones = (0..<16).map { index in
-                DownloadStore.EmbyConvertCleanupTombstone(
-                    id: UUID(),
-                    ratingKey: "emby:concurrent:\(index)",
-                    metadata: OfflineMetadata(
-                        ratingKey: "emby:concurrent:\(index)",
-                        title: "\(index)",
-                        type: "movie"))
-            }
-
-            DispatchQueue.concurrentPerform(iterations: tombstones.count) { index in
-                _ = store.addEmbyConvertCleanupTombstone(tombstones[index])
-            }
-
-            let persistedIDs = Set(try loaded(store).map(\.id))
-            #expect(persistedIDs == Set(tombstones.map(\.id)))
-        }
-    }
-
     @Test func missingQueueLoadsEmptyAndValidMutationsPreserveSiblings() throws {
         try withTemporaryDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
             #expect(try loaded(store).isEmpty)
 
-            let first = try committedAdd(store, ratingKey: "emby:same")
-            let second = try committedAdd(store, ratingKey: "emby:same")
+            let first = LegacyEmbyTombstoneFixture.make(ratingKey: "emby:same")
+            let second = LegacyEmbyTombstoneFixture.make(ratingKey: "emby:same")
+            try LegacyEmbyTombstoneFixture.write([first, second], to: store)
             #expect(try loaded(store).map(\.id) == [first.id, second.id])
 
             guard case .committed(removed: true) = store.removeEmbyConvertCleanupTombstone(
@@ -102,20 +82,13 @@ struct EmbyCleanupTombstonePersistenceTests {
                 at: cleanupAuthority(for: directory), withIntermediateDirectories: true)
             let corrupt = Data("not-json".utf8)
             try corrupt.write(to: canonical)
-            let store = DownloadStore(baseDirectory: directory)
+            let store = DownloadTestFiles.store(baseDirectory: directory)
 
             guard case .failed(let loadFailure) = store.loadEmbyConvertCleanupTombstones() else {
                 Issue.record("Expected corrupt queue to fail decoding")
                 return
             }
             #expect(loadFailure.stage == .decode)
-            guard case .failed(let addFailure) = store.addEmbyConvertCleanupTombstone(
-                ratingKey: "emby:new", metadata: metadata("emby:new")
-            ) else {
-                Issue.record("Expected add to refuse corrupt queue")
-                return
-            }
-            #expect(addFailure.stage == .decode)
             guard case .failed(let removeFailure) = store.removeEmbyConvertCleanupTombstone(
                 id: UUID()
             ) else {
@@ -129,12 +102,12 @@ struct EmbyCleanupTombstonePersistenceTests {
 
     @Test func readAndEncodeFailuresAreObservableAndFailClosed() throws {
         try withTemporaryDirectory { directory in
-            let readFailureStore = DownloadStore(
+            let readFailureStore = DownloadTestFiles.store(
                 baseDirectory: directory,
                 embyCleanupPersistence: .init(
                     read: { _ in throw InjectedTombstoneFailure() },
                     encode: { try JSONEncoder().encode($0) },
-                    atomicWrite: { data, url in try data.write(to: url, options: .atomic) }
+                    commit: { data, url in try data.write(to: url, options: .atomic) }
                 )
             )
             guard case .failed(let loadFailure) = readFailureStore.loadEmbyConvertCleanupTombstones()
@@ -143,24 +116,22 @@ struct EmbyCleanupTombstonePersistenceTests {
                 return
             }
             #expect(loadFailure.stage == .read)
-            guard case .failed(let addReadFailure) = readFailureStore.addEmbyConvertCleanupTombstone(
-                ratingKey: "emby:read", metadata: metadata("emby:read")
-            ) else {
-                Issue.record("Expected add read failure")
-                return
-            }
-            #expect(addReadFailure.stage == .read)
+            guard case .failed(let removeReadFailure) = readFailureStore.removeEmbyConvertCleanupTombstone(id: UUID())
+            else { Issue.record("Expected remove read failure"); return }
+            #expect(removeReadFailure.stage == .read)
 
-            let encodeFailureStore = DownloadStore(
+            let tombstone = LegacyEmbyTombstoneFixture.make(ratingKey: "emby:encode")
+            let legacyData = try JSONEncoder().encode([tombstone])
+            let encodeFailureStore = DownloadTestFiles.store(
                 baseDirectory: directory,
                 embyCleanupPersistence: .init(
-                    read: { _ in nil },
+                    read: { _ in legacyData },
                     encode: { _ in throw InjectedTombstoneFailure() },
-                    atomicWrite: { _, _ in Issue.record("Commit must not run after encode failure") }
+                    commit: { _, _ in Issue.record("Commit must not run after encode failure") }
                 )
             )
-            guard case .failed(let encodeFailure) = encodeFailureStore.addEmbyConvertCleanupTombstone(
-                ratingKey: "emby:encode", metadata: metadata("emby:encode")
+            guard case .failed(let encodeFailure) = encodeFailureStore.removeEmbyConvertCleanupTombstone(
+                id: tombstone.id
             ) else {
                 Issue.record("Expected injected encode failure")
                 return
@@ -169,71 +140,22 @@ struct EmbyCleanupTombstonePersistenceTests {
         }
     }
 
-    @Test func tempWriteThenFailurePreservesThePreviousCanonicalQueue() throws {
-        try withTemporaryDirectory { directory in
-            let initial = DownloadStore(baseDirectory: directory)
-            let first = try committedAdd(initial, ratingKey: "emby:first")
-            let canonical = cleanupAuthority(for: directory)
-                .appendingPathComponent("emby-convert-cleanup.json")
-            let previous = try Data(contentsOf: canonical)
-            let temp = directory.appendingPathComponent("injected-tombstone.tmp")
-            let failing = DownloadStore(
-                baseDirectory: directory,
-                embyCleanupPersistence: .init(
-                    read: { try Data(contentsOf: $0) },
-                    encode: { try JSONEncoder().encode($0) },
-                    atomicWrite: { data, _ in
-                        try data.write(to: temp)
-                        throw InjectedTombstoneFailure()
-                    }
-                )
-            )
-
-            guard case .failed(let failure) = failing.addEmbyConvertCleanupTombstone(
-                ratingKey: "emby:second", metadata: metadata("emby:second")
-            ) else {
-                Issue.record("Expected temp/pre-replace failure")
-                return
-            }
-            #expect(failure.stage == .commit)
-            #expect(try Data(contentsOf: canonical) == previous)
-            #expect(try loaded(DownloadStore(baseDirectory: directory)).map(\.id) == [first.id])
-            #expect(FileManager.default.fileExists(atPath: temp.path))
-        }
-    }
-
-    @Test func replaceThenThrowReconcilesAddFromCanonicalQueue() throws {
-        try withTemporaryDirectory { directory in
-            let replacing = DownloadStore(
-                baseDirectory: directory,
-                embyCleanupPersistence: replaceThenThrowPersistence()
-            )
-            guard case .committed(let tombstone) = replacing.addEmbyConvertCleanupTombstone(
-                ratingKey: "emby:ambiguous", metadata: metadata("emby:ambiguous")
-            ) else {
-                Issue.record("Expected canonical re-read to prove the add committed")
-                return
-            }
-            let restored = try loaded(DownloadStore(baseDirectory: directory))
-            #expect(restored == [tombstone])
-        }
-    }
-
     @Test func removalFailuresNeverClaimDurableRecovery() throws {
         try withTemporaryDirectory { directory in
-            let initial = DownloadStore(baseDirectory: directory)
-            let first = try committedAdd(initial, ratingKey: "emby:first")
-            let second = try committedAdd(initial, ratingKey: "emby:second")
+            let initial = DownloadTestFiles.store(baseDirectory: directory)
+            let first = LegacyEmbyTombstoneFixture.make(ratingKey: "emby:first")
+            let second = LegacyEmbyTombstoneFixture.make(ratingKey: "emby:second")
+            try LegacyEmbyTombstoneFixture.write([first, second], to: initial)
             let canonical = cleanupAuthority(for: directory)
                 .appendingPathComponent("emby-convert-cleanup.json")
             let previous = try Data(contentsOf: canonical)
 
-            let beforeReplace = DownloadStore(
+            let beforeReplace = DownloadTestFiles.store(
                 baseDirectory: directory,
                 embyCleanupPersistence: .init(
                     read: { try Data(contentsOf: $0) },
                     encode: { try JSONEncoder().encode($0) },
-                    atomicWrite: { _, _ in throw InjectedTombstoneFailure() }
+                    commit: { _, _ in throw InjectedTombstoneFailure() }
                 )
             )
             guard case .failed(let preFailure) = beforeReplace.removeEmbyConvertCleanupTombstone(
@@ -244,19 +166,19 @@ struct EmbyCleanupTombstonePersistenceTests {
             }
             #expect(preFailure.stage == .commit)
             #expect(try Data(contentsOf: canonical) == previous)
-            #expect(try loaded(DownloadStore(baseDirectory: directory)).map(\.id) == [first.id, second.id])
+            #expect(try loaded(DownloadTestFiles.store(baseDirectory: directory)).map(\.id) == [first.id, second.id])
 
-            let afterReplace = DownloadStore(
+            let afterReplace = DownloadTestFiles.store(
                 baseDirectory: directory,
                 embyCleanupPersistence: replaceThenThrowPersistence()
             )
-            guard case .committed(removed: true) = afterReplace.removeEmbyConvertCleanupTombstone(
+            guard case .failed(let postFailure) = afterReplace.removeEmbyConvertCleanupTombstone(
                 id: first.id
             ) else {
-                Issue.record("Expected canonical re-read to prove removal committed")
+                Issue.record("A removal whose commit keeps throwing must not claim durability")
                 return
             }
-            #expect(try loaded(DownloadStore(baseDirectory: directory)).map(\.id) == [second.id])
+            #expect(postFailure.stage == .commit)
         }
     }
 
@@ -267,7 +189,7 @@ struct EmbyCleanupTombstonePersistenceTests {
                 return try Data(contentsOf: url)
             },
             encode: { try JSONEncoder().encode($0) },
-            atomicWrite: { data, url in
+            commit: { data, url in
                 try data.write(to: url, options: .atomic)
                 throw InjectedTombstoneFailure()
             }
@@ -282,25 +204,11 @@ struct EmbyCleanupTombstonePersistenceTests {
         return values
     }
 
-    private func committedAdd(_ store: DownloadStore, ratingKey: String) throws
-        -> DownloadStore.EmbyConvertCleanupTombstone {
-        guard case .committed(let tombstone) = store.addEmbyConvertCleanupTombstone(
-            ratingKey: ratingKey, metadata: metadata(ratingKey)
-        ) else {
-            throw InjectedTombstoneFailure()
-        }
-        return tombstone
-    }
-
-    private func metadata(_ ratingKey: String) -> OfflineMetadata {
-        OfflineMetadata(ratingKey: ratingKey, title: ratingKey, type: "movie")
-    }
-
     private func withTemporaryDirectory(_ body: (URL) throws -> Void) throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = DownloadTestFiles.temporaryDirectory
             .appendingPathComponent("emby-cleanup-tombstones-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         try body(directory)
     }
 }

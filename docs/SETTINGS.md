@@ -63,11 +63,18 @@ Apple TV is streaming-only, so this section does not appear there.
 | --- | --- | --- | --- |
 | **Default Quality** | Quality preselected for new downloads: Original when available, Original video quality, or a fixed preset from 4K 40 Mbps down to 480p 1.5 Mbps. Original is offered only when the server can provide it. | 1080p 8 Mbps | Vision, iOS, Mac |
 | **Storage Limit** | Maximum space downloads may use: Unlimited, 10 GB, 25 GB, 50 GB, 100 GB, or 250 GB. A new download that would exceed the limit is refused; existing downloads are never deleted automatically. | Unlimited | Vision, iOS, Mac |
-| **Use cellular data for downloads** | Allows new downloads to use cellular data on devices that have it. Transfers already in progress keep their previous setting. | Off | Vision, iOS, Mac |
+| **Use cellular data for downloads** | Allows new downloads to use cellular data, Low Data Mode networks and expensive networks such as a personal hotspot. Transfers already in progress keep their previous setting. | Off | Vision, iOS, Mac |
+| **Simultaneous downloads** | Maximum simultaneous transfers, from 1 to 5. Plex optimize and Emby Convert jobs on the server do not use a slot. Lowering it lets running transfers finish; raising it starts waiting rows when slots are available. The choice survives relaunch. | 3 | Vision, iOS, Mac |
 | **Queue Order** | **Respect server queue order** or **Prioritize quick downloads**. Prioritizing moves a new Plex server-side conversion ahead of other waiting conversions (never ahead of the one already running), when your Plex account is allowed to. Jellyfin and Emby are unaffected. | Respect server queue order | Vision, iOS, Mac |
 | **Items** / **Storage used** | Shows how many downloads are on this device and how much space they use. | — | Vision, iOS, Mac |
 | **Remove completed downloads** | Deletes finished downloads from this device (after confirmation). | — | Vision, iOS, Mac |
 | **Remove all downloads** | Cancels active transfers and deletes every download from this device (after confirmation). | — | Vision, iOS, Mac |
+
+The network preference also applies to new side-asset requests. Active tasks and tasks resumed
+from OS resume data keep their creation policy. D5 treats constrained and expensive networks as
+part of the same opt-in. Unknown media sizes remain visibly unknown and cannot be fully charged
+to the storage limit; a retry replaces its own retained bytes while admitted work reserves known
+remaining bytes. No automatic eviction enforces the cap.
 
 ## Maintenance
 

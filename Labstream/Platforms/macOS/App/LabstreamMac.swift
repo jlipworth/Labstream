@@ -54,19 +54,19 @@ struct LabstreamMac: App {
                         MacMainWindowController.shared.issue(.navigateBack)
                     }
                     .keyboardShortcut("[", modifiers: .command)
-                    .disabled(!runtime.appModel.isAuthenticated)
+                    .disabled(!runtime.appModel.isAuthenticated || !MacMainWindowController.shared.navigationCommandAvailability.canNavigateBack)
 
                     Button("Search") {
                         MacMainWindowController.shared.issue(.focusSearch)
                     }
                     .keyboardShortcut("f", modifiers: .command)
-                    .disabled(!runtime.appModel.isAuthenticated)
+                    .disabled(!runtime.appModel.isAuthenticated || !MacMainWindowController.shared.navigationCommandAvailability.canSelectDestination)
 
                     Button("Offline") {
                         MacMainWindowController.shared.issue(.selectOffline)
                     }
                     .keyboardShortcut("d", modifiers: [.command, .shift])
-                    .disabled(!runtime.appModel.isAuthenticated)
+                    .disabled(!runtime.appModel.isAuthenticated || !MacMainWindowController.shared.navigationCommandAvailability.canSelectDestination)
                 }
 
                 CommandMenu("Account") {

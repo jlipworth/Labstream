@@ -23,6 +23,14 @@ When a plan is complete or superseded:
 
 ## Active plans
 
+- [iPhone Duo support](2026-10-25-iphone-duo.md) — [#419](https://github.com/jlipworth/Labstream/issues/419)
+  geometry-driven layout, fold-during-playback invariants, iOS 27.1 vertical bars, Xcode 27.1
+  toolchain move and Duo XCUITest lanes, with player follow-ups through 2026-11-02; physical Duo
+  and Duo App Store screenshot gates remain open.
+- [Downloads manager overhaul](2026-10-16-downloads-overhaul.md) — P1–P7 (including the 1.8.0
+  source bump) and follow-ups are implemented, with internal TestFlight builds recorded in
+  Releases; live-backend, physical-device and release acceptance ([#403](https://github.com/jlipworth/Labstream/issues/403))
+  remain open. Defect dispositions live in the linked immutable evidence audit.
 - [Licensed demo screenshots and review notes](2026-09-15-store-demo-capture.md) —
   provenance and capture contract recorded; final images, credits, age suitability and
   exact-candidate reviewer journeys remain open.

@@ -42,6 +42,57 @@ Mac, and TV app scenes inert so hosted tests do not boot the real app. UI tests 
 `app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"` explicitly, and any new test plan must
 choose `1` or `0` deliberately; otherwise a UI test can silently drive an inert host app.
 
+### Downloads overhaul pin suites
+
+Pure lifecycle, admission, cleanup, container, storage and presentation pins run in the hermetic
+PMSKit suite. App-owned pins use `LabstreamTests/` on the mobile host or `LabstreamMacTests` on
+macOS; tvOS excludes the Downloads capability. There is still no visionOS-hosted target.
+
+| Phase | Principal guards |
+| --- | --- |
+| P1 | `BackgroundDownloadRangeOwnershipTests`, startup admission/registry tests and backend route/source policy regressions. |
+| P2 | `DurableJournalCommitTests`, `DownloadCleanupIntentRunnerTests`, `CleanupRunnerManagerTests`, `CleanupAuthorityContractTests` and cleanup ordering/journal tests. |
+| P3a | `DownloadLifecycleReducerTests`, `DownloadLifecycleStoreTests`: finalization/relaunch, condemnation, exact ownership and recovery. |
+| P3b | `DownloadSchemaUpgradeTests`: D1 paused partials, deletion barriers/capsules, durable notice and v4/v5 boundaries. |
+| P4 | `DownloadAdmissionCoordinatorTests`, `SeasonPlannerIntegrationTests`, `ServerPrepRunnerIntegrationTests`, admission/prep policy tests. |
+| P5 | `P5SessionTransportTests`, storage admission/estimate/source-size tests and season cap/fallback integration controls. |
+| P6 | `P6ContractTests`, store resolution/I/O/load/inventory/artifact/reconcile/path-lease suites, manager persistence/rework/review suites and session wake/checkpoint/opaque-resume/lease suites. |
+| P7 | `P7OfflinePlaybackTests`, subtitle/source-recovery, availability/return, MediaBrowser negotiation, row, joined-control and side-asset ordering suites; PMSKit P7 container/presentation/lifecycle tests. |
+
+Use the no-simulator Mac hosted lane for deterministic app-level download checks:
+
+```sh
+scripts/native-test-matrix.py affected \
+  --changed-file Labstream/Capabilities/Downloads/Core/DownloadManager.swift \
+  --run --lane macos-hosted
+```
+
+Run one Xcode lane at a time; do not launch competing build/test processes. Keep the checked
+manifest and normal test parallelism for the final combined gate. A focused serialized diagnostic
+run can isolate deliberately held workers, but it is not a substitute for the full normal-parallel
+hosted run. Fixtures must isolate coordinators/identities and acknowledge worker entry, commit or
+recovery completion with bounded waits; do not widen heartbeat deadlines to hide ordering races.
+Download file fixtures use `@Suite(.downloadTestFiles)` and
+`DownloadTestFiles.temporaryDirectory`. Each test case owns a fresh root; fixture bases
+must be children of that root so their hidden durable-authority siblings remain owned too.
+Create stores with `DownloadTestFiles.store` so startup, artifact workers and index writes
+are drained before removal, including stores created by detached probes. Use
+`DownloadTestFiles.manager` to stop callbacks and admission work before draining its stores.
+The scope awaits registered asynchronous cleanup before removing its exact root on success,
+throw or early return. XCTest side-asset fixtures use `DownloadFileTestCase`, with an
+instance-owned root and awaited teardown block for the same lifetime guarantee.
+Register resource teardown with `DownloadTestFiles.onCleanup` before
+throwing startup waits; do not rely on fixture `deinit` or launch an unawaited cleanup task.
+This also keeps fixture debris out of the app temporary-directory range-stash sweep. No
+host-wide temporary cleanup or macOS runner `TMPDIR` override is needed for these fixtures.
+Current-store startup inventories its base and authority, then schedules interrupted
+unsupported-root reclamation. That reclamation intentionally lists their parent to select only that root's exact pending quarantine and
+retired-root prefix; range-body recovery lists its configured temp directory, while durable
+held-range recovery lists the store base. These are distinct ownership boundaries.
+
+Require terminal xcodebuild success and the result bundle, not merely a printed test summary.
+Expected known issues must be named explicitly. No hosted suite establishes live backend or physical-device acceptance.
+
 ### Suspended-request integration regressions
 
 Keep async ownership tests at the production publication boundary, not only in pure authority
@@ -89,6 +140,23 @@ manifest and its topology tests in the same change whenever target membership or
 root changes. Git discovery includes deleted paths and both endpoints of renames, including
 working-tree changes when requested; filenames are read with NUL delimiters.
 
+`duo-ui-smoke` runs the mobile semantic fixture smoke on this worktree's iPhone Duo simulator
+(`--duo-sim-id`, `.simid-duo`, folded outer display by default), plus player fixture checks:
+the landscape lock follows the measured scene class (phone-class scenes lock, large scenes keep the
+device orientation), the chrome envelope stays put across reveal and hide, and the DEBUG book pose
+moves the control group into the trailing half. `LabstreamMobileDuoUITests` adds browse → detail
+→ playback in folded portrait and both folded-landscape rotations (the DEBUG
+`--ui-testing-orientation` route, because the Duo simulator ignores `XCUIDevice.orientation`),
+asserting that content clears the measured vertical-bar column and the playhead advances.
+`mobile-ui-smoke` also runs the lock check. Shared and mobile-platform paths select it alongside `mobile-ui-smoke`.
+It proves the posture the simulator booted in only. `scripts/duo-appresize.sh` drives the
+inner-size proxy by hand (`launch [--pose book|tabletop|flat]`, `start`, `set WxH`, `shot`, `stop`):
+`--pose` sets the DEBUG-only `LABSTREAM_DEBUG_DUO_POSE` override so book and tabletop layouts can
+be captured against the pose seam. Those captures prove layout against the seam only. XCUITest
+cannot observe an `appResize` session (it keeps reporting the outer-display window), so inner-size
+and resize-during-playback runs are judged from screenshots and `AppDiagnostics`; a real
+fold/unfold, Device Hub and physical-device checks remain open.
+
 The bounded command and playback runners terminate their owned process group on timeout or
 cancellation. Cleanup waits for surviving descendants, not just the leader, before escalating;
 it never uses application-name or system-wide process matching.
@@ -99,7 +167,7 @@ applicable named evidence runner. A successful matrix lane alone is not runtime 
 
 Execution is deliberately lane-at-a-time. The driver never provisions or boots a simulator, and
 `--run` requires an exact `--lane`. A simulator-hosted lane additionally requires the ID recorded
-for this worktree by `worktree-sim.sh` (`.simid-iphone` or `.simid-tvos`) and
+for this worktree by `worktree-sim.sh` (`.simid-iphone`, `.simid-duo` or `.simid-tvos`) and
 `--allow-simulator`, which is an assertion that the caller has acquired the repository's
 one-simulator lease. The driver rejects an arbitrary simulator ID even when that simulator is
 Booted. It also fails unless the owned simulator is already Booted **and every other simulator is
@@ -356,6 +424,9 @@ those summaries and `analysis/novel-events.jsonl` instead of re-reading whole di
 or broad unified logs.
 
 ## Private release media corpus
+
+Synthetic codec, channel-layout and native-control regressions that need no media server are
+covered by [Headless playback testing](HEADLESS-PLAYBACK-TESTING.md).
 
 Use the [private media corpus workflow](MEDIA-CORPUS-TESTING.md) to inventory
 observed codec/container/audio/subtitle combinations and choose bounded release cases.

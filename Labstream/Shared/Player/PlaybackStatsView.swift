@@ -21,18 +21,35 @@ import AppKit
 struct PlaybackStatsView: View {
     var diagnostics: PlaybackDiagnostics
     var tracks: PlaybackStatsSummary.Tracks
+    /// Resolved-address route; nil until `PlaybackConnectionRouteResolver` answers.
+    var route: PlaybackConnectionRoute? = nil
 
     /// "" shows the compact summary; otherwise the raw value of the expanded section.
     @AppStorage(PlaybackStatsView.sectionDefaultsKey) private var storedSection = ""
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.colorScheme) private var colorScheme
     @State private var copied = false
+    #if os(iOS)
+    /// Measured width of the tile area: two equal columns when narrow, four when wide.
+    @State private var tileAreaWidth: CGFloat = 0
+    /// Measured panel width: a wide panel stacks the chain over a four-column tile grid.
+    @State private var panelWidth: CGFloat = 0
+    #endif
 
     nonisolated static let sectionDefaultsKey = "playback.stats.expandedSection"
 
-    private var summary: PlaybackStatsSummary { .make(diagnostics, tracks: tracks) }
+    private var summary: PlaybackStatsSummary { .make(diagnostics, tracks: tracks, route: route) }
     private var section: PlaybackStatsSummary.Section? { .init(rawValue: storedSection) }
     private var stacksCells: Bool { dynamicTypeSize.isAccessibilitySize }
+
+    /// iPhone/iPad only: a panel wide enough for four tile columns stacks the chain above them.
+    private var isWideIOSPanel: Bool {
+        #if os(iOS)
+        panelWidth >= Metrics.fourColumnMinimumWidth
+        #else
+        false
+        #endif
+    }
 
     var body: some View {
         let summary = summary
@@ -45,6 +62,9 @@ struct PlaybackStatsView: View {
             }
         }
         .animation(.smooth(duration: 0.2), value: storedSection)
+        #if os(iOS)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { panelWidth = $0 }
+        #endif
     }
 
     // MARK: Header
@@ -74,6 +94,12 @@ struct PlaybackStatsView: View {
         if stacksCells {
             VStack(alignment: .leading, spacing: Metrics.cellGap) {
                 chain(summary, vertical: true)
+                tiles(summary)
+                expandButton
+            }
+        } else if isWideIOSPanel {
+            VStack(alignment: .leading, spacing: Metrics.cellGap) {
+                chain(summary, vertical: false)
                 tiles(summary)
                 expandButton
             }
@@ -167,6 +193,13 @@ struct PlaybackStatsView: View {
                          summary.audioTrack, summary.subtitles], id: \.label) { tile($0) }
             }
         } else {
+            #if os(iOS)
+            // iPhone/iPad (iPhone Duo design spec, stats sheet): one column width for every row,
+            // two columns on a narrow panel (folded) and four on a wide one (unfolded), so no
+            // value ("58.2 Mb/s") truncates and no tile is wider than its siblings.
+            equalTileGrid(summary, columns: tileAreaWidth >= Metrics.fourColumnMinimumWidth ? 4 : 2)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { tileAreaWidth = $0 }
+            #else
             // Health facts in thirds, then the two tracks in halves: track names are the
             // longest values in the summary.
             VStack(spacing: Metrics.cellGap) {
@@ -182,8 +215,23 @@ struct PlaybackStatsView: View {
                 }
                 .fixedSize(horizontal: false, vertical: true)
             }
+            #endif
         }
     }
+
+    #if os(iOS)
+    private func equalTileGrid(_ summary: PlaybackStatsSummary, columns: Int) -> some View {
+        let tiles = [summary.buffer, summary.bitrate, summary.connection,
+                     summary.audioTrack, summary.subtitles]
+        return LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Metrics.cellGap,
+                                                            alignment: .top),
+                                        count: columns),
+                         alignment: .leading,
+                         spacing: Metrics.cellGap) {
+            ForEach(tiles, id: \.label) { tile($0).fixedSize(horizontal: false, vertical: true) }
+        }
+    }
+    #endif
 
     private func tile(_ tile: PlaybackStatsSummary.Tile) -> some View {
         let layout = stacksCells
@@ -228,12 +276,11 @@ struct PlaybackStatsView: View {
     @ViewBuilder
     private func expanded(_ summary: PlaybackStatsSummary,
                           section: PlaybackStatsSummary.Section) -> some View {
-        Picker("Section", selection: Binding(
-            get: { section },
-            set: { storedSection = $0.rawValue })) {
-            ForEach(PlaybackStatsSummary.Section.allCases) { Text($0.title).tag($0) }
-        }
-        .pickerStyle(.segmented)
+        LabstreamSegmentedPicker(
+            title: "Section",
+            selection: Binding(get: { section }, set: { storedSection = $0.rawValue }),
+            options: PlaybackStatsSummary.Section.allCases,
+            label: \.title)
         .labelsHidden()
         .accessibilityIdentifier("playback.stats.sections")
 
@@ -295,7 +342,6 @@ struct PlaybackStatsView: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// The path hue, deepened on light glass so converted values keep text contrast.
     private func pathColor(_ path: PlaybackStatsSummary.Path) -> Color {
         path.color(for: colorScheme)
     }
@@ -336,20 +382,21 @@ private enum Metrics {
     static let linkLength: CGFloat = 44
     static let wideColumn: CGFloat = 260
     static let rowLabelWidth: CGFloat = 104
+    /// The tile area at which the iOS summary switches from two equal columns to four.
+    static let fourColumnMinimumWidth: CGFloat = 520
     #endif
 }
 
 extension PlaybackStatsSummary.Path {
-    /// One hue per path. Light appearance (e.g. iOS glass over a bright frame) uses deeper
-    /// shades of the same hues so small value text stays legible.
+    /// The same palette on every platform (design spec, Color & type): green means only "plays
+    /// as-is"; copy and encode are neutral gray and are told apart by their path title and link
+    /// label, because cyan and orange read as the amber "selected" accent. Light appearance
+    /// (e.g. glass over a bright frame) uses a deeper green so small value text stays legible.
     func color(for scheme: ColorScheme) -> Color {
         switch (self, scheme) {
         case (.direct, .dark): .green
-        case (.copy, .dark): .cyan
-        case (.encode, .dark): .orange
         case (.direct, _): Color(red: 0.05, green: 0.45, blue: 0.18)
-        case (.copy, _): Color(red: 0.0, green: 0.40, blue: 0.58)
-        case (.encode, _): Color(red: 0.70, green: 0.30, blue: 0.0)
+        case (.copy, _), (.encode, _): .gray
         }
     }
 }

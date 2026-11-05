@@ -47,7 +47,7 @@ struct ContentView: View {
             TVPlayerFixtureView()
                 .environment(musicPlayer)
                 .environment(appModel)
-        case .browse, nil:
+        case .browse, .offline, nil:
             mainBody
         }
         #elseif os(iOS) && DEBUG
@@ -63,32 +63,45 @@ struct ContentView: View {
         #endif
     }
 
+    @ViewBuilder
+    private var gatedBody: some View {
+        switch BrowseUIGate.state(isBrowseReady: appModel.isBrowseReady,
+                                  isRestoring: bootstrap.isRestoring || isResolvingOfflineAvailability,
+                                  isSwitchingBackend: appModel.isSwitchingBackend,
+                                  hasEverBeenBrowseReady: bootstrap.hasEverBeenBrowseReady,
+                                  canOpenOffline: canOpenOffline) {
+        case .browse:
+            RootView(runtime: runtime)
+        case .restoringSplash:
+            RestoringSessionView()
+        case .offline:
+            #if os(tvOS)
+            LoginView(authManager: authManager)
+                .environment(appModel)
+            #else
+            OfflineLaunchView(runtime: runtime)
+            #endif
+        case .login:
+            LoginView(authManager: authManager)
+                .environment(appModel)
+        }
+    }
+
     private var mainBody: some View {
         // #90: the gate is centralized in `BrowseUIGate` so the "switch must not bounce the
         // browse UI" invariant holds for ANY backend (not just Plex via the refreshServers
         // field-preservation carve-out). An already-ready browse UI stays mounted through a
         // switch; a genuinely signed-out user still gets the splash/login.
         Group {
-            switch BrowseUIGate.state(isBrowseReady: appModel.isBrowseReady,
-                                      isRestoring: bootstrap.isRestoring,
-                                      isSwitchingBackend: appModel.isSwitchingBackend,
-                                      hasEverBeenBrowseReady: bootstrap.hasEverBeenBrowseReady,
-                                      canOpenOffline: canOpenOffline) {
-            case .browse:
-                RootView(runtime: runtime)
-            case .restoringSplash:
-                RestoringSessionView()
-            case .offline:
-                #if os(tvOS)
-                LoginView(authManager: authManager)
-                    .environment(appModel)
-                #else
+            #if DEBUG && !os(tvOS)
+            if DebugUITestLaunchConfiguration.fixtureKind == .offline {
                 OfflineLaunchView(runtime: runtime)
-                #endif
-            case .login:
-                LoginView(authManager: authManager)
-                    .environment(appModel)
+            } else {
+                gatedBody
             }
+            #else
+            gatedBody
+            #endif
         }
         .onAppear {
             // #90: seed the "has shown browse UI" flag for the case where we're ALREADY
@@ -108,9 +121,34 @@ struct ContentView: View {
             // Restore exactly once per app launch. The session objects are app-lifetime, so a window
             // reopened after Cinema already holds a live, connected session — re-running discovery
             // here would needlessly re-show "Connecting…" and re-probe the server.
-            guard !bootstrap.didStartRestore else { return }
+            #if DEBUG
+            DebugPlaybackProbeSupport.recordStartupStage(.contentTaskEntered)
+            #endif
+            guard !bootstrap.didStartRestore else {
+                #if DEBUG
+                DebugPlaybackProbeSupport.recordStartupStage(.restoreSkipped)
+                #endif
+                return
+            }
             bootstrap.didStartRestore = true
+            #if DEBUG && (os(visionOS) || os(macOS))
+            // Synthetic signal experiments must not depend on server authentication
+            // or trigger download restoration. Normal launches retain the usual path.
+            if ProcessInfo.processInfo.arguments.contains("--vp-probe-capture-signals") ||
+                ProcessInfo.processInfo.arguments.contains("--vp-probe-observer-control") ||
+                ProcessInfo.processInfo.arguments.contains("--vp-probe-tap-control") {
+                bootstrap.isRestoring = false
+                await DebugRawURLPlaybackProbe.runIfRequested()
+                return
+            }
+            #endif
+            #if DEBUG
+            DebugPlaybackProbeSupport.recordStartupStage(.restoreBegin)
+            #endif
             await authManager.restoreSession()
+            #if DEBUG
+            DebugPlaybackProbeSupport.recordStartupStage(.restoreDone)
+            #endif
             bootstrap.isRestoring = false
 #if DEBUG
             // Explicit playback probes must not wait behind unrelated inactive-download
@@ -123,7 +161,9 @@ struct ContentView: View {
                debugArgs.indices.contains(idx + 1),
                let backend = MediaBackendKind(rawValue: debugArgs[idx + 1]),
                backend != appModel.activeBackend {
+                DebugPlaybackProbeSupport.recordStartupStage(.backendSwitchBegin)
                 await authManager.switchBackend(backend)
+                DebugPlaybackProbeSupport.recordStartupStage(.backendSwitchDone)
             }
 
             await DebugJellyfinPlaybackProbe.runIfRequested(appModel: appModel)
@@ -131,22 +171,13 @@ struct ContentView: View {
             await DebugPlexPlaybackProbe.runIfRequested(appModel: appModel)
 #endif
             #if !os(tvOS)
-            // Restore the selected browse lane first, then hydrate only inactive backends that
-            // currently own durable active work. Paused/failed/completed rows remain cold until
-            // their explicit resume, retry, or side-asset dispatch edge.
-            let inactiveDownloadBackends = Set(
-                downloadManager.records.lazy
-                    .filter { $0.status.isActiveWork }
-                    .map { DownloadJobSnapshot(record: $0).backend }
-            ).subtracting([appModel.activeBackend])
-            for backend in inactiveDownloadBackends.sorted(by: { $0.rawValue < $1.rawValue }) {
-                _ = await authManager.hydrateSavedSessionForDownloads(backend: backend)
+            bootstrap.launchDownloadRecovery.beginLaunchPass(browseReady: appModel.isBrowseReady)
+            await runLaunchDownloadRecovery(reason: "session_restored")
+            // B77: a Reconnect that landed while this offline pass was still hydrating.
+            if bootstrap.launchDownloadRecovery.finishLaunchPass(
+                browseReady: appModel.isBrowseReady) {
+                await runLaunchDownloadRecovery(reason: "backend_ready")
             }
-            downloadManager.resumePendingServerPrepDownloads()
-            downloadManager.rehydrateMissingOptionalSideAssetsForCompletedRows(
-                reason: "session_restored")
-            downloadManager.scheduleServerPrepResumeRetries()
-            downloadManager.teardownOrphanedEncodersOnLaunch()
             #endif
 #if DEBUG
             await DebugRawURLPlaybackProbe.runIfRequested()
@@ -178,10 +209,17 @@ struct ContentView: View {
                 // mounted (BrowseUIGate) instead of bouncing through the restore splash.
                 bootstrap.hasEverBeenBrowseReady = true
                 #if !os(tvOS)
-                downloadManager.resumePendingServerPrepDownloads()
-                downloadManager.rehydrateMissingOptionalSideAssetsForCompletedRows(
-                    reason: "backend_ready")
-                downloadManager.scheduleServerPrepResumeRetries()
+                if bootstrap.launchDownloadRecovery.browseBecameReady() {
+                    // B77: Reconnect after an offline launch. The launch pass ran while every
+                    // server was unreachable, so rerun all of it, including inactive-backend
+                    // hydration and the orphaned-encoder sweep.
+                    Task { await runLaunchDownloadRecovery(reason: "backend_ready") }
+                } else {
+                    downloadManager.resumePendingServerPrepDownloads()
+                    downloadManager.rehydrateMissingOptionalSideAssetsForCompletedRows(
+                        reason: "backend_ready")
+                    downloadManager.scheduleServerPrepResumeRetries()
+                }
                 #endif
             }
         }
@@ -218,6 +256,40 @@ struct ContentView: View {
             downloadManager.teardownOrphanedEncodersOnLaunch()
             #endif
         }
+    }
+
+    #if !os(tvOS)
+    /// Launch download recovery: restore the selected browse lane first, then hydrate only
+    /// inactive backends that currently own durable active work. Paused/failed/completed rows
+    /// remain cold until their explicit resume, retry, or side-asset dispatch edge.
+    private func runLaunchDownloadRecovery(reason: String) async {
+        // P2: backends that only owe journaled server cleanup need a session too, or their
+        // cleanup could never run while the user stays on another backend.
+        let cleanupBackends = await downloadManager.pendingCleanupBackends()
+        guard !Task.isCancelled else { return }
+        let inactiveDownloadBackends = Set(
+            downloadManager.records.lazy
+                .filter { $0.status.isActiveWork }
+                .map { DownloadJobSnapshot(record: $0).backend }
+        ).union(cleanupBackends)
+            .subtracting([appModel.activeBackend])
+        for backend in inactiveDownloadBackends.sorted(by: { $0.rawValue < $1.rawValue }) {
+            _ = await authManager.hydrateSavedSessionForDownloads(backend: backend)
+        }
+        downloadManager.resumePendingServerPrepDownloads()
+        downloadManager.rehydrateMissingOptionalSideAssetsForCompletedRows(reason: reason)
+        downloadManager.scheduleServerPrepResumeRetries()
+        downloadManager.teardownOrphanedEncodersOnLaunch()
+    }
+    #endif
+
+    private var isResolvingOfflineAvailability: Bool {
+        #if os(tvOS)
+        false
+        #else
+        authManager.sessionRestoreOutcome == .temporarilyUnavailable
+            && downloadManager.offlineAvailabilityIsResolving
+        #endif
     }
 
     /// #259: only a preserved credential after a transient restore failure, with at least one

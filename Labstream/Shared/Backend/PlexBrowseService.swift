@@ -174,6 +174,31 @@ struct PlexBrowseService {
         }
     }
 
+    /// "More Like This" for a movie or show detail (`/library/metadata/{id}/similar`).
+    func similar(ratingKey: String, count: Int = 20) async throws -> [MediaItem] {
+        try await executor.execute({ snapshot in
+            PlexBrowseRequest.similar(server: snapshot.session.baseURL,
+                                      token: snapshot.session.token,
+                                      identity: snapshot.identity,
+                                      ratingKey: ratingKey,
+                                      count: count)
+        }, as: MetadataResponse.self) { response in
+            response.mediaContainer.metadata
+        }
+    }
+
+    /// Every episode of a show with view state (`allLeaves`), for the show page's resume action.
+    func showEpisodes(ratingKey: String) async throws -> [MediaItem] {
+        try await executor.execute({ snapshot in
+            PlexBrowseRequest.allLeaves(server: snapshot.session.baseURL,
+                                        token: snapshot.session.token,
+                                        identity: snapshot.identity,
+                                        ratingKey: ratingKey)
+        }, as: MetadataResponse.self) { response in
+            response.mediaContainer.metadata.filter { $0.kind == .episode }
+        }
+    }
+
     func libraries() async throws -> [PlexSection] {
         try await executor.execute({ snapshot in
             BrowseAPI.sections(server: snapshot.session.baseURL,

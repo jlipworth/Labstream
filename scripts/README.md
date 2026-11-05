@@ -5,6 +5,29 @@ privacy-safe evidence collection, and opt-in live-server probes. Scripts that ne
 gitignored environment files; keep tokens, server URLs, item IDs, device IDs, generated logs, and
 media details out of commits and public issues.
 
+## Workflow inspection and continuity
+
+- `workspace-status.py [--offline] [--issue N] [--json]` — read-only worktrees, dirt,
+  upstream divergence, PRs and explicit issue references, local checkpoints/receipts, and
+  repository-recorded release evidence. Does not fetch or query App Store Connect. API
+  failures are reported as unavailable, not as an empty backlog.
+- `issues.py [--repo OWNER/REPO] [--json] find WORDS...` and `show N` — read-only
+  GitHub issue search over open and recently closed issues, including comment-only matches
+  and full comments for the selected results. Pagination/search limits fail explicitly.
+- `ci-wait.py --commit SHA --branch BRANCH [--require CONTEXT]` — exact-commit CI
+  statuses/checks through the existing `gh` login. Defaults to Woodpecker push hygiene and
+  PMSKit contexts; include the docs context when applicable. No restarts or writes.
+- `xcodebuild-lease.py run --lane NAME [--wait-timeout S] [--lock PATH] -- COMMAND...`,
+  `status` and `held` — shared host lock across worktrees. The versioned Xcode wrapper and
+  platform scenario runners use it. Busy waits are bounded; no live owner is killed to acquire the
+  lock. `held` exits 0 when the calling process inherited the lease from a wrapping `run`, so
+  nested wrappers do not wait on themselves.
+- `workflow-state.py` — worktree-local validation/docs receipts, resume checkpoints and
+  stable review finding IDs. `show` is read-only. Other subcommands explicitly write only
+  the local store, defaulting to ignored `build/workflow/state.json`.
+
+Commands and limitations: [workflow status and review evidence](../docs/DEVELOPMENT.md#workflow-status-and-review-evidence).
+
 ## Build and validation
 
 - `xcodebuild-versioned.sh` — wraps `xcodebuild` and stamps a source-derived internal Build ID.
@@ -16,6 +39,8 @@ media details out of commits and public issues.
   the gitignored `ci-hygiene.local` (one string per line; `#` comments and blank lines ignored; the
   scan fails if this file is ever tracked), from a file named by `CI_EXTRA_FORBIDDEN_FILE`, and from
   newline-separated `CI_EXTRA_FORBIDDEN`. `publication-audit.py` also reads `ci-hygiene.local`.
+  A source guard also fails any download status or lifecycle write that bypasses the lifecycle
+  reducer (submit a `DownloadLifecycleEvent` instead).
 - `testflight-release.py` — preflight, archive, validate, upload, status, `select-build`,
   `distribute` (to an internal TestFlight group via `--group`), `ship` (on-demand archive, validate,
   upload, wait, distribute, then prune), and `prune-archives` for the coordinated App Store targets.
@@ -59,8 +84,11 @@ media details out of commits and public issues.
   affected-platform, and full native validation planning, with explicitly gated
   lane-at-a-time execution. Simulator-hosted lanes require the exact ID owned by the current
   worktree, sole-booted state, and an explicit lease assertion; generic simulator build lanes do
-  not. See
-  [Testing strategy](../docs/TESTING-STRATEGY.md#native-apple-matrix-driver).
+  not. `--run --lane macos-hosted` runs deterministic download/store/player pin suites without
+  a simulator; retain normal test parallelism and serialize Xcode lanes for the final gate. See
+  [Testing strategy](../docs/TESTING-STRATEGY.md#native-apple-matrix-driver). The matrix includes
+  the iPhone Duo simulator (`--duo-sim-id`) and the `duo-ui-smoke` lane; see
+  [Development](../docs/DEVELOPMENT.md).
 - `app-store-screenshots.py` + `app-store-screenshot-specs.json` — serial credential-free fixture
   capture for visionOS, iPhone, iPad, tvOS, and the isolated Mac target. It uses exact worktree
   simulator IDs, exports only JPEGs plus a sanitized checksum manifest, and fails closed on
@@ -78,6 +106,41 @@ media details out of commits and public issues.
   container; it writes only gitignored listing, cache, inventory, representative, and summary
   artifacts. See the
   [private media corpus workflow](../docs/MEDIA-CORPUS-TESTING.md).
+- `playback-regression.py` — bounded, simulator-free synthetic audio/video regression package
+  for a compatible Mac. `plan` previews commands; `run` executes known controls and optional
+  codec/multichannel suites; `report` validates a saved package. See
+  [Headless playback testing](../docs/HEADLESS-PLAYBACK-TESTING.md).
+- `playback-coverage.py` — maps a private inventory to synthetic fixture families and prioritizes
+  technical combinations using file counts. Family matches never establish library-file playback.
+- `playback-native-control.py` — explicit generated-fixture native Mac controls for retained
+  observation, seek/item/cancellation lifecycle, and mixed or asset-track audio taps. Uses only
+  the worktree-staged dev app, exact process identity, bounded logs and a loopback range server;
+  normal app launch is restored afterward. This is not a backend credential runner.
+- `emby-reopen-soak.py` — repeats the in-app Emby deep-seek reopen probe on the Mac host dev app
+  (already signed in to Emby) and correlates each run with the lines Emby appended to its server
+  log over `kubectl`. Counts prewarm, copy-lane retry, render-pipeline failure, audio-queue resync
+  and server transcode-start signals (#420/#421). Raw logs stay under `build/emby-reopen-soak/`.
+  `--query` (exact private title) is required; `--runs`, repeatable `--seek-ms`, `--timeout`,
+  `--settle` and `--output` tune the run; `--kube-context`, `--namespace`, `--deployment` and
+  `--container` locate the server. `--identity` and `--app` default to the identity
+  `deploy-macos-to-host.sh` derives for this worktree (`LABSTREAM_MAC_BUNDLE_ID_SUFFIX`, else the
+  current branch).
+- `playback-signal-lab.py`, `playback-signal-matrix.py`, `playback-multichannel-lab.py`, and
+  `playback-signal-compare.py` — lower-level fixture generation, detector, codec/channel and
+  capture-method experiments. `playback-observation-report.py` checks existing-player capture
+  coverage without inventing a reference-quality verdict for arbitrary content. The signal lab,
+  regression and native-control runners compile `playback-signal-host.swift`, the shared
+  AVFoundation host they drive.
+- `scrub-server-logs.py` — offline, stdlib-only scrubber for Plex, Jellyfin, and Emby server and
+  transcoder (ffmpeg) logs before they go into an upstream report. It first discovers the concrete
+  hosts, IPs, tokens, client/device/user/session IDs, user and device names, media paths, titles,
+  release names, and search terms (including inside base64/gzip payloads), then replaces them with
+  the repository placeholders and re-encodes payloads, and finally re-scans the output. Any residual
+  hit exits 1 and writes `SCRUB-VERIFY-FAILED` into the output. `--since`/`--until` and
+  `--play-session` cut the main log down to one playback and pull in the matching transcoder logs.
+  `--output` must be a fresh directory outside the inputs; `--report` writes per-file category
+  counts. Neither the summary nor the report ever contains a value. Posting stays manual. See
+  [Sharing server logs upstream](../docs/AGENT-PLAYBACK-TROUBLESHOOTING.md#sharing-server-logs-upstream).
 - `perf-log-summary.py` — converts privacy-safe performance signposts into summaries/Markdown and
   produces strict, raw-artifact-bound comparison summaries.
 - `perf_evidence_schema.py` — shared closed schema/parser for privacy-safe performance spans,
@@ -249,13 +312,27 @@ scripts/perf-compare.py compare \
   inventory with `uv run python -m unittest discover -s scripts/tests -v` when `pyproject.toml` is present,
   so newly added matching test modules do not require this catalog to be hand-enumerated.
 
+## Research harnesses
+
+- `research/download-backlog-measure.py --worker PATH [--suite all|files|assets|large-file]
+  [--repetitions 1-3]` — bounded synthetic measurement of download-backlog memory and append
+  writes. `PATH` is the compiled `research/download-backlog-worker.swift`; stdout is aggregate JSON
+  only, and production behavior is unchanged. See the
+  [research note](https://github.com/jlipworth/Labstream/blob/main/docs/research/2026-10-22-download-backlog-memory-and-writes.md).
+
 ## Simulator and worktree helpers
 
 - `worktree-sim.sh` — provisions one simulator per worktree. The default is visionOS
-  (`vpwt-*`, `.simid`); opt into iPhone, iPad, or tvOS with `--platform`,
+  (`vpwt-*`, `.simid`); opt into iPhone, iPhone Duo, iPad, or tvOS with `--platform`,
   `LABSTREAM_SIM_PLATFORM`, or a gitignored `.simplatform` file (`iphonewt-*`/`.simid-iphone`,
-  `ipadwt-*`/`.simid-ipad`, `tvwt-*`/`.simid-tvos`). Resolve a concrete ID and never
+  `duowt-*`/`.simid-duo` for the iPhone Duo foldable, `ipadwt-*`/`.simid-ipad`, `tvwt-*`/`.simid-tvos`). Resolve a concrete ID and never
   target `booted`.
+- `duo-appresize.sh launch [--pose book|tabletop|flat] [-- ARGS]`, `start [--size WxH]`,
+  `set WxH`, `stop`, `shot PATH` — headless iPhone Duo inner-display proxy for this worktree's Duo
+  simulator: a `devicectl device appResize` session at the inner-display size plus the app's
+  DEBUG-only `LABSTREAM_DEBUG_DUO_POSE` override. Captures prove layout against the pose seam only;
+  real Device Hub and hardware folds remain open gates. See
+  [iOS/iPadOS](../docs/MOBILE-IOS.md).
 - `run-bounded-command.py` — wall-clock timeout wrapper used by the mobile and tvOS agent
   runners so a hung `xcodebuild` or simctl step cannot run unbounded.
 - `bounded_process.py` — internal process-group termination helper shared by bounded runners;

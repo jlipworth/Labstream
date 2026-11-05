@@ -10,15 +10,17 @@ public struct DurableDownloadCleanupIntent: Codable, Equatable, Sendable, Identi
     public struct ServerIdentity: Codable, Equatable, Sendable {
         public let baseURLString: String
         public let serverID: String?
-        public let userID: String
+        /// Required for Jellyfin/Emby. Plex cleanup is server-scoped (optimize queue items belong
+        /// to the server, not the account), so Plex identities carry no user.
+        public let userID: String?
 
         /// Stores only server identity. Credentials, query items, and fragments are discarded.
-        public init?(baseURL: URL, serverID: String?, userID: String) {
+        /// Whether a user is required is decided per backend by `DurableDownloadCleanupIntent`.
+        public init?(baseURL: URL, serverID: String?, userID: String?) {
             guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false),
                   let scheme = components.scheme?.lowercased(),
                   scheme == "http" || scheme == "https",
-                  components.host?.isEmpty == false,
-                  !userID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+                  components.host?.isEmpty == false else { return nil }
             components.scheme = scheme
             components.host = components.host?.lowercased()
             components.user = nil
@@ -28,11 +30,17 @@ public struct DurableDownloadCleanupIntent: Codable, Equatable, Sendable, Identi
             guard let value = components.url?.absoluteString else { return nil }
             self.baseURLString = value
             self.serverID = Self.nonempty(serverID)
-            self.userID = userID.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.userID = Self.nonempty(userID)
         }
 
+        /// Cleanup matching only; resume eligibility stays with `BackendSession.matchesPersistedServer`.
+        /// A user-bound identity requires the same user (GUID formatting normalized); a server ID,
+        /// when recorded, must match exactly; otherwise the normalized base URL decides.
         public func matches(_ session: BackendSession) -> Bool {
-            guard session.userID == userID else { return false }
+            if let userID {
+                guard let liveUserID = session.userID,
+                      MediaBrowserUserIdentity.sameUser(liveUserID, userID) else { return false }
+            }
             if let serverID { return session.serverID == serverID }
             guard let persistedURL = URL(string: baseURLString) else { return false }
             return BackendURLIdentity.sameBaseURL(persistedURL, session.baseURL)
@@ -46,7 +54,7 @@ public struct DurableDownloadCleanupIntent: Codable, Equatable, Sendable, Identi
             guard let url = URL(string: rawURL),
                   let value = Self(baseURL: url,
                                    serverID: try c.decodeIfPresent(String.self, forKey: .serverID),
-                                   userID: try c.decode(String.self, forKey: .userID)) else {
+                                   userID: try c.decodeIfPresent(String.self, forKey: .userID)) else {
                 throw DecodingError.dataCorruptedError(
                     forKey: .baseURLString, in: c,
                     debugDescription: "Cleanup server identity must be a credential-free HTTP(S) base URL")
@@ -58,7 +66,7 @@ public struct DurableDownloadCleanupIntent: Codable, Equatable, Sendable, Identi
             var c = encoder.container(keyedBy: CodingKeys.self)
             try c.encode(baseURLString, forKey: .baseURLString)
             try c.encodeIfPresent(serverID, forKey: .serverID)
-            try c.encode(userID, forKey: .userID)
+            try c.encodeIfPresent(userID, forKey: .userID)
         }
 
         private static func nonempty(_ value: String?) -> String? {
@@ -70,6 +78,29 @@ public struct DurableDownloadCleanupIntent: Codable, Equatable, Sendable, Identi
     public enum Operation: Equatable, Sendable {
         case activeEncoding(playSessionID: String)
         case embyConvert(EmbyConvertIdentity)
+        /// Remove this row's Plex optimize (type-42) queue item, matched by its exact title.
+        case plexOptimize(queueTitle: String)
+    }
+
+    /// What is known about the Plex create PUT behind a `plexOptimize` intent. An absent queue item
+    /// retires the intent only once the create is known to have landed; an unresolved create may
+    /// still become visible later.
+    public enum PlexCreateEvidence: String, Codable, Equatable, Sendable {
+        case confirmed
+        case unresolved
+    }
+
+    /// Why the intent exists, which decides when the runner may execute it. Not part of the
+    /// operation identity: `ensure` deduplicates on operation, so a later delete reuses an earlier
+    /// terminal-release intent rather than adding a second one.
+    public enum Provenance: Equatable, Sendable {
+        /// Written by delete; runs once the row's removal has committed.
+        case rowDeletion
+        /// Written for a handle a terminal row still references; runs while that row is terminal
+        /// and unprotected, or once it is gone.
+        case terminalRelease
+        /// The originating attempt gave the resource up while its row may live on.
+        case abandonment(originAttempt: DownloadAttemptKey)
     }
 
     public enum EmbyConvertIdentity: Equatable, Sendable {
@@ -87,25 +118,53 @@ public struct DurableDownloadCleanupIntent: Codable, Equatable, Sendable, Identi
     public let backend: DownloadBackendKind
     public let server: ServerIdentity
     public let operation: Operation
+    /// `nil` for entries written before provenance existed; the app classifies them once on load.
+    public let provenance: Provenance?
+    /// Present only for `plexOptimize`.
+    public let plexCreate: PlexCreateEvidence?
+    /// When the intent was first journaled; bounds how long an unresolvable Plex item is retained.
+    public let recordedAtEpochSeconds: Double?
 
     public init?(id: UUID = UUID(), attemptKey: DownloadAttemptKey,
-                 backend: DownloadBackendKind, server: ServerIdentity, operation: Operation) {
-        guard !attemptKey.ratingKey.isEmpty, backend != .plex else { return nil }
+                 backend: DownloadBackendKind, server: ServerIdentity, operation: Operation,
+                 provenance: Provenance? = nil, plexCreate: PlexCreateEvidence? = nil,
+                 recordedAtEpochSeconds: Double? = nil) {
+        guard !attemptKey.ratingKey.isEmpty else { return nil }
         switch operation {
         case .activeEncoding(let playSessionID):
-            guard !playSessionID.isEmpty else { return nil }
+            guard backend != .plex, !playSessionID.isEmpty else { return nil }
         case .embyConvert(let identity):
             guard backend == .emby else { return nil }
             if case .ambiguousCreate(_, _, let started, _) = identity {
                 guard started.isFinite else { return nil }
             }
+        case .plexOptimize(let queueTitle):
+            guard backend == .plex, !queueTitle.isEmpty, plexCreate != nil else { return nil }
         }
+        if case .plexOptimize = operation {} else { guard plexCreate == nil else { return nil } }
+        // MediaBrowser cleanup is always user-bound; Plex cleanup is server-scoped.
+        guard (backend == .plex) == (server.userID == nil) else { return nil }
+        if case .abandonment(let origin) = provenance {
+            guard !origin.ratingKey.isEmpty else { return nil }
+        }
+        if let recordedAtEpochSeconds { guard recordedAtEpochSeconds.isFinite else { return nil } }
         self.version = Self.currentVersion
         self.id = id
         self.attemptKey = attemptKey
         self.backend = backend
         self.server = server
         self.operation = operation
+        self.provenance = provenance
+        self.plexCreate = plexCreate
+        self.recordedAtEpochSeconds = recordedAtEpochSeconds
+    }
+
+    /// The same authority with its provenance settled (legacy classification) or its create
+    /// evidence upgraded once the item has been seen.
+    public func with(provenance: Provenance?, plexCreate: PlexCreateEvidence? = nil) -> Self? {
+        Self(id: id, attemptKey: attemptKey, backend: backend, server: server,
+             operation: operation, provenance: provenance, plexCreate: plexCreate ?? self.plexCreate,
+             recordedAtEpochSeconds: recordedAtEpochSeconds)
     }
 
     /// A stale completion can clear only the exact durable entry it executed.
@@ -123,8 +182,10 @@ public struct DurableDownloadCleanupIntent: Codable, Equatable, Sendable, Identi
         case version, id, attemptKey, backend, server, operationType
         case playSessionID, embyConvertMode, embyConvertJobID, baselineJobIDs
         case fingerprint, attemptStartedAtEpochSeconds, phase
+        case queueTitle, plexCreate, provenance, provenanceOriginAttempt, recordedAtEpochSeconds
     }
-    private enum OperationType: String, Codable { case activeEncoding, embyConvert }
+    private enum OperationType: String, Codable { case activeEncoding, embyConvert, plexOptimize }
+    private enum ProvenanceTag: String, Codable { case rowDeletion, terminalRelease, abandonment }
     private enum ConvertMode: String, Codable { case knownJob, ambiguousCreate }
 
     public func encode(to encoder: Encoder) throws {
@@ -149,6 +210,19 @@ public struct DurableDownloadCleanupIntent: Codable, Equatable, Sendable, Identi
             try c.encode(fingerprint, forKey: .fingerprint)
             try c.encode(started, forKey: .attemptStartedAtEpochSeconds)
             try c.encode(phase, forKey: .phase)
+        case .plexOptimize(let queueTitle):
+            try c.encode(OperationType.plexOptimize, forKey: .operationType)
+            try c.encode(queueTitle, forKey: .queueTitle)
+            try c.encodeIfPresent(plexCreate, forKey: .plexCreate)
+        }
+        try c.encodeIfPresent(recordedAtEpochSeconds, forKey: .recordedAtEpochSeconds)
+        switch provenance {
+        case nil: break
+        case .rowDeletion: try c.encode(ProvenanceTag.rowDeletion, forKey: .provenance)
+        case .terminalRelease: try c.encode(ProvenanceTag.terminalRelease, forKey: .provenance)
+        case .abandonment(let origin):
+            try c.encode(ProvenanceTag.abandonment, forKey: .provenance)
+            try c.encode(origin, forKey: .provenanceOriginAttempt)
         }
     }
 
@@ -178,9 +252,24 @@ public struct DurableDownloadCleanupIntent: Codable, Equatable, Sendable, Identi
                     attemptStartedAtEpochSeconds: try c.decode(Double.self, forKey: .attemptStartedAtEpochSeconds),
                     phase: try c.decode(EmbyConvertRecoveryPolicy.Phase.self, forKey: .phase)))
             }
+        case .plexOptimize:
+            operation = .plexOptimize(queueTitle: try c.decode(String.self, forKey: .queueTitle))
+        }
+        let provenance: Provenance?
+        switch try c.decodeIfPresent(ProvenanceTag.self, forKey: .provenance) {
+        case nil: provenance = nil
+        case .rowDeletion: provenance = .rowDeletion
+        case .terminalRelease: provenance = .terminalRelease
+        case .abandonment:
+            provenance = .abandonment(originAttempt: try c.decode(
+                DownloadAttemptKey.self, forKey: .provenanceOriginAttempt))
         }
         guard let value = Self(id: id, attemptKey: attemptKey, backend: backend,
-                               server: server, operation: operation) else {
+                               server: server, operation: operation, provenance: provenance,
+                               plexCreate: try c.decodeIfPresent(PlexCreateEvidence.self,
+                                                                 forKey: .plexCreate),
+                               recordedAtEpochSeconds: try c.decodeIfPresent(
+                                Double.self, forKey: .recordedAtEpochSeconds)) else {
             throw DecodingError.dataCorruptedError(forKey: .operationType, in: c,
                                                     debugDescription: "Invalid cleanup intent")
         }

@@ -28,7 +28,13 @@ struct LabstreamMobile: App {
         WindowGroup {
             if let runtime {
                 ContentView(runtime: runtime)
+                    // One switch style app-wide: amber on state, never system green.
+                    .toggleStyle(LabstreamSwitchToggleStyle())
+                    // The single foldable-pose and vertical-bar-edge source for every surface.
+                    .providesDuoPose()
                     .reportsAppSceneActivity(runtime.sceneActivity, role: .mainWindow)
+                    // DEBUG-only capture route for folded-landscape evidence (no-op otherwise).
+                    .debugCaptureOrientation()
             } else {
                 SecureStorageUnavailableView()
             }

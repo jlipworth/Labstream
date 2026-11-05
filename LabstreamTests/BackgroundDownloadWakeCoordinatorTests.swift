@@ -19,7 +19,7 @@ struct BackgroundDownloadWakeCoordinatorTests {
         #expect(coordinator.deferRevalidationIfWakePending(second))
         #expect(coordinator.deferRevalidationIfWakePending(first))
 
-        let drain = coordinator.finishEvents(identifier: "wake")
+        let drain = prove(coordinator.finishEvents(identifier: "wake"), coordinator)
         #expect(drain.completionBatches == [batch("wake", token)])
         #expect(drain.deferredRevalidationKeys == [first, second])
         #expect(!coordinator.hasPendingHandler)
@@ -39,7 +39,7 @@ struct BackgroundDownloadWakeCoordinatorTests {
         #expect(coordinator.finishEvents(identifier: "wake") == .none)
 
         #expect(coordinator.endOperation() == .none)
-        let drain = coordinator.endOperation()
+        let drain = prove(coordinator.endOperation(), coordinator)
         #expect(drain.completionBatches == [batch("wake", token)])
         #expect(drain.deferredRevalidationKeys == [attempt])
         #expect(coordinator.snapshot.pendingOperationCount == 0)
@@ -67,7 +67,7 @@ struct BackgroundDownloadWakeCoordinatorTests {
 
         let current = coordinator.endGrace(for: attempt, generation: second.generation)
         #expect(current.ended)
-        #expect(current.drain.completionBatches == [batch("wake", token)])
+        #expect(prove(current.drain, coordinator).completionBatches == [batch("wake", token)])
         #expect(coordinator.snapshot.pendingOperationCount == 0)
         #expect(!coordinator.endGrace(for: attempt, generation: second.generation).ended)
     }
@@ -85,6 +85,37 @@ struct BackgroundDownloadWakeCoordinatorTests {
         #expect(coordinator.snapshot.pendingOperationCount == 0)
     }
 
+    @Test("Rebuild grace marks its row as owned until the grace ends (B00)")
+    func graceMarksRowOwnedUntilEnded() throws {
+        let coordinator = BackgroundDownloadWakeCoordinator()
+        let attempt = try key("grace-owned")
+        #expect(!coordinator.hasGrace(forRatingKey: attempt.ratingKey))
+
+        _ = coordinator.beginGrace(for: attempt)
+        #expect(coordinator.hasGrace(forRatingKey: attempt.ratingKey))
+        #expect(!coordinator.hasGrace(forRatingKey: "plex:other"))
+
+        _ = coordinator.endGrace(for: attempt)
+        #expect(!coordinator.hasGrace(forRatingKey: attempt.ratingKey))
+    }
+
+    @Test("Finishing all awaiting events keeps operations and graces holding the release (B07)")
+    func finishAllAwaitingEventsRespectsHolds() throws {
+        let coordinator = BackgroundDownloadWakeCoordinator()
+        let attempt = try key("finish-all")
+        let token = deterministicToken(5)
+        coordinator.storeHandler(identifier: "wake", token: token)
+        _ = coordinator.beginGrace(for: attempt)
+
+        #expect(coordinator.finishAllAwaitingEvents() == .none)
+        #expect(coordinator.hasGrace(forRatingKey: attempt.ratingKey))
+        #expect(coordinator.snapshot.pendingOperationCount == 1)
+
+        let ended = coordinator.endGrace(for: attempt)
+        #expect(prove(ended.drain, coordinator).completionBatches == [batch("wake", token)])
+        #expect(!coordinator.hasPendingHandler)
+    }
+
     @Test("Startup abort clears grace ownership and permits a balanced rearm")
     func abortClearsGraceOwnership() throws {
         let coordinator = BackgroundDownloadWakeCoordinator()
@@ -100,6 +131,12 @@ struct BackgroundDownloadWakeCoordinatorTests {
         #expect(coordinator.snapshot.pendingOperationCount == 1)
         #expect(coordinator.endGrace(for: attempt, generation: rearmed.generation).ended)
         #expect(coordinator.snapshot.pendingOperationCount == 0)
+    }
+
+    private func prove(_ drain: BackgroundDownloadWakeCoordinator.Drain,
+                       _ coordinator: BackgroundDownloadWakeCoordinator) -> BackgroundDownloadWakeCoordinator.Drain {
+        guard let flush = drain.flush else { return drain }
+        return coordinator.persistenceFinished(flush, committed: true)
     }
 
     private func key(_ suffix: String) throws -> DownloadAttemptKey {

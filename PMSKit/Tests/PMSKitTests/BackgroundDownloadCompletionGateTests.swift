@@ -16,6 +16,25 @@ struct BackgroundDownloadCompletionGateTests {
         #expect(gate.awaitingFinishHandlerCount == 0)
     }
 
+    @Test("Finishing every awaiting identifier still defers behind pending operations")
+    func finishAllAwaitingEventsDefersBehindPendingWork() {
+        var gate = BackgroundDownloadCompletionGate()
+        let first = BackgroundDownloadCompletionHandlerToken()
+        let second = BackgroundDownloadCompletionHandlerToken()
+        gate.storeHandler(identifier: "b", token: second)
+        gate.storeHandler(identifier: "a", token: first)
+        gate.beginOperation()
+
+        #expect(gate.finishAllAwaitingEvents().isEmpty)
+        #expect(gate.pendingOperationCount == 1)
+        #expect(gate.awaitingFinishHandlerCount == 0)
+        #expect(gate.endOperation() == [
+            .init(identifier: "a", tokens: [first]),
+            .init(identifier: "b", tokens: [second]),
+        ])
+        #expect(!gate.hasPendingHandler)
+    }
+
     @Test("Completion is deferred until all pending durable operations drain")
     func defersUntilPendingWorkDrains() {
         var gate = BackgroundDownloadCompletionGate()

@@ -4,6 +4,14 @@ import Testing
 
 @Suite("Download row status caption policy")
 struct DownloadRowStatusCaptionPolicyTests {
+    @Test(arguments: [DownloadStatus.complete, .unverified])
+    func finishedCaptions(status: DownloadStatus) {
+        let word = status == .complete ? "Downloaded" : "Not verified"
+        #expect(DownloadRowStatusCaptionPolicy.caption(context(status: status,
+            bytes: 1_600_000_000, resolutionLabel: "1080p"))
+            == "\(word) • 1080p • 1.6 GB")
+    }
+
     @Test("Static byte-range zero-byte active rows stay in download language")
     func activeStaticZeroByteCaption() {
         let caption = DownloadRowStatusCaptionPolicy.caption(context(
@@ -28,6 +36,18 @@ struct DownloadRowStatusCaptionPolicyTests {
             serverPrepProgress: 1.0))
 
         #expect(caption == "Finalizing server transcode… • 720p")
+    }
+
+    @Test("#414: a finished render waiting for a transfer slot says so, even at 100%")
+    func serverPrepReadyCaption() {
+        let ready = context(status: .preparing,
+                            resumeMode: .serverPrepThenStatic,
+                            isActive: true,
+                            serverPrepState: DownloadRowStatusCaptionPolicy.serverPrepReadyState,
+                            serverPrepProgress: 1.0)
+        #expect(DownloadRowStatusCaptionPolicy.phase(ready) == .serverPrepReady)
+        #expect(DownloadRowStatusCaptionPolicy.phase(ready).isActiveWork)
+        #expect(DownloadRowStatusCaptionPolicy.caption(ready) == "Ready — waiting for a download slot…")
     }
 
     @Test("Forward-only active bytes include approximate percent and server-paced rate")
@@ -100,40 +120,6 @@ struct DownloadRowStatusCaptionPolicyTests {
         #expect(DownloadRowStatusCaptionPolicy.caption(active) == "Preparing on server… 42%")
     }
 
-
-    @Test("Compact sheet captions preserve modal phase wording")
-    func compactActiveCaptions() {
-        #expect(DownloadRowStatusCaptionPolicy.compactActiveCaption(lane: .original,
-                                                                   backend: .plex,
-                                                                   isServerPreparedVersion: false) == "Downloading…")
-        // B4: server-prepared static byte-range version reads as "optimized", never "transcode".
-        #expect(DownloadRowStatusCaptionPolicy.compactActiveCaption(lane: .original,
-                                                                   backend: .plex,
-                                                                   isServerPreparedVersion: true) == "Downloading optimized…")
-        #expect(DownloadRowStatusCaptionPolicy.compactActiveCaption(lane: .compatibleRemux,
-                                                                   backend: .emby,
-                                                                   isServerPreparedVersion: false) == "Remuxing + downloading…")
-        #expect(DownloadRowStatusCaptionPolicy.compactActiveCaption(lane: .optimize,
-                                                                   backend: .jellyfin,
-                                                                   isServerPreparedVersion: false) == "Transcoding + downloading…")
-    }
-
-    @Test("A queued row with no live slot reads as waiting in the sheet, never as a transfer (#362)")
-    func compactWaitingCaptionForUnadmittedQueuedRows() {
-        #expect(DownloadRowStatusCaptionPolicy.compactWaitingCaption(
-            status: .queued, isActive: false, resumeMode: .staticByteRange) == "Queued…")
-        #expect(DownloadRowStatusCaptionPolicy.compactWaitingCaption(
-            status: .queued, isActive: false, resumeMode: nil) == "Queued…")
-        #expect(DownloadRowStatusCaptionPolicy.compactWaitingCaption(
-            status: .queued, isActive: false, resumeMode: .serverPrepThenStatic) == "Preparing on server…")
-        // Genuinely active rows keep the transfer phase wording and progress UI.
-        #expect(DownloadRowStatusCaptionPolicy.compactWaitingCaption(
-            status: .queued, isActive: true, resumeMode: .staticByteRange) == nil)
-        for status in [DownloadStatus.downloading, .preparing, .paused, .failed, .complete, .unverified] {
-            #expect(DownloadRowStatusCaptionPolicy.compactWaitingCaption(
-                status: status, isActive: false, resumeMode: .staticByteRange) == nil)
-        }
-    }
 
     @Test("Record context derives persisted row facts from the shared job snapshot")
     func recordContextDerivesPersistedFacts() {

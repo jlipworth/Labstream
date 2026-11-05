@@ -19,6 +19,9 @@ public enum BackgroundRangeRequestReason: String, Sendable, Equatable {
 public enum BackgroundRangeCompletionDisposition: Sendable, Equatable {
     case successAlreadyHandled
     case cancelled
+    /// B09: the OS cancelled the task (Background App Refresh disabled, insufficient system
+    /// resources, force quit). Park the row at its durable checkpoint as a resumable interruption.
+    case parkSystemInterrupted
     case requestNeeded(BackgroundRangeRequestReason)
     case pauseResumable
 }
@@ -28,10 +31,11 @@ public enum BackgroundRangeCompletionDisposition: Sendable, Equatable {
 public enum BackgroundRangeCompletionPolicy {
     public static func disposition(hasError: Bool,
                                    errorCode: Int?,
-                                   hasRequest: Bool) -> BackgroundRangeCompletionDisposition {
+                                   hasRequest: Bool,
+                                   isSystemInitiatedCancel: Bool = false) -> BackgroundRangeCompletionDisposition {
         guard hasError else { return .successAlreadyHandled }
         if errorCode == NSURLErrorCancelled {
-            return .cancelled
+            return isSystemInitiatedCancel ? .parkSystemInterrupted : .cancelled
         }
         return hasRequest ? .pauseResumable : .requestNeeded(.requestRebuildNeeded)
     }

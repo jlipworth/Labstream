@@ -16,7 +16,18 @@ final class EmbyConvertCleanupJournal: @unchecked Sendable {
     struct Persistence: Sendable {
         let read: @Sendable (URL) throws -> Data?
         let encode: @Sendable ([Tombstone]) throws -> Data
-        let atomicWrite: @Sendable (Data, URL) throws -> Void
+        /// Full durable replace (B18): temp write, full fsync, rename, directory fsync.
+        let commit: @Sendable (Data, URL) throws -> Void
+
+        init(
+            read: @escaping @Sendable (URL) throws -> Data?,
+            encode: @escaping @Sendable ([Tombstone]) throws -> Data,
+            commit: @escaping @Sendable (Data, URL) throws -> Void
+        ) {
+            self.read = read
+            self.encode = encode
+            self.commit = commit
+        }
 
         static let live = Self(
             read: { url in
@@ -32,7 +43,7 @@ final class EmbyConvertCleanupJournal: @unchecked Sendable {
                 }
             },
             encode: { try JSONEncoder().encode($0) },
-            atomicWrite: { data, url in try data.write(to: url, options: .atomic) }
+            commit: DurableJournalCommit.liveCommit
         )
     }
 
@@ -50,11 +61,6 @@ final class EmbyConvertCleanupJournal: @unchecked Sendable {
 
     enum LoadResult: Sendable, Equatable {
         case loaded([Tombstone])
-        case failed(Failure)
-    }
-
-    enum AddResult: Sendable, Equatable {
-        case committed(Tombstone)
         case failed(Failure)
     }
 
@@ -78,41 +84,6 @@ final class EmbyConvertCleanupJournal: @unchecked Sendable {
     }
 
     @discardableResult
-    func add(_ tombstone: Tombstone) -> AddResult {
-        lock.lock(); defer { lock.unlock() }
-        var values: [Tombstone]
-        switch readLocked() {
-        case .loaded(let loaded): values = loaded
-        case .failed(let failure): return .failed(failure)
-        }
-        guard !values.contains(where: { $0.id == tombstone.id }) else {
-            return .committed(tombstone)
-        }
-        let expectedIDs = EmbyConvertRecoveryPolicy.appendingCleanupTombstoneID(
-            tombstone.id, to: values.map(\.id))
-        values.append(tombstone)
-        assert(values.map(\.id) == expectedIDs)
-        let data: Data
-        do {
-            data = try persistence.encode(values)
-        } catch {
-            return .failed(Self.failure(.encode, error))
-        }
-        do {
-            try persistence.atomicWrite(data, fileURL)
-        } catch {
-            // Atomic replacement can succeed before its injected/filesystem error is observed.
-            // Re-read within this journal transaction: the generated UUID is exact add proof.
-            if case .loaded(let durable) = readLocked(),
-               durable.contains(where: { $0.id == tombstone.id }) {
-                return .committed(tombstone)
-            }
-            return .failed(Self.failure(.commit, error))
-        }
-        return .committed(tombstone)
-    }
-
-    @discardableResult
     func remove(id: UUID) -> RemoveResult {
         lock.lock(); defer { lock.unlock() }
         var values: [Tombstone]
@@ -129,14 +100,7 @@ final class EmbyConvertCleanupJournal: @unchecked Sendable {
         } catch {
             return .failed(Self.failure(.encode, error))
         }
-        do {
-            try persistence.atomicWrite(data, fileURL)
-        } catch {
-            // Absence of this exact UUID after a thrown replacement proves removal won.
-            if case .loaded(let durable) = readLocked(),
-               !durable.contains(where: { $0.id == id }) {
-                return .committed(removed: true)
-            }
+        if let error = DurableJournalCommit.commit(data, to: fileURL, using: persistence.commit) {
             return .failed(Self.failure(.commit, error))
         }
         return .committed(removed: true)

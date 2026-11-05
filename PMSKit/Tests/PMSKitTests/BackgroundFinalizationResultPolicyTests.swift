@@ -83,4 +83,22 @@ struct BackgroundFinalizationResultPolicyTests {
         #expect(stillParked.status == .unverified)
         #expect(!stillParked.shouldDeleteFile)
     }
+
+    @Test("Revalidating a published body never fails or deletes it for truncation (B54)")
+    func revalidationKeepsPublishedTruncatedBody() {
+        // After a relaunch the in-memory strike count restarts at 1; the parked, published body
+        // must still survive its re-probe.
+        let result = BackgroundFinalizationResultPolicy.result(
+            for: .truncated(actualDurationMs: 6_480_000, expectedDurationMs: 7_200_000),
+            consecutiveTruncationFailures: 1,
+            revalidatingPublishedFile: true)
+        #expect(result.status == .unverified)
+        #expect(!result.shouldDeleteFile)
+        // A fresh transfer still fails and deletes on its first strike.
+        let fresh = BackgroundFinalizationResultPolicy.result(
+            for: .truncated(actualDurationMs: 6_480_000, expectedDurationMs: 7_200_000),
+            consecutiveTruncationFailures: 1)
+        #expect(fresh.status == .failed)
+        #expect(fresh.shouldDeleteFile)
+    }
 }

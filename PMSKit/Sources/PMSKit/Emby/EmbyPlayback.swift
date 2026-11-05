@@ -123,7 +123,7 @@ public struct EmbyMediaSourceInfo: Decodable, Sendable, Equatable {
             mediaStreams.first { $0.type == "Audio" && $0.index == index }
         } ?? mediaStreams.first { $0.type == "Audio" }
         return MediaBrowserPlaybackSourceMetadata(
-            container: container?.split(separator: ",").first.map(String.init),
+            container: MediaBrowserDownloadContainer.token(container),
             width: width ?? video?.width,
             height: height ?? video?.height,
             bitrate: bitrate.map { $0 / 1_000 },
@@ -318,9 +318,14 @@ public enum EmbyPlayback {
     /// response lacks a `PlaySessionId` / media source / source id (all required to either
     /// download the transcode or tear down the encoder afterwards).
     public static func downloadDecision(response: EmbyPlaybackInfoResponse,
-                                        preferredMediaSourceId: String? = nil) throws -> EmbyDownloadPlaybackDecision {
+                                        preferredMediaSourceId: String? = nil,
+                                        audioStreamIndex: Int? = nil) throws -> EmbyDownloadPlaybackDecision {
         guard let playSessionId = response.playSessionId, !playSessionId.isEmpty else {
             throw EmbyPlaybackError.missingPlaySessionId
+        }
+        if let preferredMediaSourceId, !preferredMediaSourceId.isEmpty,
+           !response.mediaSources.contains(where: { $0.id == preferredMediaSourceId }) {
+            throw EmbyPlaybackError.preferredMediaSourceUnavailable(preferredMediaSourceId)
         }
         guard let source = chooseSource(response.mediaSources, preferredMediaSourceId: preferredMediaSourceId) else {
             throw EmbyPlaybackError.noMediaSources
@@ -329,7 +334,10 @@ public enum EmbyPlayback {
             throw EmbyPlaybackError.missingMediaSourceId
         }
         let videoStream = source.mediaStreams.first { $0.type == "Video" }
-        let audioStream = source.mediaStreams.first { $0.type == "Audio" }
+        let selectedAudio = audioStreamIndex.flatMap { index in
+            source.mediaStreams.first { $0.type == "Audio" && $0.index == index }
+        }
+        let audioStream = selectedAudio ?? source.mediaStreams.first { $0.type == "Audio" }
         return EmbyDownloadPlaybackDecision(
             playSessionId: playSessionId,
             mediaSourceId: mediaSourceId,
@@ -337,12 +345,13 @@ public enum EmbyPlayback {
             supportsDirectStream: source.supportsDirectStream,
             transcodingURL: source.transcodingURL.flatMap { $0.isEmpty ? nil : $0 },
             size: source.size,
-            container: source.container?.split(separator: ",").first.map(String.init),
+            container: MediaBrowserDownloadContainer.token(source.container),
             bitrate: source.bitrate,
             width: source.width ?? videoStream?.width,
             height: source.height ?? videoStream?.height,
             videoCodec: source.videoCodec ?? videoStream?.codec,
-            audioCodec: source.audioCodec ?? audioStream?.codec,
+            audioCodec: selectedAudio.map { $0.codec ?? source.audioCodec }
+                ?? (source.audioCodec ?? audioStream?.codec),
             transcodeReasons: source.transcodeReasons)
     }
 
@@ -406,7 +415,7 @@ public enum EmbyPlayback {
             return EmbyExistingVersion(
                 mediaSourceId: id,
                 name: source.name,
-                container: source.container?.split(separator: ",").first.map(String.init) ?? source.container,
+                container: MediaBrowserDownloadContainer.token(source.container),
                 videoCodec: source.videoCodec ?? video?.codec,
                 audioCodec: source.audioCodec ?? audio?.codec,
                 size: source.size,
@@ -511,7 +520,7 @@ public enum EmbyPlayback {
         guard source.supportsDirectPlay || source.supportsDirectStream else {
             throw EmbyPlaybackError.unsupportedMediaSource
         }
-        let container = (source.container?.split(separator: ",").first).map(String.init) ?? "mp4"
+        let container = MediaBrowserDownloadContainer.token(source.container) ?? "mp4"
         let base = try embyURL(server: server, path: "/videos/\(itemId)/stream.\(container)")
         guard var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
             throw EmbyPlaybackError.invalidURL

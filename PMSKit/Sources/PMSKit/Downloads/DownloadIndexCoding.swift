@@ -14,14 +14,21 @@ import Foundation
 /// `DownloadStore`; the tests exercise the isolation/versioning with a stand-in row.
 public enum DownloadIndexCoding {
 
-    /// Schema version stamped on every new write. Bump when the on-disk row shape
+    /// Schema version stamped once an index has been upgraded. Bump when the on-disk row shape
     /// changes in a way a loader must branch on.
-    public static let currentSchemaVersion = 4
+    public static let currentSchemaVersion = 5
+
+    /// Versions this binary loads as current (P3b). v4 and v5 share the row and envelope shape;
+    /// a v4 index keeps being written as v4 until the store's upgrade stamps it v5, so a v4 file
+    /// never contains a row created after the upgrade.
+    public static let admissibleSchemaVersions: ClosedRange<Int> = 4...5
 
     /// A mutation-free startup classification. The app must run this before constructing any
     /// persistence writer, cleaning temporary files, or creating/protecting the Downloads root.
-    /// Only an absent index and an exact current envelope are admissible. Older/forward schemas
-    /// are reset as one opaque root; unreadable data is kept in place and fails closed.
+    /// Only an absent index and an admissible (v4 or v5) envelope are admissible. Older schemas are reset
+    /// as one opaque root. A NEWER schema (written by a later app version, then downgraded) is
+    /// classified unreadable: it is kept in place and fails closed, never reset, so reinstalling
+    /// the newer app recovers every download.
     public enum StartupProbe: Sendable, Equatable {
         case missing
         case current
@@ -45,9 +52,9 @@ public enum DownloadIndexCoding {
               envelope["rows"] is [Any] else {
             return .unreadable
         }
-        return version == currentSchemaVersion
-            ? .current
-            : .unsupported(schemaVersion: version)
+        if admissibleSchemaVersions.contains(version) { return .current }
+        if version > currentSchemaVersion { return .unreadable }
+        return .unsupported(schemaVersion: version)
     }
 
     /// Outcome of a current-envelope load: the rows that decoded, the schema version, and how many rows were
@@ -93,7 +100,7 @@ public enum DownloadIndexCoding {
     public static func decode<Row: Decodable>(_ type: Row.Type, from data: Data) -> DecodeResult<Row> {
         let decoder = JSONDecoder()
         if let envelope = try? decoder.decode(DecodeEnvelope<Row>.self, from: data),
-           envelope.schemaVersion == currentSchemaVersion {
+           admissibleSchemaVersions.contains(envelope.schemaVersion) {
             let rows = envelope.rows.compactMap(\.row)
             return DecodeResult(rows: rows,
                                 schemaVersion: envelope.schemaVersion,
@@ -102,13 +109,17 @@ public enum DownloadIndexCoding {
         return DecodeResult(rows: [], schemaVersion: currentSchemaVersion, skippedRowCount: 0)
     }
 
-    /// Encode rows into the current versioned envelope.
-    public static func encode<Row: Encodable>(_ rows: [Row]) throws -> Data {
+    /// Encode rows into a versioned envelope; `schemaVersion` must be admissible (P3b writes v4
+    /// until the upgrade stamp, v5 after it).
+    public static func encode<Row: Encodable>(
+        _ rows: [Row], schemaVersion: Int = currentSchemaVersion
+    ) throws -> Data {
+        precondition(admissibleSchemaVersions.contains(schemaVersion))
         let encoder = JSONEncoder()
         // Store recovery compares an ambiguous post-replace canonical file with the exact
         // candidate submitted to the persistence writer. JSON object key order is otherwise
         // unspecified, so two encodes of the same snapshot can produce different bytes.
         encoder.outputFormatting = [.sortedKeys]
-        return try encoder.encode(EncodeEnvelope(schemaVersion: currentSchemaVersion, rows: rows))
+        return try encoder.encode(EncodeEnvelope(schemaVersion: schemaVersion, rows: rows))
     }
 }

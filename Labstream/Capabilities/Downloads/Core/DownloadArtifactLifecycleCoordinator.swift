@@ -6,7 +6,7 @@ import Darwin
 /// mutations. Registration always precedes filesystem work; the worker reports the terminal
 /// index outcome when the operation is safe to release across a lifecycle boundary.
 final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
-    struct Ticket: Sendable, Equatable {
+    struct Ticket: Sendable, Hashable {
         let sequence: UInt64
         let key: DownloadAttemptKey
         let generation: UInt64
@@ -35,10 +35,18 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
         case failed(Failure)
     }
 
+    /// Scheduling seam: suspend consumption outside the condition to pin delayed exact waiters.
+    private let resolutionWillRead: @Sendable (Ticket) -> Void
+    init(resolutionWillRead: @escaping @Sendable (Ticket) -> Void = { _ in }) {
+        self.resolutionWillRead = resolutionWillRead
+    }
     private let condition = NSCondition()
+    private var registeredWaiters: [UInt64: Int] = [:]
+    private var waiterFailures: [UInt64: Failure] = [:]
     private var nextSequence: UInt64 = 0
     private struct Entry {
         let intentID: UUID
+        let firstSequence: UInt64
         var outcome: Outcome
     }
     /// Live work only: pending attempts plus failures whose intent may still be retried. A
@@ -50,7 +58,8 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
     /// Exact outcomes for failed attempts whose entries were retired (superseded by a completed
     /// retry, or permanently abandoned). Ticket-scoped waiters consult this when their sequence is
     /// gone from `entries`, so a delayed waiter still observes its own attempt's failure instead
-    /// of inheriting a retry's success. Bounded FIFO; an evicted (ancient) ticket reads
+    /// of inheriting a retry's success. Registered waiters additionally retain their outcome apart
+    /// from this bounded FIFO; an evicted, unregistered ancient ticket reads
     /// `.completed`, the same as any pruned completed chain.
     private var retiredFailures: [UInt64: Failure] = [:]
     private var retiredFailureOrder: [UInt64] = []
@@ -63,9 +72,17 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
         preparedRevision: DownloadStore.PersistenceTicket
     ) -> Ticket {
         condition.lock()
+        let firstSequence = entries.values.filter { $0.intentID == intentID }.map(\.firstSequence).min()
+            ?? (nextSequence + 1)
+        for (sequence, entry) in entries where entry.intentID == intentID {
+            if case .failed(let failure) = entry.outcome {
+                entries.removeValue(forKey: sequence)
+                retireFailureLocked(sequence: sequence, failure: failure)
+            }
+        }
         nextSequence += 1
         let sequence = nextSequence
-        entries[sequence] = Entry(intentID: intentID, outcome: .pending)
+        entries[sequence] = Entry(intentID: intentID, firstSequence: firstSequence, outcome: .pending)
         condition.unlock()
         return Ticket(
             sequence: sequence,
@@ -189,6 +206,7 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
 
     /// Caller must hold `condition`.
     private func retireFailureLocked(sequence: UInt64, failure: Failure) {
+        if registeredWaiters[sequence] != nil { waiterFailures[sequence] = failure }
         if retiredFailures.updateValue(failure, forKey: sequence) == nil {
             retiredFailureOrder.append(sequence)
         }
@@ -197,8 +215,51 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
         }
     }
 
+    private func registerWaiter(_ ticket: Ticket) {
+        condition.lock(); defer { condition.unlock() }
+        registeredWaiters[ticket.sequence, default: 0] += 1
+        if let failure = retiredFailures[ticket.sequence] { waiterFailures[ticket.sequence] = failure }
+    }
+
+    private func unregisterWaiter(_ ticket: Ticket) {
+        condition.lock(); defer { condition.unlock() }
+        let count = (registeredWaiters[ticket.sequence] ?? 1) - 1
+        if count == 0 {
+            registeredWaiters.removeValue(forKey: ticket.sequence)
+            waiterFailures.removeValue(forKey: ticket.sequence)
+        } else { registeredWaiters[ticket.sequence] = count }
+    }
+
     func waitSynchronously(for ticket: Ticket) -> FlushResult {
-        blockingWait(for: ticket, timeout: nil)
+        registerWaiter(ticket)
+        defer { unregisterWaiter(ticket) }
+        resolutionWillRead(ticket)
+        return blockingWait(for: ticket, deadline: nil)
+    }
+
+    func resolve(for ticket: Ticket, deadline: DownloadStoreDeadline) async -> FlushResult {
+        registerWaiter(ticket)
+        defer { unregisterWaiter(ticket) }
+        resolutionWillRead(ticket)
+        while true {
+            if let result = exactOutcome(ticket) { return result }
+            guard deadline.remaining > 0 else { return .timedOut(sequence: ticket.sequence) }
+            do { try await Task.sleep(for: .seconds(min(deadline.remaining, 0.01))) }
+            catch { return .timedOut(sequence: ticket.sequence) }
+        }
+    }
+
+    private func exactOutcome(_ ticket: Ticket) -> FlushResult? {
+        condition.lock(); defer { condition.unlock() }
+        guard let entry = entries[ticket.sequence], entry.intentID == ticket.intentID else {
+            if let failure = waiterFailures[ticket.sequence] ?? retiredFailures[ticket.sequence] { return .failed(failure) }
+            return .completed
+        }
+        switch entry.outcome {
+        case .pending: return nil
+        case .completed: return .completed
+        case .failed(let failure): return .failed(failure)
+        }
     }
 
     func waitSynchronously(through watermark: Watermark) -> FlushResult {
@@ -206,24 +267,38 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
     }
 
     func flush(through watermark: Watermark, timeout: TimeInterval) async -> FlushResult {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async { [self] in
-                continuation.resume(returning: blockingBoundaryWait(
-                    through: watermark,
-                    timeout: max(0, timeout)
-                ))
-            }
+        await flush(through: watermark, deadline: .after(timeout))
+    }
+
+    func flush(through watermark: Watermark, deadline: DownloadStoreDeadline) async -> FlushResult {
+        while true {
+            if let result = boundaryOutcome(watermark) { return result }
+            guard deadline.remaining > 0 else { return .timedOut(sequence: watermark.sequence) }
+            do { try await Task.sleep(for: .seconds(min(deadline.remaining, 0.01))) }
+            catch { return .timedOut(sequence: watermark.sequence) }
         }
     }
 
-    private func blockingWait(for ticket: Ticket, timeout: TimeInterval?) -> FlushResult {
+    private func boundaryOutcome(_ watermark: Watermark) -> FlushResult? {
+        condition.lock(); defer { condition.unlock() }
+        var pending = false
+        for entry in entries.values where entry.firstSequence <= watermark.sequence {
+            switch entry.outcome {
+            case .failed(let failure): return .failed(failure)
+            case .pending: pending = true
+            case .completed: break
+            }
+        }
+        return pending ? nil : .completed
+    }
+
+    private func blockingWait(for ticket: Ticket, deadline: DownloadStoreDeadline?) -> FlushResult {
         condition.lock()
-        let deadline = timeout.map { Date().addingTimeInterval($0) }
         while true {
             guard let entry = entries[ticket.sequence], entry.intentID == ticket.intentID else {
                 // Retired sequences resolve to their exact recorded failure; a pruned completed
                 // chain (or an evicted ancient failure) reads as completed.
-                let retired = retiredFailures[ticket.sequence]
+                let retired = waiterFailures[ticket.sequence] ?? retiredFailures[ticket.sequence]
                 condition.unlock()
                 if let retired { return .failed(retired) }
                 return .completed
@@ -239,19 +314,19 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
                 break
             }
             if let deadline {
-                guard Date() < deadline else {
+                guard deadline.remaining > 0 else {
                     condition.unlock()
                     return .timedOut(sequence: ticket.sequence)
                 }
-                _ = condition.wait(until: min(deadline, Date().addingTimeInterval(0.05)))
+                _ = condition.wait(until: Date().addingTimeInterval(min(deadline.remaining, 0.05)))
             } else {
                 condition.wait()
             }
         }
     }
 
-    /// A boundary observes the newest process attempt for each durable intent at or below its
-    /// immutable watermark. Registering a retry supersedes only the older attempt for that same
+    /// A boundary observes every intent first registered at or below its immutable watermark,
+    /// following that intent's current retry even when its epoch is newer than the watermark. Registering a retry supersedes only the older attempt for that same
     /// intent; unrelated failures remain visible. Outcomes are not destructively consumed by
     /// waiters, so concurrent waiters over one watermark receive the same result — though a
     /// completed retry or an explicit abandonment may upgrade what a still-blocked waiter
@@ -266,7 +341,7 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
             // `entries` holds live work only — abandoned/superseded attempts were retired — so
             // one dead intent can no longer poison every later boundary, and the scan cost is
             // bounded by in-flight and retryable-failed attempts.
-            let candidates = entries.filter { $0.key <= watermark.sequence }
+            let candidates = entries.filter { $0.value.firstSequence <= watermark.sequence }
             var latestByIntent: [UUID: (sequence: UInt64, outcome: Outcome)] = [:]
             for (sequence, entry) in candidates {
                 if sequence > (latestByIntent[entry.intentID]?.sequence ?? 0) {

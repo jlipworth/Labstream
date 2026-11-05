@@ -5,55 +5,337 @@ import SwiftUI
 import UIKit
 
 // Target-exclusive mobile presentation leaves for the shared player chrome.
+//
+// iPhone and iPad use ONE control arrangement in every pose (iPhone Duo design spec, "Player"):
+//
+//   top row      Close, PiP and gravity at leading; AirPlay at trailing
+//   transport    −10 / play-pause / +10, centred
+//   title        the title (1 line) and a 1–2 word caption, at leading
+//   scrubber     the timeline with elapsed and remaining times
+//   menus        Quality, Subtitles, Audio, Chapters, Speed, Stats
+//
+// The menus are labeled glass capsules whenever they fit (beside the title on a wide viewport,
+// else on their own row under the scrubber) and icon-only circles, same order, when they do not.
+// Quality is always present and first (dimmed when the source only plays at original quality).
+// The transport adds −30 / +30 outside the ±10 pair when the row has room. `MobilePlayerArrangement`
+// (PMSKit) decides only where the group sits: the whole safe frame, the video rectangle on a
+// portrait viewport, the trailing half in book, or a deck below the hinge in tabletop.
 extension CustomPlayerChrome {
+    nonisolated static let mobileChromeSpace = "labstream.player.mobileChrome"
+    /// Stats panel width on a regular viewport: room for the four-column tile grid.
+    static let mobileWideStatsWidth: CGFloat = 600
+
+    /// Chrome composition from the measured player viewport and size classes
+    /// (`MobilePlayerChromeLayoutPolicy`). The idiom only selects the phone-landscape metrics.
     var mobileChromeLayout: MobilePlayerChromeLayoutPolicy {
-        MobilePlayerChromeLayoutPolicy(horizontalSizeClass: horizontalSizeClass,
-                                       verticalSizeClass: verticalSizeClass,
-                                       idiom: UIDevice.current.userInterfaceIdiom,
-                                       viewportSize: chromeViewportSize)
+        MobilePlayerChromeLayoutPolicy(horizontalSizeClass: Self.policySizeClass(horizontalSizeClass),
+                                       verticalSizeClass: Self.policySizeClass(verticalSizeClass),
+                                       isPhoneIdiom: UIDevice.current.userInterfaceIdiom == .phone,
+                                       viewportWidth: Double(chromeViewportSize.width),
+                                       viewportHeight: Double(chromeViewportSize.height))
     }
 
-    var mobileChromeGeometryDetail: String {
-        let layout = mobileChromeLayout
-        return "phoneLandscape=\(layout.isPhoneLandscape) compact=\(layout.usesCompactChrome)"
-            + " h=\(horizontalSizeClass.map { "\($0)" } ?? "nil")"
-            + " v=\(verticalSizeClass.map { "\($0)" } ?? "nil")"
+    var mobileChromeBranch: MobilePlayerChromeLayoutPolicy.Branch {
+        mobileChromeLayout.branch
     }
 
-    var topUtilityButtonExtraTopPadding: CGFloat {
-        10
+    static func policySizeClass(_ sizeClass: UserInterfaceSizeClass?) -> MobilePlayerChromeLayoutPolicy.SizeClass? {
+        switch sizeClass {
+        case .compact: .compact
+        case .regular: .regular
+        case nil: nil
+        @unknown default: nil
+        }
     }
 
-    var topUtilityButtonVisualSide: CGFloat {
-        isPhoneLandscapeChrome ? 38 : 44
+    // MARK: Arrangement in local space
+
+    /// `mobileArrangement` (global space) moved into this view's own space. Before the player is
+    /// measured, the whole view below the latched top inset is the overlay.
+    var mobileLocalArrangement: MobilePlayerArrangement {
+        if let arrangement = mobileArrangement, let origin = mobileChromeGlobalOrigin,
+           arrangement.chromeFrame.width > 0, arrangement.chromeFrame.height > 0 {
+            func local(_ rect: CGRect) -> CGRect { rect.offsetBy(dx: -origin.x, dy: -origin.y) }
+            return MobilePlayerArrangement(mode: arrangement.mode,
+                                           videoFrame: local(arrangement.videoFrame),
+                                           chromeFrame: local(arrangement.chromeFrame),
+                                           transportFrame: local(arrangement.transportFrame),
+                                           bottomGroupFrame: local(arrangement.bottomGroupFrame),
+                                           statusFrame: local(arrangement.statusFrame))
+        }
+        let full = CGRect(origin: .zero, size: chromeViewportSize)
+        let top = min(mobileLatchedTopSafeInset, full.height)
+        let safe = CGRect(x: 0, y: top, width: full.width, height: full.height - top)
+        return MobilePlayerArrangement(mode: .overlay, videoFrame: full, chromeFrame: safe,
+                                       transportFrame: safe, bottomGroupFrame: safe, statusFrame: safe)
     }
 
-    var topUtilityButtonHitSide: CGFloat {
-        max(44, topUtilityButtonVisualSide)
+    /// Distance from the top of this view to the top row. In the overlay and book the group starts
+    /// at the safe edge and keeps the authored inset (or the latched inset plus a margin); on the
+    /// video rectangle and the tabletop deck it starts one margin inside the group's frame.
+    func mobileTopRowY(_ arrangement: MobilePlayerArrangement) -> CGFloat {
+        let inner: CGFloat
+        switch arrangement.mode {
+        case .overlay, .book: inner = 0
+        case .videoRect, .tabletop: inner = mobileEdgeInset
+        }
+        return max(arrangement.chromeFrame.minY + inner, topChromeEffectiveTopInset)
     }
+
+    func mobileBottomInset(_ arrangement: MobilePlayerArrangement) -> CGFloat {
+        switch arrangement.mode {
+        case .videoRect: mobileEdgeInset
+        case .tabletop: bottomChromeBottomInset
+        case .overlay, .book:
+            // The group's frame already stops at the bottom safe edge (the home indicator), so the
+            // authored margin counts from the picture's edge, not on top of the inset. Stacking
+            // both left a tall dead band under the circles on the unfolded Duo.
+            max(mobileMinimumSafeEdgeMargin,
+                bottomChromeBottomInset - max(0, arrangement.videoFrame.maxY - arrangement.chromeFrame.maxY))
+        }
+    }
+
+    /// The least gap kept between the controls and a non-zero safe edge.
+    var mobileMinimumSafeEdgeMargin: CGFloat { 8 }
+
+    /// Margin between the group's frame and its controls: 16 pt compact, 24 pt regular.
+    var mobileEdgeInset: CGFloat {
+        isCompactMobileChrome ? 16 : 24
+    }
+
+    /// Visible circle diameter; every hit target stays at least 44 pt.
+    var mobileCircleSide: CGFloat {
+        isCompactMobileChrome ? 40 : 44
+    }
+
+    var mobilePlayPauseSide: CGFloat {
+        isCompactMobileChrome ? 60 : 68
+    }
+
+    /// The transport sits midway between the measured top row and bottom group, inside the
+    /// transport frame's column.
+    func mobileTransportRect(_ arrangement: MobilePlayerArrangement) -> CGRect {
+        let frame = arrangement.transportFrame
+        var top = frame.minY
+        var bottom = frame.maxY
+        if mobileTopRowFrame.height > 0 { top = max(top, mobileTopRowFrame.maxY) }
+        if mobileBottomGroupFrame.height > 0 { bottom = min(bottom, mobileBottomGroupFrame.minY) }
+        guard bottom > top else { return frame }
+        return CGRect(x: frame.minX, y: top, width: frame.width, height: bottom - top)
+    }
+
+    /// The transport status centres in the video rectangle (upright), the book group, or the
+    /// tabletop picture half; with chrome visible it also clears the top row and bottom group.
+    func mobileStatusRect(_ arrangement: MobilePlayerArrangement) -> CGRect {
+        let frame = arrangement.statusFrame
+        guard arrangement.mode != .tabletop else { return frame }
+        var top = frame.minY
+        var bottom = frame.maxY
+        if shouldShowChrome, mobileTopRowFrame.height > 0 { top = max(top, mobileTopRowFrame.maxY) }
+        if shouldShowChrome, selectedMenu == nil, mobileBottomGroupFrame.height > 0 {
+            bottom = min(bottom, mobileBottomGroupFrame.minY)
+        }
+        guard bottom > top else { return frame }
+        return CGRect(x: frame.minX, y: top, width: frame.width, height: bottom - top)
+    }
+
+    /// Menus anchor to the bottom group (the deck's buttons in tabletop) and are clamped to its
+    /// width, so in book they open in the trailing half, clear of the fold.
+    func mobileMenuRect(_ arrangement: MobilePlayerArrangement) -> CGRect {
+        let group = arrangement.bottomGroupFrame
+        let top = arrangement.mode == .tabletop ? arrangement.chromeFrame.minY : topChromeEffectiveTopInset
+        guard group.maxY > top else { return group }
+        return CGRect(x: group.minX, y: top, width: group.width, height: group.maxY - top)
+    }
+
+    // MARK: Layers
+
+    @ViewBuilder var mobileChromeLayers: some View {
+        let arrangement = mobileLocalArrangement
+
+        if shouldShowChrome, arrangement.mode != .tabletop {
+            mobileScrim
+                .mobilePlaced(in: mobileScrimRect(arrangement))
+                .allowsHitTesting(false)
+                .transition(.opacity)
+        }
+
+        if shouldShowChrome {
+            mobileTopRow
+                .padding(.horizontal, mobileEdgeInset)
+                .padding(.top, max(0, mobileTopRowY(arrangement) - arrangement.chromeFrame.minY))
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.mobileChromeSpace)) } action: {
+                    mobileTopRowFrame = $0
+                    topChromeOccupiedHeight = $0.maxY
+                }
+                .mobilePlaced(in: arrangement.chromeFrame, alignment: .top)
+                .transition(.opacity)
+        }
+
+        // The status platter owns the primary transport action while buffering/reconnecting, so
+        // the transport row is not left visible through its translucent material.
+        if shouldShowChrome, selectedMenu == nil, !isTransportStatusPresented {
+            mobileTransportRow
+                .mobilePlaced(in: mobileTransportRect(arrangement), alignment: .center)
+                .transition(.scale(scale: 0.92).combined(with: .opacity))
+        }
+
+        transientStatusOverlay
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .padding(statusOverlayMargin)
+            .mobilePlaced(in: mobileStatusRect(arrangement))
+
+        if let mobileDisplayStatus {
+            Text(mobileDisplayStatus)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .background(.black.opacity(0.68), in: Capsule())
+                .allowsHitTesting(false)
+                .transition(.opacity)
+                .mobilePlaced(in: arrangement.statusFrame)
+        }
+
+        offlineSubtitleOverlay
+            .padding(.horizontal, isCompactMobileChrome ? 18 : 80)
+            .padding(.bottom, mobileSubtitleBottomPadding(arrangement))
+            .animation(.easeInOut(duration: 0.2), value: chromeVisible)
+            .allowsHitTesting(false)
+            .mobilePlaced(in: mobileSubtitleRect(arrangement), alignment: .bottom)
+
+        VStack(spacing: 14) {
+            if selectedMenu == nil, let marker = controller.skipMarker.active {
+                HStack {
+                    Spacer()
+                    Button {
+                        controller.skipCurrentMarker()
+                    } label: {
+                        Label(marker.kind.label, systemImage: marker.kind.systemImage)
+                    }
+                    .labstreamGlassProminentButtonStyle()
+                }
+                .transition(.opacity)
+            }
+
+            if selectedMenu == nil, controller.upNext.isShown, let next = controller.upNext.nextItem {
+                upNextCard(next)
+            }
+
+            if shouldShowChrome, selectedMenu == nil {
+                mobileBottomGroup
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.mobileChromeSpace)) } action: {
+                        mobileBottomGroupFrame = $0
+                    }
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                        bottomChromeOccupiedHeight = $0
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .padding(.horizontal, mobileEdgeInset)
+        .padding(.bottom, mobileBottomInset(arrangement))
+        .mobilePlaced(in: arrangement.bottomGroupFrame, alignment: .bottom)
+
+        if let selectedMenu {
+            let menuRect = mobileMenuRect(arrangement)
+            CustomPlayerMenuPopover(menu: selectedMenu,
+                                    controller: controller,
+                                    menuState: menuState,
+                                    widthOverride: adaptiveMenuWidth(for: selectedMenu,
+                                                                     available: menuRect.width),
+                                    maxPopoverHeight: menuPopoverHeightLimit(availableHeight: menuRect.height),
+                                    onClose: { closeMenu() })
+                .frame(maxWidth: .infinity, alignment: selectedMenu.popoverAlignment)
+                .padding(.horizontal, menuHorizontalInset)
+                .padding(.bottom, menuBottomClearance)
+                .mobilePlaced(in: menuRect, alignment: .bottom)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
+    /// TV-app style legibility scrim over the group's frame: dark at the top row and under the
+    /// bottom group, clear over the middle of the picture.
+    var mobileScrim: some View {
+        LinearGradient(stops: [
+            .init(color: .black.opacity(0.45), location: 0),
+            .init(color: .black.opacity(0), location: 0.3),
+            .init(color: .black.opacity(0), location: 0.55),
+            .init(color: .black.opacity(0.6), location: 1),
+        ], startPoint: .top, endPoint: .bottom)
+    }
+
+    /// The scrim darkens the whole picture, not just the safe frame the controls sit in: over a
+    /// full-bleed picture (overlay, book) it runs under the status strip and the home-indicator
+    /// band too, so tapping never leaves undimmed stripes at the top and bottom edges. On the
+    /// upright video rectangle the bands are already black, so it stays on the group's frame,
+    /// where its gradient stops line up with the top row and the bottom group.
+    func mobileScrimRect(_ arrangement: MobilePlayerArrangement) -> CGRect {
+        switch arrangement.mode {
+        case .overlay, .book: arrangement.videoFrame.union(arrangement.chromeFrame)
+        case .videoRect, .tabletop: arrangement.chromeFrame
+        }
+    }
+
+    func mobileSubtitleRect(_ arrangement: MobilePlayerArrangement) -> CGRect {
+        switch arrangement.mode {
+        case .tabletop: arrangement.statusFrame
+        case .overlay, .videoRect, .book: arrangement.chromeFrame
+        }
+    }
+
+    func mobileSubtitleBottomPadding(_ arrangement: MobilePlayerArrangement) -> CGFloat {
+        guard arrangement.mode != .tabletop else { return 16 }
+        if chromeVisible, mobileBottomGroupFrame.height > 0 {
+            return max(0, arrangement.chromeFrame.maxY - mobileBottomGroupFrame.minY) + 8
+        }
+        return subtitleBottomPadding
+    }
+
+    // MARK: Top row
+
+    var mobileTopRow: some View {
+        HStack(spacing: 10) {
+            if let onClose {
+                mobileCircleButton("Close", systemImage: "xmark") {
+                    revealChrome()
+                    onClose()
+                }
+                .playerGeometryProbe("topClose")
+            }
+
+            if mobileSystemCoordinator != nil {
+                pipButton
+                    .playerGeometryProbe("topPiP")
+            }
+
+            displayModeButton
+                .playerGeometryProbe("topDisplayMode")
+
+            Spacer(minLength: 0)
+
+            if mobileSystemCoordinator != nil {
+                airPlayButton
+                    .playerGeometryProbe("topAirPlay")
+            }
+        }
+    }
+
+    var mobileHitSide: CGFloat { max(44, mobileCircleSide) }
 
     var airPlayButton: some View {
         AirPlayRoutePickerButton()
-            .frame(width: topUtilityButtonVisualSide, height: topUtilityButtonVisualSide)
-            .frame(width: topUtilityButtonHitSide, height: topUtilityButtonHitSide)
-            .iosPlayerTopUtilityButtonStyle(isPhoneLandscape: isPhoneLandscapeChrome)
+            .frame(width: mobileCircleSide, height: mobileCircleSide)
+            .frame(width: mobileHitSide, height: mobileHitSide)
+            .mobilePlayerCircleStyle(visibleSide: mobileCircleSide)
             .accessibilityLabel("AirPlay")
     }
 
     var displayModeButton: some View {
-        Button {
+        mobileCircleButton(mobileVideoDisplayMode.accessibilityLabel,
+                           systemImage: mobileVideoDisplayMode.systemImage) {
             setMobileVideoDisplayMode(mobileVideoDisplayMode.toggled)
-        } label: {
-            Label(mobileVideoDisplayMode.accessibilityLabel,
-                  systemImage: mobileVideoDisplayMode.systemImage)
-                .labelStyle(.iconOnly)
-                .font(.body.weight(.semibold))
-                .frame(width: topUtilityButtonVisualSide, height: topUtilityButtonVisualSide)
-                .frame(width: topUtilityButtonHitSide, height: topUtilityButtonHitSide)
         }
-        .buttonStyle(.plain)
-        .iosPlayerTopUtilityButtonStyle(isPhoneLandscape: isPhoneLandscapeChrome)
-        .accessibilityLabel(mobileVideoDisplayMode.accessibilityLabel)
     }
 
     func setMobileVideoDisplayMode(_ mode: MobileVideoDisplayMode) {
@@ -71,215 +353,281 @@ extension CustomPlayerChrome {
         revealChrome()
     }
 
+    /// The PiP slot is always present (dimmed while PiP is unavailable for the item or route), so
+    /// availability changes never move the gravity button beside it (#258).
     var pipButton: some View {
-        Button {
+        let isActive = mobileSystemCoordinator?.isPictureInPictureActive == true
+        let isPossible = isActive || mobileSystemCoordinator?.isPictureInPicturePossible == true
+        return mobileCircleButton(isActive ? "Exit Picture in Picture" : "Picture in Picture",
+                                  systemImage: isActive ? "pip.exit" : "pip.enter") {
             revealChrome(keepVisible: true)
             mobileSystemCoordinator?.togglePictureInPicture()
-        } label: {
-            let isActive = mobileSystemCoordinator?.isPictureInPictureActive == true
-            Label(isActive ? "Exit Picture in Picture" : "Picture in Picture",
-                  systemImage: isActive ? "pip.exit" : "pip.enter")
-                .labelStyle(.iconOnly)
-                .font(.body.weight(.semibold))
-                .frame(width: topUtilityButtonVisualSide, height: topUtilityButtonVisualSide)
-                .frame(width: topUtilityButtonHitSide, height: topUtilityButtonHitSide)
         }
-        .buttonStyle(.plain)
-        .iosPlayerTopUtilityButtonStyle(isPhoneLandscape: isPhoneLandscapeChrome)
+        .disabled(!isPossible)
+        .opacity(isPossible ? 1 : 0.45)
     }
-    var regularIOSHeaderInline: some View {
-        HStack(alignment: .center, spacing: 10) {
-            regularTitleLabel
-                .frame(minWidth: 280, idealWidth: 380, maxWidth: 480, alignment: .leading)
-                .layoutPriority(3)
 
-            Spacer(minLength: 6)
+    // MARK: Transport
 
-            labeledMenuStrip
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .layoutPriority(2)
+    var mobileTransportRow: some View {
+        ViewThatFits(in: .horizontal) {
+            mobileTransportRow(includesLongSkips: true)
+            mobileTransportRow(includesLongSkips: false)
         }
     }
 
-    var regularIOSHeaderStacked: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            regularTitleLabel
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            menuStrip
-                .frame(maxWidth: .infinity, alignment: .trailing)
-        }
-    }
-    var phoneLandscapeControls: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if scrubState.isDragging, trickPlayProvider != nil {
-                trickPlayPreview
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+    func mobileTransportRow(includesLongSkips: Bool) -> some View {
+        HStack(spacing: isCompactMobileChrome ? 20 : 28) {
+            if includesLongSkips {
+                mobileSkipButton(seconds: -30, visibleSide: mobileLongSkipSide)
             }
-
-            // Match the hierarchy people expect from iPhone media players: seeking is
-            // the primary full-width row, while transport and playback options sit
-            // below it. Never make the timeline compete horizontally with our richer
-            // Quality/Subtitles/Audio controls.
-            compactScrubberColumn
-                .frame(maxWidth: .infinity)
-
-            // The row must never be wider than the platter it sits in (#258): a fixed-size
-            // menu strip that overflowed used to widen the platter and, through it, the whole
-            // chrome envelope, so the item's menu set (Quality availability) moved every control.
-            // Degrade deterministically instead: drop to the -10/+30 pair the portrait compact
-            // layout already uses, then let the full-size pills scroll. (Hardware keys are
-            // separate: ←/→ skip 30 s, Shift-←/→ skip 10 s.)
-            ViewThatFits(in: .horizontal) {
-                phoneLandscapeTransportRow(skips: [-30, -10, 10, 30], scrollsMenus: false)
-                phoneLandscapeTransportRow(skips: [-10, 30], scrollsMenus: false)
-                phoneLandscapeTransportRow(skips: [-10, 30], scrollsMenus: true)
-            }
-            .frame(maxWidth: .infinity)
-            .playerGeometryProbe("bottomMenuRow")
-        }
-    }
-
-    func phoneLandscapeTransportRow(skips: [Int], scrollsMenus: Bool) -> some View {
-        HStack(spacing: 8) {
-            ForEach(skips, id: \.self) { seconds in
-                phoneLandscapeSkipButton(seconds: seconds)
-            }
-
-            Spacer(minLength: 12)
-
-            if scrollsMenus {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    phoneLandscapeMenuButtons
-                }
-                .defaultScrollAnchor(.trailing)
-                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-            } else {
-                phoneLandscapeMenuButtons
-                    .fixedSize(horizontal: true, vertical: false)
+            mobileSkipButton(seconds: -10)
+            mobilePlayPauseButton
+                .playerGeometryProbe("centerPlayPause")
+            mobileSkipButton(seconds: 10)
+            if includesLongSkips {
+                mobileSkipButton(seconds: 30, visibleSide: mobileLongSkipSide)
             }
         }
+        // Keep the long skips well clear of the screen edges; they are secondary to ±10.
+        .padding(.horizontal, includesLongSkips ? mobileEdgeInset * 2 : 0)
     }
-    /// iPhone and iPad follow the familiar full-screen player hierarchy: the primary
-    /// play/pause action belongs over the picture, not crowded into the timeline bar.
-    var iosCenterPlayPauseButton: some View {
+
+    /// The ±30 circles sit outside ±10 and read as secondary: slightly smaller discs.
+    var mobileLongSkipSide: CGFloat {
+        isCompactMobileChrome ? 34 : 38
+    }
+
+    var mobilePlayPauseButton: some View {
         Button {
             revealChrome()
             controller.togglePlayback()
             scheduleChromeHideIfNeeded()
         } label: {
             Image(systemName: controller.transport.showsPausedControl ? "play.fill" : "pause.fill")
-                .font(.system(size: isPhoneLandscapeChrome ? 28 : 32, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 68, height: 68)
-                .glassEffect(.regular, in: Circle())
-                .shadow(color: .black.opacity(0.34), radius: 12, y: 5)
+                .font(.system(size: isCompactMobileChrome ? 26 : 30, weight: .semibold))
+                .frame(width: mobilePlayPauseSide, height: mobilePlayPauseSide)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .frame(width: 80, height: 80)
-        .contentShape(Circle())
+        .mobilePlayerCircleStyle(visibleSide: mobilePlayPauseSide)
         .accessibilityLabel(controller.transport.showsPausedControl ? "Play" : "Pause")
         .accessibilityHint("Toggles playback")
     }
 
-    func phoneLandscapeSkipButton(seconds: Int) -> some View {
+    func mobileSkipButton(seconds: Int, visibleSide: CGFloat? = nil) -> some View {
         let isForward = seconds > 0
         let amount = abs(seconds)
-        return Button {
+        return mobileCircleButton(isForward ? "Skip forward \(amount) seconds" : "Skip back \(amount) seconds",
+                                  systemImage: isForward ? "goforward.\(amount)" : "gobackward.\(amount)",
+                                  visibleSide: visibleSide) {
             performRelativeSkip(seconds: seconds)
-        } label: {
-            Image(systemName: isForward ? "goforward.\(amount)" : "gobackward.\(amount)")
-                .font(.system(size: 16, weight: .semibold))
-                .frame(width: 34, height: 34)
-                .background(.white.opacity(0.10), in: Circle())
-                .overlay {
-                    Circle()
-                        .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
-                }
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(.white)
-        .frame(width: 44, height: 44)
-        .contentShape(Circle())
         .disabled(scrubState.durationMs <= 0)
-        .accessibilityLabel(isForward ? "Skip forward \(amount) seconds" : "Skip back \(amount) seconds")
     }
 
-    /// Compact landscape controls keep the complete playback-option set visible now
-    /// that play/pause lives over the picture and no longer consumes this row.
-    var phoneLandscapeMenuButtons: some View {
-        HStack(spacing: 6) {
-            ForEach(availableMenus) { menu in
-                phoneLandscapeMenuButton(menu)
+    // MARK: Title, scrubber, circles
+
+    var mobileBottomGroup: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if scrubState.isDragging, trickPlayProvider != nil {
+                trickPlayPreview
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
+            // The first that fits: labeled menus beside the title, labeled menus on their own
+            // row under the scrubber, then icon-only circles in the same order. A row never
+            // mixes labeled and icon-only buttons.
+            ViewThatFits(in: .horizontal) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .bottom, spacing: 12) {
+                        mobileTitleBlock
+                            .frame(minWidth: 160, idealWidth: 160, maxWidth: .infinity, alignment: .leading)
+                        mobileMenuPills
+                            .playerGeometryProbe("bottomMenuRow", detail: "variant=inline")
+                    }
+                    mobileScrubberBlock
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    mobileTitleBlock
+                    mobileScrubberBlock
+                    mobileMenuPills
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.top, 4)
+                        .playerGeometryProbe("bottomMenuRow", detail: "variant=row")
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    mobileTitleBlock
+                    mobileScrubberBlock
+                    mobileMenuCircles
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.top, 4)
+                        .playerGeometryProbe("bottomMenuRow", detail: "variant=icons")
+                }
             }
         }
+        .foregroundStyle(.white)
+        .playerGeometryProbe("bottomPlatter",
+                             detail: "branch=\(mobileChromeBranch.rawValue) arrangement=\(mobileLocalArrangement.mode.rawValue)")
     }
 
-    func phoneLandscapeMenuButton(_ menu: CustomPlayerMenuKind) -> some View {
+    /// The menus in one fixed order, Quality first. It is always present, so an item's menu set
+    /// never moves a button; when the source only plays at original quality it is dimmed.
+    static let mobileMenuOrder: [CustomPlayerMenuKind] = [.quality, .subtitles, .audio, .chapters, .speed, .stats]
+
+    var mobileMenuPills: some View {
+        HStack(spacing: 6) {
+            ForEach(Self.mobileMenuOrder, id: \.self) { mobileMenuPill($0) }
+        }
+        .fixedSize()
+    }
+
+    var mobileMenuCircles: some View {
+        HStack(spacing: isCompactMobileChrome ? 6 : 10) {
+            ForEach(Self.mobileMenuOrder, id: \.self) { mobileMenuCircle($0) }
+        }
+    }
+
+    func mobileCircleButton(_ title: String, systemImage: String, visibleSide: CGFloat? = nil,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .labelStyle(.iconOnly)
+                .font(visibleSide.map { $0 < mobileCircleSide ? .subheadline.weight(.semibold) : .body.weight(.semibold) }
+                      ?? .body.weight(.semibold))
+                .frame(width: mobileHitSide, height: mobileHitSide)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .mobilePlayerCircleStyle(visibleSide: visibleSide ?? mobileCircleSide)
+        .accessibilityLabel(title)
+    }
+
+    /// A labeled glass capsule for a player menu: the same glass and height as the circles.
+    func mobileMenuPill(_ menu: CustomPlayerMenuKind) -> some View {
         Button {
             openMenu(menu)
         } label: {
-            Label(menu.shortTitle, systemImage: menu.systemImage)
-                .labelStyle(.titleAndIcon)
-                .font(.caption.weight(.semibold))
+            HStack(spacing: 5) {
+                Image(systemName: menu.systemImage)
+                Text(menu.title)
+            }
+                .font(.subheadline.weight(.semibold))
                 .lineLimit(1)
-                .frame(minWidth: phoneLandscapeMenuMinWidth(menu), minHeight: 44)
-                .padding(.horizontal, 4)
+                .fixedSize()
+                .padding(.horizontal, 12)
+                .frame(height: mobileCircleSide)
+                .frame(minHeight: 44)
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .phoneLandscapePlayerMenuButtonStyle(isSelected: selectedMenu == menu)
-        .accessibilityLabel(menu.title)
-    }
-
-    func phoneLandscapeMenuMinWidth(_ menu: CustomPlayerMenuKind) -> CGFloat {
-        switch menu {
-        case .quality: 78
-        case .subtitles: 70
-        case .audio: 68
-        case .chapters: 84
-        case .speed, .stats: 66
+        .foregroundStyle(.white)
+        .background {
+            Capsule()
+                .fill(.clear)
+                .frame(height: mobileCircleSide)
+                .glassEffect(.regular, in: Capsule())
         }
+        .shadow(color: .black.opacity(0.32), radius: 9, y: 4)
+        .accessibilityLabel(menu.title)
+        .mobileMenuAvailability(menu, available: isMobileMenuAvailable(menu))
     }
 
-    /// visionOS-parity labeled pills in iOS glass styling — every menu one tap away.
-    var labeledMenuStrip: some View {
-        HStack(spacing: 8) {
-            ForEach(availableMenus) { menu in
-                Button {
-                    openMenu(menu)
-                } label: {
-                    Label(menu.shortTitle, systemImage: menu.systemImage)
-                        .labelStyle(.titleAndIcon)
-                        .font(.callout.weight(.semibold))
-                        .frame(minWidth: menu.minChromeWidth, minHeight: 44)
-                        .padding(.horizontal, 6)
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(.glass)
-                .tint(.primary)
+    func mobileMenuCircle(_ menu: CustomPlayerMenuKind) -> some View {
+        mobileCircleButton(menu.title, systemImage: menu.systemImage) {
+            openMenu(menu)
+        }
+        .mobileMenuAvailability(menu, available: isMobileMenuAvailable(menu))
+    }
+
+    func isMobileMenuAvailable(_ menu: CustomPlayerMenuKind) -> Bool {
+        availableMenus.contains(menu)
+    }
+
+    var mobileTitleBlock: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            if let mobileCaption, !mobileCaption.isEmpty {
+                Text(mobileCaption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
+        .accessibilityElement(children: .combine)
     }
 
-    /// The labeled pills in a trailing-anchored horizontal scroller — the variant for
-    /// rows too narrow to seat the whole strip. Pills keep their full size and titles;
-    /// the viewer swipes to reach the clipped ones.
-    var scrollableLabeledMenuStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            labeledMenuStrip
+    var mobileScrubberBlock: some View {
+        VStack(spacing: 2) {
+            timelineSlider
+            HStack {
+                Text(format(ms: scrubState.displayedPositionMs))
+                Spacer()
+                Text("−" + format(ms: max(0, scrubState.durationMs - scrubState.displayedPositionMs)))
+                    .accessibilityLabel("Remaining \(format(ms: max(0, scrubState.durationMs - scrubState.displayedPositionMs)))")
+            }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity, alignment: .trailing)
-        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+    }
+
+    // MARK: Layout changes
+
+    /// A chrome branch change (rotation, window resize, iPhone Duo fold) rebuilds the scrubber in a
+    /// different composition. Abandon an open scrub draft rather than committing a seek from a
+    /// slider that no longer exists, and restart the auto-hide countdown that the drag suspended.
+    func handleMobileChromeBranchChange(from old: MobilePlayerChromeLayoutPolicy.Branch,
+                                        to new: MobilePlayerChromeLayoutPolicy.Branch) {
+        let wasDragging = cancelMobileScrubForLayoutChange()
+        AppDiagnostics.record(.playback, "player.chrome_branch_change", fields: [
+            "from": .label(old.rawValue),
+            "to": .label(new.rawValue),
+            "scrub_cancelled": .bool(wasDragging),
+        ])
+    }
+
+    /// A pose change (book, tabletop, flat) or a switch between the overlay and the video
+    /// rectangle moves the scrubber, so a scrub in progress is cancelled the same way.
+    func handleMobileArrangementModeChange(from old: MobilePlayerArrangement.Mode,
+                                           to new: MobilePlayerArrangement.Mode) {
+        let wasDragging = cancelMobileScrubForLayoutChange()
+        AppDiagnostics.record(.playback, "player.arrangement_change", fields: [
+            "from": .label(old.rawValue),
+            "to": .label(new.rawValue),
+            "scrub_cancelled": .bool(wasDragging),
+        ])
+    }
+
+    private func cancelMobileScrubForLayoutChange() -> Bool {
+        let wasDragging = scrubState.isDragging
+        if wasDragging {
+            scrubState.cancel()
+        }
+        scrubEditingSessionActive = false
+        endHoverPreview()
+        clearTrickPlayPreview()
+        scheduleChromeHideIfNeeded()
+        return wasDragging
+    }
+
+    var mobileChromeGeometryDetail: String {
+        let layout = mobileChromeLayout
+        return "branch=\(layout.branch.rawValue) phoneLandscape=\(layout.isPhoneLandscape) compact=\(layout.usesCompactChrome)"
+            + " arrangement=\(mobileLocalArrangement.mode.rawValue)"
+            + " h=\(horizontalSizeClass.map { "\($0)" } ?? "nil")"
+            + " v=\(verticalSizeClass.map { "\($0)" } ?? "nil")"
     }
 }
 
-struct IOSPlayerTopUtilityButtonStyle: ViewModifier {
-    let isPhoneLandscape: Bool
+/// One glass-circle style for every player control: a monochrome glass disc of `visibleSide`
+/// inside a hit target of at least 44 pt.
+struct MobilePlayerCircleStyle: ViewModifier {
+    let visibleSide: CGFloat
 
-    private var visibleSide: CGFloat { isPhoneLandscape ? 38 : 44 }
     private var hitSide: CGFloat { max(44, visibleSide) }
 
     func body(content: Content) -> some View {
@@ -297,78 +645,33 @@ struct IOSPlayerTopUtilityButtonStyle: ViewModifier {
     }
 }
 
-struct PhoneLandscapePlayerMenuButtonStyle: ViewModifier {
-    let isSelected: Bool
-
-    func body(content: Content) -> some View {
-        content
-            .foregroundStyle(.white.opacity(isSelected ? 1 : 0.92))
-            .background(.white.opacity(isSelected ? 0.20 : 0.11), in: Capsule())
-            .overlay {
-                Capsule()
-                    .strokeBorder(.white.opacity(isSelected ? 0.24 : 0.12), lineWidth: 0.7)
-            }
-            .contentShape(Capsule())
-    }
-}
-
 extension View {
-    /// Hairline edge for the bottom control platter. Liquid Glass takes its colour from what is
-    /// behind it, so over letterbox/pillarbox black it nearly vanishes and the platter reads as
-    /// only as wide as the picture (#258). The outline keeps the same envelope legible over any
-    /// source aspect.
-    func iosPlayerPlatterOutline(cornerRadius: CGFloat) -> some View {
-        overlay {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .strokeBorder(.white.opacity(0.16), lineWidth: 0.75)
-                .allowsHitTesting(false)
+    /// An unavailable menu keeps its slot (so nothing beside it moves) but is dimmed and inert.
+    @ViewBuilder
+    func mobileMenuAvailability(_ menu: CustomPlayerMenuKind, available: Bool) -> some View {
+        if menu == .quality {
+            disabled(!available)
+                .opacity(available ? 1 : 0.45)
+                .accessibilityHint(available ? "Changes the streaming quality"
+                                             : "This source plays at its original quality")
+        } else {
+            disabled(!available)
+                .opacity(available ? 1 : 0.45)
         }
     }
 
-    func iosPlayerTopUtilityButtonStyle(isPhoneLandscape: Bool) -> some View {
-        modifier(IOSPlayerTopUtilityButtonStyle(isPhoneLandscape: isPhoneLandscape))
+    func mobilePlayerCircleStyle(visibleSide: CGFloat) -> some View {
+        modifier(MobilePlayerCircleStyle(visibleSide: visibleSide))
     }
 
-    func phoneLandscapePlayerMenuButtonStyle(isSelected: Bool) -> some View {
-        modifier(PhoneLandscapePlayerMenuButtonStyle(isSelected: isSelected))
+    /// Places the view in `rect` (the parent's coordinate space) with `alignment` inside it. The
+    /// empty part of the rect is not hit-testable, so taps fall through to the player surface.
+    func mobilePlaced(in rect: CGRect, alignment: Alignment = .center) -> some View {
+        frame(width: max(0, rect.width), height: max(0, rect.height), alignment: alignment)
+            .position(x: rect.midX, y: rect.midY)
     }
 }
-/// Pure sizing policy for the mobile player chrome.
-///
-/// iPhones in landscape are constrained by height even when their horizontal size class is
-/// regular, and iPad split views can be compact without being phone-like. Keep those cases
-/// explicit so we drop chrome rows based on the actual viewport instead of only one size class.
-struct MobilePlayerChromeLayoutPolicy: Equatable {
-    let horizontalSizeClass: UserInterfaceSizeClass?
-    let verticalSizeClass: UserInterfaceSizeClass?
-    let idiom: UIUserInterfaceIdiom
-    let viewportSize: CGSize
 
-    private var hasMeasuredViewport: Bool {
-        viewportSize.width > 0 && viewportSize.height > 0
-    }
-
-    private var isGeometryLandscape: Bool {
-        hasMeasuredViewport && viewportSize.width > viewportSize.height
-    }
-
-    private var shortestMeasuredSide: CGFloat? {
-        hasMeasuredViewport ? min(viewportSize.width, viewportSize.height) : nil
-    }
-
-    var isPhoneLandscape: Bool {
-        idiom == .phone
-            && (verticalSizeClass == .compact
-                || (isGeometryLandscape && (shortestMeasuredSide ?? 0) <= 500))
-    }
-
-    var usesCompactChrome: Bool {
-        idiom == .phone
-            || horizontalSizeClass == .compact
-            || verticalSizeClass == .compact
-            || (shortestMeasuredSide.map { $0 < 500 } ?? false)
-    }
-}
 struct AirPlayRoutePickerButton: UIViewRepresentable {
     func makeUIView(context: Context) -> AVRoutePickerView {
         let view = AVRoutePickerView(frame: .zero)

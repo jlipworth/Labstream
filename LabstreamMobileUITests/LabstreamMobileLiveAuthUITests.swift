@@ -75,7 +75,7 @@ final class LabstreamMobileLiveAuthUITests: XCTestCase {
         app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
         app.launchArguments = []
         app.launch()
-        let backend = app.segmentedControls.buttons["Jellyfin"]
+        let backend = app.buttons["Jellyfin"].firstMatch
         XCTAssertTrue(backend.waitForExistence(timeout: 15), "Expected signed-out app; never sign out automatically.")
         backend.tap()
         let field = app.textFields["https://jellyfin.example.com"]

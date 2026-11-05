@@ -96,6 +96,96 @@ struct DurableDownloadCleanupIntentTests {
             try JSONDecoder().decode(DurableDownloadCleanupIntent.self, from: blankUser)
         }
     }
+
+    // MARK: - P2 schema: Plex identity, create evidence, provenance
+
+    private var plexServer: DurableDownloadCleanupIntent.ServerIdentity {
+        .init(baseURL: URL(string: "https://plex.example.internal:32400")!,
+              serverID: "machine-1", userID: nil)!
+    }
+
+    @Test func plexOptimizeRoundTripsServerScopedWithCreateEvidenceAndProvenance() throws {
+        let origin = DownloadAttemptKey(
+            ratingKey: "plex:item", attemptID: DownloadAttemptID(uuid: UUID(int: 9)))
+        let value = try #require(DurableDownloadCleanupIntent(
+            id: UUID(int: 5), attemptKey: origin, backend: .plex, server: plexServer,
+            operation: .plexOptimize(queueTitle: "Labstream optimize marker"),
+            provenance: .abandonment(originAttempt: origin), plexCreate: .unresolved))
+        let data = try JSONEncoder().encode(value)
+        let decoded = try JSONDecoder().decode(DurableDownloadCleanupIntent.self, from: data)
+        #expect(decoded == value)
+        #expect(decoded.server.userID == nil)
+        #expect(decoded.plexCreate == .unresolved)
+        #expect(decoded.provenance == .abandonment(originAttempt: origin))
+    }
+
+    @Test func userBindingIsBackendSpecific() {
+        // Plex must not carry a user; MediaBrowser must.
+        #expect(DurableDownloadCleanupIntent(
+            attemptKey: attempt, backend: .plex, server: server,
+            operation: .plexOptimize(queueTitle: "t"), plexCreate: .confirmed) == nil)
+        #expect(DurableDownloadCleanupIntent(
+            attemptKey: attempt, backend: .emby, server: plexServer,
+            operation: .activeEncoding(playSessionID: "play")) == nil)
+        // A Plex operation needs create evidence, and only Plex carries it.
+        #expect(DurableDownloadCleanupIntent(
+            attemptKey: attempt, backend: .plex, server: plexServer,
+            operation: .plexOptimize(queueTitle: "t")) == nil)
+        #expect(DurableDownloadCleanupIntent(
+            attemptKey: attempt, backend: .emby, server: server,
+            operation: .activeEncoding(playSessionID: "play"), plexCreate: .confirmed) == nil)
+        #expect(DurableDownloadCleanupIntent(
+            attemptKey: attempt, backend: .plex, server: plexServer,
+            operation: .plexOptimize(queueTitle: ""), plexCreate: .confirmed) == nil)
+    }
+
+    @Test func plexMatchingIsServerScopedWithURLFallback() throws {
+        let value = try #require(DurableDownloadCleanupIntent(
+            attemptKey: attempt, backend: .plex, server: plexServer,
+            operation: .plexOptimize(queueTitle: "t"), plexCreate: .confirmed))
+        func plex(_ serverID: String?, _ url: String = "https://plex.example.internal:32400",
+                  user: String? = nil) -> BackendSession {
+            BackendSession(kind: .plex, baseURL: URL(string: url)!, token: "token",
+                           userID: user, serverID: serverID)
+        }
+        // A Home profile switch (different or absent account) still matches the same server.
+        #expect(value.matches(session: plex("machine-1", user: "home-user")))
+        #expect(!value.matches(session: plex("machine-2")))
+        let legacy = try #require(DurableDownloadCleanupIntent(
+            attemptKey: attempt, backend: .plex,
+            server: .init(baseURL: URL(string: "https://plex.example.internal:32400")!,
+                          serverID: nil, userID: nil)!,
+            operation: .plexOptimize(queueTitle: "t"), plexCreate: .confirmed))
+        #expect(legacy.matches(session: plex("machine-1")))
+        #expect(!legacy.matches(session: plex("machine-1", "https://192.0.2.10:32400")))
+    }
+
+    @Test func mediaBrowserUserMatchingNormalizesGUIDFormatting() throws {
+        let guidServer = try #require(DurableDownloadCleanupIntent.ServerIdentity(
+            baseURL: URL(string: "https://example.com/emby")!, serverID: "server-1",
+            userID: "4C1A2B3C-0000-1111-2222-333344445555"))
+        let value = try #require(DurableDownloadCleanupIntent(
+            attemptKey: attempt, backend: .emby, server: guidServer,
+            operation: .activeEncoding(playSessionID: "play")))
+        #expect(value.matches(session: BackendSession(
+            kind: .emby, baseURL: URL(string: "https://example.com/emby")!, token: "token",
+            userID: "4c1a2b3c000011112222333344445555", serverID: "server-1")))
+    }
+
+    @Test func legacyEntriesDecodeWithoutProvenance() throws {
+        let value = try #require(DurableDownloadCleanupIntent(
+            attemptKey: attempt, backend: .jellyfin, server: server,
+            operation: .activeEncoding(playSessionID: "play"), provenance: .rowDeletion))
+        var object = try #require(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(value)) as? [String: Any])
+        #expect(object["provenance"] as? String == "rowDeletion")
+        object.removeValue(forKey: "provenance")
+        let legacy = try JSONDecoder().decode(
+            DurableDownloadCleanupIntent.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        #expect(legacy.provenance == nil)
+        #expect(legacy.with(provenance: .terminalRelease)?.provenance == .terminalRelease)
+    }
 }
 
 private extension UUID {

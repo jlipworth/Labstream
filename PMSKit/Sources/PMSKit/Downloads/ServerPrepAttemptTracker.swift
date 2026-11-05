@@ -26,6 +26,12 @@ public struct ServerPrepAttemptTracker: Sendable, Equatable {
 
     public var allProtectedQueueTitles: Set<String> { Set(queueTitleByAttempt.values) }
 
+    /// Titles protected by attempts other than `excluded`: a cleanup intent must not be blocked by
+    /// its own (deleted or abandoning) attempt's still-registered protection.
+    public func protectedQueueTitles(excluding excluded: Set<DownloadAttemptKey>) -> Set<String> {
+        Set(queueTitleByAttempt.filter { !excluded.contains($0.key) }.values)
+    }
+
     public func queueTitle(for key: DownloadAttemptKey) -> String? {
         queueTitleByAttempt[key]
     }
@@ -75,6 +81,20 @@ public struct ServerPrepAttemptTracker: Sendable, Equatable {
     public mutating func beginEmbyConvertAttempt(for key: DownloadAttemptKey, id: UUID = UUID()) -> UUID {
         embyConvertAttemptByAttempt[key] = id
         return id
+    }
+
+    @discardableResult
+    public mutating func beginEmbyConvertPoller(for key: DownloadAttemptKey, id: UUID = UUID()) -> UUID? {
+        guard embyConvertAttemptByAttempt[key] == nil else { return nil }
+        embyConvertAttemptByAttempt[key] = id
+        return id
+    }
+
+    @discardableResult
+    public mutating func endEmbyConvertPoller(for key: DownloadAttemptKey, id: UUID) -> Bool {
+        guard embyConvertAttemptByAttempt[key] == id else { return false }
+        embyConvertAttemptByAttempt.removeValue(forKey: key)
+        return true
     }
 
     public func isCurrentEmbyConvertAttempt(for key: DownloadAttemptKey, id: UUID) -> Bool {

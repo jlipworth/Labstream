@@ -14,8 +14,14 @@ struct ProgressSliver: View {
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Capsule().fill(.black.opacity(0.45))
+                    #if os(iOS)
+                    // Progress is white on art on iOS: amber means "selected" only.
+                    Capsule().fill(.white)
+                        .frame(width: geo.size.width * fraction)
+                    #else
                     Capsule().fill(.tint)
                         .frame(width: geo.size.width * fraction)
+                    #endif
                 }
             }
             .frame(height: 4)

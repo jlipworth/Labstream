@@ -16,6 +16,7 @@ enum DebugJellyfinPlaybackProbe {
     static func runIfRequested(appModel: AppModel) async {
         let arguments = ProcessInfo.processInfo.arguments
         guard arguments.contains("--vp-probe-jellyfin-playback") else { return }
+        DebugPlaybackProbeSupport.recordStartupStage(.jellyfinEntry)
 
         await DebugPlaybackProbeSupport.withTemporaryDiagnosticsEnabled {
             await run(arguments: arguments, appModel: appModel)
@@ -30,8 +31,15 @@ enum DebugJellyfinPlaybackProbe {
             DebugPlaybackProbeSupport.recordMissingQuery(eventName: "probe.jellyfin.fail")
             return
         }
+        DebugPlaybackProbeSupport.recordStartupStage(.optionsReady)
         guard DebugPlaybackScenario.admitted(arguments, bitrateKbps: options.bitrateKbps) else { return }
-        guard DebugPlaybackProbeSupport.prepareSourceBindingDiscovery(backend: "jellyfin", arguments: arguments) else { return }
+        DebugPlaybackProbeSupport.recordStartupStage(.admitted)
+        guard DebugPlaybackProbeSupport.prepareSourceBindingDiscovery(backend: "jellyfin", arguments: arguments) else {
+            DebugPlaybackProbeSupport.recordStartupStage(.discoveryBlocked)
+            DebugPlaybackScenario.blocked(arguments, reason: .evidenceUnavailable)
+            return
+        }
+        DebugPlaybackProbeSupport.recordStartupStage(.discoveryPrepared)
         let query = options.query
         let bitrateKbps = options.bitrateKbps
         let seekMs = options.seekMs

@@ -6,6 +6,7 @@
 # Semantic hierarchy inspection and interaction can then attach to the same fixture launch without
 # depending on a user's backend account. Never run without the repository's simulator lease.
 set -euo pipefail
+lease_original_args=("$@")
 
 usage() {
   cat <<'USAGE'
@@ -64,6 +65,10 @@ done
 
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
+# Hold the same host lease across build/install/UI/teardown, not just compilation.
+if ! python3 "$repo_root/scripts/xcodebuild-lease.py" held; then
+  exec python3 "$repo_root/scripts/xcodebuild-lease.py" run --lane agent-mobile-run -- "$repo_root/scripts/agent-mobile-run.sh" "${lease_original_args[@]}"
+fi
 simid=$(scripts/worktree-sim.sh --platform "$platform" id) || {
   printf 'No worktree-owned %s simulator. Run worktree-sim setup only after acquiring the lease.\n' "$platform" >&2
   exit 2

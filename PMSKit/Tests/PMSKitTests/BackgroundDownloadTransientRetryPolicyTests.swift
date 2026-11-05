@@ -5,6 +5,12 @@ import Testing
 @Suite("Background download transient retry policy")
 struct BackgroundDownloadTransientRetryPolicyTests {
 
+    @Test("Range drop backoff saturates at eight seconds")
+    func rangeDropBackoff() {
+        #expect((1...6).map { BackgroundDownloadTransientRetryPolicy.rangeRetryDelay(nextAttempt: $0) }
+                == [1, 2, 4, 8, 8, 8])
+    }
+
     @Test("Opaque downloads require transient URL errors, resume data, supported lane, and budget")
     func opaqueDownloadRetryGate() {
         #expect(BackgroundDownloadTransientRetryPolicy.opaqueDownloadDecision(
@@ -72,11 +78,15 @@ struct BackgroundDownloadTransientRetryPolicyTests {
         ) == .reject(.missingRangeRequest))
 
         #expect(BackgroundDownloadTransientRetryPolicy.rangeDecision(
+            errorDomain: NSURLErrorDomain, errorCode: NSURLErrorNetworkConnectionLost,
+            hasRequest: true, currentRetryCount: 3) == .retry(nextAttempt: 4))
+
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeDecision(
             errorDomain: NSURLErrorDomain,
             errorCode: NSURLErrorTimedOut,
             hasRequest: true,
-            currentRetryCount: 3
-        ) == .reject(.retryBudgetExhausted(nextAttempt: 4, maxRetries: 3)))
+            currentRetryCount: 4
+        ) == .reject(.retryBudgetExhausted(nextAttempt: 5, maxRetries: 4)))
     }
 
     @Test("Transient error code set preserves the network drop cases used by downloads")

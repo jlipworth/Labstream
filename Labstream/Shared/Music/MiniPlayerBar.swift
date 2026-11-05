@@ -81,9 +81,13 @@ struct MiniPlayerBar: View {
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
     @Binding private var presentation: NowPlayingPresentationState
+    /// iOS only: whether the bar draws its own glass capsule. The system supplies the capsule
+    /// for `tabViewBottomAccessory`; the app-hosted bottom inset beside a vertical bar does not.
+    private let hostsPlatter: Bool
 
-    init(presentation: Binding<NowPlayingPresentationState>) {
+    init(presentation: Binding<NowPlayingPresentationState>, hostsPlatter: Bool = false) {
         _presentation = presentation
+        self.hostsPlatter = hostsPlatter
     }
 
     /// Artwork size inside the bar (64-pt visionOS ornament; the iOS 26 tab-view
@@ -95,7 +99,10 @@ struct MiniPlayerBar: View {
     #endif
 
     var body: some View {
-        #if os(visionOS)
+        #if os(visionOS) || os(iOS)
+        // iOS: the shell hosts the Now Playing sheet (`nowPlayingSheet(presentation:)`), because
+        // the bar moves between the tab bottom accessory and a per-tab bottom inset as the
+        // vertical bar comes and goes, and only one node may own the presentation.
         barBody
         #else
         // The sheet must hang off a node that stays in the hierarchy while the bar
@@ -104,13 +111,8 @@ struct MiniPlayerBar: View {
         barBody
         .sheet(isPresented: $presentation.isPresented,
                onDismiss: { presentation.dismiss() }) {
-            #if os(iOS)
-            NowPlayingView(scrollToQueue: presentation.scrollToQueue)
-                .presentationDragIndicator(.visible)
-            #else
             nowPlayingPanel
                 .presentationSizing(.fitted)
-            #endif
         }
         #endif
     }
@@ -182,13 +184,26 @@ struct MiniPlayerBar: View {
             .onTapGesture { presentation.present() }
             .hoverEffect(.highlight)
         #else
-        // Inside the iOS 26 tab-view bottom accessory: the system supplies the Liquid
-        // Glass capsule, so the bar renders bare content — no platter of its own.
-        barContent(for: current)
-            .padding(.horizontal, DS.Space.md)
-            .overlay(alignment: .bottom) { MiniPlayerProgressHairline() }
-            .contentShape(Rectangle())
-            .onTapGesture { presentation.present() }
+        if hostsPlatter {
+            // App-hosted bottom inset beside a vertical bar: the bar draws the same Liquid
+            // Glass capsule the system accessory would supply.
+            barContent(for: current)
+                .padding(.horizontal, DS.Space.md)
+                .frame(height: 52)
+                .overlay(alignment: .bottom) { MiniPlayerProgressHairline() }
+                .clipShape(Capsule())
+                .labstreamGlassBackground(in: Capsule())
+                .contentShape(Capsule())
+                .onTapGesture { presentation.present() }
+        } else {
+            // Inside the iOS 26 tab-view bottom accessory: the system supplies the Liquid
+            // Glass capsule, so the bar renders bare content — no platter of its own.
+            barContent(for: current)
+                .padding(.horizontal, DS.Space.md)
+                .overlay(alignment: .bottom) { MiniPlayerProgressHairline() }
+                .contentShape(Rectangle())
+                .onTapGesture { presentation.present() }
+        }
         #endif
     }
 
@@ -561,8 +576,14 @@ private struct MiniPlayerProgressHairline: View {
                 // .primary, not .white: over the bar's light material in light
                 // mode a white track is invisible; .primary adapts (white on dark).
                 Capsule().fill(.primary.opacity(0.12))
+                #if os(iOS)
+                // Progress is label-colored on iOS: amber means "selected" only.
+                Capsule().fill(.primary)
+                    .frame(width: geo.size.width * fraction)
+                #else
                 Capsule().fill(.tint)
                     .frame(width: geo.size.width * fraction)
+                #endif
             }
         }
         .frame(height: 3)
@@ -602,6 +623,20 @@ private struct MacMiniPlayerScrubber: View {
         let current = Int(isScrubbing ? scrubSeconds : player.elapsedSeconds)
         let duration = Int(player.durationSeconds)
         return "\(current / 60):\(String(format: "%02d", current % 60)) of \(duration / 60):\(String(format: "%02d", duration % 60))"
+    }
+}
+#endif
+
+#if os(iOS)
+extension View {
+    /// The single Now Playing sheet for the iPhone/iPad shell. It hangs off a node that stays in
+    /// the hierarchy while the mini player itself is hidden or moves between placements.
+    func nowPlayingSheet(presentation: Binding<NowPlayingPresentationState>) -> some View {
+        sheet(isPresented: presentation.isPresented,
+              onDismiss: { presentation.wrappedValue.dismiss() }) {
+            NowPlayingView(scrollToQueue: presentation.wrappedValue.scrollToQueue)
+                .presentationDragIndicator(.visible)
+        }
     }
 }
 #endif

@@ -65,6 +65,29 @@ def stratified(rows, roots):
     return [bucket[i] for i in range(max(map(len, buckets), default=0)) for bucket in buckets if i < len(bucket)]
 
 
+def codec_summary(records):
+    """Counts distinguish tracks from files; failed probes and cover art are excluded."""
+    video, audio, video_files, audio_files, layouts = Counter(), Counter(), Counter(), Counter(), Counter()
+    for row in records:
+        if row.get('error'):
+            continue
+        seen_video, seen_audio = set(), set()
+        for stream in row.get('facts', {}).get('streams', []):
+            codec = stream.get('codec_name', 'unknown')
+            if stream.get('codec_type') == 'video' and not stream.get('disposition', {}).get('attached_pic'):
+                video[codec] += 1
+                seen_video.add(codec)
+            elif stream.get('codec_type') == 'audio':
+                audio[codec] += 1
+                seen_audio.add(codec)
+                layouts[f"{codec} | {stream.get('channels', 'unknown')} channels | {stream.get('channel_layout', 'unknown')}"] += 1
+        video_files.update(seen_video)
+        audio_files.update(seen_audio)
+    return {'video_codecs': dict(video), 'audio_codecs': dict(audio),
+            'video_codec_files': dict(video_files), 'audio_codec_files': dict(audio_files),
+            'audio_layouts': dict(layouts)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, default=Path('build/media-corpus'))
@@ -141,7 +164,7 @@ def main():
     (args.output / 'inventory.json').write_text(json.dumps({**provenance, 'items': records}, indent=2))
     groups = summarize(records)
     (args.output / 'representatives.json').write_text(json.dumps({**provenance, 'combinations': groups}, indent=2))
-    summary = {**{k: v for k, v in provenance.items() if k != 'source'}, 'successful': sum(not r.get('error') for r in records), 'errors': dict(Counter(r['error'] for r in records if r.get('error'))), 'combinations': len(groups), 'video_codecs': dict(Counter(s['codec_name'] for r in records for s in r.get('facts', {}).get('streams', []) if s['codec_type'] == 'video' and not s.get('disposition', {}).get('attached_pic')))}
+    summary = {**{k: v for k, v in provenance.items() if k != 'source'}, 'successful': sum(not r.get('error') for r in records), 'errors': dict(Counter(r['error'] for r in records if r.get('error'))), 'combinations': len(groups), **codec_summary(records)}
     (args.output / 'summary.json').write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
 

@@ -75,20 +75,25 @@ struct DownloadPausePolicyTests {
                 == .parkPreparing)
     }
 
-    @Test("Queue pause keeps persistent Emby server prep polling but pauses other active rows")
-    func queuePauseSkipsPersistentEmbyConvertPolling() {
+    @Test("Queue pause includes Emby preparation and parked admission requests")
+    func queuePauseIncludesAllPendingWork() {
         let embyConvert = record(status: .preparing,
                                  backend: .emby,
                                  lane: .optimize,
                                  resumeMode: .serverPrepThenStatic,
                                  embyJobID: 42)
-        #expect(!DownloadPausePolicy.shouldPauseDuringQueuePause(embyConvert))
+        #expect(DownloadPausePolicy.shouldPauseDuringQueuePause(embyConvert))
 
         let plexPrep = record(status: .queued,
                               backend: .plex,
                               lane: .optimize,
                               resumeMode: .serverPrepThenStatic)
         #expect(DownloadPausePolicy.shouldPauseDuringQueuePause(plexPrep))
-        #expect(!DownloadPausePolicy.shouldPauseDuringQueuePause(record(status: .paused)))
+        for status in [DownloadStatus.paused, .failed] {
+            var waiting = record(status: status)
+            waiting.admissionIntent = .retryRequested
+            #expect(DownloadPausePolicy.shouldPauseDuringQueuePause(waiting))
+        }
+        #expect(!DownloadPausePolicy.shouldPauseDuringQueuePause(record(status: .complete)))
     }
 }

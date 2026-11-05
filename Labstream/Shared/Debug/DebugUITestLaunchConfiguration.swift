@@ -18,6 +18,45 @@ enum DebugUITestLaunchConfiguration {
         isEnabled(in: ProcessInfo.processInfo.arguments)
     }
 
+    /// Browse-fixture capture routes for headless layout evidence (iPhone/iPad shell): select a
+    /// tab at launch (`home`, `libraries`, `search`, `music`, `offline`), push the fixture's
+    /// first library grid, or seed the Search query. Nothing deep-links to these screens and
+    /// simulator taps are not scriptable, so these make folded/appResize captures possible.
+    nonisolated static let initialTabFlag = "--ui-testing-initial-tab"
+    nonisolated static let openFirstLibraryFlag = "--ui-testing-open-first-library"
+    /// With `--ui-testing-initial-tab settings`: the Settings category to show (raw value, e.g.
+    /// `audioSubtitles`). Regular width selects it; the compact sheet scrolls to it.
+    nonisolated static let settingsCategoryFlag = "--ui-testing-settings-category"
+    nonisolated static let searchQueryFlag = "--ui-testing-search-query"
+    /// Push a fixture item (movie, show, fixture season or episode, by rating key) onto Home at launch.
+    nonisolated static let openItemFlag = "--ui-testing-open-item"
+    nonisolated static func argumentValue(_ flag: String, in arguments: [String]) -> String? {
+        guard isEnabled(in: arguments),
+              let index = arguments.firstIndex(of: flag),
+              arguments.indices.contains(index + 1) else { return nil }
+        return arguments[index + 1]
+    }
+
+    static var initialTab: String? {
+        argumentValue(initialTabFlag, in: ProcessInfo.processInfo.arguments)
+    }
+
+    static var initialSettingsCategory: String? {
+        usesBrowseFixture ? argumentValue(settingsCategoryFlag, in: ProcessInfo.processInfo.arguments) : nil
+    }
+
+    static var opensFirstLibrary: Bool {
+        usesBrowseFixture && ProcessInfo.processInfo.arguments.contains(openFirstLibraryFlag)
+    }
+
+    static var initialOpenItemKey: String? {
+        usesBrowseFixture ? argumentValue(openItemFlag, in: ProcessInfo.processInfo.arguments) : nil
+    }
+
+    static var initialSearchQuery: String? {
+        usesBrowseFixture ? argumentValue(searchQueryFlag, in: ProcessInfo.processInfo.arguments) : nil
+    }
+
     static var initialBackend: MediaBackendKind? {
         initialBackend(in: ProcessInfo.processInfo.arguments)
     }
@@ -42,6 +81,9 @@ enum DebugUITestLaunchConfiguration {
         /// protects the streaming-only product contract: tvOS must not expose Offline actions.
         case season
         case player
+        /// Restricted cold-launch Offline surface (banner + Offline library) without a
+        /// reachable server. Not available on tvOS, which has no Offline surface.
+        case offline
     }
 
     static var fixtureKind: FixtureKind? {
@@ -66,8 +108,9 @@ enum DebugUITestLaunchConfiguration {
         isEnabled && ProcessInfo.processInfo.arguments.contains(downloadCompositionEvidenceFlag)
     }
 
-    /// Player-fixture variant: holds the controller's transport status in `.buffering` so the
-    /// buffering overlay can be reviewed deterministically (TVUI-025).
+    /// Player-fixture variant: pins the controller's transport status in `.buffering` (or
+    /// `.pausedBuffering` with the paused flag on iPhone/iPad) through the real presentation
+    /// timing, so the spinner and escalated card can be reviewed deterministically (TVUI-025).
     static var playerFixtureStartsBuffering: Bool {
         fixtureKind == .player && ProcessInfo.processInfo.arguments.contains("--ui-testing-player-buffering")
     }
@@ -92,6 +135,23 @@ enum DebugUITestLaunchConfiguration {
     nonisolated static let playerPausedFlag = "--ui-testing-player-paused"
     nonisolated static let playerGeometryFlag = "--ui-testing-player-geometry"
     nonisolated static let playerAllMenusFlag = "--ui-testing-player-all-menus"
+    nonisolated static let playerPresentDelayFlag = "--ui-testing-player-present-delay"
+
+    /// Seconds the player fixture waits before presenting the player (default 0). A host-side
+    /// `devicectl device appResize` session can only start while the app is portrait and
+    /// frontmost, so the iPhone Duo resize proxy starts it during this window, before the player
+    /// applies its landscape lock.
+    nonisolated static func playerFixturePresentDelaySeconds(in arguments: [String]) -> Int {
+        guard fixtureKind(in: arguments) == .player,
+              let index = arguments.firstIndex(of: playerPresentDelayFlag),
+              arguments.indices.contains(index + 1),
+              let seconds = Int(arguments[index + 1]) else { return 0 }
+        return min(max(seconds, 0), 60)
+    }
+
+    static var playerFixturePresentDelaySeconds: Int {
+        playerFixturePresentDelaySeconds(in: ProcessInfo.processInfo.arguments)
+    }
 
     nonisolated static func playerFixtureAspect(in arguments: [String]) -> PlayerFixtureAspect {
         guard fixtureKind(in: arguments) == .player,

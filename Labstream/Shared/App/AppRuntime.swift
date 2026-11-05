@@ -1,4 +1,5 @@
 import Foundation
+import PMSKit
 import SwiftUI
 
 /// Shared app-lifetime runtime used by every shipping entrypoint.
@@ -123,6 +124,8 @@ final class SessionBootstrap {
     /// True once browse UI has mounted in this process. This keeps an already-ready UI mounted
     /// through a backend switch instead of bouncing through the restore splash.
     var hasEverBeenBrowseReady = false
+    /// B77: reruns the launch download recovery after a Reconnect from an offline launch.
+    @ObservationIgnored var launchDownloadRecovery = LaunchDownloadRecoveryGate()
 }
 
 struct SecureStorageUnavailableView: View {

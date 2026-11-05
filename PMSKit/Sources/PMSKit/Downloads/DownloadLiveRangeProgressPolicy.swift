@@ -108,6 +108,29 @@ public enum DownloadLiveRangeProgressPolicy {
         return min(optimistic, expectedBytes)
     }
 
+    /// Bytes fed to the aggregate speed estimator for a Range attempt (#416). A finished segment
+    /// leaves the in-flight sum before its body is appended to the durable partial, so the train
+    /// total dips by up to one segment for about a second at every boundary. The estimator treats
+    /// any regression as a wake and drops the whole batch, which showed "Updating speed…" every
+    /// segment while the app was open. Hold the previous sample only when finished bodies that
+    /// are not yet counted explain the whole dip; any larger loss (discarded temp, a failed
+    /// sibling, a train reset) still reaches the estimator and rebaselines it.
+    public static func rateSampleBytes(reportedBytes: Int, previous: Int?, bytesAwaitingAppend: Int) -> Int {
+        guard let previous, reportedBytes < previous, bytesAwaitingAppend > 0,
+              reportedBytes + bytesAwaitingAppend >= previous else { return reportedBytes }
+        return previous
+    }
+
+    /// Attempts whose last rate sample must survive pruning: any with an in-flight task, and any
+    /// whose finished current-train bodies are still awaiting append. Between its last task
+    /// finishing and the replacement's first callback, an attempt has only claims; dropping its
+    /// sample then (on another attempt's callback) would bring the boundary reset back.
+    public static func retainedRateSampleKeys<Key: Hashable>(inflight: Set<Key>,
+                                                             claims: [(key: Key, trainEpoch: Int)],
+                                                             trainEpochs: [Key: Int]) -> Set<Key> {
+        inflight.union(claims.filter { $0.trainEpoch == (trainEpochs[$0.key] ?? 0) }.map(\.key))
+    }
+
     public static func liveDisplayBytes(for record: DownloadRecord,
                                         sample: DownloadLiveRangeProgressSample?) -> Int? {
         guard record.status == .downloading,

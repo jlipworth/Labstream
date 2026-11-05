@@ -19,6 +19,8 @@ library screenshots into committed evidence.
 | Apple Vision Pro | Signed device build, awake/paired headset, same network as the server | Real video/audio rendering, Custom Cinema, immersive transitions, off-head lifecycle, background download continuation |
 | iPhone simulator | `LabstreamMobile` on a compact-width simulator | Phone tab shell, login/browse/detail layout, player controls, orientation code paths; not PiP/AirPlay/cellular/background-device guarantees |
 | iPad simulator | `LabstreamMobile` on an iPad simulator | Adaptive sidebar, regular-width grids/sheets, shared player UI; not physical background transfer or external-route behavior |
+| iPhone Duo simulator | `LabstreamMobile` built with Xcode 27.1 on the worktree `duowt-*` simulator (iOS 27.1 runtime); `scripts/duo-appresize.sh` for inner-size and DEBUG book/tabletop captures | Folded outer-display layout, vertical-bar safe-area clearance, inner-size layout against the `appResize` proxy, and book/tabletop layout against the DEBUG pose seam; not a real Device Hub or hardware fold |
+| Physical iPhone Duo | Signed mobile build on the foldable | Real fold/unfold during browse and playback, both folded-landscape camera rotations, book and tabletop poses, PiP across displays |
 | Physical iPhone/iPad | Signed mobile build with required trust/Developer Mode | PiP, AirPlay, Control Center/lock screen, audio routes, cellular policy, background transfers, Spotlight and App Intents |
 | Apple TV simulator | Exact worktree `LabstreamTV` simulator; signed-in test session or production-isolated fixture | Ten-foot shell, deterministic focus/navigation, custom-player remote paths, and absence of downloads; not physical Siri Remote, HDR/audio/HDMI, lifecycle, or performance |
 | Physical Apple TV (future acceptance) | Signed `LabstreamTV` development build on explicitly selected hardware with a real Siri Remote and display/audio chain | Evidence for remote-only operation, focus, system keyboard/dictation, HDR/DV, HDMI/audio, interruptions, lifecycle, accessibility, and long-play performance; this open gate does not establish release acceptance |
@@ -54,6 +56,7 @@ skipping them.
 | Saved session restores through the neutral Connecting screen without flashing login | [ ] | [ ] | [ ] |
 | Invalid/revoked credentials return to a clear sign-in state | [ ] | [ ] | [ ] |
 | Disconnected cold launch with a completed local file opens restricted Offline mode and plays without a server request | [ ] | [ ] | [ ] |
+| Restricted Offline shows "Server unreachable" as a subtitle (visionOS: toolbar) with Reconnect, Sign In and Settings all reachable; nothing overlaps the title (#415) | [ ] | [ ] | [ ] |
 | A revoked (401) or refused (403) saved session at cold launch shows sign-in, not Offline, even with a completed local file | [ ] | [ ] | [ ] |
 | Explicit sign-out clears the active runtime lane and stops stale music | [ ] | [ ] | [ ] |
 | Reauthentication to the same server refreshes browse state and navigation identity | [ ] | [ ] | [ ] |
@@ -120,9 +123,27 @@ layout code changed.
 - [ ] Poster/artwork requests authenticate correctly for the active backend and fail to a
       privacy-safe placeholder without logging a token-bearing URL.
 - [ ] On a physical iPhone against Emby, Recently Added TV Shows prefers a season/series Primary
-      poster when available; a Thumb-only episode uses a 16:9 card/request without warping. Also
-      regression-check one movie rail and one missing-parent episode fallback (regression
-      coverage for the fixed #245 warped-artwork defect).
+      poster when available; a Thumb-only episode keeps a 16:9 request and is cropped, not warped,
+      into the poster card. Also regression-check one movie rail and one missing-parent episode
+      fallback (regression coverage for the fixed #245 warped-artwork defect).
+- [ ] **iPhone Duo browse (#419):** Folded portrait and both folded-landscape rotations keep
+      shelves, View All, detail titles and actions clear of the vertical bar's column (rails clip
+      at the content region and a tap on the column over a clipped card does nothing); grids are
+      3 folded portrait / 4 folded landscape / 3 upright / 4 sideways; unfolded sideways shows the
+      show | season split and Downloads stays one list; book keeps the grid's outer margins with a wide hinge
+      gutter. Simulator evidence (2026-10-26): `LabstreamMobileDuoUITests` folded runs and the
+      gallery in `artifacts/duo-final/gallery/` (gitignored) cover every surface; inner sizes
+      come from the appResize proxy, which has horizontal bars. Open: the inner display with its
+      own vertical bar, real Device Hub folds (Resolved decision 9) and the physical iPhone Duo.
+- [ ] **Settings two columns (#419):** On an unfolded iPhone Duo and on iPad in regular width,
+      Settings shows the category list beside the selected category (only that row is amber);
+      in book pose the split sits on the hinge. Scroll the folded Settings sheet to a section,
+      unfold: that category is selected; select another, fold: the sheet opens at it. Compact
+      iPad (Slide Over) keeps the single form in the sheet. Simulator evidence (2026-10-26):
+      `testRegularWidthSettingsShowsCategoriesBesideTheDetail` on iPad, appResize captures of
+      both hand-off directions and book on the Duo. Open: the physical Duo and real folds.
+- [ ] Home Continue Watching and On Deck render poster cards (episodes show season/show posters)
+      whether a movie or an episode was watched most recently, on Plex, Jellyfin, and Emby.
 
 ## 4. Shared video playback
 
@@ -160,12 +181,21 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
       sessions/encoders, and does not create a hidden retry or transcode loop.
 - [ ] Jellyfin/Emby reopen sends the selected quality, audio, subtitle, play-session, and
       media-source state; progress start/update/stop reaches the correct backend.
+- [ ] Emby Original 4K video-copy title with DTS/TrueHD (converted) and with AC-3 audio: audio plays
+      continuously from start, after a deep seek, and after resume (#420). The Stats panel says
+      "audio is converted" and shows the delivered codec under "This device" when Emby converts.
 - [ ] Plex timeline updates on play/pause/stop and near-end watched state. Jellyfin/Emby
       video progress likewise updates Continue Watching after reopen.
 - [ ] Skip Intro/Credits appears only inside valid marker ranges and automatic/manual
       preferences behave as configured.
 - [ ] Network loss or a starved stream shows buffering/reconnecting/failure status instead
       of a black surface with no explanation. Recovery never revives a superseded player.
+- [ ] Buffering overlay timing: waits under ~0.6 s show nothing; a sustained wait shows a
+      spinner only (no card), escalating to the card with Pause after ~3.5 s; brief
+      waiting/playing chatter never flickers; pausing during a wait shows the "Resume when
+      ready" card at once; reconnect/failure appear immediately. With chrome visible, the
+      spinner/card sits between the top bar and the scrubber (iPhone landscape, iPad both
+      orientations), and appear/escalate transitions animate rather than pop.
 - [ ] Stats reports source, decision/play method, rendered stream, bitrate, audio,
       and HDR facts without private server or media identifiers.
 - [ ] **Stats redesign (#331):** Stats opens on the compact summary, and See more / Show less
@@ -174,6 +204,10 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
       sizes, tiles stack instead of wrapping. VoiceOver reads the chain as one sentence and each
       tile as label plus value. Copy diagnostics pastes without track titles. On tvOS, focus
       reaches See more, the section picker, and Show less with the Siri Remote.
+- [ ] **Stats palette and route (1.8.0 build 1653):** on every platform only the direct-play path
+      is green; copy and encode paths are neutral gray. Over Tailscale or another VPN (including a
+      100.64.0.0/10 address), Connection reads VPN, and a resolvable custom domain is never
+      Unknown.
 - [ ] **visionOS playback explanation (#203):** open Stats during each representative
       lane below. Confirm the reason line and the Video section's Decision rows (headline and at
       most two useful reasons) agree with the active result. The normal player must not show raw reason arrays, backend prose, URLs,
@@ -211,12 +245,24 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
 - [ ] **iPhone:** Full-screen video requests the intended landscape orientation and restores
       the prior orientation policy on close. Ordinary backgrounding pauses, while active PiP
       or AirPlay is allowed to continue.
-- [ ] **iPhone player layout (#258):** In landscape, with the same chrome state, the close/utility
-      buttons, center play/pause, and bottom platter sit in the same place and size for a
-      pillarboxed (16:9 or 4:3) and a letterboxed (2.39:1) title, for streamed and downloaded
-      playback, and with or without the Quality menu. No control is clipped by the rounded
-      display corners, and the platter outline stays visible over black bars. Simulator
-      fixture evidence exists; physical-device confirmation is open.
+- [ ] **iPhone player layout (#258):** In landscape, with the same chrome state, the top row,
+      transport, scrubber and menu row sit in the same place and size for a pillarboxed
+      (16:9 or 4:3) and a letterboxed (2.39:1) title, for streamed and downloaded playback, and
+      with Quality available or dimmed. The menus are labeled whenever they fit, with Quality first. No control is clipped by the rounded display corners.
+      Simulator fixture evidence exists; physical-device confirmation is open.
+- [ ] **iPhone Duo player poses:** Folded landscape keeps the chrome below the top status strip
+      and the bottom row clear of the camera island (both rotations). Unfolded upright overlays
+      the video rectangle; sideways shows the hover preview with a trackpad. Book moves the
+      transport, title, scrubber and menus into the trailing half; tabletop shows the picture
+      above the hinge and a deck below that does not auto-hide. Folding or unfolding mid-playback
+      never stops, reloads or seeks. Simulator evidence (2026-10-26): the folded Duo UI smoke
+      (`LabstreamMobileDuoUITests`, both folded-landscape rotations through the DEBUG orientation
+      route) and the book-override test pass; the appResize proxy flipped 669x951 / 466x678 /
+      951x669 during playback with one `playback.session_start`, no stop, no view disappear and
+      an advancing playhead; DEBUG book and tabletop captures match the design. Open: the
+      camera-island trim and which rotation is camera-leading (no occlusion region in the
+      simulator), the inner display's own vertical bar, a real Device Hub unfold, and the
+      physical iPhone Duo.
 - [ ] **iPadOS:** Player layout and menus work in regular and compact multitasking widths;
       PiP, AirPlay, keyboard controls, and the adaptive sidebar do not strand presentation.
 - [ ] **iPad pointer preview:** Continuous pointer movement over the timeline advances the
@@ -281,9 +327,33 @@ never capture account names, server addresses, provider IDs, item IDs, or activi
 
 ## 5. Downloads and Offline
 
+The downloads overhaul's deterministic pin suites and Mac hosted command are documented in
+[Testing strategy](docs/TESTING-STRATEGY.md#downloads-overhaul-pin-suites). Their results do not
+check off the live-server or physical-device items below.
+
+- [ ] Reject or supersede an offline launch while orientation is suspended: no stale player
+      appears and orientation returns to the surface.
+- [ ] Sign out with an encoder-release journal write held or failed: UI remains responsive,
+      records stay parked, and recovery retains exact cleanup authority without clearing a newer handle.
+
 This section applies only to visionOS, iOS/iPadOS, and macOS. The tvOS app must compile
 without the Downloads capability and expose no Offline tab, download action, storage control,
 background-session registration, or migration/recovery work.
+
+### Library upgrade (schema v5, one-time)
+
+- [ ] Install a v5 build over a build with an existing download library (v4). Check what
+      happens to each kind of download:
+  - complete, unverified and paused static-range downloads remain;
+  - queued, transferring, server-preparing, failed and paused live-stream downloads are
+    removed;
+  - a dismissible notice states how many were removed.
+- [ ] A server job belonging to a removed Plex or Emby download in preparation is cancelled
+      (Plex: a completed render stays).
+- [ ] Deleting a download during Plex optimize preparation never leaves a new optimize job on
+      the server.
+- [ ] Deleting an active download stops its transfer promptly. Check the network activity or
+      that no further bytes arrive.
 
 ### Route and presentation matrix
 
@@ -314,16 +384,105 @@ background-session registration, or migration/recovery work.
       unambiguous backend badges.
 - [ ] Pause/Resume, Pause All/Resume All, Retry, Delete, completed-only deletion, queue pause,
       cellular permission, and storage-limit rejection leave coherent durable rows.
+- [ ] Bulk toolbar: mix transferring, server-prep, waiting, paused, failed and completed rows.
+      Any running/requested work shows **Pause All** with the pause icon. Tap it: admission stops,
+      waiting retries are withdrawn, server preparation (including Emby Convert) parks, and the
+      icon changes to **Resume All** once work is paused. Resume All changes it back even with
+      more rows than available slots. A per-row Resume during queue pause exposes Pause All again.
+      During “Restoring downloads…” the bulk control is disabled.
+- [ ] Storage (P5): with a storage limit set, retrying a large partial download is not refused
+      for counting its partial twice. A Jellyfin or Emby Original shows its real size in the
+      download sheet. An item whose size is unknown says so. A Plex Original that falls back to
+      an optimized render is refused before the server starts rendering when it would exceed the
+      limit.
 - [ ] Plan a season on Emby (and separately on Plex) that mixes one new Convert/optimize episode
       with an episode that already has a converted/optimized version and a directly playable
       original. While the conversion is still preparing, the static episodes are admitted and
-      transfer (at most two static, one server-prep, three total). A waiting row reads
-      **Queued…** in both the offline list and the download sheet, never "Downloading
-      optimized…" with a spinner.
+      transfer (at the default setting: at most two static and three total transfers; server
+      preparation does not use a transfer slot). A waiting row reads **Waiting for a download
+      slot…** in Offline and the current-download sheets (**Queued** on iPhone/iPad), never "Downloading optimized…" with a
+      spinner.
+- [ ] Server jobs (#414): on Plex (and separately Emby), queue three optimize/Convert downloads,
+      then lock or background the device for a few hours. The server shows all three jobs
+      submitted straight away, and all three finish rendering while the app is suspended. On
+      reopening, finished renders beyond the free transfer slots read **Ready — waiting for a
+      download slot…** (**Queued** on iPhone/iPad) and start in queue order as slots free; the transfer count never exceeds
+      the simultaneous-downloads setting. Deleting a waiting row cleans up like any server-prep row.
+- [ ] Admission (P4): with five paused rows, Resume All starts at most the caps and the rest read
+      **Waiting for a download slot…** until a lane frees. A tap while every lane is busy waits and
+      survives relaunch. During Pause All, one row's Resume starts only that row; the next Pause
+      All parks it again. Start a season while the server is unreachable: rows wait and start once
+      it is back, instead of failing.
+- [ ] In Settings ▸ Downloads on visionOS, iOS/iPadOS and macOS, **Simultaneous downloads**
+      offers 1–5 and defaults to 3; tvOS has no Downloads section. At 1, 3 and 5, total admission
+      respects the selection, static transfers are capped at `max(1, total - 1)`, live-forward
+      streams stay capped at 1, and server preparation does not use a transfer slot (up to 5
+      server jobs are submitted). Lower the setting during active
+      transfers: nothing is cancelled and waiting rows stay waiting until occupancy drops below
+      the caps. Raise it: waiting rows start without another Resume action. Relaunch with waiting
+      rows and verify the stored value still bounds admission after existing work is reattached.
+- [ ] #409 device reproduction (shared pre-overhaul transport behaviour): enable diagnostics,
+      run two finished static-source downloads actively for 60 seconds, leave the headset off-head
+      for ten minutes, then keep Labstream continuously active for at least two minutes. Export
+      after `downloads.range_health_result`. Confirm `background_wake` provenance, the 10 s settle
+      plus 60 s counter window, selected old/new task IDs, discarded bytes (at most 256 MiB), and
+      paired pre/post rates on the same session. With two rows and two crawling tasks each, confirm
+      one reissue per row around seconds 70–80; result observation must not delay the second row.
+      Pause, cancel, error or completion before 30 seconds must report its actual elapsed rate and
+      outcome. Repeat with one row and no fast peer. A failed
+      improvement must not trigger another recovery of that attempt in the same process.
+- [ ] #409 negative controls: uniformly slow networking, network loss, near-complete tasks,
+      bodies over 256 MiB, unknown relaunch provenance, queue pause, inactivity during persistence,
+      and admission settings 1/3/5. Hold a competing path lease or fail persistence beyond three
+      seconds, then restore it without a scene change: the missing interval must refill in the same
+      attempt beside its live sibling, with no extra one-shot budget spent. Restore connectivity before baseline and confirm a subsequent
+      uninterrupted window is eligible; interrupt inside that window and confirm deferral. Reactivate
+      after inactivity during replacement persistence: the missing head must resume beside its live
+      sibling without another recovery budget. Race a sibling finish after claim and before refill:
+      no duplicate range or depth above two including held bodies. Pause, delete and backend sign-out
+      during recovery must prevent replacement. Healthy siblings and held tails survive; recovery
+      holds its admission slot. Relaunch may adopt old tasks with unknown provenance and loses the process
+      budget; it must not infer background creation. If still crawling, export before/after manual
+      pause/resume. Complete each download and verify offline playback and storage cleanup across
+      available static backend routes. OS scheduling remains a hypothesis and hardware acceptance
+      stays open until paired results show repeatable improvement.
 - [ ] Server-side encoders/optimizer/Convert jobs are stopped or reconciled when their row
       completes, fails, is canceled, or is recovered after relaunch.
+- [ ] Fail an Emby Convert row while its server job is still converting (for example, stay
+      offline past the poll-health budget), relaunch or switch backends, then tap Retry. The job is
+      not deleted by the launch sweep: Retry resumes polling the same job instead of starting a new
+      conversion.
+- [ ] Resume a large static download from a mostly complete partial with free space for the
+      remaining bytes but not the whole file. It resumes instead of reporting storage full.
+- [ ] Retry a failed Plex optimize row. It re-renders at the profile originally requested, not
+      the default preset.
+- [ ] With **Use cellular data for downloads** off, a new download on a Low Data Mode or personal
+      hotspot network waits; it starts once an unconstrained, inexpensive network is available.
+- [ ] Planning an Emby season shows "Planning episode N of M…" and finishes without a per-episode
+      server refresh delay.
+- [ ] Delete a **paused** Plex optimize row while its server job is still queued or rendering.
+      The confirmation says in-progress preparation is cancelled where possible. Within a few
+      minutes the item leaves the server's conversion queue. A completed optimized version is
+      never removed by deleting its row.
+- [ ] Delete a preparing Emby Convert row while offline, then reconnect. The server's Sync job
+      is cancelled after the reconnect without any further user action.
+- [ ] Delete a Jellyfin transcode download while signed in to a different backend. Its server
+      encoder is stopped once that backend's session is available, including after a relaunch.
 
 ### Static segment train
+
+- [ ] Aggregate speed (#379): run multiple downloads, lock/remove the headset for a sustained
+      interval, then wake it. The header shows **Updating speed…** until every transferring row
+      has fresh observations in the same post-wake window; staggered callbacks never show a
+      partial batch total or an inflated catch-up burst (#224). Compare the settled total with
+      a synchronized server-side sample over the same interval. Repeat with one transfer and
+      with one transfer stalled: quiet observations contribute zero, and missing observations
+      hide the total rather than silently omitting that transfer. A background-session wake
+      and a long callback gap must receive the same protection.
+- [ ] Segment boundaries (#416): keep a large (multi-GB) static download running with the app
+      in the foreground for a minute or more. After the first settle, the header speed stays
+      visible across every 512 MiB segment boundary; **Updating speed…** does not reappear
+      every 10–20 seconds.
 
 Both visionOS and non-visionOS currently use the closed-segment train. Each segment is
 512 MiB, with at most two live or newly planned segments per download (the durable head plus
@@ -359,6 +518,11 @@ claiming background durability.
       than claiming resumability from unsafe resume data.
 - [ ] Simulator evidence is labeled correctly: its normal foreground URLSession substitute
       does not prove device background relaunch/continuation.
+- [ ] On iPhone/iPad, Vision Pro and Mac, fill the download slots and queue individual titles
+      and a season on Plex, Jellyfin and Emby. Waiting and server-preparing rows show posters
+      promptly; relaunch retains them and repairs missing posters after the matching session
+      returns. Check that poster bytes count in storage, delete during a poster fetch leaves no
+      artwork behind, and titles without artwork retain the placeholder.
 - [ ] Completed rows retain backend, resolution/route, poster, subtitles, chapters, and
       trick-play side assets when available; missing optional side assets do not fail the media.
 - [ ] Complete a row while its poster or one or more chapter images are missing. With its matching
@@ -372,6 +536,37 @@ claiming background durability.
       independent budgets, and a new process receives fresh counts.
 - [ ] Offline playback works with the server unreachable, persists a local playhead, uses local
       side assets only, and never attempts online timeline reporting.
+- [ ] On Plex, Jellyfin and Emby downloads, play from Detail, close, and reopen from Offline
+      (then reverse). Both use the same local position and one configured rewind; near-end reset
+      agrees. Retry/replacement cannot inherit delayed saves from the old player. Local progress
+      does not sync watched state back to the server.
+- [ ] With embedded text subtitles and a downloaded sidecar, one menu shows both and one Off.
+      Switch sidecar → embedded → Off, including a slow sidecar load; only the selected source
+      renders and a late parse cannot restore an overlay. Repeat from Detail and Offline.
+- [ ] On iPhone and iPad (narrow, regular and unfolded Duo), Offline is one list with no detail
+      page. Each row is a one-line title, one context line (finished rows end with the size) and a
+      1–2 word status (Ready, Unverified, Downloading 42%, Queued, Paused, Preparing, Verifying)
+      that never wraps. Caution is the gray secondary color plus a triangle, never orange or
+      amber; VoiceOver reads the full caption as the status value. A tap plays a finished row or
+      opens an unfinished row's actions; long-press and swipe offer the same.
+- [ ] On Vision Pro and resizable Mac, compare Offline rows with
+      current-download sheets: waiting/paused and route context are neutral, verified completion
+      green, caution orange, failure/destructive actions red. All text lines align without icons;
+      poster badges remain. Zero server progress is indeterminate; server indexing and verification
+      have distinct captions.
+      Finished rows have one summary in status/resolution/average bitrate/size order, no separate
+      quality line, and append `+ <size> extras` only when present. Unknown facts are omitted.
+      Other states retain requested quality, progress and captions. Long context/status/quality
+      stay single-line with tail truncation; VoiceOver reads the full summary plus verified or
+      playback-not-verified phrasing, and error details expand. Media/extras and exact/estimated
+      sizes remain distinct; preterminal progress stays below 100%.
+- [ ] Delete paused and in-prep rows: confirmation explains supported unfinished server-job
+      cancellation and retention of finished server versions. Replace the attempt while the
+      confirmation is open; accepting the old confirmation leaves the replacement intact.
+- [ ] Cold-launch restricted Offline, enter Cinema from a local row, exit, then Reconnect.
+      The row receives focus once; the return is acknowledged by identity and does not replay
+      on normal Root. Repeat with a newer pending return and with blocked readable recovery;
+      playable rows remain available while mutations stay disabled.
 - [ ] Relaunch reconciliation demotes missing, truncated, or unplayable files and preserves
       genuinely complete files. Storage totals distinguish indexed content, temporary data,
       and conservative orphan candidates.
