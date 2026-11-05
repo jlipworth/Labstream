@@ -189,6 +189,7 @@ of the inner display is about the size of the outer display.
   sign-in). Disabling a sheet's bar moves the status bar onto the presenter's title.
 - Color has one meaning each: amber is selected (including switch on state), green is plays-as-is
   status only, red is destructive or failed, and everything else is neutral glass or label color.
+  The logo and wordmark are black and white only, so none of these colors is also a brand color.
 
 **Pose source and DEBUG override.** `providesDuoPose()` on the mobile shell installs the single
 `\.duoPose` value (always `.flat` on visionOS, tvOS and macOS). It comes only from the active

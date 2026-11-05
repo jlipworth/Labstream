@@ -1,10 +1,31 @@
 import SwiftUI
 
-/// App-icon-style brand lockup for the sign-in screen.
-///
-/// The mark is the same transparent logo-only artwork used by the icon foreground, deliberately
-/// avoiding the wordmark in the cropped app icon while still presenting the Labstream name on
-/// screen.
+/// The app icon in miniature: the black tile with the white L. `LabstreamGlyph` uses the app
+/// icon's own 1024-pt canvas and L placement (`scripts/generate-brand-assets.py`), so it fills
+/// the whole tile and stays optically identical to the Home Screen icon.
+struct BrandMarkTile: View {
+    let side: CGFloat
+    let cornerRadius: CGFloat
+    var strokeOpacity: Double = 0.14
+    var strokeWidth: CGFloat = 0.75
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(DS.Brand.ink)
+            Image("LabstreamGlyph")
+                .resizable()
+                .scaledToFit()
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(DS.Brand.paper.opacity(strokeOpacity), lineWidth: strokeWidth)
+        }
+        .frame(width: side, height: side)
+        .accessibilityHidden(true)
+    }
+}
+
+/// App-icon-style brand lockup for the sign-in screen: the icon tile above a one-color
+/// "Labstream" wordmark (the logo is pure black and white; no accent half).
 struct LoginBrandHeader: View {
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -26,11 +47,7 @@ struct LoginBrandHeader: View {
         VStack(spacing: DS.Space.md) {
             brandMark
 
-            HStack(spacing: 0) {
-                Text("Lab")
-                Text("stream")
-                    .foregroundStyle(DS.Brand.wordmarkAccent)
-            }
+            Text("Labstream")
             #if os(tvOS)
             .font(.system(size: 58, weight: .bold, design: .rounded))
             #else
@@ -38,29 +55,12 @@ struct LoginBrandHeader: View {
             #endif
             .lineLimit(1)
             .minimumScaleFactor(0.6)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Labstream")
         }
     }
 
     private var brandMark: some View {
-        ZStack {
-            logoTileShape
-                .fill(DS.Brand.iconPlateGradient)
-            logoTileShape
-                .strokeBorder(.white.opacity(0.14), lineWidth: 0.75)
-
-            Image("LabstreamGlyph")
-                .resizable()
-                .scaledToFit()
-                .frame(width: markSide * 0.7, height: markSide * 0.7)
-        }
-        .frame(width: markSide, height: markSide)
-        .shadow(color: .black.opacity(0.32), radius: 14, x: 0, y: 8)
-    }
-
-    private var logoTileShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: (DS.Radius.card + 14) * (markSide / 112), style: .continuous)
+        BrandMarkTile(side: markSide, cornerRadius: (DS.Radius.card + 14) * (markSide / 112))
+            .shadow(color: .black.opacity(0.32), radius: 14, x: 0, y: 8)
     }
 }
 
@@ -70,20 +70,7 @@ struct LoginBrandHeader: View {
 struct CompactLoginHeader: View {
     var body: some View {
         HStack(spacing: DS.Space.md) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(DS.Brand.iconPlateGradient)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .strokeBorder(.white.opacity(0.24), lineWidth: 0.5)
-                    }
-
-                Image("LabstreamGlyph")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 36, height: 36)
-            }
-            .frame(width: 56, height: 56)
+            BrandMarkTile(side: 56, cornerRadius: 16, strokeOpacity: 0.24, strokeWidth: 0.5)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("Labstream")
@@ -102,8 +89,8 @@ struct CompactLoginHeader: View {
     }
 }
 
-/// Full-bleed branded login backdrop for iOS. In light appearance, a subtle veil keeps
-/// the gradient from fighting adaptive light panels while preserving the Labstream color.
+/// Full-bleed branded login backdrop: the graphite-to-black brand gradient. On iPad in light
+/// appearance a subtle veil keeps it from fighting the adaptive light panels.
 struct LoginBrandBackdrop: View {
     #if os(iOS)
     @Environment(\.colorScheme) private var colorScheme
@@ -113,14 +100,14 @@ struct LoginBrandBackdrop: View {
     var body: some View {
         #if os(iOS)
         if horizontalSizeClass == .compact {
-            // A full teal slab made the phone login read as a splash screen and
+            // A full brand slab made the phone login read as a splash screen and
             // swallowed the segmented backend picker. Keep the native grouped
-            // surface, with only a quiet brand wash behind the onboarding content.
+            // surface, with only a quiet neutral wash behind the onboarding content.
             Color(uiColor: .systemGroupedBackground)
                 .ignoresSafeArea()
                 .overlay(alignment: .top) {
                     LinearGradient(colors: [
-                        DS.Brand.deepTeal.opacity(colorScheme == .light ? 0.14 : 0.28),
+                        DS.Brand.wash.opacity(colorScheme == .light ? 0.18 : 0.28),
                         Color.clear
                     ], startPoint: .top, endPoint: .bottom)
                     .frame(height: 430)
@@ -131,7 +118,7 @@ struct LoginBrandBackdrop: View {
                     .ignoresSafeArea(edges: [.top, .horizontal])
                 }
         } else {
-            DS.Brand.iconPlateGradient
+            DS.Brand.backdropGradient
                 .ignoresSafeArea()
                 .overlay {
                     if colorScheme == .light {
@@ -141,7 +128,7 @@ struct LoginBrandBackdrop: View {
                 }
             }
         #else
-        DS.Brand.iconPlateGradient
+        DS.Brand.backdropGradient
             .ignoresSafeArea()
         #endif
     }

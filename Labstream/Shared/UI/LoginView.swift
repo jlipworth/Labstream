@@ -616,31 +616,12 @@ private struct MacLoginHeader: View {
     var body: some View {
         VStack(spacing: DS.Space.md) {
             HStack(spacing: DS.Space.md) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(DS.Brand.iconPlateGradient)
+                BrandMarkTile(side: 46, cornerRadius: 12, strokeOpacity: 0.16, strokeWidth: 0.5)
+                    .shadow(color: .black.opacity(0.16), radius: 8, x: 0, y: 4)
 
-                    Image("LabstreamGlyph")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 31, height: 31)
-                }
-                .frame(width: 46, height: 46)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(.white.opacity(0.16), lineWidth: 0.5)
-                }
-                .shadow(color: .black.opacity(0.16), radius: 8, x: 0, y: 4)
-
-                HStack(spacing: 0) {
-                    Text("Lab")
-                    Text("stream")
-                        .foregroundStyle(DS.Brand.wordmarkAccent)
-                }
-                .font(.title2.weight(.semibold))
-                .lineLimit(1)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Labstream")
+                Text("Labstream")
+                    .font(.title2.weight(.semibold))
+                    .lineLimit(1)
             }
 
             Text("Sign in to connect your media library.")
@@ -670,7 +651,7 @@ private struct MacLoginWindowBackground: View {
         Color(nsColor: .windowBackgroundColor)
             .overlay(alignment: .top) {
                 LinearGradient(colors: [
-                    DS.Brand.deepTeal.opacity(0.08),
+                    DS.Brand.wash.opacity(0.10),
                     Color.clear
                 ], startPoint: .top, endPoint: .bottom)
                 .frame(height: 220)
