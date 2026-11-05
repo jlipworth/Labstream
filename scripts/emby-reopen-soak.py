@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -20,7 +22,27 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_APP = ROOT / 'build/macos-host/downloads-overhaul/Labstream.app'
+
+
+def default_identity(root: Path = ROOT, env=None, branch=None) -> str:
+    """Mirror scripts/deploy-macos-to-host.sh: env suffix, else current branch, else repo dir."""
+    env = os.environ if env is None else env
+    raw = env.get('LABSTREAM_MAC_BUNDLE_ID_SUFFIX', '')
+    if not raw:
+        if branch is None:
+            try:
+                branch = subprocess.run(['git', 'branch', '--show-current'], cwd=root, capture_output=True,
+                                        text=True, check=False).stdout.strip()
+            except OSError:
+                branch = ''
+        raw = branch or root.name
+    raw = re.sub(r'-+', '-', re.sub(r'[^a-z0-9-]+', '-', raw.lower())).strip('-') or 'worktree'
+    if raw[0].isdigit():
+        raw = f'wt-{raw}'
+    if len(raw) > 48:
+        digest = hashlib.sha256(str(root).encode()).hexdigest()[:8]
+        raw = f'{raw[:39]}-{digest}'.rstrip('-')
+    return raw
 DEFAULT_SEEKS_MS = (2_400_000, 1_200_000, 3_600_000, 1_800_000, 4_800_000, 600_000, 3_000_000, 4_200_000)
 SERVER_LOG = '/config/logs/embyserver.txt'
 
@@ -205,16 +227,18 @@ def main(argv=None) -> int:
     parser.add_argument('--query', required=True, help='exact private title; never written to the summary')
     parser.add_argument('--runs', type=int, default=20)
     parser.add_argument('--seek-ms', type=int, action='append', help='repeatable; cycles across runs')
-    parser.add_argument('--app', type=Path, default=DEFAULT_APP)
+    parser.add_argument('--app', type=Path, help='staged app (default: build/macos-host/<identity>/Labstream.app)')
     parser.add_argument('--timeout', type=int, default=180, help='seconds to wait for a probe verdict')
     parser.add_argument('--settle', type=int, default=3)
-    parser.add_argument('--identity', default='downloads-overhaul', help='dev bundle id suffix of the staged app')
+    parser.add_argument('--identity', help='dev bundle id suffix of the staged app (default: derived like deploy-macos-to-host.sh)')
     parser.add_argument('--kube-context')
     parser.add_argument('--namespace', default='media')
     parser.add_argument('--deployment', default='emby')
     parser.add_argument('--container', default='emby')
     parser.add_argument('--output', type=Path, default=ROOT / 'build/emby-reopen-soak')
     opts = parser.parse_args(argv)
+    opts.identity = opts.identity or default_identity()
+    opts.app = opts.app or ROOT / 'build/macos-host' / opts.identity / 'Labstream.app'
     if not (opts.app / 'Contents/MacOS/Labstream').exists():
         raise SystemExit(f'no staged app at {opts.app}; run scripts/deploy-macos-to-host.sh first')
     if screen_locked():

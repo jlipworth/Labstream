@@ -7,6 +7,14 @@ soak = load_script('emby_reopen_soak', Path(__file__).parents[1] / 'emby-reopen-
 
 
 class EmbyReopenSoakTests(unittest.TestCase):
+    def test_default_identity_matches_the_mac_host_helper(self):
+        root = Path('/tmp/repo')
+        self.assertEqual(soak.default_identity(root, env={}, branch='downloads/overhaul'), 'downloads-overhaul')
+        self.assertEqual(soak.default_identity(root, env={'LABSTREAM_MAC_BUNDLE_ID_SUFFIX': 'My_Run'}), 'my-run')
+        self.assertEqual(soak.default_identity(root, env={}, branch='419-duo'), 'wt-419-duo')
+        long = soak.default_identity(root, env={}, branch='x' * 60)
+        self.assertEqual(len(long), 48)
+
     def test_redacts_credentials_and_session_identifiers(self):
         line = 'GET /videos/1/hls1/main/0.m4s?api_key=SECRET&PlaySessionId=abc&DeviceId=dev&x=1'
         out = soak.redact(line)
