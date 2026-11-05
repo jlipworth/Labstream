@@ -16,24 +16,32 @@ plus the work integrated on the same branch: iPhone Duo support and the Xcode 27
 ([#419](https://github.com/jlipworth/Labstream/issues/419)), the iOS player and Stats rework,
 Emby copy-lane fixes, bounded headless codec regression testing and Mac navigation fixes.
 
-The latest recorded processed distribution is **1.8.0 (build 1653)** for all four platforms,
-archived on 2026-11-02 from clean commit `f1efcae5`. Every 1.8.0 build below was archived from the
-`downloads/overhaul` integration branch before it landed on `main` (uploaded with
-`--allow-unpublished`), passed validation, processed to **VALID**, reached **IN_BETA_TESTING** and
-is available in the **Labstream Internal** TestFlight group. They are TestFlight builds only: no
-1.8.0 App Store version exists, no 1.8.0 build was selected, and nothing was submitted for review.
-The selected review candidate remains **1.7.2 (build 1503)** at `b63d1757`, and the previous
-release was **1.6.1 (build 2)** at `abd1ddcac351`. Keep the source version and the processed
+The latest recorded processed distribution is **1.8.0 (build 1654)** for all four platforms,
+archived on 2026-11-05 from clean `main` commit `27b6bf5a`, after `downloads/overhaul` landed (#425)
+and the in-app privacy and support links merged (#427). It processed to **VALID**, reached
+**IN_BETA_TESTING** and is in the **Labstream Internal** TestFlight group. Builds 1523–1653 were
+archived from the `downloads/overhaul` integration branch before it landed (uploaded with
+`--allow-unpublished`).
+
+On 2026-11-05 the four App Store Connect version drafts were renamed from 1.7.2 to **1.8.0**, and
+**1.8.0 (build 1654)** was selected for each platform. 1.7.2 was never submitted or released.
+Nothing has been submitted for review. The previous release was **1.6.1 (build 2)** at
+`abd1ddcac351`.
+
+`main` is squash-merged, so its commit count (the `--build-number auto` value) is about 140 below
+the integration-branch builds. Until the commit count passes 1654, pass an explicit
+`--build-number` above the last upload; App Store Connect rejects a lower build number for the same
+version. Keep the source version and the processed
 binary version separate when reporting release status. 1.8.0 device acceptance is tracked in
 [#403](https://github.com/jlipworth/Labstream/issues/403). PMSKit has no app-version constant; the
 runtime client identity reads the bundle version and falls back to `0.0.0`.
 
 | Product | Current source | Latest processed (internal TestFlight) | Selected for the App Store version | Open acceptance |
 | --- | --- | --- | --- | --- |
-| Apple Vision Pro (`Labstream`) | 1.8.0 (build 2) | 1.8.0 (build 1653) | 1.7.2 (build 1503) | Physical TestFlight acceptance and review access. |
-| iPhone and iPad (`LabstreamMobile`) | 1.8.0 (build 2) | 1.8.0 (build 1653) | 1.7.2 (build 1503) | Physical iPhone, iPad and iPhone Duo acceptance; Duo App Store screenshots. |
-| Apple TV (`LabstreamTV`) | 1.8.0 (build 2) | 1.8.0 (build 1653) | 1.7.2 (build 1503) | Physical Apple TV acceptance. |
-| Mac (`LabstreamMac`) | 1.8.0 (build 2) | 1.8.0 (build 1653) | 1.7.2 (build 1503) | Sandbox and live-host acceptance. A 1.6.1 (build 2) TestFlight install passed launch and receipt/signature checks; no later Mac TestFlight install is recorded. |
+| Apple Vision Pro (`Labstream`) | 1.8.0 (build 2) | 1.8.0 (build 1654) | 1.8.0 (build 1654) | Physical TestFlight acceptance and review access. |
+| iPhone and iPad (`LabstreamMobile`) | 1.8.0 (build 2) | 1.8.0 (build 1654) | 1.8.0 (build 1654) | Physical iPhone, iPad and iPhone Duo acceptance; Duo App Store screenshots. |
+| Apple TV (`LabstreamTV`) | 1.8.0 (build 2) | 1.8.0 (build 1654) | 1.8.0 (build 1654) | Physical Apple TV acceptance. |
+| Mac (`LabstreamMac`) | 1.8.0 (build 2) | 1.8.0 (build 1654) | 1.8.0 (build 1654) | Sandbox and live-host acceptance. A 1.6.1 (build 2) TestFlight install passed launch and receipt/signature checks; no later Mac TestFlight install is recorded. |
 
 ### 1.8.0 internal TestFlight builds
 
@@ -42,6 +50,7 @@ verification, and none of it is physical-device or live-backend acceptance unles
 
 | Date | Build | Commit | What it adds | Checked | Still open |
 | --- | --- | --- | --- | --- | --- |
+| 2026-11-05 | 1654 | `27b6bf5a` | First 1.8.0 build from `main`: everything above plus in-app Privacy Policy, Support and support-email links in Settings ▸ About and on the sign-in screen, a QR sheet on Apple TV and the Mac Help menu ([#427](https://github.com/jlipworth/Labstream/pull/427)). Selected for all four 1.8.0 App Store versions. | Four-platform builds, Mac hosted suite, hermetic PMSKit, iPhone/iPad/Apple TV simulator screenshots of the new links, docs hygiene, pre-upload validation. | Physical-device acceptance (#403); tapping the links and the Apple TV QR sheet. |
 | 2026-11-02 | 1653 | `f1efcae5` | One Stats path palette on every platform (green for direct play, neutral gray for copy and encode); the Connection tile resolves the host on device and reports a VPN route for Tailscale and other tunnels instead of Unknown for custom domains. | 13 Stats summary tests, two mobile Stats UI tests, clean visionOS build and launch smoke, docs hygiene. | New colors on visionOS, tvOS and macOS; the VPN route on a real Tailscale connection. |
 | 2026-10-31 | 1651 | `ff57f33d` | iOS player menus: Quality, Subtitles, Audio, Chapters, Speed and Stats become labeled glass capsules when they fit (beside the title, else under the scrubber, else icon-only); Quality is always present and first; the More overflow is gone; the −30/+30 skips return outside ±10. | Clean Duo-simulator build, folded-display capture, 12-test mobile fixture UI suite. | Unfolded inner-display layout on screen; physical Duo; other platforms. |
 | 2026-10-31 | 1649 | `8de68dca` | Offline scrubber for Plex, Jellyfin and Emby server and transcoder logs; the iOS player tap scrim dims the whole picture and the bottom group no longer stacks its margin on the home-indicator inset. | Clean Duo-simulator `LabstreamMobile` build, three player-chrome fixture UI tests. | Physical Duo acceptance of the scrim fix; real folds. |
@@ -317,7 +326,8 @@ and App Store Connect state before relying on them for a new submission.
       and added to the internal TestFlight group. They are not selected for the platform versions.
 - [x] Clean **1.7.2 (build 1503)** archives from `b63d1757` were built, validated, uploaded, and
       processed for all four platforms on 2026-10-16, added to the internal TestFlight group, and
-      selected for each 1.7.2 platform version.
+      selected for each 1.7.2 platform version (superseded on 2026-11-05: the versions became 1.8.0
+      with build 1654 selected).
 - [x] Clean **1.7.2 (build 1506)** archives from `6faff16f` were built, validated, uploaded, and
       processed for all four platforms on 2026-10-16 and added to the internal TestFlight group.
       They are not selected for the platform versions.
