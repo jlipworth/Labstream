@@ -88,13 +88,20 @@ Commands and limitations: [workflow status and review evidence](../docs/DEVELOPM
   a simulator; retain normal test parallelism and serialize Xcode lanes for the final gate. See
   [Testing strategy](../docs/TESTING-STRATEGY.md#native-apple-matrix-driver). The matrix includes
   the iPhone Duo simulator (`--duo-sim-id`) and the `duo-ui-smoke` lane; see
-  [Development](../docs/DEVELOPMENT.md).
+  [Development](../docs/DEVELOPMENT.md). The visionOS simulator (`--visionos-sim-id`, the
+  worktree's `.simid`) runs the `visionos-ui-smoke` XCUITest lane.
+- `ui-test-checkpoints.py` + `ui_checkpoint_driver.py` — run a UI test and capture the simulator
+  display from the host at each `checkpoint("name")` the test reaches (needed on visionOS, where
+  in-process XCUITest screenshots are 1×1). Test output goes to a private, redacted log. See
+  [visionOS XCUITest](../docs/TESTING-STRATEGY.md#visionos-xcuitest).
 - `app-store-screenshots.py` + `app-store-screenshot-specs.json` — App Store screenshot exporter.
   `capture` runs serial credential-free fixture captures of named scenes (home, library, detail,
   playback, downloads; no downloads on tvOS) for visionOS, iPhone 6.3- and 6.9-inch, iPad, iPhone
   Duo outer and inner (appResize proxy), tvOS, and the isolated Mac target; those images are layout
   evidence only. `live start|shot|finish` captures an ordinary session launched without arguments
-  for the review catalog. `validate` checks sizes, alpha, checksums and mode wording; `coverage`
+  for the review catalog; `live drive` runs the opt-in live-catalog UI test against that process
+  (sign-in from the gitignored `app-review-live.env`, then Home → Movies → Spring → play) and
+  shoots each scene; `live start --dry-run` labels an export as automation evidence only. `validate` checks sizes, alpha, checksums and mode wording; `coverage`
   checks every Apple-required display class. It uses exact worktree simulator IDs and exports only
   JPEGs plus a sanitized manifest. See
   [App Store screenshot automation](../docs/APP-STORE-SCREENSHOTS.md).

@@ -10,6 +10,10 @@ Two capture modes share one export format:
   no arguments at all, let a person sign in to the review catalog and navigate normally, and then
   capture the exact simulator display after two identical frames. The manifest records the
   zero-argument launch and the unchanged process, never credentials, endpoints or IDs.
+  ``live drive`` replaces the person with the opt-in live-catalog UI test: it attaches to the same
+  process, signs in with private runner values from the gitignored ``scripts/app-review-live.env``,
+  navigates, and calls ``live shot`` at each scene checkpoint. ``live start --dry-run`` labels the
+  export as automation evidence that is never a final screenshot.
 
 Raw runner evidence stays under the ignored artifact root. The export contains only flattened JPEG
 screenshots and a sanitized manifest: no logs, simulator IDs, absolute paths, credentials, or
@@ -20,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import json
 import math
 import shutil
@@ -67,8 +72,8 @@ FIXTURE_ROUTES: dict[str, dict[str, dict[str, Any] | None]] = {
     },
     "visionos": {
         **MOBILE_ROUTES,
-        # The visionOS player is spatial and has no Debug player fixture; the simulator cannot be
-        # driven on Xcode 27, so playback is a human/headset capture.
+        # The visionOS player is spatial and has no Debug player fixture, so playback is a live
+        # capture (`live drive`) or a human/headset one.
         "playback": None,
     },
     "tvos": {
@@ -91,6 +96,21 @@ SOURCE_NAMES = {target: "screen-end.png" for target in SIMULATOR_TARGETS} | {"ma
 # Live capture display names (simctl io --display). The Duo's plain screenshot targets the inner
 # LCD, which is black while folded; outer is `primary`, the real unfolded inner is `primary-1`.
 LIVE_DISPLAYS = {"duo-outer": "primary", "duo-inner": "primary-1"}
+
+
+DRY_RUN_NOTE = ("dry run: proves the automated sign-in, navigation and capture path only; final "
+                "screenshots come from a later owner-reviewed pass")
+LIVE_CONFIG_PATH = ROOT / "scripts" / "app-review-live.env"
+LIVE_SECRET_KEYS = ("LABSTREAM_LIVE_AUTH_SERVER", "LABSTREAM_LIVE_AUTH_USERNAME",
+                    "LABSTREAM_LIVE_AUTH_PASSWORD")
+LIVE_OPTIONAL_KEYS = ("LABSTREAM_LIVE_LIBRARY", "LABSTREAM_LIVE_TITLE")
+# The opt-in live-catalog UI test per product (xcodebuild -only-testing identifiers).
+LIVE_TESTS = {
+    **{target: "LabstreamMobileUITests/LabstreamMobileLiveCatalogUITests/testSignInAndBrowseReviewCatalog"
+       for target in MOBILE_TARGETS},
+    "tvos": "LabstreamTVUITests/LabstreamTVLiveCatalogUITests/testSignInAndBrowseReviewCatalog",
+    "visionos": "LabstreamVisionUITests/LabstreamVisionLiveCatalogUITests/testSignInAndBrowseReviewCatalog",
+}
 
 
 class ScreenshotError(RuntimeError):
@@ -516,7 +536,7 @@ def _session_state(session: Path) -> dict[str, Any]:
         raise ScreenshotError(f"not a live capture session: {error}") from error
 
 
-def live_start(target: str, artifact_root: Path, *, allow_simulator: bool) -> Path:
+def live_start(target: str, artifact_root: Path, *, allow_simulator: bool, dry_run: bool = False) -> Path:
     if target not in SIMULATOR_TARGETS:
         raise ScreenshotError("live mode supports simulator targets; capture macOS by hand")
     if not allow_simulator:
@@ -544,7 +564,8 @@ def live_start(target: str, artifact_root: Path, *, allow_simulator: bool) -> Pa
     session = artifact_root.resolve() / f"{session_name}-live-{target}"
     (session / "export").mkdir(parents=True)
     state = {"schemaVersion": 1, "target": target, "pid": pid, "launchArguments": [],
-             "app": _installed_version(udid), "startedAt": datetime.now(timezone.utc).isoformat()}
+             "app": _installed_version(udid), "startedAt": datetime.now(timezone.utc).isoformat(),
+             "dryRun": dry_run}
     (session / "live-session.json").write_text(json.dumps(state, indent=2) + "\n")
     return session
 
@@ -593,8 +614,10 @@ def live_shot(session: Path, scene: str) -> Path:
     entries = [entry for entry in _live_entries(session) if entry["scene"] != scene]
     entries.append(_entry(specs, target, scene, destination, mode="live", launch_arguments=[]))
     entries.sort(key=lambda entry: SCENE_ORDER.index(entry["scene"]))
-    _write_manifest(export_dir, specs, entries, mode="live", dirty=_git_dirty(),
-                    extra={"app": state["app"], "launchedWithoutArguments": True})
+    extra: dict[str, Any] = {"app": state["app"], "launchedWithoutArguments": True}
+    if state.get("dryRun"):
+        extra |= {"dryRun": True, "dryRunNote": DRY_RUN_NOTE}
+    _write_manifest(export_dir, specs, entries, mode="live", dirty=_git_dirty(), extra=extra)
     validate_export(export_dir, specs)
     return destination
 
@@ -604,6 +627,77 @@ def _live_entries(session: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     return _read_manifest(session / "export").get("screenshots", [])
+
+
+def load_live_config(path: Path = LIVE_CONFIG_PATH,
+                     environ: dict[str, str] | None = None) -> dict[str, str]:
+    """Private live-test values: process environment first, then the gitignored KEY=VALUE file."""
+    environ = dict(os.environ) if environ is None else environ
+    values: dict[str, str] = {}
+    if path.is_file():
+        for raw in path.read_text().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            values[key.strip().removeprefix("export ").strip()] = value.strip().strip("'\"")
+    keys = LIVE_SECRET_KEYS + LIVE_OPTIONAL_KEYS
+    config = {key: environ.get(key) or values.get(key, "") for key in keys}
+    missing = [key for key in LIVE_SECRET_KEYS if not config[key]]
+    if missing:
+        raise ScreenshotError(
+            f"blocked: live drive needs {', '.join(missing)} in the environment or {path.name} "
+            "(copy scripts/app-review-live.env.example; never commit it)")
+    if not config["LABSTREAM_LIVE_AUTH_SERVER"].startswith("https://"):
+        raise ScreenshotError("LABSTREAM_LIVE_AUTH_SERVER must be an HTTPS origin")
+    return {key: value for key, value in config.items() if value}
+
+
+def live_drive(session: Path, xctestrun: Path, *, config_path: Path = LIVE_CONFIG_PATH,
+               keep_result: bool = False) -> list[str]:
+    """Run the live-catalog UI test against the session's process and shoot each scene."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import ui_checkpoint_driver as driver
+
+    state = _session_state(session)
+    target = state["target"]
+    if target not in LIVE_TESTS:
+        raise ScreenshotError(f"{target} has no live-catalog UI test")
+    if not xctestrun.is_file():
+        raise ScreenshotError("missing .xctestrun; build-for-testing the target's scheme first")
+    config = load_live_config(config_path)
+    udid = _simulator_udid(target)
+    if _app_pid(udid) != state["pid"]:
+        raise ScreenshotError("Labstream is not the process this session launched; start a new session")
+    checkpoints = session / "checkpoints"
+    runner = {**config, "LABSTREAM_LIVE_CATALOG_ALLOWED": "1", "LABSTREAM_LIVE_ATTACH": "1",
+              driver.CHECKPOINT_ENV: str(checkpoints)}
+    # The result bundle records typed text, so it is private and deleted unless asked to keep it.
+    result_bundle = session / "private-result.xcresult"
+    shutil.rmtree(result_bundle, ignore_errors=True)
+    command = ["scripts/xcodebuild-versioned.sh", "test-without-building", "-xctestrun", str(xctestrun),
+               "-destination", f"id={udid}", f"-only-testing:{LIVE_TESTS[target]}",
+               "-parallel-testing-enabled", "NO", "-collect-test-diagnostics", "never",
+               "-resultBundlePath", str(result_bundle)]
+    scenes = set(live_scenes(target))
+
+    def shoot(name: str) -> None:
+        if name in scenes:
+            live_shot(session, name)
+
+    try:
+        code, seen = driver.run(command, checkpoint_dir=checkpoints, on_checkpoint=shoot,
+                                log_path=session / "private-test.log", cwd=ROOT,
+                                env=driver.runner_environment(runner),
+                                secrets=[config[key] for key in LIVE_SECRET_KEYS])
+    finally:
+        if not keep_result:
+            shutil.rmtree(result_bundle, ignore_errors=True)
+        shutil.rmtree(checkpoints, ignore_errors=True)
+    shot = [name for name in seen if name in scenes]
+    if code != 0:
+        raise ScreenshotError(f"live UI test failed after {shot or 'no'} scenes; see {session.name}/private-test.log")
+    return shot
 
 
 def live_finish(session: Path) -> Path:
@@ -660,6 +754,14 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--target", required=True, choices=sorted(SIMULATOR_TARGETS))
     start.add_argument("--artifact-root", type=Path, default=default_root)
     start.add_argument("--allow-simulator", action="store_true")
+    start.add_argument("--dry-run", action="store_true",
+                       help="label the export as automation evidence, never final screenshots")
+    drive = live_sub.add_parser("drive", help="sign in and navigate with the live-catalog UI test")
+    drive.add_argument("session", type=Path)
+    drive.add_argument("--xctestrun", type=Path, required=True)
+    drive.add_argument("--config", type=Path, default=LIVE_CONFIG_PATH)
+    drive.add_argument("--keep-result", action="store_true",
+                       help="keep the private .xcresult (contains typed credentials)")
     shot = live_sub.add_parser("shot")
     shot.add_argument("session", type=Path)
     shot.add_argument("--scene", required=True, choices=SCENE_ORDER)
@@ -692,9 +794,13 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "live":
             if args.live_command == "start":
                 session = live_start(args.target, args.artifact_root,
-                                     allow_simulator=args.allow_simulator)
+                                     allow_simulator=args.allow_simulator, dry_run=args.dry_run)
                 print(f"SESSION: {session}")
                 print("Sign in and navigate normally, then run `live shot SESSION --scene NAME`.")
+            elif args.live_command == "drive":
+                scenes = live_drive(args.session.resolve(), args.xctestrun.resolve(),
+                                    config_path=args.config, keep_result=args.keep_result)
+                print(f"PASS: captured {', '.join(scenes)}")
             elif args.live_command == "shot":
                 print(f"PASS: {live_shot(args.session.resolve(), args.scene)}")
             else:
@@ -707,6 +813,8 @@ def main(argv: list[str] | None = None) -> int:
             manifests = [validate_export(path.resolve(), specs) for path in args.export_dirs]
             if args.live_only and any(manifest["mode"] != "live" for manifest in manifests):
                 raise ScreenshotError("--live-only rejects fixture exports")
+            if args.live_only and any(manifest.get("dryRun") for manifest in manifests):
+                raise ScreenshotError("--live-only rejects dry-run exports")
             families = set(parse_targets(args.target)) if args.target else None
             report = coverage_report(manifests, specs, as_of=args.as_of, families=families,
                                      include_upcoming=args.include_upcoming)

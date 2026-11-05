@@ -270,6 +270,57 @@ class AppStoreScreenshotTests(unittest.TestCase):
                 with self.assertRaisesRegex(screenshots.ScreenshotError, "without arguments"):
                     screenshots.live_shot(session, "home")
 
+    def test_live_config_reads_private_file_and_environment_without_echoing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "app-review-live.env"
+            path.write_text("# comment\nLABSTREAM_LIVE_AUTH_SERVER=https://review.example.invalid\n"
+                            "export LABSTREAM_LIVE_AUTH_USERNAME='demo'\n"
+                            "LABSTREAM_LIVE_AUTH_PASSWORD=file-secret\nUNRELATED=x\n")
+            config = screenshots.load_live_config(path, {"LABSTREAM_LIVE_AUTH_PASSWORD": "env-secret"})
+            self.assertEqual(config["LABSTREAM_LIVE_AUTH_USERNAME"], "demo")
+            self.assertEqual(config["LABSTREAM_LIVE_AUTH_PASSWORD"], "env-secret")
+            self.assertNotIn("UNRELATED", config)
+            path.write_text("LABSTREAM_LIVE_AUTH_SERVER=http://plain.example.invalid\n"
+                            "LABSTREAM_LIVE_AUTH_USERNAME=u\nLABSTREAM_LIVE_AUTH_PASSWORD=p\n")
+            with self.assertRaisesRegex(screenshots.ScreenshotError, "HTTPS"):
+                screenshots.load_live_config(path, {})
+            with self.assertRaises(screenshots.ScreenshotError) as missing:
+                screenshots.load_live_config(Path(directory) / "absent.env", {"LABSTREAM_LIVE_AUTH_PASSWORD": "s3cret"})
+            self.assertIn("blocked", str(missing.exception))
+            self.assertNotIn("s3cret", str(missing.exception))
+
+    def test_every_simulator_target_has_a_live_catalog_test(self) -> None:
+        self.assertEqual(set(screenshots.LIVE_TESTS), set(screenshots.SIMULATOR_TARGETS))
+        for test_id in screenshots.LIVE_TESTS.values():
+            target, cls, _ = test_id.split("/")
+            self.assertTrue((ROOT / target / f"{cls}.swift").is_file(), test_id)
+
+    def test_dry_run_live_manifest_is_labelled_and_rejected_for_release(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory)
+            (session / "export").mkdir()
+            (session / "live-session.json").write_text(json.dumps(
+                {"target": "iphone", "pid": 42, "app": {}, "launchArguments": [], "dryRun": True}))
+            frame = session / "frame.png"
+            frame.write_bytes(b"frame")
+            def convert(source, destination, target, pixels):
+                destination.write_bytes(b"jpeg")
+            with mock.patch.object(screenshots, "_simulator_udid", return_value="SIM"), \
+                    mock.patch.object(screenshots, "_booted_udids", return_value={"SIM"}), \
+                    mock.patch.object(screenshots, "_app_pid", return_value=42), \
+                    mock.patch.object(screenshots, "_stable_frame", return_value=frame), \
+                    mock.patch.object(screenshots, "_convert_to_store_jpeg", side_effect=convert), \
+                    mock.patch.object(screenshots, "image_properties", return_value=(1206, 2622, False)), \
+                    mock.patch.object(screenshots, "_git_dirty", return_value=False):
+                screenshots.live_shot(session, "home")
+                manifest = json.loads((session / "export" / "manifest.json").read_text())
+                self.assertTrue(manifest["dryRun"])
+                self.assertIn("dry run", manifest["dryRunNote"])
+                self.assertFalse(manifest["releaseEligible"])
+                code = screenshots.main(["coverage", str(session / "export"), "--live-only",
+                                         "--target", "iphone"])
+            self.assertEqual(code, 2)
+
     def test_live_capture_reads_the_duo_displays_explicitly(self) -> None:
         self.assertEqual(screenshots.LIVE_DISPLAYS, {"duo-outer": "primary", "duo-inner": "primary-1"})
 

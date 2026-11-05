@@ -343,10 +343,61 @@ repository lease; they resolve the worktree-owned simulator and shut it down by 
 platform runners' Xcode invocations have a platform-specific wall-clock bound, including
 result-log finalization. Mobile and TV semantic scenarios retain XCTest attachments and result bundles in
 addition to video, screenshots, logs, and `run.json`. macOS uses semantic Accessibility against an
-isolated development identity. visionOS remains passive/probe-first because Xcode 27 Device
-Interaction does not support its simulator; gaze, pinch-drag, immersive, and hardware-only checks
-remain human/headset gates. Real backend credentials supplement these fixture loops but are never a
-precondition for platform-loop closure.
+isolated development identity. Xcode 27 Device Interaction does not support the visionOS
+simulator, but XCUITest does: see [visionOS XCUITest](#visionos-xcuitest). Gaze, pinch-drag,
+immersive, and hardware-only checks remain human/headset gates. Real backend credentials supplement
+these fixture loops but are never a precondition for platform-loop closure.
+
+### visionOS XCUITest
+
+Verified on 2026-11-05 with Xcode 27.1 and the visionOS 27.0 simulator: a `LabstreamVisionUITests`
+UI-test bundle (in the `Labstream` scheme's `LabstreamVisionUITests.xctestplan`) launches
+Labstream, reads the full accessibility tree (window content plus the ornament tab bar, whose
+buttons carry SF Symbol identifiers such as `house` and `rectangle.stack`), finds a Home card by
+its `labstream.home.<rail>.<item>` identifier, taps it with an element query, opens the detail
+page, and taps Resume. The fixture smoke runs as the `visionos-ui-smoke` matrix lane:
+
+```sh
+SIMID=$(scripts/worktree-sim.sh --platform visionos id)
+xcrun simctl boot "$SIMID"
+scripts/native-test-matrix.py full --visionos-sim-id "$SIMID" --allow-simulator \
+  --run --lane visionos-ui-smoke
+```
+
+Limits found in the same run:
+
+- `XCUIScreen.main.screenshot()` and `app.screenshot()` return a 1×1 image on the visionOS
+  simulator. Capture the display from the host with `simctl io screenshot` instead. The tests'
+  `checkpoint("name")` helper (`UITestCheckpoint.swift`, one identical copy per UI-test target)
+  writes `name.ready` to the host directory in `LABSTREAM_UI_CHECKPOINT_DIR` and waits for
+  `name.done`. `scripts/ui-test-checkpoints.py` runs a test and captures each checkpoint.
+- There is no visionOS player fixture, and the browse fixture's media URL does not resolve, so the
+  fixture smoke proves that Resume is delivered but not that playback starts. Real playback start
+  is covered by the opt-in live-catalog test below.
+- After a failed test, xcodebuild spends up to 10 minutes collecting simulator diagnostics; pass
+  `-collect-test-diagnostics never` (the matrix lane does).
+- XCUITest synthesizes element taps through the accessibility runtime. It does not exercise gaze
+  hover, pinch-drag, immersive spaces, or Cinema, and coordinate clicking remains banned.
+
+### Live-catalog sign-in tests
+
+`LabstreamMobileLiveCatalogUITests` (iPhone/iPad), `LabstreamTVLiveCatalogUITests`, and
+`LabstreamVisionLiveCatalogUITests` sign in to the Jellyfin review server with username and
+password, then go Home → Movies → Spring details → play. They pause at the `home`, `library`,
+`detail` and `playback` checkpoints. They skip unless the runner environment has
+`LABSTREAM_LIVE_CATALOG_ALLOWED=1` and the private `LABSTREAM_LIVE_AUTH_SERVER`,
+`LABSTREAM_LIVE_AUTH_USERNAME` and `LABSTREAM_LIVE_AUTH_PASSWORD`. Those values live only in the
+gitignored `scripts/app-review-live.env` (template: `scripts/app-review-live.env.example`) or the
+caller's environment, and reach the test as xcodebuild `TEST_RUNNER_` variables. The tests never
+sign out. On an app that is already signed in to another account they fail at the catalog check.
+
+XCUITest's activity log prints typed text, including the server address and username. On tvOS,
+where the system keyboard types into the app, it also prints the password. Run the tests through
+`scripts/app-store-screenshots.py live drive`, which redacts every private value from the
+log it keeps and deletes the result bundle. See [App Store screenshots](APP-STORE-SCREENSHOTS.md).
+With placeholder values (`https://jellyfin.example.invalid`), the sign-in form path was verified up to
+Submit on the iPhone, Apple TV, and visionOS simulators on 2026-11-05. The test then failed, as
+designed, waiting for Home. The macOS Accessibility runner has no live sign-in path yet.
 
 ### Download transport fault probes
 

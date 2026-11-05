@@ -1,0 +1,22 @@
+{
+  "configurations" : [
+    {
+      "id" : "5C1F8B0E-7A43-4F3B-9C5E-2D6A1B7E9F01",
+      "name" : "Default",
+      "options" : {
+      }
+    }
+  ],
+  "defaultOptions" : {
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:Labstream.xcodeproj",
+        "identifier" : "BB00000000000000000000A0",
+        "name" : "LabstreamVisionUITests"
+      }
+    }
+  ],
+  "version" : 1
+}
