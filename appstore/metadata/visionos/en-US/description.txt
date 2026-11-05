@@ -12,7 +12,7 @@ Features:
 
 • Watch progress, Up Next, and episode autoplay
 
-• Offline downloads on iPhone, iPad, Mac, and Apple Vision Pro
+• Offline downloads on iPhone, iPad, Mac, and Apple Vision Pro, with a resumable queue, whole-season downloads, up to five at a time, and optional server-side preparation through Plex optimize or Emby Convert
 
 • Native experiences for iPhone/iPad, Apple TV, Mac, and Apple Vision Pro
 
