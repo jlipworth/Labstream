@@ -129,6 +129,45 @@ clears the status bar and shuts the simulator down. A session's export lives at
 `<session>/export`. macOS has no live lane yet; capture its window by hand with the isolated host
 path and apply the same checks.
 
+### Automated sign-in and navigation (`live drive`)
+
+`live drive` replaces the person in the steps above with the opt-in live-catalog UI test for the
+session's product (`LabstreamMobileLiveCatalogUITests`, `LabstreamTVLiveCatalogUITests`, or
+`LabstreamVisionLiveCatalogUITests`). The test attaches to the process that `live start` launched
+without arguments (`XCUIApplication.activate()`; the session's PID check still applies). If the app
+is signed out, the test signs in with username and password. It then goes Home → Movies → Spring
+details → play, and the driver runs `live shot` at the `home`, `library`, `detail` and `playback`
+checkpoints.
+
+```sh
+cp scripts/app-review-live.env.example scripts/app-review-live.env   # gitignored; fill in, chmod 600
+# Build the target's UI tests once (iPhone/iPad shown; tvOS: LabstreamTV + LabstreamTVUITests plan;
+# visionOS: Labstream scheme).
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamMobile \
+  -testPlan LabstreamTests -destination "platform=iOS Simulator,id=$SIMID" \
+  -derivedDataPath build/DerivedData-ios-iphone build-for-testing CODE_SIGNING_ALLOWED=NO
+xcrun simctl install "$SIMID" build/DerivedData-ios-iphone/Build/Products/Debug-iphonesimulator/Labstream.app
+SESSION=$(scripts/app-store-screenshots.py live start --target iphone --allow-simulator --dry-run \
+  | sed -n 's/^SESSION: //p')
+scripts/app-store-screenshots.py live drive "$SESSION" \
+  --xctestrun build/DerivedData-ios-iphone/Build/Products/*.xctestrun
+scripts/app-store-screenshots.py live finish "$SESSION"
+```
+
+The server address, username and password come only from `scripts/app-review-live.env` or the
+caller's environment (`LABSTREAM_LIVE_AUTH_SERVER`, `LABSTREAM_LIVE_AUTH_USERNAME`,
+`LABSTREAM_LIVE_AUTH_PASSWORD`). They reach the test as xcodebuild `TEST_RUNNER_` variables and are
+never printed. Missing values stop the command as `blocked` before anything runs, and the tests
+themselves skip. XCUITest logs typed text, so the driver keeps only a redacted
+`<session>/private-test.log` and deletes the result bundle (`--keep-result` keeps it for
+debugging; it contains the typed values). The test never signs out. An app signed in to another
+account fails at the catalog check, so sign out by hand first.
+
+`--dry-run` on `live start` adds `"dryRun": true` and a note to the export manifest. Dry-run
+exports prove that the automation works and are never final screenshots: `coverage --live-only`
+rejects them. Final screenshots come from a later live session without `--dry-run`, reviewed by
+the release owner.
+
 ## Validate and check coverage
 
 ```sh
@@ -167,9 +206,9 @@ dimensions, alpha rejection, checksums, mode wording, and display-class coverage
 
 Outside automation:
 
-- **Apple Vision Pro interaction and playback:** Xcode 27's supported path is passive. Live
-  navigation, authentication, and spatial playback need a person on the simulator or headset;
-  coordinate clicking must not be used.
+- **Apple Vision Pro interaction and playback:** `live drive` signs in and navigates through
+  XCUITest element queries, but nothing in automation proves gaze, pinch-drag, immersive, or
+  headset rendering. Coordinate clicking must not be used.
 - **iPhone Duo folding:** the inner fixture image is an appResize proxy; a real unfold (Device Hub
   or hardware) is required for final inner images.
 - **Mac host permissions:** the isolated Accessibility driver and window-only capture require the

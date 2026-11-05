@@ -23,7 +23,9 @@ from xcode_lease import default_path, inherited
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 DEFAULT_MANIFEST = SCRIPT_DIR / "native-test-matrix.json"
-SIMULATOR_ID_FILES = {"iphone": ".simid-iphone", "duo": ".simid-duo", "tvos": ".simid-tvos"}
+SIMULATOR_ID_FILES = {
+    "iphone": ".simid-iphone", "duo": ".simid-duo", "tvos": ".simid-tvos", "visionos": ".simid",
+}
 class MatrixError(RuntimeError):
     pass
 
@@ -167,6 +169,7 @@ def render_lane(
     iphone_sim_id: str | None,
     tvos_sim_id: str | None,
     duo_sim_id: str | None = None,
+    visionos_sim_id: str | None = None,
 ) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "name": name,
@@ -182,10 +185,12 @@ def render_lane(
         "iphone_sim_id": iphone_sim_id or "<required:iphone-sim-id>",
         "tvos_sim_id": tvos_sim_id or "<required:tvos-sim-id>",
         "duo_sim_id": duo_sim_id or "<required:duo-sim-id>",
+        "visionos_sim_id": visionos_sim_id or "<required:visionos-sim-id>",
     }
     command = [part.format(**values) for part in lane["command"]]
     simulator = lane.get("simulator")
-    supplied = {"iphone": iphone_sim_id, "duo": duo_sim_id, "tvos": tvos_sim_id}
+    supplied = {"iphone": iphone_sim_id, "duo": duo_sim_id, "tvos": tvos_sim_id,
+                "visionos": visionos_sim_id}
     missing = simulator is not None and not supplied.get(simulator)
     entry.update(
         {
@@ -213,6 +218,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--iphone-sim-id")
     result.add_argument("--tvos-sim-id")
     result.add_argument("--duo-sim-id", help="this worktree's iPhone Duo simulator (.simid-duo)")
+    result.add_argument("--visionos-sim-id", help="this worktree's visionOS simulator (.simid)")
     result.add_argument("--output-dir", type=Path, default=REPO_ROOT / "build" / "native-test-matrix")
     result.add_argument("--format", choices=("text", "json"), default="text")
     result.add_argument("--run", action="store_true", help="execute one explicitly selected lane")
@@ -246,6 +252,7 @@ def main(argv: list[str] | None = None) -> int:
                 iphone_sim_id=args.iphone_sim_id,
                 tvos_sim_id=args.tvos_sim_id,
                 duo_sim_id=args.duo_sim_id,
+                visionos_sim_id=args.visionos_sim_id,
             )
             for name in names
         ]
@@ -267,6 +274,7 @@ def main(argv: list[str] | None = None) -> int:
                     "iphone": args.iphone_sim_id,
                     "duo": args.duo_sim_id,
                     "tvos": args.tvos_sim_id,
+                    "visionos": args.visionos_sim_id,
                 }[entry["simulator"]]
                 assert simulator_id is not None
                 require_worktree_simulator(entry["simulator"], simulator_id)
