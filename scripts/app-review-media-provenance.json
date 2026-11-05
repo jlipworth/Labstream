@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "catalogRelease": "open-films-v1",
-  "verifiedOn": "2026-09-15",
-  "sourceManifestSha256": "7954af871fcef8d1f02bf29445257ee3236d791e5c7b2eb720ce6201cd5974fb",
-  "scope": "Public source and derivative identities copied from the deployed review catalog manifest; not a fresh live-server checksum audit.",
+  "catalogRelease": "open-films-v2",
+  "verifiedOn": "2026-11-05",
+  "sourceManifestSha256": "113253b3efbe36b836ecad6b947051c51b0883fe3fc60bb0333eb22fc1613af5",
+  "scope": "Public source and derivative identities copied from the deployed review catalog manifest. On 2026-11-05 the six allowlisted open-film files on the live server matched these hashes in a read-only check; this file is a dated snapshot, not a fresh live-server checksum audit at capture time.",
   "openFilms": [
     {
       "title": "Spring",
@@ -107,7 +107,7 @@
       "path": "files/generate-media.sh",
       "runtime": "jellyfin/jellyfin:10.11.11",
       "runtimeDigest": "sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db",
-      "sourceSha256": "c6d691f8c40c7acac7627d2f511710f17b72ab9fba97c4ae117714c55fbf410d",
+      "sourceSha256": "a80e7c8caf6034ea5f48fe422c2e1d0418f5c9b5e5a43aaa3ef258a6f994e462",
       "deterministicInputs": true
     },
     "origin": "Repository-authored procedural gradients, synthesized audio, subtitles, chapters, and plain fictional technical metadata; no third-party material is incorporated.",

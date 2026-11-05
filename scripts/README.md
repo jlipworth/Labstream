@@ -89,10 +89,14 @@ Commands and limitations: [workflow status and review evidence](../docs/DEVELOPM
   [Testing strategy](../docs/TESTING-STRATEGY.md#native-apple-matrix-driver). The matrix includes
   the iPhone Duo simulator (`--duo-sim-id`) and the `duo-ui-smoke` lane; see
   [Development](../docs/DEVELOPMENT.md).
-- `app-store-screenshots.py` + `app-store-screenshot-specs.json` — serial credential-free fixture
-  capture for visionOS, iPhone, iPad, tvOS, and the isolated Mac target. It uses exact worktree
-  simulator IDs, exports only JPEGs plus a sanitized checksum manifest, and fails closed on
-  non-Apple dimensions or alpha channels. See
+- `app-store-screenshots.py` + `app-store-screenshot-specs.json` — App Store screenshot exporter.
+  `capture` runs serial credential-free fixture captures of named scenes (home, library, detail,
+  playback, downloads; no downloads on tvOS) for visionOS, iPhone 6.3- and 6.9-inch, iPad, iPhone
+  Duo outer and inner (appResize proxy), tvOS, and the isolated Mac target; those images are layout
+  evidence only. `live start|shot|finish` captures an ordinary session launched without arguments
+  for the review catalog. `validate` checks sizes, alpha, checksums and mode wording; `coverage`
+  checks every Apple-required display class. It uses exact worktree simulator IDs and exports only
+  JPEGs plus a sanitized manifest. See
   [App Store screenshot automation](../docs/APP-STORE-SCREENSHOTS.md).
 - `app-review-media-provenance.json` — checked-in public source, license, and catalog-hash
   provenance for the licensed App Review/storefront demo media; it is data, not a script, and
@@ -323,8 +327,9 @@ scripts/perf-compare.py compare \
 ## Simulator and worktree helpers
 
 - `worktree-sim.sh` — provisions one simulator per worktree. The default is visionOS
-  (`vpwt-*`, `.simid`); opt into iPhone, iPhone Duo, iPad, or tvOS with `--platform`,
-  `LABSTREAM_SIM_PLATFORM`, or a gitignored `.simplatform` file (`iphonewt-*`/`.simid-iphone`,
+  (`vpwt-*`, `.simid`); opt into iPhone, the 6.9-inch App Store iPhone lane, iPhone Duo, iPad, or
+  tvOS with `--platform`, `LABSTREAM_SIM_PLATFORM`, or a gitignored `.simplatform` file
+  (`iphonewt-*`/`.simid-iphone`, `iphone69wt-*`/`.simid-iphone69` for a Pro Max-only lane,
   `duowt-*`/`.simid-duo` for the iPhone Duo foldable, `ipadwt-*`/`.simid-ipad`, `tvwt-*`/`.simid-tvos`). Resolve a concrete ID and never
   target `booted`.
 - `duo-appresize.sh launch [--pose book|tabletop|flat] [-- ARGS]`, `start [--size WxH]`,
@@ -351,10 +356,13 @@ scripts/perf-compare.py compare \
 - `playback-evidence.py` — offline, allowlisted progress-evidence validator. A passing result
   proves only sustained sampled playhead progress; it does not prove visible frames, hardware
   decode, server cleanup, or video-copy negotiation.
-- `agent-mobile-run.sh` — credential-free iPhone/iPad fixture launch and evidence bundle. It
-  requires `--allow-simulator` as the caller's one-simulator lease assertion and publishes the
-  stable semantic targets that Xcode 27 Device Interaction should use for the next action step.
-- `agent-tvos-run.sh` — credential-free tvOS semantic Home-to-detail and deterministic local-player evidence; it requires `--allow-simulator` as the lease assertion.
+- `agent-mobile-run.sh` — credential-free iPhone (`iphone`, `iphone69`), iPad, and iPhone Duo
+  fixture launch and evidence bundle. It requires `--allow-simulator` as the caller's one-simulator
+  lease assertion and publishes the stable semantic targets that Xcode 27 Device Interaction should
+  use for the next action step. The passive scenario accepts `--fixture`, repeatable
+  `--launch-arg` (`--ui-testing-*` capture routes only), `--skip-build`, and, on Duo,
+  `--duo-display outer|inner`.
+- `agent-tvos-run.sh` — credential-free tvOS semantic Home-to-detail and deterministic local-player evidence; it requires `--allow-simulator` as the lease assertion. Its passive scenario accepts `--fixture browse|player`, `--launch-arg` capture routes, and `--skip-build`. `agent-sim-run.sh` (visionOS) and `agent-macos-run.sh` accept the same `--launch-arg` routes for their passive fixture scenarios; the Mac runner also accepts `--fixture`.
 - `agent-macos-run.sh` / `agent-macos-ax-driver.swift` — isolated credential-free macOS fixture
   run using semantic Accessibility actions and Labstream-window-only screenshots.
 

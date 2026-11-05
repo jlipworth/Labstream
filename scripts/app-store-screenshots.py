@@ -40,7 +40,7 @@ MOBILE_TARGETS = frozenset({"iphone", "iphone69", "ipad", "duo-outer", "duo-inne
 SCENE_ORDER = ("home", "library", "detail", "playback", "downloads")
 MANIFEST_SCHEMA = 2
 FIXTURE_CONTENT = "credential-free synthetic Labstream fixture; layout evidence only, not for upload"
-LIVE_CONTENT = ("Labstream review catalog (Jellyfin open-films-v1) in an ordinary signed-in "
+LIVE_CONTENT = ("Labstream review catalog (Jellyfin open-films-v2) in an ordinary signed-in "
                 "session launched without arguments; requires editorial, licensing and privacy "
                 "approval before upload")
 FIXTURE_PRIVACY = "synthetic-fixture-only; sanitized export excludes logs, IDs, paths, and accounts"
@@ -75,6 +75,8 @@ FIXTURE_ROUTES: dict[str, dict[str, dict[str, Any] | None]] = {
         "playback": {"fixture": "player", "args": []},
     },
 }
+# Seconds to let each scene settle before capture; the player fixture must finish preparing its clip.
+SCENE_SETTLE_SECONDS = {"home": 4, "library": 4, "detail": 4, "playback": 12, "downloads": 4}
 SOURCE_NAMES = {target: "screen-end.png" for target in SIMULATOR_TARGETS} | {"macos": "screen-before.png"}
 # Live capture display names (simctl io --display). The Duo's plain screenshot targets the inner
 # LCD, which is black while folded; outer is `primary`, the real unfolded inner is `primary-1`.
@@ -166,16 +168,17 @@ def _runner_command(target: str, scene: str, evidence_root: Path, *, first: bool
         if route["fixture"] != "browse":
             raise ScreenshotError("the visionOS runner only supports the browse fixture")
         return ["scripts/agent-sim-run.sh", "launch-fixture-home-passive", "--allow-simulator",
-                "--duration", "3", *([] if first else ["--skip-build"]), *keep, *launch, *common]
+                "--duration", str(SCENE_SETTLE_SECONDS[scene]), *([] if first else ["--skip-build"]), *keep, *launch, *common]
     if target in MOBILE_TARGETS:
         platform = specs_platform(target)
         duo = ["--duo-display", "inner"] if target == "duo-inner" else []
         return ["scripts/agent-mobile-run.sh", platform, "fixture-home-passive",
-                "--allow-simulator", "--duration", "4", "--fixture", route["fixture"],
+                "--allow-simulator", "--duration", str(SCENE_SETTLE_SECONDS[scene]),
+                "--fixture", route["fixture"],
                 *duo, *([] if first else ["--skip-build"]), *keep, *launch, *common]
     if target == "tvos":
         return ["scripts/agent-tvos-run.sh", "fixture-home-passive", "--allow-simulator",
-                "--fixture", route["fixture"], *([] if first else ["--skip-build"]), *keep,
+                "--duration", str(SCENE_SETTLE_SECONDS[scene]), "--fixture", route["fixture"], *([] if first else ["--skip-build"]), *keep,
                 *launch, *common]
     return ["scripts/agent-macos-run.sh", "fixture-home-passive", "--fixture", route["fixture"],
             *([] if first else ["--skip-build"]), *launch, *common]

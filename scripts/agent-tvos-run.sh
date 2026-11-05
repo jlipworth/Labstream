@@ -20,6 +20,7 @@ Options:
   --fixture browse|player  Debug fixture kind. Default: browse.
   --launch-arg ARG      Extra --ui-testing-* capture-route argument or plain value (repeatable).
   --skip-build          Reuse the last passive build (still installs and verifies the executable).
+  --duration SECONDS    Settle time after launch before the capture. Default: 5.
 
 Exit codes: 0 passed, 1 failed, 2 blocked/precondition missing.
 USAGE
@@ -38,11 +39,13 @@ keep_booted=0
 fixture=browse
 extra_launch_args=()
 skip_build=0
+duration=5
 while (($#)); do
   case "$1" in
     --fixture) fixture=${2:-}; shift 2 ;;
     --launch-arg) extra_launch_args+=("${2:-}"); shift 2 ;;
     --skip-build) skip_build=1; shift ;;
+    --duration) duration=${2:-}; shift 2 ;;
     --artifact-root) artifact_root=${2:-}; shift 2 ;;
     --allow-simulator) allow_simulator=1; shift ;;
     --keep-booted) keep_booted=1; shift ;;
@@ -50,6 +53,7 @@ while (($#)); do
     *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
 done
+[[ $duration =~ ^[1-9][0-9]*$ ]] || { printf 'Duration must be a positive integer.\n' >&2; exit 2; }
 [[ $fixture == browse || $fixture == player ]] || {
   printf 'Unsupported tvOS fixture: %s\n' "$fixture" >&2; exit 2;
 }
@@ -222,7 +226,7 @@ if [[ $scenario == fixture-home-passive ]]; then
   printf '%s\n' "${launch_args[@]}" >"$outdir/launch-args.txt"
   xcrun simctl launch "$simid" org.labstream.Labstream "${launch_args[@]}" \
     >"$outdir/launch.log" 2>&1
-  sleep 5
+  sleep "$duration"
   bounded_screenshot "$outdir/screen-end.png" >>"$outdir/screenshot.log" 2>&1
   kill -INT "$video_pid" 2>/dev/null || true
   wait "$video_pid" 2>/dev/null || true
