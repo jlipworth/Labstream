@@ -54,6 +54,16 @@ class PerfEmbyBrowseFixtureTests(unittest.TestCase):
         status, _headers, payload = self.request(path, **kwargs)
         return status, json.loads(payload)
 
+    def settled_ledger(self):
+        """The ledger once no request is in flight. The fixture records a request after writing its
+        response, so a client can see the response before the ledger counts it."""
+        deadline = time.monotonic() + 2
+        while True:
+            status, ledger = self.json_request("/__fixture__/ledger")
+            if ledger.get("in_flight") == 0 or time.monotonic() >= deadline:
+                return status, ledger
+            time.sleep(0.01)
+
     def test_loopback_and_control_configuration_fail_closed(self):
         for bind in ("0.0.0.0", "localhost", "192.0.2.1", "::1"):
             with self.subTest(bind=bind), self.assertRaises(FIXTURE.FixtureConfigurationError):
@@ -178,7 +188,7 @@ class PerfEmbyBrowseFixtureTests(unittest.TestCase):
         })[0], 200)
         self.assertEqual(self.json_request(f"/Users/{FIXTURE.USER_ID}/Views")[0], 200)
 
-        status, ledger = self.json_request("/__fixture__/ledger")
+        status, ledger = self.settled_ledger()
         self.assertEqual(status, 200)
         self.assertEqual(ledger["by_route"], {"items": 2, "views": 1})
         self.assertEqual(ledger["by_status"], {"200": 2, "503": 1})
@@ -211,7 +221,7 @@ class PerfEmbyBrowseFixtureTests(unittest.TestCase):
         self.assertEqual(self.json_request(
             "/Users/AuthenticateByName", method="POST",
             document={"Username": "wrong", "Pw": "wrong"})[0], 401)
-        ledger = self.json_request("/__fixture__/ledger")[1]
+        ledger = self.settled_ledger()[1]
         self.assertEqual(ledger["by_route"], {"authenticate": 2, "server_info": 1})
         encoded = json.dumps(ledger)
         self.assertNotIn(FIXTURE.AUTH_PASSWORD, encoded)
@@ -283,7 +293,7 @@ class PerfEmbyBrowseFixtureTests(unittest.TestCase):
                 lambda _: self.request("/Items/movie-00/Images/Primary")[0], range(4)
             ))
         self.assertEqual(statuses, [429] * 4)
-        ledger = self.json_request("/__fixture__/ledger")[1]
+        ledger = self.settled_ledger()[1]
         self.assertEqual(ledger["by_route"], {"image": 4})
         self.assertGreaterEqual(ledger["max_in_flight"], 2)
 
