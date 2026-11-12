@@ -121,13 +121,29 @@ scripts/app-store-screenshots.py live shot <session> --scene detail
 scripts/app-store-screenshots.py live finish <session>
 ```
 
-`live start` refuses to boot while another simulator is booted, overrides the iPhone/iPad status bar
-to 9:41 with full signal, launches with no arguments, and records the process ID plus the installed
-marketing/build version. `live shot` refuses a relaunched process, waits for two identical frames,
+`live start` refuses to boot while another simulator is booted, clears the review account's watch
+progress (below), overrides the iPhone/iPad status bar to 9:41 with full signal, launches with no
+arguments, and records the process ID plus the installed marketing/build version. `live shot` refuses a relaunched process, waits for two identical frames,
 checks the display-class size, and replaces any earlier shot of the same scene. `live finish`
 clears the status bar and shuts the simulator down. A session's export lives at
 `<session>/export`. macOS has no live lane yet; capture its window by hand with the isolated host
 path and apply the same checks.
+
+### Watch-progress reset
+
+Every `live start` first clears the review account's resume positions, played marks, play counts
+and favorites, so each capture starts from the same catalog. Without it the state drifts: every
+`live drive` plays the title a little further, Home's Continue Watching and Next Up shelves change
+between runs, and the title eventually sits at its end. The reset signs in to the review server as
+the review account from its own device identity, sends the same "mark unwatched" and "unfavorite"
+calls the app makes (the review account may not write user data directly), and logs that one
+session out. It never touches the app's own session, prints no address or credential, and records
+`watchProgressReset` and the number of items cleared in the session's `live-session.json`.
+
+The reset needs the private values in `scripts/app-review-live.env` (next section), so `live start`
+stops as `blocked` without them. Pass `--skip-reset` to capture the existing state on purpose, for
+example a hand-driven session that should show a Continue Watching shelf. The server's own nightly
+reset is unrelated and stays in place.
 
 ### Automated sign-in and navigation (`live drive`)
 

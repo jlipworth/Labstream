@@ -31,6 +31,9 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -536,7 +539,81 @@ def _session_state(session: Path) -> dict[str, Any]:
         raise ScreenshotError(f"not a live capture session: {error}") from error
 
 
-def live_start(target: str, artifact_root: Path, *, allow_simulator: bool, dry_run: bool = False) -> Path:
+# A capture-only client identity: Jellyfin's logout ends every session sharing a DeviceId, so the
+# reset must never share one with the app or with a reviewer's device.
+RESET_CLIENT = ('MediaBrowser Client="Labstream Screenshot Reset", Device="Capture Host", '
+                'DeviceId="labstream-screenshot-reset", Version="1.0"')
+
+
+def _review_request(server: str, method: str, path: str, *, token: str | None = None,
+                    query: dict[str, Any] | None = None, body: dict[str, Any] | None = None) -> Any:
+    """One JSON call to the review server. Errors name the step only: never a URL, body or value."""
+    url = server.rstrip("/") + path + ("?" + urllib.parse.urlencode(query) if query else "")
+    headers = {"Authorization": RESET_CLIENT + (f', Token="{token}"' if token else ""),
+               "Accept": "application/json",
+               # Named honestly: the review edge refuses urllib's default client name.
+               "User-Agent": "Labstream-Screenshot-Reset/1.0"}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = response.read()
+    except urllib.error.HTTPError as error:
+        raise ScreenshotError(f"review server refused {method} {path.split('/')[1]} (HTTP {error.code})") from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise ScreenshotError(f"review server unreachable during {method} {path.split('/')[1]}") from None
+    return json.loads(payload) if payload else None
+
+
+def reset_review_progress(config: dict[str, str]) -> int:
+    """Clear the review account's watch state so every capture starts from the same catalog.
+
+    Resume positions, played marks, play counts and favorites drift between runs (each `live
+    drive` plays the title a little further), which changes Home's Continue Watching and Next Up
+    shelves and eventually parks the title at its end. Signs in as the review account from a
+    dedicated device, clears only that account's own state, and logs that one token out.
+    """
+    server = config["LABSTREAM_LIVE_AUTH_SERVER"]
+    auth = _review_request(server, "POST", "/Users/AuthenticateByName",
+                           body={"Username": config["LABSTREAM_LIVE_AUTH_USERNAME"],
+                                 "Pw": config["LABSTREAM_LIVE_AUTH_PASSWORD"]})
+    token = (auth or {}).get("AccessToken")
+    user_id = ((auth or {}).get("User") or {}).get("Id")
+    if not token or not user_id:
+        raise ScreenshotError("review server sign-in returned no session")
+    try:
+        listing = _review_request(server, "GET", "/Items", token=token,
+                                  query={"userId": user_id, "Recursive": "true",
+                                         "EnableUserData": "true", "Limit": 500})
+        cleared = 0
+        for item in (listing or {}).get("Items") or []:
+            data = item.get("UserData") or {}
+            if not item.get("Id"):
+                continue
+            item_path = urllib.parse.quote(str(item["Id"]))
+            # The same calls the app's "mark unwatched" and "unfavorite" make: the review account
+            # may not write user data directly. Marking unplayed also zeroes the resume position.
+            if data.get("PlaybackPositionTicks") or data.get("PlayCount") or data.get("Played"):
+                _review_request(server, "DELETE", f"/UserPlayedItems/{item_path}", token=token,
+                                query={"userId": user_id})
+                cleared += 1
+            if data.get("IsFavorite"):
+                _review_request(server, "DELETE", f"/UserFavoriteItems/{item_path}", token=token,
+                                query={"userId": user_id})
+                cleared += 1
+    finally:
+        try:
+            _review_request(server, "POST", "/Sessions/Logout", token=token)
+        except ScreenshotError:
+            pass
+    return cleared
+
+
+def live_start(target: str, artifact_root: Path, *, allow_simulator: bool, dry_run: bool = False,
+               reset_progress: bool = True, config_path: Path = LIVE_CONFIG_PATH) -> Path:
     if target not in SIMULATOR_TARGETS:
         raise ScreenshotError("live mode supports simulator targets; capture macOS by hand")
     if not allow_simulator:
@@ -545,6 +622,8 @@ def live_start(target: str, artifact_root: Path, *, allow_simulator: bool, dry_r
     foreign = _booted_udids() - {udid}
     if foreign:
         raise ScreenshotError("another simulator is booted; wait for the one-simulator lease")
+    # Before the app launches, so its first Home load already sees the clean state.
+    cleared = reset_review_progress(load_live_config(config_path)) if reset_progress else None
     subprocess.run(["xcrun", "simctl", "boot", udid], cwd=ROOT, capture_output=True)
     _run(["xcrun", "simctl", "bootstatus", udid, "-b"])
     if target in MOBILE_TARGETS:
@@ -565,7 +644,9 @@ def live_start(target: str, artifact_root: Path, *, allow_simulator: bool, dry_r
     (session / "export").mkdir(parents=True)
     state = {"schemaVersion": 1, "target": target, "pid": pid, "launchArguments": [],
              "app": _installed_version(udid), "startedAt": datetime.now(timezone.utc).isoformat(),
-             "dryRun": dry_run}
+             "dryRun": dry_run, "watchProgressReset": reset_progress}
+    if cleared is not None:
+        state["watchProgressItemsCleared"] = cleared
     (session / "live-session.json").write_text(json.dumps(state, indent=2) + "\n")
     return session
 
@@ -756,6 +837,10 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--allow-simulator", action="store_true")
     start.add_argument("--dry-run", action="store_true",
                        help="label the export as automation evidence, never final screenshots")
+    start.add_argument("--skip-reset", action="store_true",
+                       help="do not clear the review account's watch progress first (the default "
+                            "reset needs the private live values and keeps captures reproducible)")
+    start.add_argument("--config", type=Path, default=LIVE_CONFIG_PATH)
     drive = live_sub.add_parser("drive", help="sign in and navigate with the live-catalog UI test")
     drive.add_argument("session", type=Path)
     drive.add_argument("--xctestrun", type=Path, required=True)
@@ -794,7 +879,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "live":
             if args.live_command == "start":
                 session = live_start(args.target, args.artifact_root,
-                                     allow_simulator=args.allow_simulator, dry_run=args.dry_run)
+                                     allow_simulator=args.allow_simulator, dry_run=args.dry_run,
+                                     reset_progress=not args.skip_reset, config_path=args.config)
                 print(f"SESSION: {session}")
                 print("Sign in and navigate normally, then run `live shot SESSION --scene NAME`.")
             elif args.live_command == "drive":

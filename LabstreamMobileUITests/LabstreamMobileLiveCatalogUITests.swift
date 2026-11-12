@@ -63,10 +63,16 @@ final class LabstreamMobileLiveCatalogUITests: XCTestCase {
         // A playing video never gives the host two identical frames, and the opening seconds are
         // title cards: pause, then skip past the opening so the capture holds a still scene.
         sleep(4)
+        // The reveal tap can land on the centered play/pause control while the chrome is still
+        // on screen (a start from the beginning keeps it up longer than a resume), which pauses
+        // playback itself. Either outcome is fine: pause only if it is still playing.
         let pause = app.buttons["Pause"].firstMatch
-        if !pause.isHittable { app.windows.firstMatch.tap() }
-        XCTAssertTrue(pause.waitForExistence(timeout: 5), "Player chrome has no Pause button")
-        pause.tap()
+        let paused = app.buttons["Play"].firstMatch
+        if !pause.isHittable, !paused.exists { app.windows.firstMatch.tap() }
+        let deadline = Date().addingTimeInterval(8)
+        while Date() < deadline, !pause.exists, !paused.exists { usleep(250_000) }
+        XCTAssertTrue(pause.exists || paused.exists, "Player chrome has no Pause or Play button")
+        if pause.exists { pause.tap() }
         let skip = app.buttons["Skip forward 30 seconds"].firstMatch
         XCTAssertTrue(skip.waitForExistence(timeout: 5), "Player chrome has no skip-forward button")
         for _ in 0..<Self.playbackSkips { skip.tap(); usleep(500_000) }
