@@ -140,6 +140,10 @@ calls the app makes (the review account may not write user data directly), and l
 session out. It never touches the app's own session, prints no address or credential, and records
 `watchProgressReset` and the number of items cleared in the session's `live-session.json`.
 
+Titles listed in the optional `LABSTREAM_LIVE_WATCHED_TITLES` value (comma-separated, exact) are
+kept or marked watched instead, together with their episodes. The review catalog's sample series
+goes there: left unwatched, it leads Home's Next Up shelf in every capture.
+
 The reset needs the private values in `scripts/app-review-live.env` (next section), so `live start`
 stops as `blocked` without them. Pass `--skip-reset` to capture the existing state on purpose, for
 example a hand-driven session that should show a Continue Watching shelf. The server's own nightly

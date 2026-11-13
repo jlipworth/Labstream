@@ -283,6 +283,29 @@ class AppStoreScreenshotTests(unittest.TestCase):
             ("DELETE", "/UserFavoriteItems/watched"), ("POST", "/Sessions/Logout")])
         self.assertTrue(all(token == "tok" for _, _, token in calls[1:]))
 
+    def test_review_progress_reset_keeps_named_titles_watched(self) -> None:
+        config = {"LABSTREAM_LIVE_AUTH_SERVER": "https://review.invalid",
+                  "LABSTREAM_LIVE_AUTH_USERNAME": "reviewer", "LABSTREAM_LIVE_AUTH_PASSWORD": "s3cret",
+                  "LABSTREAM_LIVE_WATCHED_TITLES": " Sample Series , Other "}
+        calls: list[tuple[str, str]] = []
+        def fake_request(server, method, path, *, token=None, query=None, body=None):
+            calls.append((method, path))
+            if path == "/Users/AuthenticateByName":
+                return {"AccessToken": "tok", "User": {"Id": "user"}}
+            if path == "/Items":
+                return {"Items": [
+                    {"Id": "series", "Name": "Sample Series", "UserData": {"Played": False}},
+                    {"Id": "episode", "Name": "Subtitles and Chapters", "SeriesName": "Sample Series",
+                     "UserData": {"Played": True, "PlayCount": 1}},
+                    {"Id": "already", "Name": "Other", "UserData": {"Played": True}},
+                    {"Id": "film", "Name": "Spring", "UserData": {"PlaybackPositionTicks": 9}},
+                ]}
+            return None
+        with mock.patch.object(screenshots, "_review_request", side_effect=fake_request):
+            self.assertEqual(screenshots.reset_review_progress(config), 2)
+        self.assertEqual(calls[2:-1], [("POST", "/UserPlayedItems/series"),
+                                       ("DELETE", "/UserPlayedItems/film")])
+
     def test_review_progress_reset_logs_out_after_a_failure_and_never_echoes_values(self) -> None:
         config = {"LABSTREAM_LIVE_AUTH_SERVER": "https://review.invalid",
                   "LABSTREAM_LIVE_AUTH_USERNAME": "reviewer", "LABSTREAM_LIVE_AUTH_PASSWORD": "s3cret"}

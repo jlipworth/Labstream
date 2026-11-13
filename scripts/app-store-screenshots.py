@@ -106,7 +106,7 @@ DRY_RUN_NOTE = ("dry run: proves the automated sign-in, navigation and capture p
 LIVE_CONFIG_PATH = ROOT / "scripts" / "app-review-live.env"
 LIVE_SECRET_KEYS = ("LABSTREAM_LIVE_AUTH_SERVER", "LABSTREAM_LIVE_AUTH_USERNAME",
                     "LABSTREAM_LIVE_AUTH_PASSWORD")
-LIVE_OPTIONAL_KEYS = ("LABSTREAM_LIVE_LIBRARY", "LABSTREAM_LIVE_TITLE")
+LIVE_OPTIONAL_KEYS = ("LABSTREAM_LIVE_LIBRARY", "LABSTREAM_LIVE_TITLE", "LABSTREAM_LIVE_WATCHED_TITLES")
 # The opt-in live-catalog UI test per product (xcodebuild -only-testing identifiers).
 LIVE_TESTS = {
     **{target: "LabstreamMobileUITests/LabstreamMobileLiveCatalogUITests/testSignInAndBrowseReviewCatalog"
@@ -575,7 +575,13 @@ def reset_review_progress(config: dict[str, str]) -> int:
     drive` plays the title a little further), which changes Home's Continue Watching and Next Up
     shelves and eventually parks the title at its end. Signs in as the review account from a
     dedicated device, clears only that account's own state, and logs that one token out.
+
+    Titles named in `LABSTREAM_LIVE_WATCHED_TITLES` (comma-separated, exact) are left or marked
+    watched instead, with their episodes: an unwatched sample series otherwise leads Home's Next
+    Up shelf in every capture.
     """
+    watched = {title.strip() for title in config.get("LABSTREAM_LIVE_WATCHED_TITLES", "").split(",")
+               if title.strip()}
     server = config["LABSTREAM_LIVE_AUTH_SERVER"]
     auth = _review_request(server, "POST", "/Users/AuthenticateByName",
                            body={"Username": config["LABSTREAM_LIVE_AUTH_USERNAME"],
@@ -594,6 +600,12 @@ def reset_review_progress(config: dict[str, str]) -> int:
             if not item.get("Id"):
                 continue
             item_path = urllib.parse.quote(str(item["Id"]))
+            if watched & {item.get("Name"), item.get("SeriesName")}:
+                if item.get("Name") in watched and not data.get("Played"):
+                    _review_request(server, "POST", f"/UserPlayedItems/{item_path}", token=token,
+                                    query={"userId": user_id})
+                    cleared += 1
+                continue
             # The same calls the app's "mark unwatched" and "unfavorite" make: the review account
             # may not write user data directly. Marking unplayed also zeroes the resume position.
             if data.get("PlaybackPositionTicks") or data.get("PlayCount") or data.get("Played"):
