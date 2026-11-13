@@ -190,6 +190,11 @@ of the inner display is about the size of the outer display.
 - Color has one meaning each: amber is selected (including switch on state), green is plays-as-is
   status only, red is destructive or failed, and everything else is neutral glass or label color.
   The logo and wordmark are black and white only, so none of these colors is also a brand color.
+  One exception: the selected tab is label color, not amber. The tab bar floats over artwork, and
+  an amber label over a warm poster was unreadable; the bar's selection capsule marks the choice.
+  `PlatformRootShell` sets this through the tab bar's selected-item appearance, because a SwiftUI
+  `.tint` on the `TabView` also recolors the glass buttons inside every tab, and setting the
+  appearance in `App.init` made the app accent fall back to system blue.
 
 **Pose source and DEBUG override.** `providesDuoPose()` on the mobile shell installs the single
 `\.duoPose` value (always `.flat` on visionOS, tvOS and macOS). It comes only from the active

@@ -615,7 +615,7 @@ capsules):
 
 | Color | Single meaning | Used for | No longer used for |
 | --- | --- | --- | --- |
-| **Amber** (accent) | **Selected** | the selected tab, the selected season/row in a split, the selected segment or menu item, the on state of a switch (`.tint` on `Toggle`) | progress of any kind, the scrubber, View All links, the primary action button, star ratings, Reconnect, the sign-in button, the text caret |
+| **Amber** (accent) | **Selected** | the selected season/row in a split (the selected tab was amber until 2026-11-12; it is now label color because amber was unreadable over warm artwork under the floating bar), the selected segment or menu item, the on state of a switch (`.tint` on `Toggle`) | progress of any kind, the scrubber, View All links, the primary action button, star ratings, Reconnect, the sign-in button, the text caret |
 | **Green** (system) | **Plays as-is** (status only) | the Direct-play status and badge, ready states | switches (the system default on color is overridden) and anything else |
 | **Red** (system) | **Destructive or failed** | delete download, error states | – |
 | **Brand blue** | **Identity only** | the welcome/icon art | any control |
