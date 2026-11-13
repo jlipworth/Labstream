@@ -1,5 +1,6 @@
 import PMSKit
 import SwiftUI
+import UIKit
 
 enum MobileSettingsPresentationAction: Equatable {
   case unchanged
@@ -66,7 +67,31 @@ struct PlatformRootShell: View {
   private var downloadManager: DownloadManager { runtime.downloadManager }
   private var musicPlayer: MusicPlayerController { runtime.musicPlayer }
 
+  /// The selected tab is drawn in the label color, which the glass bar keeps legible over any
+  /// artwork scrolling beneath it; the bar's selection capsule already marks the choice. An amber
+  /// selected tab was unreadable over warm posters. Only the bar's selected-item appearance
+  /// changes, because a SwiftUI `.tint` on the TabView also recolors the glass buttons inside
+  /// every tab. It is applied when the shell is first built, not in `App.init`: setting it before
+  /// the application exists made the app accent fall back to system blue.
+  private static let selectedTabAppearance: Void = {
+    let tabBar = UITabBarAppearance()
+    for layout in [
+      tabBar.stackedLayoutAppearance, tabBar.inlineLayoutAppearance,
+      tabBar.compactInlineLayoutAppearance,
+    ] {
+      layout.selected.iconColor = .label
+      layout.selected.titleTextAttributes = [.foregroundColor: UIColor.label]
+    }
+    UITabBar.appearance().standardAppearance = tabBar
+    UITabBar.appearance().scrollEdgeAppearance = tabBar
+  }()
+
   var body: some View {
+    _ = Self.selectedTabAppearance
+    return shell
+  }
+
+  private var shell: some View {
     TabView(selection: $navigation.selection) {
       ForEach(mobileTabs, id: \.self) { destination in
         Tab(
