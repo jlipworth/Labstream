@@ -1,0 +1,2730 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Native Apple-platform client for your own Plex, Jellyfin, or Emby server.">
+      
+      
+      
+        <link rel="canonical" href="https://jlipworth.github.io/Labstream/DOWNLOADS-OFFLINE/">
+      
+      
+        <link rel="prev" href="../PLAYBACK-ARCHITECTURE/">
+      
+      
+        <link rel="next" href="../MUSIC-DESIGN/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Downloads & offline - Labstream</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#downloads-and-offline-playback" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Labstream" class="md-header__button md-logo" aria-label="Labstream" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Labstream
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Downloads & offline
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/jlipworth/Labstream" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jlipworth/Labstream
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Labstream" class="md-nav__button md-logo" aria-label="Labstream" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Labstream
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/jlipworth/Labstream" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jlipworth/Labstream
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Support & troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../SETTINGS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Settings reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../REPORTING-BUGS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Report a bug
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../privacy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Privacy policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../RELEASES/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release and App Store status
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../app-store-exception/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License exception
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project policies
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project policies
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/jlipworth/Labstream/blob/main/SECURITY.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/jlipworth/Labstream/blob/main/CODE_OF_CONDUCT.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code of conduct
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/jlipworth/Labstream/blob/main/LICENSE" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPLv3 license
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Developer guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DEVELOPMENT/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_3" id="__nav_4_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform targets
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Platform targets
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MOBILE-IOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    iOS and iPadOS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../TVOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    tvOS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MACOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macOS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_4" id="__nav_4_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing and release
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Testing and release
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../TESTING-STRATEGY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing strategy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../AGENT-PLAYBACK-TROUBLESHOOTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent playback troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MEDIA-CORPUS-TESTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Private media corpus
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../HEADLESS-PLAYBACK-TESTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Headless playback testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../APP-STORE-SCREENSHOTS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    App Store screenshots
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../COMPILE-PERFORMANCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compile performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MACOS-CI/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Native macOS CI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../SCRIPTS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scripts catalog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ARCHITECTURE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CODE-MAP/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code map
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../BACKENDS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Backends
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../PLAYBACK-ARCHITECTURE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Playback
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Downloads & offline
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Downloads & offline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#core-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core rules
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#backend-routes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backend routes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#transfer-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Transfer lifecycle
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Transfer lifecycle">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#truncation-and-checkpoint-authority" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Truncation and checkpoint authority
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bounded-background-completion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bounded background completion
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#background-downloads-and-sleeping-devices" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Background downloads and sleeping devices
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#module-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Module ownership
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#server-cleanup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Server cleanup
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#offline-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Offline metadata
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#local-playback-and-row-presentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local playback and row presentation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reconcile-and-resume" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reconcile and resume
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MUSIC-DESIGN/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Music
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../PERSISTENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Persistence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../SYSTEM-INTEGRATION/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    System integration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DIAGNOSTICS-PRIVACY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Diagnostics & privacy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#core-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core rules
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#backend-routes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backend routes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#transfer-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Transfer lifecycle
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Transfer lifecycle">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#truncation-and-checkpoint-authority" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Truncation and checkpoint authority
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bounded-background-completion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bounded background completion
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#background-downloads-and-sleeping-devices" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Background downloads and sleeping devices
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#module-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Module ownership
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#server-cleanup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Server cleanup
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#offline-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Offline metadata
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#local-playback-and-row-presentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local playback and row presentation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reconcile-and-resume" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reconcile and resume
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="downloads-and-offline-playback">Downloads and offline playback<a class="headerlink" href="#downloads-and-offline-playback" title="Permanent link">&para;</a></h1>
+<p>Labstream downloads are implemented for the visionOS, iOS/iPadOS, and macOS targets and are designed
+to end in a local file the current device can play, plus enough metadata to show the item in the
+offline library and resume safely. The same engine is present in the <a href="../MACOS/">macOS target</a>, where
+background recovery remains a pre-release acceptance gate rather than a reliability promise. The
+<a href="../TVOS/">tvOS target</a> compiles no Downloads capability or Offline surface.</p>
+<pre class="mermaid"><code>flowchart TD
+  accTitle: Static and live-forward download routes
+  accDescr: User and recovery requests share admission. Backend inspection selects a static source, server preparation, or live-forward stream. Completion captures and validates the body before publication as complete or unverified. Both local launch surfaces use one exact-attempt factory and event sink.
+  Request[Tap, season, resume or recovery] --&gt; Admission[Shared admission window]
+  Admission --&gt; Inspect[Inspect backend media options]
+  Inspect --&gt; Prep[Plex optimize or Emby Convert]
+  Prep --&gt; Static
+  Inspect --&gt; Static[Static original, existing, or prepared file]
+  Inspect --&gt; Live[Live-forward remux or transcode]
+  Static --&gt; Train[Closed-range segment train and durable partial]
+  Live --&gt; Forward[One forward-only transfer]
+  Train --&gt; Validate[Completion and local playback validation]
+  Forward --&gt; Validate
+  Validate --&gt; Store[Published complete or unverified file and index]
+  Store --&gt; Offline[Offline library and Detail]
+  Offline --&gt; Factory[Exact-attempt launch factory after orientation]
+  Factory --&gt; Player[Local player and event sink]</code></pre>
+<p>The admission window is shared by user actions and recovery. Server preparation hands a completed
+render to the static lane; live-forward streams cannot claim static byte resume. Finalization
+captures an attempt-owned body, rewrites HEVC tags and validates before publication. Probe-inconclusive
+and repeated-truncation files remain playable as unverified. Detail and Offline use the same local
+launch factory, with position saving and actual-playing verification as separate events.</p>
+<h2 id="core-rules">Core rules<a class="headerlink" href="#core-rules" title="Permanent link">&para;</a></h2>
+<ul>
+<li>A completed download must have a local playable file and a durable offline record.</li>
+<li>Direct original downloads are offered only when Labstream expects the file to play locally.</li>
+<li>Server-rendered or server-prepared routes are used when the original is not a safe local target.</li>
+<li>Transfers reconcile on relaunch. Static/original and server-prepared static routes
+  resume from durable checkpoints when their persisted authority remains valid; live-forward
+  remux/transcode streams may become retryable and restart from the beginning
+  rather than claiming unsafe byte-offset resume.</li>
+<li>Offline records must never contain access tokens. They do persist the minimum backend
+  context needed to resume and clean up a job, which currently includes the owning backend,
+  server base URL/server ID, MediaBrowser user ID where applicable, media/play-session IDs,
+  and route/checkpoint state. See <a href="../PERSISTENCE/#app-container">Persistence</a> for the complete
+  on-disk and credential boundary. Treat <code>index.json</code> as private app data, not a shareable profile.</li>
+</ul>
+<h2 id="backend-routes">Backend routes<a class="headerlink" href="#backend-routes" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Backend</th>
+<th>Download choices</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Plex</td>
+<td>Compatible original, explicit existing version, and completed optimizer output all hand off to a static file transfer.</td>
+</tr>
+<tr>
+<td>Jellyfin</td>
+<td>Original is static/range-resumable. Compatible remux and capped transcode are live forward-only streams.</td>
+</tr>
+<tr>
+<td>Emby</td>
+<td>Original, reusable existing version, and completed Convert output are static. Compatible remux is live forward-only; a requested transcode is normally rerouted through persistent Convert-then-static.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="transfer-lifecycle">Transfer lifecycle<a class="headerlink" href="#transfer-lifecycle" title="Permanent link">&para;</a></h2>
+<p>Each download row persists a <strong>lifecycle</strong> and an <strong>attempt history</strong>. Every change to them goes
+through one pure reducer, <code>DownloadLifecycleReducer</code>. The serialized <code>DownloadStatus</code> that the
+UI, diagnostics and older app versions read is derived from the lifecycle.</p>
+<pre class="mermaid"><code>stateDiagram-v2
+  accTitle: Download lifecycle
+  accDescr: A row is planned or admitted, may prepare on the server, transfers bytes, and enters finalizing once a complete body exists. Finalizing ends complete or unverified after publication, or failed. Interruptions pause a row with a recorded cause; errors fail it with a recorded reason. Retry modes choose where a paused or failed row resumes.
+  state "planned" as Planned
+  state "admitted" as Admitted
+  state "serverPrep" as ServerPrep
+  state "transferring" as Transferring
+  state "finalizing" as Finalizing
+  state "paused" as Paused
+  state "failed" as Failed
+  state "complete" as Complete
+  state "unverified" as Unverified
+  [*] --&gt; Planned
+  [*] --&gt; Admitted
+  Planned --&gt; Admitted: admission granted
+  Admitted --&gt; ServerPrep: Emby Convert
+  Admitted --&gt; Admitted: Plex optimize preparation
+  ServerPrep --&gt; Admitted: prepared source handed off
+  Admitted --&gt; Transferring: transfer starts
+  Transferring --&gt; Finalizing: complete body at the working path
+  Finalizing --&gt; Complete: validated and published
+  Finalizing --&gt; Unverified: published; probe inconclusive or repeated truncation
+  Finalizing --&gt; Failed: validation fails
+  Transferring --&gt; Paused: interruption (cause recorded)
+  Transferring --&gt; Failed: transfer fails (reason recorded)
+  Paused --&gt; Admitted: resume or retry
+  Paused --&gt; Transferring: resume blob
+  Paused --&gt; ServerPrep: prep reattach or Convert resume
+  Failed --&gt; Admitted: retry
+  Unverified --&gt; Complete: eligible actual playing or revalidation
+  Complete --&gt; [*]
+  Unverified --&gt; [*]</code></pre>
+<p>This diagram shows lifecycle destinations; admission and retry routing still depend on durable
+facts. Plex preparation retains admitted/queued compatibility, while Emby Convert uses serverPrep.
+Finalizing is not paused by cancelling its validator. Only eligible actual-playing evidence or
+successful revalidation can clear an unverified warning; playing the start of a known truncated file
+cannot prove its tail exists.</p>
+<table>
+<thead>
+<tr>
+<th>Lifecycle</th>
+<th>Serialized status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>planned</code>, <code>admitted</code></td>
+<td><code>queued</code> (a <code>planned</code> row is waiting for an admission lane)</td>
+</tr>
+<tr>
+<td><code>serverPrep</code></td>
+<td><code>preparing</code> for Emby Convert; Plex optimizer rows stay <code>admitted</code>/<code>queued</code> until the handoff</td>
+</tr>
+<tr>
+<td><code>transferring</code>, <code>finalizing</code></td>
+<td><code>downloading</code></td>
+</tr>
+<tr>
+<td><code>complete</code>, <code>unverified</code>, <code>paused</code>, <code>failed</code></td>
+<td>the same name</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Attempt history</strong> records what no status can:
+- truncation strikes;
+- the reason a row is <code>unverified</code>;
+- the last failure;
+- why a row paused (user, queue paused, system interruption, awaiting a session, storage,
+  deferred resume).</p>
+<p>Rules that follow from this:</p>
+<ul>
+<li><strong>Progress never promotes a paused, failed or finalizing row.</strong> It only records the bytes
+  (B09).</li>
+<li><strong><code>finalizing</code> is persisted</strong> as soon as a complete body reaches the attempt working path. A
+  relaunch before validation re-finalizes that body instead of deleting it (B10). A forward-only
+  body exists at the working path only once its whole transfer finished, so the same rule covers
+  a finished forward-only body whose task was lost.</li>
+<li><strong>Truncation strikes persist</strong> with the row and survive a relaunch.</li>
+<li>A Retry of the same server, account, item, source and profile inherits them, and a replayed
+    validation outcome is not counted twice.</li>
+<li>The second strike keeps the body as <code>unverified</code> and publishes it.</li>
+<li>Revalidating a published body never fails or deletes it for truncation (B54).</li>
+<li><strong>Relaunch reconciliation</strong> applies the reducer to each row's facts: route, durable checkpoint,
+  body, pending artifact intents, deletion state and live task. Any file deletion it decides runs
+  outside the store lock.</li>
+</ul>
+<p>Finalization still rewrites HEVC <code>hev1</code> to <code>hvc1</code> before validation, and both terminal success
+states keep the local file. The opaque and static-range pipelines share the completion path.</p>
+<h3 id="truncation-and-checkpoint-authority">Truncation and checkpoint authority<a class="headerlink" href="#truncation-and-checkpoint-authority" title="Permanent link">&para;</a></h3>
+<p>A failing truncation verdict permanently condemns that attempt's working body. A best-effort rename
+removes it from the working path before persistence waits; the persisted condemnation fence also
+blocks checkpoint reads, recovery finalization and Retry cloning if rename/removal fails. Replacing
+an attempt inherits only same-source truncation strikes, never condemnation or unrelated failure
+state. A condemned Retry starts at zero even if its backend becomes available later. Replayed body
+outcomes do not count another strike. A second-strike published body remains unverified and playable
+across relaunch; neither position updates nor actual playing erase that warning.</p>
+<h3 id="bounded-background-completion">Bounded background completion<a class="headerlink" href="#bounded-background-completion" title="Permanent link">&para;</a></h3>
+<p>OS completion handlers are timestamped at registry receipt, including before session construction.
+One non-sliding wake budget covers finish-events, identified operations and the captured index plus
+artifact boundary: 25 seconds overall, 20 seconds for operations and a 5-second persistence reserve.
+Normal release requires finish-events, settled required operations and persistence covering their
+resulting boundary. Expiry is an explicit timeout, not successful durability or physical cancellation.
+Exact handler tokens release once; an old timer or operation end cannot release a later generation.</p>
+<p>Blocked-before-transport, activation-in-progress and failed-after-transport remain distinct. A
+blocked dormant session can release a late handler; an existing healthy transport retains its owned
+holds. Expiry also fences later activation, refill and probing until foreground or a new authorized
+wake. Dirty index work, artifact intents and worker-owned path leases survive a waiter's timeout.
+No AVPlayer validation probe starts while inactive; foreground revalidation remains recoverable.
+These are app-side bounds, not proof of OS scheduling or background continuation on hardware.</p>
+<h2 id="background-downloads-and-sleeping-devices">Background downloads and sleeping devices<a class="headerlink" href="#background-downloads-and-sleeping-devices" title="Permanent link">&para;</a></h2>
+<p>The Downloads header reports aggregate speed only when every transferring attempt has fresh
+delegate observations over one common interval within the last four seconds. It shows
+<strong>Updating speed…</strong> while that evidence is incomplete; queued, preparing and finalizing rows do
+not count as transfers. Foreground, a background-session wake, or a gap of six seconds in an
+attempt's callbacks discards the old batch window. Each attempt's first callback establishes a
+new watermark, with four seconds of baseline replacement to exclude buffered catch-up bytes
+(#224), before the shared window can produce a total. Staggered callbacks are interpolated
+inside their observed overlap, never extrapolated or silently omitted. Observed quiet intervals
+contribute zero; a silent attempt makes the total unavailable once the common window expires.
+A dip in a Range attempt's reported bytes resets its window only when bodies that finished but are
+not yet appended cannot explain the whole dip, so the total survives 512 MiB segment boundaries
+(#416; <code>DownloadLiveRangeProgressPolicy</code>). All measurement state is memory-only.</p>
+<p>For the shared pre-overhaul transport crawl reported in #409, static closed ranges have a
+bounded foreground experiment. After authoritative reconciliation and ten seconds of settling,
+one 60-second continuously active counter window can select a known <code>background_wake</code> task
+below 128 KiB/s with more than ten minutes remaining at that rate. Zero progress uses the same
+window. A task with at most 256 MiB of nondurable body may be plain-cancelled and reissued on the
+same session; a fresh counter must still meet the cap immediately before cancellation. Exactly
+256 MiB is allowed. One exact attempt gets at most one recovery per process, with one operation
+in flight globally. The 30-second result observations overlap subsequent rows' recoveries, so
+both rows in the two-row/two-task crawl can reissue around seconds 70–80 after reconciliation.
+Unknown relaunch provenance is observed and diagnosed without reissue. Eligibility starts at the
+baseline boundary: connectivity restored during settling does not invalidate the subsequent
+window; an interruption inside measurement produces a deferred result.</p>
+<p>The selected task alone loses its nondurable body. The attempt, durable checkpoint, held tail,
+healthy sibling, resource validator, train epoch and 512 MiB/depth-two sizing survive. Checkpoint
+failure leaves the original task running. Inactivity or P6 winding-down at the real persistence-to-
+resume edge parks the replacement with an exact-attempt refill intent. Renewed foreground
+reconciliation runs the gap planner even beside a live sibling, without spending another recovery.
+Temporary refill or resume failures also retry within the same activation, at one-second intervals
+for at most three retries, then hand off to ordinary request recovery. These retries preserve the
+sibling and spend no additional health-recovery budget. Finished bodies remain planner coverage
+throughout the delegate-to-assembly handoff, including before they become held; an invalidated
+train's pending bodies retain cleanup ownership but cannot cover replacement requests. Expired
+physical workers retain their leases and defer recovery. No health state or revocation history is
+persisted, so a kill loses provenance and the experimental budget; normal reattachment may adopt
+the old task.</p>
+<p>Diagnostics extend <code>downloads.range_start</code> with creation context, session kind and registration
+phase, and distinguish actual <code>downloads.range_resume</code>. One <code>downloads.range_health_reissue</code>
+candidate event is paired with <code>downloads.range_health_result</code> after about 30 active seconds
+or at the actual pause, cancel, error, completion or inactive edge. Results use that stop's elapsed
+interval and outcome, and repeat provenance, exact pre/post counters and rates,
+old/new task IDs and discarded bytes. <code>downloads.range_health_foreground</code> records aggregate
+activity edges. Terminal-attempt budgets and obsolete connectivity entries are retired; pauses
+retain the one-shot budget. There are no periodic healthy verdicts. Persistent OS scheduling
+treatment is a hypothesis; paired device evidence and hardware acceptance remain pending.</p>
+<p>Downloading while the app is backgrounded, suspended, or the device is locked/asleep is
+fundamentally constrained by the platform, not by the server or the app:</p>
+<ul>
+<li><strong>Only system-owned transfers keep running.</strong> True background <code>URLSessionDownloadTask</code>s owned
+  by the system daemon (<code>nsurlsessiond</code>) may continue; app-side work (server-prep polling,
+  keepalives, timers) is frozen while the app is suspended.</li>
+<li><strong>Background transfers are deprioritized.</strong> The OS gives interactive networking and power
+  management priority over background bulk transfers, so throughput can be substantially slower
+  than the same download with the app active.</li>
+<li><strong>Background app wake-ups are rate-limited.</strong> Each time the system relaunches the app for a
+  background-session event, it may delay the next opportunity to do app work. Any design that
+  needs an app wake-up per bounded transfer therefore stalls after a handful of handoffs
+  regardless of transfer size.</li>
+<li><strong>Background scheduling remains system-controlled.</strong> Labstream asks for non-discretionary
+  transfers, but the OS still decides when background work runs and how much network/power budget
+  it receives.</li>
+</ul>
+<p>Labstream's static byte-range lane is shaped around these limits and follows the simplest
+Apple-standard architecture we can make stable:</p>
+<pre class="mermaid"><code>sequenceDiagram
+  accTitle: Static segment-train data flow
+  accDescr: The background transfer owner reads one exact-attempt durable checkpoint, asks a pure policy for up to two closed ranges, and enqueues marked URLSession tasks. Completed bodies are stashed by offset, the maximal contiguous run is appended, the checkpoint is persisted, and the queue is refilled.
+  participant BGS as BackgroundDownloadSession
+  participant Store as DownloadStore
+  participant Policy as Segment policies
+  participant URL as URLSession
+
+  BGS-&gt;&gt;Store: read exact attempt, durable offset, and total size
+  BGS-&gt;&gt;Policy: plan missing closed ranges
+  Policy--&gt;&gt;BGS: at most two marked segment plans
+  BGS-&gt;&gt;URL: enqueue background download tasks
+  loop each delivered completion
+    URL--&gt;&gt;BGS: completed body and segment offset
+    BGS-&gt;&gt;Policy: classify stashed bodies at durable offset
+    Policy--&gt;&gt;BGS: append run, hold later bodies, discard invalid bodies
+    BGS-&gt;&gt;Store: append contiguous run and persist checkpoint
+    BGS-&gt;&gt;Policy: refill from new durable offset
+  end</code></pre>
+<ul>
+<li><strong>A pre-queued train of closed-range segment tasks for known-size static files.</strong> The
+  same segment-train engine runs on visionOS, iOS/iPadOS, and macOS; Mac background recovery
+  remains a platform-specific release-acceptance gate.
+  Static Plex/Jellyfin/Emby file routes enqueue up to <code>maxQueuedSegments</code> (currently 2) background
+  <code>URLSessionDownloadTask</code>s ahead of the durable checkpoint, each a closed
+  <code>Range: bytes=&lt;offset&gt;-&lt;offset+segmentBytes-1&gt;</code> request of <code>segmentBytes</code> (512 MiB) —
+  roughly 1 GiB of queued runway per file. The two-task cap is intentional: one head plus
+  one look-ahead preserves overlap without multiplying several visible downloads into
+  dozens of concurrent transfers. <code>StaticRangeSegmentQueuePolicy</code> is the pure
+  planner: given the durable offset, the expected total size, and the segment offsets
+  already live in the session, it emits the closed ranges still needed, up to the queue
+  depth. When the expected total size is unknown, the planner falls back to a single
+  open-ended <code>Range: bytes=&lt;durableOffset&gt;-</code> plan — the same shape used before segmentation,
+  so that fallback is a zero-regression path rather than a special case.
+  <code>StaticRangeTransferConfiguration</code> owns only the segment size and queue-depth constants;
+  transfer shape remains planner-owned so the unknown-total open-ended fallback follows the
+  same attempt and durable-checkpoint rules as the closed train.</li>
+<li><strong>Segments are attempt-marked and stashed, then assembled in order.</strong> Each new segment
+  task's <code>taskDescription</code> combines the rating key and current
+  <code>lbs-segment:v3:&lt;offset&gt;:&lt;attemptID&gt;</code> marker with a U+001F separator. Relaunch/reattach
+  therefore requires both the row and exact attempt, not merely a reused rating key.
+  Old V1/V2 segment markers, V1 opaque markers, bare descriptions, and URL-derived identity are
+  no longer parsed or adopted. <code>StaticRangeReattachPolicy</code> accepts only a current,
+  offset-matching task for the row's exact attempt; every unmarked, malformed, stale-attempt, or
+  mismatched task is cancelled.
+  When a segment task
+  finishes, its body is stashed by offset; <code>StaticRangeSegmentAssemblyPolicy</code> — a pure
+  assembler — decides, given the durable offset and the set of stashed finished bodies,
+  which stashes form the maximal contiguous run starting exactly at the durable offset
+  (appended now), which are held (a later segment finished out of order, waiting on a gap),
+  and which are discarded (fully behind the checkpoint, or overlapping but not
+  offset-aligned — the same non-negotiable append-alignment invariant as the pre-segment
+  design). Appending a run advances the durable checkpoint and refills the train back up
+  to the queue depth.</li>
+<li><strong>URLSession resume data remains first-class only for the single open-ended fallback.</strong>
+  The store has one resume-blob slot per download row. When an unknown-size static source uses
+  <code>Range: bytes=&lt;durableOffset&gt;-</code>, pausing can preserve that task's OS temp progress and display
+  watermark in a blob. Adoption requires the blob's original open-ended Range offset to equal the
+  current durable partial.</li>
+<li><strong>Closed train segments never persist or adopt URLSession resume data, including the head.</strong>
+  CFNetwork can replay a resumed closed request past its original end, so pausing a segment train
+  clears any old blob/watermark and plain-cancels unfinished segments. The app-owned durable partial
+  remains authoritative. Completed held bodies are durably manifested and may be rehydrated across
+  relaunch only when their exact attempt, length, and validator checks still match; mismatches fail
+  closed and re-fetch. Unfinished ranges are planned again on Resume.</li>
+<li><strong>The durable partial is the fallback.</strong> A rejected old-format closed-range blob, or an open-ended blob that is
+  missing, malformed, stale, exhausted, or backed by a deleted temp file, is rejected and cleared
+  together with its display watermark. Recovery then re-plans from the durable partial's current
+  file size rather than appending unvalidated bytes.</li>
+<li><strong>Free-space admission follows the physical append timeline.</strong> Start, continuation, blob Resume,
+  and automatic storage-full parking charge the remaining network bytes, the largest upcoming
+  append copy, uncached side-asset estimate, and headroom. Durable checkpoints and held bodies
+  already on disk are counted once.
+  A blob refused for space keeps its resume authority and display watermark; it reports storage
+  exhaustion without treating the blob as corrupt or restarting the transfer.</li>
+<li><strong>Transient Range retries are bounded by durable progress.</strong> Optimistic URLSession progress does
+  not reset the retry budget. Positive appends, including held-body drains, reset it; explicit user
+  start/Resume resets it too. Transport drops get four retries with delays of 1, 2, 4, and 8 seconds. Delayed retries hold the background completion
+  gate through successor registration and check attempt, train epoch, and restart generation.
+  Pause/Resume invalidates old timers while preserving already finished bodies.</li>
+<li><strong>Stash sweeps respect in-process ownership.</strong> Both temporary and durable held bodies are claimed
+  before their rename and remain protected through queued append or manifest publication until
+  consumption/discard. The final claim check and orphan deletion share one lock boundary.</li>
+<li><strong>HTTP safety checks still guard the append.</strong> Completed bodies are validated for
+  <code>Content-Range</code> start alignment, pinned validator mismatches, HTTP <code>200</code> full-body
+  replacement/restart behavior, <code>416</code> total validation, temp disappearance fallback, and safe
+  resume-blob adoption/clearing. A strangely resumed transfer is rejected, restarted, or
+  falls back to the durable partial rather than appending unvalidated bytes.</li>
+<li><strong>Why segments, not one task:</strong> a visionOS wake bounce can silently restart the body of an
+  in-flight custom-<code>Range</code> request with no error and no resume-data callback (see the
+  <a href="../DEVELOPMENT/#verified-platform-findings">verified platform finding</a>). With one open-ended task, that restart forfeits
+  every un-appended byte transferred off-head, unbounded overnight. With a segment train,
+  nsurlsessiond executes pre-queued segments with the process dead — no per-continuation app
+  wake is required — and a wake-time bounce can only restart the one segment that was mid-flight
+  (at most <code>segmentBytes</code>). Markers allow surviving tasks and delivered completions to be
+  mapped back to their row and offset after reattach, but do not assume the OS will always
+  redeliver a completion that occurred while the process was dead. Only bodies actually
+  recovered through the background-session lifecycle are adopted; otherwise the durable
+  partial remains authoritative and the missing range is re-planned and re-fetched.</li>
+</ul>
+<p>Simulator caveat: Labstream intentionally uses a foreground/default <code>URLSession</code>
+in simulator builds because the background transfer daemon is unreliable there.
+Simulator passes can validate routing, progress UI, and retry policy, but not
+real background continuation, lock/off-head scheduling, or cellular policy.</p>
+<p>User-facing expectations worth setting (the "downloads disclaimer"):</p>
+<ul>
+<li>Very large background downloads are best-effort. Keeping the device on power helps; briefly
+  foregrounding the app gives Labstream a chance to process delivered completions or recover
+  app-owned work, without guaranteeing any change to the OS scheduler.</li>
+<li>Plex optimize and Emby Convert are server-side preparation jobs. Their app-side polling and
+  handoff cannot run while the app is suspended; Emby Convert job identity is persisted so polling
+  can resume after relaunch. Once either route hands off to a static file, the byte transfer can use
+  the static recovery path.</li>
+<li>Fresh and resumed Plex optimize jobs inspect metadata before creating work. They reuse an
+  existing render only when it is a server-optimized part (under
+  Plex's "Plex Versions" path) that matches the requested tier: resolution as a bounding box
+  within ±16 px and container bitrate within ×1.10 of the video cap plus 768 kbps, and
+  original-quality requests must land at the source height. <code>OptimizedVersionMatch</code> owns this
+  rule, so a 1080p/8 Mbps retry never silently reuses an older 720p render.</li>
+<li>Plex queue inspection distinguishes a present item, proven absence, and unavailable inspection.
+  Only proven absence plus a successful metadata inspection can create a job. Immediately before
+  dispatch, the row durably records a 3-minute visibility grace. Relaunch preserves that timestamp:
+  absence during the grace keeps inspecting without another create; proven absence after it fails
+  server preparation if no matching version is visible. An HTTP 400 duplicate rechecks adoption;
+  other create errors fail promptly. The separate 120-second completion/indexing grace and
+  authentication failure budget remain in force. The 24-hour prep deadline applies only while
+  nothing is rendered: a matching finished render (for example one that waited for a transfer
+  slot across a relaunch) is adopted even past it (#414). Static handoff uses the live
+  server lane on which the rendered Part was observed.</li>
+<li>Fresh Plex and Emby preparation starts return after registering their poller tasks. Delete
+  cancels those tasks. Emby reuse and completed conversions share one handoff that detaches its
+  own poller before releasing prep bookkeeping, then starts the existing-version static lane.
+  Pause All parks Emby Convert through the same cancellation path as a row Pause.</li>
+<li>Jellyfin optimized/compatible-remux downloads, and Emby compatible-remux
+  downloads, can be live-forward encoder streams. They may continue as
+  system-owned transfers while the OS allows it, but they are not durable
+  byte-range checkpoints and can require retry/restart after interruption.</li>
+<li>Cellular downloads are off by default where cellular data is available.
+  Settings ▸ Downloads ▸ <strong>Use cellular data for downloads</strong> also governs
+  constrained networks (Low Data Mode) and expensive networks such as a personal
+  hotspot: while it is off, downloads wait for an unconstrained, inexpensive
+  network. It applies to newly created request-based transfer tasks and side-asset
+  fetches; active tasks and tasks resumed from OS resume data keep the policy
+  they were created with.</li>
+</ul>
+<h2 id="module-ownership">Module ownership<a class="headerlink" href="#module-ownership" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Owns</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>DownloadManager</code></td>
+<td>Main-actor queue coordination and user-visible state.</td>
+</tr>
+<tr>
+<td><code>DownloadKeepaliveCoordinator</code></td>
+<td>Exact-attempt Jellyfin/Emby keepalive task ownership and credential-generation quarantine. A keepalive runs only while the session tracks a live transfer for that attempt. Emby sends Ping only; Jellyfin currently sends Playing/Progress at a fixed position of 0 instead of the transfer's byte fraction. This is an interim containment: it stops downloads from reporting advancing positions, but it is not proven to leave watch state untouched. The live Ping-only A/B decides the final shape, and the watch-state check stays open until it does.</td>
+</tr>
+<tr>
+<td>Backend-specific manager extensions</td>
+<td>Plex/Jellyfin/Emby route setup and server-prep polling.</td>
+</tr>
+<tr>
+<td><code>BackgroundDownloadSession</code></td>
+<td>URLSession tasks, segment-train enqueue/refill, transfer callbacks, finalization, and wake-release effects.</td>
+</tr>
+<tr>
+<td><code>BackgroundDownloadWakeCoordinator</code> and wake budget contract</td>
+<td>Exact-token completion gate, receipt-based absolute deadline, identified operations, deferred revalidation and rebuild grace generations.</td>
+</tr>
+<tr>
+<td><code>DownloadManager+SeasonPlanner</code> and <code>SeasonDownloadPlannerSheet</code></td>
+<td>Immutable season drafts, one atomic Store commit of planned rows plus retry intents, and the refreshed, source-validated first start.</td>
+</tr>
+<tr>
+<td><code>DownloadAdmissionCoordinator</code> and <code>DownloadManager+Admission</code></td>
+<td>The one admission window: observed lane occupancy, supervised starts, durable waiting requests, backoff and the Pause All row exemption.</td>
+</tr>
+<tr>
+<td><code>DownloadOptionsModel</code></td>
+<td>Typed per-item option resolution for the download sheet; it does not own season planning.</td>
+</tr>
+<tr>
+<td><code>DownloadVolumeFreeSpace</code></td>
+<td>Purgeable-inclusive free-space measurement used by storage-full parking.</td>
+</tr>
+<tr>
+<td><code>DownloadStore</code>, async contract and path leases</td>
+<td>Schema-v5 index state, exact-attempt work/mutation admission, bounded submit/resolve, off-lock filesystem observations and physical path exclusion.</td>
+</tr>
+<tr>
+<td><code>DownloadArtifactLifecycleCoordinator</code> and file-effect seams</td>
+<td>Order attempt-scoped resume/checkpoint/promotion/deletion work with its terminal persistence outcome.</td>
+</tr>
+<tr>
+<td><code>DownloadWorkRegistry</code></td>
+<td>Attempt-scoped side-cache and encoder-task ownership.</td>
+</tr>
+<tr>
+<td><code>DownloadCleanupIntentJournal</code></td>
+<td>Independent durable, credential-free server-cleanup authority for all three backends: Jellyfin/Emby encoders, Emby Convert jobs and Plex optimize queue items.</td>
+</tr>
+<tr>
+<td><code>DownloadCleanupIntentRunner</code></td>
+<td>The only executor of journaled cleanup: eligibility, ownership recheck, bounded concurrency and per-intent backoff with its own wake-up.</td>
+</tr>
+<tr>
+<td><code>EmbyConvertCleanupJournal</code></td>
+<td>Legacy Emby Convert tombstones, read only to migrate them into the cleanup journal at launch.</td>
+</tr>
+<tr>
+<td>PMSKit download policies</td>
+<td>Pure route, retry, row-display, and recovery decisions, including the segment-train planner and assembler.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="server-cleanup">Server cleanup<a class="headerlink" href="#server-cleanup" title="Permanent link">&para;</a></h2>
+<p>Every server resource a download stops needing is recorded in the cleanup journal before
+anything cancels it. That covers a Jellyfin/Emby encoder (<code>activeEncoding</code>), an Emby Convert
+job (<code>knownJob</code>, or <code>ambiguousCreate</code> when the create response was lost) and a Plex optimize
+queue item (<code>plexOptimize</code>). The journal lives in an authority directory outside the versioned
+media root. Each write uses the index's commit protocol: temp file, full fsync, rename and
+directory sync. A write whose final sync fails is reported as a failure, never proven by
+re-reading the file. The directory and every file are excluded from backup and data-protected.</p>
+<p>Each intent records why it exists:</p>
+<table>
+<thead>
+<tr>
+<th>Provenance</th>
+<th>Written by</th>
+<th>Runs when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Row deletion</td>
+<td>Delete, before the row is removed</td>
+<td>the row's removal has committed</td>
+</tr>
+<tr>
+<td>Terminal release</td>
+<td>Launch/backend-switch sweep for a terminal row's handles</td>
+<td>the row is terminal and not protecting the job for Retry, or the row is gone</td>
+</tr>
+<tr>
+<td>Abandonment</td>
+<td>Superseded negotiations, stale creates, duplicate jobs, the 24-hour Convert expiry, abandoned Plex seeds, stale optimize-job sweeps</td>
+<td>whenever the ownership recheck passes</td>
+</tr>
+</tbody>
+</table>
+<p>The runner executes nothing while a row's deletion is staged, in flight, or failed. Just before
+each server call it re-checks ownership: another row's PlaySessionId, Convert job, queue title,
+or a job that row's crash-window recovery would adopt keeps the resource. Convert cleanup and
+Convert crash-window recovery are serialized per server. Claims are scoped to persisted server
+and MediaBrowser user, never the currently visible browse lane. After each awaited inspection,
+claims and eligibility are reread immediately before cancellation. An originating Convert/Plex
+attempt still claims a resource while its persisted reference remains; a failed abandonment write
+cannot take its job. For a nonresumable encoder, the origin claims only while its transfer is active,
+allowing interrupted release to replay safely.</p>
+<p>The runner coalesces producer/recovery/session triggers, executes at most two intents at once and
+schedules its own earliest retry. Per-intent backoff ranges from 30 seconds to 30 minutes, with
+a two-minute local eligibility recheck for waiting work. Legacy import/quarantine barriers run
+before every pass; unreadable authority is never an empty queue.</p>
+<p>Plex queue responses are classified explicitly:</p>
+<ul>
+<li>a completed render is kept (deleting the queue item would delete the version);</li>
+<li>a malformed list, a duplicate title or an unknown state keeps the intent;</li>
+<li>an absent item retires the intent only once the create PUT is known to have landed.</li>
+</ul>
+<p>An unresolved create is retried, slowly after a day, and retired with a diagnostic after a week.
+One race is accepted: a render that completes between the queue read and the DELETE is
+deleted, because PMS has no conditional cancel. The delete confirmation therefore says
+in-progress preparation is cancelled "where possible".</p>
+<p>Abandonment producers submit journal I/O to a worker and await a bounded durability result.
+A stale Plex title sweep commits its discoveries in one transaction. A failed or expired
+observation does not authorize a superseded-encoder stop or an Emby stale-create cancel;
+late durable intents remain replayable by the cleanup runner. Producers recheck captured
+server identity and exact row authority after suspension before dependent handoffs.
+Sign-out pauses rows rather than deleting them. Active encoders still need a journaled release
+captured before credential revocation; see <a href="#local-playback-and-row-presentation">Local playback and row presentation</a>.</p>
+<h2 id="offline-metadata">Offline metadata<a class="headerlink" href="#offline-metadata" title="Permanent link">&para;</a></h2>
+<p>Offline records keep enough information to display and play the item without a live server:</p>
+<ul>
+<li>backend and item identity;</li>
+<li>title/metadata needed for the offline library;</li>
+<li>local file URL and byte counts;</li>
+<li>selected media characteristics;</li>
+<li>optional poster and side-asset references;</li>
+<li>resume/progress state where applicable.</li>
+</ul>
+<p>Paths in the JSON index are one-level paths relative to the Downloads directory and are
+re-hydrated against the current sandbox at load time. Absolute container paths are not
+stable across installs. URLSession resume data is stored as a protected, backup-excluded
+sibling artifact and referenced by relative path; it is only valid for static/range-resumable
+sources. The storage and backup boundary is detailed in <a href="../PERSISTENCE/#app-container">Persistence</a>.</p>
+<p>Side assets such as posters, chapters, and compatible external text subtitles are cached next to the download record when available. They are treated as convenience metadata; the main playable file remains the durable core of the download.</p>
+<p>Posters are offered as soon as an owned row is queued, including season plans and restored
+active rows when their matching backend session becomes available. This poster-only pass runs
+independently of media admission and server preparation; BIF, trickplay, chapters and subtitles
+keep their normal later scheduling. It uses the existing paced, authenticated side-asset transport
+and respects Pause All and network preferences. Each attempt/source gets one early offer per
+launch; a failed fetch is non-fatal and remains eligible for normal later side-asset hydration.
+Validation, attempt/source-fenced staging and promotion, <code>sideAssetBundleOwner</code>, and
+<code>posterGeneration</code> are unchanged. Cached poster bytes count as side-asset storage, survive
+relaunch, and feed the shared Offline row artwork on visionOS, iOS/iPadOS and macOS. Rows
+without artwork retain the placeholder glyph; tvOS has no Downloads capability.</p>
+<h2 id="local-playback-and-row-presentation">Local playback and row presentation<a class="headerlink" href="#local-playback-and-row-presentation" title="Permanent link">&para;</a></h2>
+<p>Detail's Play Offline and the Offline library admit the exact rendered attempt after orientation.
+One manager-owned factory rechecks ownership, deletion, terminal state and the local file, then
+captures local resume/rewind, metadata-owned backend/assets and an attempt/session-bound event
+sink. The shared player consumes that sink: actual playing can verify eligible unverified rows,
+while repeated-truncation warnings remain. Position updates coalesce behind bounded asynchronous
+P6 persistence, including a terminal close sample; no synchronous close flush or rating-key save
+adapter remains. Positions are local only: watched/progress sync-back and offline Up Next remain
+separate work.</p>
+<p>Sign-out parks rows immediately and captures exact encoder-cleanup authority before credentials
+are revoked. Encoder-release journal work uses a P6 worker submission and bounded asynchronous
+resolution. Only a durable journal result permits compare-clearing that exact play-session handle;
+failure or expiry retains its row/transient authority, and an old completion cannot erase a newer
+handle. Recovery must replay retained exact releases after journal failure or timeout.</p>
+<p>Offline offers embedded subtitles and downloaded text sidecars together with one Off choice.
+Opening the menu does not parse sidecars. Selecting embedded, sidecar or Off revokes the other
+selection; item/session/selection generations reject late parses. Emby converted downloads retain
+an independent original text-subtitle source. Historically ambiguous origins skip repair safely
+and keep existing cached subtitles and playable media.</p>
+<p>Library and current-download sheets share lifecycle-driven rows. On visionOS and macOS,
+waiting/paused and route/context are neutral, verified completion green, caution orange, and
+failures/destructive controls red. All text lines share a leading edge without status icons;
+poster badges remain. Finished rows show
+one tail-truncated summary: <code>Downloaded • 1080p • 5.7 Mbps avg • 1.6 GB + 12 MB extras</code> or
+<code>Not verified • 1080p • 6.1 Mbps avg • 1.8 GB</code>. Resolution, local media average bitrate and size
+are omitted when unknown; extras appear only when present. Finished rows have no separate quality
+line. Other states retain requested quality, progress and captions. Context and status stay
+single-line with full accessibility values; VoiceOver adds “Downloaded and verified” or
+“Downloaded; playback not verified” to the full summary. Error details expand.
+On iPhone/iPad (<code>DownloadRowContent.mobileBody</code>) a row is a one-line title, one context line
+(the backend only when backends are mixed, the metadata or requested quality, and the size once
+finished) and a 1–2 word status from <code>compactStatusText</code> (Ready, Unverified, Downloading 42%,
+Queued, Paused, Preparing, Verifying, Failed). Caution uses the secondary color plus a warning
+triangle, never orange, because amber means selection on iOS. The full caption is the status's
+accessibility value. Offline is one list in every width with no detail page: a tap plays a
+finished row or opens an unfinished row's actions, and long-press and swipe offer the same.
+Server indexing, preparation and verification remain distinct, and preterminal progress never
+claims 100%. Delete captures exact attempt identities and explains supported unfinished server-job
+cancellation while retaining finished server versions.</p>
+<p>Availability is a generation-tagged off-MainActor scan, refreshed at publication, foreground and
+recovery boundaries. Body/progress reads do not stat files. Readable blocked recovery permits
+terminal playback with mutations disabled; opaque unsupported/unreadable indices cannot open
+Offline. Restricted Offline consumes Cinema returns and acknowledges their identity before
+Reconnect, preventing normal Root from replaying an old return.</p>
+<h2 id="reconcile-and-resume">Reconcile and resume<a class="headerlink" href="#reconcile-and-resume" title="Permanent link">&para;</a></h2>
+<p>On launch, Labstream compares the offline index, files on disk, active transfers, persisted
+artifact reservations, and durable cleanup intents. Current reconciliation:</p>
+<p>Startup first installs all transfer callbacks and registers the still-dormant session with the
+background-completion registry. When the Store admits a healthy current index, the initial
+transport submission crosses one bounded MainActor turn and retains the manager until that
+submission occurs. A retry before that turn cancels the deferred edge and owns the one immediate
+submission, so retry cannot overtake it or submit activation twice.</p>
+<p>A readable load that finishes after the startup deadline still publishes rows and Offline
+availability, even if its background wake has expired. Transport, probes and queue refill stay
+dormant until foreground or a new background wake authorizes recovery; older load generations
+cannot overwrite a newer recovery attempt.</p>
+<ul>
+<li><strong>Unsupported schemas</strong> keep their explicit reset path.</li>
+<li><strong>Unreadable indexes and malformed current ownership</strong> remain fail-closed.</li>
+<li><strong>A v4 index</strong> runs the one-time upgrade pass (see PERSISTENCE) before <code>.ready</code> is published.</li>
+</ul>
+<p><strong>Delete</strong> stops exactly its attempt: tracked tasks, any OS task carrying that attempt's marker,
+prep pollers and keepalive. It never stops a replacement attempt.</p>
+<p>A row being deleted, whether behind a row-deletion barrier or as a capsule, admits no new work:
+- transfer start, resume and finalization;
+- retry continuation;
+- season admission;
+- Plex optimize polling and creation.</p>
+<p>Recovery also:</p>
+<ul>
+<li>adopts only current task markers whose exact attempt matches the durable row;</li>
+<li>keeps current malformed/ownerless active rows fail-closed rather than guessing ownership;</li>
+<li>resumes/retries recoverable transfers and surfaces terminal failures in the row. A row whose
+  last failure was storage-full is not automatically redriven: every automatic static-range
+  redrive (rebuilds, backend-ready drains, launch recovery) first re-measures free space —
+  counting iOS purgeable space, matching the Settings storage gauge — and, if the volume still
+  cannot hold the remaining network bytes, largest append copy, uncached side assets and headroom,
+  parks the row as a pending resume instead of retrying. A user-initiated Retry can reattempt immediately, but still passes admission and storage preflights;</li>
+<li>migrates legacy Emby tombstones and pre-upgrade quarantined Plex intents into the cleanup
+  journal, then runs required server cleanup through the cleanup runner (see
+  <a href="#server-cleanup">Server cleanup</a>);</li>
+<li>inventories and repairs missing posters, subtitles, chapters, Plex/Emby BIF, and Jellyfin
+  trick-play playlists/tiles for completed rows without re-downloading playable media. Work runs
+  off-main, validates image/BIF/text payloads before promotion, and batches metadata publication.
+  Retry authority is exact attempt + source + resource kind and is charged only when an eligible
+  waiter actually admits transport; coalesced cancellation or a stale waiter hands authority to the
+  next eligible waiter. The worker inventories every owned side asset even after finding a missing file, so playlist
+  repair retains later existing tiles when their server requests would fail. Successful promotion,
+  including a same-path replacement, advances the side-asset generation so byte accounting and
+  storage-cap snapshots cannot retain stale cache values;</li>
+<li>keeps completed media available without requiring the source server to be reachable;</li>
+<li>keeps a failed Emby Convert row's server job when Retry would resume it: the launch and
+  backend-switch cleanup sweep cancels Convert jobs only for completed, deleted or abandoned rows,
+  using the same predicate as the retry gate. Forward-only encoders of failed rows are still
+  stopped, because they cannot resume;</li>
+<li>parks a static row at its durable checkpoint when the system (not the user) cancels its
+  background task, and fails a forward-only row as retryable in the same case;</li>
+<li>fails a Jellyfin download or retry with "version no longer available" when the requested
+  MediaSource has disappeared, instead of silently fetching another edition;</li>
+<li>treats sign-out of a backend as a resumable pause of that backend's active rows. Records
+  and files stay; <code>DownloadManager.pauseDownloadsForBackendSignOut</code> runs while credentials
+  still exist so encoder teardown can use the right session. This is not cancel or delete.</li>
+</ul>
+<p>If the selected saved session cannot be restored because its server or network is temporarily
+unreachable, launch finishes in a restricted Offline surface when at least one completed media
+file is still present. This surface exposes only the local library/player plus reconnect,
+sign-in, Settings, resume-position, and deletion controls; it does not fabricate an authenticated
+browse session. Missing or explicitly invalid credentials continue to show sign-in instead, and
+tvOS never enters this path because it does not ship downloads.</p>
+<p>Admission is decided from a typed selected-session restore outcome that Plex, Jellyfin, and Emby
+all report through <code>AuthManager.sessionRestoreOutcome</code> (PMSKit <code>SessionRestoreOutcome</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Outcome</th>
+<th>Produced by</th>
+<th>Saved credential</th>
+<th>Launch surface</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>restored</code></td>
+<td>live lane published</td>
+<td>kept</td>
+<td>browse</td>
+</tr>
+<tr>
+<td><code>missingCredential</code></td>
+<td>no saved credential, or explicit sign-out</td>
+<td>absent</td>
+<td>sign-in</td>
+</tr>
+<tr>
+<td><code>invalidCredential</code></td>
+<td>HTTP 401 (Emby: probe reports another user); a Plex 401 on inactive download hydration also classifies here but keeps the token</td>
+<td>retired</td>
+<td>sign-in</td>
+</tr>
+<tr>
+<td><code>unconfirmedCredential</code></td>
+<td>HTTP 403, or Jellyfin 2xx probe for a different user</td>
+<td>kept</td>
+<td>sign-in/retry</td>
+</tr>
+<tr>
+<td><code>temporarilyUnavailable</code></td>
+<td>transport, DNS, TLS, timeout, Plex discovery, HTTP 429/5xx or any other non-401/403 status (a reverse proxy can answer 404 while its upstream is down), or an unreadable reply such as a captive portal</td>
+<td>kept</td>
+<td>Offline if a completed local file exists, otherwise sign-in/retry</td>
+</tr>
+</tbody>
+</table>
+<p><code>OfflineLaunchAvailability.admitsOfflineLaunch</code> is the pure gate. Reconnect re-runs the selected
+restore in place; a successful restore flips <code>isBrowseReady</code> and <code>BrowseUIGate</code> mounts the normal
+root.</p>
+<p>Season confirmation captures one immutable draft containing new rows and exact retry attempts. The
+Store validates every owner and commits insertions plus retry admission intents in one
+snapshot before any lane starts; stale ownership, a normal persistence failure, and an indeterminate
+atomic-write outcome remain distinct, with the last case pausing download admission. Offline list
+snapshots contain scalar presentation/action identity only; full records resolve at exact-attempt
+action or playback edges. Storage presentation separates known, unknown, and not-applicable bytes
+instead of turning unknown side assets or reservations into false zeroes.</p>
+<p>Every download start goes through one admission window (<code>DownloadAdmissionPolicy</code>, driven by
+<code>DownloadAdmissionCoordinator</code>): single taps, season rows, Resume All, a row's Resume or Retry,
+automatic static range resumes and stalled-stream restarts. Settings ▸ Downloads ▸
+<strong>Simultaneous downloads</strong> sets the total cap from 1 to 5 (default 3). The static-file lane is
+<code>max(1, total - 1)</code> and live-forward streams are capped at 1. Server preparation (Plex optimize or
+Emby Convert) is not a transfer and does not count toward the total (#414): up to 5 server jobs
+are submitted at once whatever the setting, so a queued batch renders on the server while the app
+is suspended, and the server's own transcoder settings decide how many render concurrently. The
+pure policy takes limits supplied by the manager-owned coordinator,
+which reads the persisted preference at every gate, including relaunch recovery. Explicit row
+actions are served before automatic ones; the origin orders requests and never lifts a cap.</p>
+<p>Lowering the setting never cancels running transfers: existing work is grandfathered, and no
+new row enters until total and lane occupancy are below their limits. Raising it wakes an
+admission pass so waiting rows start as soon as the applicable lanes have room. The setting is
+available on visionOS, iOS/iPadOS and macOS; tvOS has no Downloads settings.</p>
+<ul>
+<li><strong>Occupancy is observed.</strong> A row uses its lane while its persisted lifecycle is <code>admitted</code>,
+  <code>serverPrep</code> or <code>transferring</code>, it is not being deleted, and live work backs it (a start slot,
+  a registered prep poller or a session-owned transfer). Pause, failure, finalizing and delete
+  free the lane without any release call.</li>
+<li><strong>Finished renders wait for a transfer slot (#414).</strong> When a Plex render or an Emby Convert job
+  with a persisted job identity finishes, the row keeps its prep slot and reads <strong>Ready — waiting
+  for a download slot…</strong> (iPhone/iPad: <strong>Queued</strong>) until the static and total caps have room, then starts its byte transfer
+  with the live backend session. Waiting renders go first come, first served, and ahead of new
+  transfer starts (taps, Resume, Retry, automatic static resumes); new server jobs can still be
+  submitted meanwhile. The wait is in memory: after a relaunch the resume poller finds the
+  finished render and waits again. An Emby start that reuses an already converted version has no
+  job identity yet, so it hands off at once; that handoff and grandfathered relaunch work can
+  briefly put static occupancy over its cap, and nothing new enters the static lane meanwhile.</li>
+<li><strong>Starts are supervised.</strong> A granted start is fenced by a generation until its async work
+  finishes. A start that ends without work (no session, a refresh outage) waits again with
+  backoff of 1, 5, 15, 30 and then 60 seconds instead of failing; a definitive refusal (signed
+  out, source gone, storage) stays a visible failure. Pause and delete end the supervision, so a
+  granted continuation never starts a paused or deleted row.</li>
+<li><strong>Waiting is durable.</strong> A season episode, or a tap that finds every lane full, waits as a
+  <code>planned</code> row carrying its exact source binding, route, preset and audio choice, and starts
+  through the refreshed, source-validated first-start path. Resume All and a capacity-delayed row
+  Resume or Retry keep the row paused or failed with a <code>retryRequested</code> intent, so its retry
+  routes from its own facts (checkpoint, resume blob, Emby job, Plex queue item). Waiting rows read
+  <strong>Waiting for a download slot…</strong>, or <strong>Waiting — downloads paused</strong> during Pause All
+  (iPhone/iPad rows show the compact <strong>Queued</strong> or <strong>Paused</strong>).</li>
+<li><strong>Bulk controls</strong> show <strong>Pause All</strong> whenever any row is active, preparing, retrying or
+  waiting for admission, including paused/failed rows with a pending retry request. Mixed idle,
+  completed or failed rows never hide Pause All. With no running or requested work, paused/failed
+  rows or a paused queue offer <strong>Resume All</strong>. The label and icon follow each published snapshot;
+  the control is disabled until startup recovery is ready.</li>
+<li><strong>Pause All</strong> closes the admission gate, withdraws waiting retry requests and pauses active
+  rows, including Emby Convert preparation via the same cancellation path as a row Pause.
+  This cancels local preparation pollers; remote conversion jobs retain their existing resumable
+  ownership, with supported remote-job cleanup belonging to Delete.
+  Finished bodies already being verified are allowed to finish. A row's own Resume or Retry
+  during Pause All is exempt for that row only; its pending or active work offers Pause All
+  again, and the next Pause All revokes every exemption.</li>
+<li><strong>Barriers.</strong> Nothing is granted before startup recovery has reattached tasks and pollers (work
+  the OS still owned counts first, even over a cap), or while a season commit is proving
+  durability.</li>
+<li><strong>Lane changes.</strong> A start that turns into server-prep work (a Plex original that failed its
+  preflight, an Emby negotiation rerouted to Convert) needs room in that lane first; otherwise it
+  ends without work and waits.</li>
+</ul>
+<p>Emby itself processes Convert jobs from its <em>Convert Media</em> scheduled task, which Emby staff have
+described as one conversion at a time. A second Labstream Convert can therefore wait as
+server-side <code>Queued</code> even outside Labstream's own lane cap. Static downloads need no conversion
+and are not tied to that server queue.</p>
+<p>Storage uses one rule for every gate (<code>DownloadStorageAdmissionPolicy</code>, P5):</p>
+<ul>
+<li><strong>Storage limit.</strong> Every row counts once: the bytes it holds plus its cached side assets.
+  Admitted, preparing and transferring rows also reserve their known remaining bytes. A retry or
+  re-download replaces its own row's contribution instead of adding to it. The same rule checks
+  the download sheet, every backend start, the season commit (including retried episodes) and the
+  Plex fallback before it asks the server to render.</li>
+<li><strong>Unknown sizes stay unknown.</strong> Known side assets never turn an unknown media size into an
+  "extras-only" number. The download sheet says the size is unknown and that the download is not
+  counted toward the limit; the season sheet asks for confirmation. Jellyfin and Emby items now
+  carry their source size, so originals are rarely unknown.</li>
+<li><strong>Cap limitation.</strong> Starts that pass checks concurrently before publishing their sizes are not
+  protected by a new atomic reservation transaction. Admission caps bound concurrency, but the
+  limit can temporarily overshoot; later checks and reactive ENOSPC remain backstops.</li>
+<li><strong>Free space</strong> follows the file's physical timeline. The transfer still needs the network bytes
+  not yet on disk, plus the largest body it will append (that copy briefly exists twice), plus
+  the duration/chapter-based side-asset estimate less bytes already cached (floored at zero),
+  plus 500 MB of headroom. Only usable, nonoverlapping held bodies beyond the checkpoint reduce
+  future network bytes; consumed bodies receive no further credit. The measurement counts
+  purgeable space, as the Settings gauge
+  does, and an ENOSPC during a transfer still fails the row with the storage-full affordance.</li>
+</ul>
+<p>A planned row with no in-flight slot is waiting, not transferring. All current-download surfaces
+use the shared waiting caption; an admitted row may show <strong>Queued…</strong> and a server-prep row
+<strong>Preparing on server…</strong> (the compact iPhone/iPad forms are <strong>Queued</strong> and <strong>Preparing</strong>).
+<strong>Downloading optimized</strong> is the static transfer of an existing or converted version. When it reads
+0% with a spinner, the row is active but URLSession has delivered no body bytes yet. Common reasons
+are the window before the first byte, OS scheduling, and the per-host connection limit, since each
+static row can queue two segment tasks.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright (C) 2026 Jonathan Lipworth — GPL-3.0 with §7 exception
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "content.code.copy", "toc.follow", "search.suggest"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
