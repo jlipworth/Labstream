@@ -16,10 +16,13 @@ plus the work integrated on the same branch: iPhone Duo support and the Xcode 27
 ([#419](https://github.com/jlipworth/Labstream/issues/419)), the iOS player and Stats rework,
 Emby copy-lane fixes, bounded headless codec regression testing and Mac navigation fixes.
 
-The latest recorded processed distribution is **1.8.0 (build 1655)** for all four platforms,
-archived on 2026-11-05 from clean `main` commit `b9162746`, the rebrand (#432) on top of the in-app
-privacy and support links (#427) and `downloads/overhaul` (#425). It processed to **VALID**, reached
-**IN_BETA_TESTING** and is in the **Labstream Internal** TestFlight group. Builds 1523–1653 were
+The latest recorded processed distribution is **1.8.0 (build 1656)** for all four platforms,
+archived on 2026-11-12 from clean `main` commit `9f1285c9`. It adds the labstream.app links (#440)
+and the label-colored selected tab on iPhone and iPad (#443) to build 1655. It processed to
+**VALID**, reached **IN_BETA_TESTING** and is in the **Labstream Internal** TestFlight group. It is
+not selected for the App Store versions, which still use build 1655 (archived on 2026-11-05 from
+`b9162746`: the rebrand (#432) on top of the in-app privacy and support links (#427) and
+`downloads/overhaul` (#425)). Builds 1523–1653 were
 archived from the `downloads/overhaul` integration branch before it landed (uploaded with
 `--allow-unpublished`).
 
@@ -30,7 +33,7 @@ Nothing has been submitted for review. The previous release was **1.6.1 (build 2
 `abd1ddcac351`.
 
 `main` is squash-merged, so its commit count (the `--build-number auto` value) is about 140 below
-the integration-branch builds. Until the commit count passes 1654, pass an explicit
+the integration-branch builds. Until the commit count passes 1656, pass an explicit
 `--build-number` above the last upload; App Store Connect rejects a lower build number for the same
 version. Keep the source version and the processed
 binary version separate when reporting release status. 1.8.0 device acceptance is tracked in
@@ -39,10 +42,10 @@ runtime client identity reads the bundle version and falls back to `0.0.0`.
 
 | Product | Current source | Latest processed (internal TestFlight) | Selected for the App Store version | Open acceptance |
 | --- | --- | --- | --- | --- |
-| Apple Vision Pro (`Labstream`) | 1.8.0 (build 2) | 1.8.0 (build 1655) | 1.8.0 (build 1655) | Physical TestFlight acceptance and review access. |
-| iPhone and iPad (`LabstreamMobile`) | 1.8.0 (build 2) | 1.8.0 (build 1655) | 1.8.0 (build 1655) | Physical iPhone and iPad acceptance; Duo App Store screenshots. The maintainer has tested on a physical iPhone Duo (the 1649–1653 player-menu changes came from that testing). |
-| Apple TV (`LabstreamTV`) | 1.8.0 (build 2) | 1.8.0 (build 1655) | 1.8.0 (build 1655) | Physical Apple TV acceptance. |
-| Mac (`LabstreamMac`) | 1.8.0 (build 2) | 1.8.0 (build 1655) | 1.8.0 (build 1655) | Sandbox and live-host acceptance. A 1.6.1 (build 2) TestFlight install passed launch and receipt/signature checks; no later Mac TestFlight install is recorded. |
+| Apple Vision Pro (`Labstream`) | 1.8.0 (build 2) | 1.8.0 (build 1656) | 1.8.0 (build 1655) | Physical TestFlight acceptance and review access. |
+| iPhone and iPad (`LabstreamMobile`) | 1.8.0 (build 2) | 1.8.0 (build 1656) | 1.8.0 (build 1655) | Physical iPhone and iPad acceptance; Duo App Store screenshots. The maintainer has tested on a physical iPhone Duo (the 1649–1653 player-menu changes came from that testing). |
+| Apple TV (`LabstreamTV`) | 1.8.0 (build 2) | 1.8.0 (build 1656) | 1.8.0 (build 1655) | Physical Apple TV acceptance. |
+| Mac (`LabstreamMac`) | 1.8.0 (build 2) | 1.8.0 (build 1656) | 1.8.0 (build 1655) | Sandbox and live-host acceptance. A 1.6.1 (build 2) TestFlight install passed launch and receipt/signature checks; no later Mac TestFlight install is recorded. |
 
 ### 1.8.0 internal TestFlight builds
 
@@ -51,6 +54,7 @@ verification, and none of it is physical-device or live-backend acceptance unles
 
 | Date | Build | Commit | What it adds | Checked | Still open |
 | --- | --- | --- | --- | --- | --- |
+| 2026-11-12 | 1656 | `9f1285c9` | The app's and the store listing's privacy, support and marketing links point at labstream.app ([#440](https://github.com/jlipworth/Labstream/pull/440)); the selected tab on iPhone and iPad is label color, because amber was unreadable over warm artwork under the floating tab bar ([#443](https://github.com/jlipworth/Labstream/pull/443)). Not selected for the App Store versions. | Pre-upload validation (signing, entitlements, matching privacy manifests); for #443 a clean iPhone-simulator build with a live review-catalog capture and the `mobile-hosted`, `mobile-ui-smoke` and `duo-ui-smoke` lanes; hermetic PMSKit; docs hygiene. | The tab change on iPad and in dark appearance; tapping the links on device; physical acceptance (#403). |
 | 2026-11-05 | 1655 | `b9162746` | Rebrand ([#432](https://github.com/jlipworth/Labstream/pull/432)): a white Inter Black L on a black tile for every app icon (Icon Composer for iPhone/iPad and Mac; regenerated visionOS and tvOS image stacks and Top Shelf art), the in-app glyph and the sign-in header; brand colors become black and white, with amber kept as a UI color only. Selected for all four 1.8.0 App Store versions, replacing 1654. | Pre-upload validation (signing, entitlements, matching privacy manifests); `generate-brand-assets.py --check`; quiet-machine Mac hosted suite 989/990 (one intermittent offline-subtitle test, [#436](https://github.com/jlipworth/Labstream/issues/436)). | Owner device check of the iPhone/iPad clear and tinted icons, visionOS icon parallax and Apple TV focus parallax; physical acceptance (#403). |
 | 2026-11-05 | 1654 | `27b6bf5a` | First 1.8.0 build from `main`: everything above plus in-app Privacy Policy, Support and support-email links in Settings ▸ About and on the sign-in screen, a QR sheet on Apple TV and the Mac Help menu ([#427](https://github.com/jlipworth/Labstream/pull/427)). Selected for all four 1.8.0 App Store versions. | Four-platform builds, Mac hosted suite, hermetic PMSKit, iPhone/iPad/Apple TV simulator screenshots of the new links, docs hygiene, pre-upload validation. | Physical-device acceptance (#403); tapping the links and the Apple TV QR sheet. |
 | 2026-11-02 | 1653 | `f1efcae5` | One Stats path palette on every platform (green for direct play, neutral gray for copy and encode); the Connection tile resolves the host on device and reports a VPN route for Tailscale and other tunnels instead of Unknown for custom domains. | 13 Stats summary tests, two mobile Stats UI tests, clean visionOS build and launch smoke, docs hygiene. | New colors on visionOS, tvOS and macOS; the VPN route on a real Tailscale connection. |
@@ -360,8 +364,9 @@ and App Store Connect state before relying on them for a new submission.
       [Privacy](https://labstream.app/privacy/). The app links, `appstore/metadata` URLs and the
       App Store Connect fields all use these; the github.io copies remain, with canonical tags
       pointing here.
-- [ ] App Store Connect matches: `scripts/asc-metadata.py diff` is clean after the URL push, and
-      any address in the Apple TV privacy-policy text (web-only) is `labstream.app/privacy`.
+- [x] App Store Connect matches: `scripts/asc-metadata.py diff` was clean on 2026-11-12 after the
+      review notes were pushed with the review catalog's new sample titles (`open-films-v4`), and
+      the Apple TV privacy-policy text (web-only) ends with `labstream.app/privacy`.
 - [ ] Replace the staged single-image synthetic placeholders with final, reviewed
       screenshot sets for every required App Store device size;
       the Vision Pro set includes at least one 3840 × 2160 image. Apple permits up to ten
