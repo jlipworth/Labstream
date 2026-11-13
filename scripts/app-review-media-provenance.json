@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "catalogRelease": "open-films-v2",
-  "verifiedOn": "2026-11-05",
-  "sourceManifestSha256": "113253b3efbe36b836ecad6b947051c51b0883fe3fc60bb0333eb22fc1613af5",
-  "scope": "Public source and derivative identities copied from the deployed review catalog manifest. On 2026-11-05 the six allowlisted open-film files on the live server matched these hashes in a read-only check; this file is a dated snapshot, not a fresh live-server checksum audit at capture time.",
+  "catalogRelease": "open-films-v4",
+  "verifiedOn": "2026-11-12",
+  "sourceManifestSha256": "aecb461083ffb231cb3025ebc8ac8fe60bf764328fb2d6ae9908661438c14f6a",
+  "scope": "Public source and derivative identities copied from the deployed review catalog manifest. On 2026-11-05 the six allowlisted open-film files on the live server matched these hashes in a read-only check, and the open-films-v4 seed on 2026-11-12 re-downloaded both films and verified the same six hashes before activating; this file is a dated snapshot, not a fresh live-server checksum audit at capture time.",
   "openFilms": [
     {
       "title": "Spring",
@@ -107,13 +107,13 @@
       "path": "files/generate-media.sh",
       "runtime": "jellyfin/jellyfin:10.11.11",
       "runtimeDigest": "sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db",
-      "sourceSha256": "a80e7c8caf6034ea5f48fe422c2e1d0418f5c9b5e5a43aaa3ef258a6f994e462",
+      "sourceSha256": "2721ba8165dab6ddf935f8ec82124aa9d7af1e57d92e5b90315a4edc64c82ec8",
       "deterministicInputs": true
     },
     "origin": "Repository-authored procedural gradients, synthesized audio, subtitles, chapters, and plain fictional technical metadata; no third-party material is incorporated.",
     "rightsHolder": "Repository owner",
     "license": "Project-Owned-Original-App-Review-Use",
-    "role": "Secondary codec, subtitle, chapter, seek, audio, and download fixtures. The CC BY open films are the visually dominant Movies catalog."
+    "role": "Secondary codec, subtitle, chapter, seek, audio, and download samples. The video sample (Audio and Subtitle Demo) has its own Samples library and the series (Sample Series) sits in Shows, so the CC BY open films are the only Movies catalog."
   },
   "noEndorsement": "Labstream is not affiliated with or endorsed by Blender Foundation, Blender Studio, or the film creators. Names appear only to identify and attribute the licensed works.",
   "storefrontGate": "Every visible asset must match this allowlist, include attribution, and pass editorial/age-suitability review. Final captures are not yet produced."

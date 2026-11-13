@@ -1,11 +1,27 @@
 # Licensed demo screenshots and review notes
 
 Status: active; catalog provenance snapshot dated 2026-09-15, updated to the deployed
-`open-films-v2` release on 2026-11-05. Official license pages were rechecked 2026-09-29 and Apple
+`open-films-v4` release on 2026-11-12. Official license pages were rechecked 2026-09-29 and Apple
 screenshot classes on 2026-11-05. Final captures and clean-install candidate journeys remain
 pending; the app logo and brand colors are being redone, so no final screenshots may be taken until
 that work lands.
 No screenshots were uploaded and no App Store Connect fields were changed by this work.
+
+## Catalog release open-films-v4 — 2026-11-12
+
+The two procedural samples no longer carry internal test names or sit beside the films:
+
+- **Movies** holds only _Spring_ and _Wing It!_.
+- A new **Samples** library holds _Audio and Subtitle Demo_ (was _Playback Diagnostics_ in Movies).
+- The series in **Shows** is _Sample Series_ (was _Reviewer Fixtures_).
+
+Both samples keep two audio tracks, English subtitles and three chapters, and now have 2:3 posters.
+The open films and their four artwork crops are unchanged; the seed re-downloaded both films and
+verified the six allowlisted hashes before activating the release. A review-account catalog read
+confirmed the four libraries and five titles. `open-films-v3` (same day) was superseded because
+Jellyfin dropped the word "Sample" from the video's displayed title. The public manifest records
+`open-films-v4` and the matching source-manifest hash, and the review notes in `appstore/metadata/`
+name the new titles. App Store Connect still holds the old notes until `asc-metadata.py push`.
 
 ## Review-server check — 2026-11-05 (read-only)
 
@@ -123,7 +139,7 @@ address and credentials, then sign in using the app's normal login flow.
 
 1. Open Movies, then Spring or Wing It!. Wait for the poster/backdrop, open details and play.
 2. Pause/resume and seek; leave playback, reopen the same title and verify resume progress.
-3. Browse Shows and Music. Use the technical sample with multiple available tracks/chapters to
+3. Browse Shows and Music. Use the Samples library's _Audio and Subtitle Demo_ (multiple tracks/chapters) to
    check subtitle/audio selection; do not imply the two open-film encodes supply every track type.
 4. iPhone and iPad share the universal mobile binary but have different layouts. Mac is a native
    windowed app. Apple TV is streaming-only and intentionally has no Downloads/Offline destination.
