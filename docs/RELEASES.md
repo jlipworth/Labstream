@@ -19,16 +19,16 @@ Emby copy-lane fixes, bounded headless codec regression testing and Mac navigati
 The latest recorded processed distribution is **1.8.0 (build 1656)** for all four platforms,
 archived on 2026-11-12 from clean `main` commit `9f1285c9`. It adds the labstream.app links (#440)
 and the label-colored selected tab on iPhone and iPad (#443) to build 1655. It processed to
-**VALID**, reached **IN_BETA_TESTING** and is in the **Labstream Internal** TestFlight group. It is
-not selected for the App Store versions, which still use build 1655 (archived on 2026-11-05 from
-`b9162746`: the rebrand (#432) on top of the in-app privacy and support links (#427) and
-`downloads/overhaul` (#425)). Builds 1523–1653 were
+**VALID**, reached **IN_BETA_TESTING** and is in the **Labstream Internal** TestFlight group. On
+2026-11-13 it was selected for all four 1.8.0 App Store versions, replacing build 1655 (archived on
+2026-11-05 from `b9162746`: the rebrand (#432) on top of the in-app privacy and support links (#427)
+and `downloads/overhaul` (#425)). Builds 1523–1653 were
 archived from the `downloads/overhaul` integration branch before it landed (uploaded with
 `--allow-unpublished`).
 
 On 2026-11-05 the four App Store Connect version drafts were renamed from 1.7.2 to **1.8.0**, and
 **1.8.0 (build 1654)** was selected for each platform; later that day **1.8.0 (build 1655)**, with the
-new icons, replaced it on all four. 1.7.2 was never submitted or released.
+new icons, replaced it on all four, and on 2026-11-13 **1.8.0 (build 1656)** replaced that. 1.7.2 was never submitted or released.
 Nothing has been submitted for review. The previous release was **1.6.1 (build 2)** at
 `abd1ddcac351`.
 
@@ -42,10 +42,10 @@ runtime client identity reads the bundle version and falls back to `0.0.0`.
 
 | Product | Current source | Latest processed (internal TestFlight) | Selected for the App Store version | Open acceptance |
 | --- | --- | --- | --- | --- |
-| Apple Vision Pro (`Labstream`) | 1.8.0 (build 2) | 1.8.0 (build 1656) | 1.8.0 (build 1655) | Physical TestFlight acceptance and review access. |
-| iPhone and iPad (`LabstreamMobile`) | 1.8.0 (build 2) | 1.8.0 (build 1656) | 1.8.0 (build 1655) | Physical iPhone and iPad acceptance; Duo App Store screenshots. The maintainer has tested on a physical iPhone Duo (the 1649–1653 player-menu changes came from that testing). |
-| Apple TV (`LabstreamTV`) | 1.8.0 (build 2) | 1.8.0 (build 1656) | 1.8.0 (build 1655) | Physical Apple TV acceptance. |
-| Mac (`LabstreamMac`) | 1.8.0 (build 2) | 1.8.0 (build 1656) | 1.8.0 (build 1655) | Sandbox and live-host acceptance. A 1.6.1 (build 2) TestFlight install passed launch and receipt/signature checks; no later Mac TestFlight install is recorded. |
+| Apple Vision Pro (`Labstream`) | 1.8.0 (build 2) | 1.8.0 (build 1656) | 1.8.0 (build 1656) | Physical TestFlight acceptance and review access. |
+| iPhone and iPad (`LabstreamMobile`) | 1.8.0 (build 2) | 1.8.0 (build 1656) | 1.8.0 (build 1656) | Physical iPhone and iPad acceptance; Duo App Store screenshots. The maintainer has tested on a physical iPhone Duo (the 1649–1653 player-menu changes came from that testing). |
+| Apple TV (`LabstreamTV`) | 1.8.0 (build 2) | 1.8.0 (build 1656) | 1.8.0 (build 1656) | Physical Apple TV acceptance. |
+| Mac (`LabstreamMac`) | 1.8.0 (build 2) | 1.8.0 (build 1656) | 1.8.0 (build 1656) | Sandbox and live-host acceptance. A 1.6.1 (build 2) TestFlight install passed launch and receipt/signature checks; no later Mac TestFlight install is recorded. |
 
 ### 1.8.0 internal TestFlight builds
 
@@ -54,7 +54,7 @@ verification, and none of it is physical-device or live-backend acceptance unles
 
 | Date | Build | Commit | What it adds | Checked | Still open |
 | --- | --- | --- | --- | --- | --- |
-| 2026-11-12 | 1656 | `9f1285c9` | The app's and the store listing's privacy, support and marketing links point at labstream.app ([#440](https://github.com/jlipworth/Labstream/pull/440)); the selected tab on iPhone and iPad is label color, because amber was unreadable over warm artwork under the floating tab bar ([#443](https://github.com/jlipworth/Labstream/pull/443)). Not selected for the App Store versions. | Pre-upload validation (signing, entitlements, matching privacy manifests); for #443 a clean iPhone-simulator build with a live review-catalog capture and the `mobile-hosted`, `mobile-ui-smoke` and `duo-ui-smoke` lanes; hermetic PMSKit; docs hygiene. | The tab change on iPad and in dark appearance; tapping the links on device; physical acceptance (#403). |
+| 2026-11-12 | 1656 | `9f1285c9` | The app's and the store listing's privacy, support and marketing links point at labstream.app ([#440](https://github.com/jlipworth/Labstream/pull/440)); the selected tab on iPhone and iPad is label color, because amber was unreadable over warm artwork under the floating tab bar ([#443](https://github.com/jlipworth/Labstream/pull/443)). Selected for all four 1.8.0 App Store versions on 2026-11-13, replacing 1655. | Pre-upload validation (signing, entitlements, matching privacy manifests); for #443 a clean iPhone-simulator build with a live review-catalog capture and the `mobile-hosted`, `mobile-ui-smoke` and `duo-ui-smoke` lanes; hermetic PMSKit; docs hygiene. | The tab change on iPad and in dark appearance; tapping the links on device; physical acceptance (#403). |
 | 2026-11-05 | 1655 | `b9162746` | Rebrand ([#432](https://github.com/jlipworth/Labstream/pull/432)): a white Inter Black L on a black tile for every app icon (Icon Composer for iPhone/iPad and Mac; regenerated visionOS and tvOS image stacks and Top Shelf art), the in-app glyph and the sign-in header; brand colors become black and white, with amber kept as a UI color only. Selected for all four 1.8.0 App Store versions, replacing 1654. | Pre-upload validation (signing, entitlements, matching privacy manifests); `generate-brand-assets.py --check`; quiet-machine Mac hosted suite 989/990 (one intermittent offline-subtitle test, [#436](https://github.com/jlipworth/Labstream/issues/436)). | Owner device check of the iPhone/iPad clear and tinted icons, visionOS icon parallax and Apple TV focus parallax; physical acceptance (#403). |
 | 2026-11-05 | 1654 | `27b6bf5a` | First 1.8.0 build from `main`: everything above plus in-app Privacy Policy, Support and support-email links in Settings ▸ About and on the sign-in screen, a QR sheet on Apple TV and the Mac Help menu ([#427](https://github.com/jlipworth/Labstream/pull/427)). Selected for all four 1.8.0 App Store versions. | Four-platform builds, Mac hosted suite, hermetic PMSKit, iPhone/iPad/Apple TV simulator screenshots of the new links, docs hygiene, pre-upload validation. | Physical-device acceptance (#403); tapping the links and the Apple TV QR sheet. |
 | 2026-11-02 | 1653 | `f1efcae5` | One Stats path palette on every platform (green for direct play, neutral gray for copy and encode); the Connection tile resolves the host on device and reports a VPN route for Tailscale and other tunnels instead of Unknown for custom domains. | 13 Stats summary tests, two mobile Stats UI tests, clean visionOS build and launch smoke, docs hygiene. | New colors on visionOS, tvOS and macOS; the VPN route on a real Tailscale connection. |
