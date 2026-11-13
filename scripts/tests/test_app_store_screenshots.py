@@ -238,13 +238,94 @@ class AppStoreScreenshotTests(unittest.TestCase):
                 mock.patch.object(screenshots.subprocess, "run"), \
                 mock.patch.object(screenshots.time, "sleep"), \
                 mock.patch.object(screenshots, "_app_pid", return_value=42), \
-                mock.patch.object(screenshots, "_installed_version", return_value={"buildNumber": "1"}):
+                mock.patch.object(screenshots, "_installed_version", return_value={"buildNumber": "1"}), \
+                mock.patch.object(screenshots, "load_live_config", return_value={"k": "v"}), \
+                mock.patch.object(screenshots, "reset_review_progress",
+                                  side_effect=lambda config: calls.append(["reset"]) or 3) as reset:
             session = screenshots.live_start("iphone69", Path(directory), allow_simulator=True)
             state = json.loads((session / "live-session.json").read_text())
+            skipped = screenshots.live_start("iphone69", Path(directory) / "skip", allow_simulator=True,
+                                             reset_progress=False)
+            skipped_state = json.loads((skipped / "live-session.json").read_text())
         launch = next(command for command in calls if command[2:3] == ["launch"])
         self.assertEqual(launch, ["xcrun", "simctl", "launch", "SIM", screenshots.BUNDLE_ID])
         self.assertEqual(state["launchArguments"], [])
         self.assertEqual(state["pid"], 42)
+        # Watch progress is cleared once, before the app launches, and the session records it.
+        reset.assert_called_once_with({"k": "v"})
+        self.assertLess(calls.index(["reset"]), calls.index(launch))
+        self.assertEqual((state["watchProgressReset"], state["watchProgressItemsCleared"]), (True, 3))
+        self.assertFalse(skipped_state["watchProgressReset"])
+        self.assertNotIn("watchProgressItemsCleared", skipped_state)
+
+    def test_review_progress_reset_clears_only_touched_items_and_logs_out(self) -> None:
+        config = {"LABSTREAM_LIVE_AUTH_SERVER": "https://review.invalid",
+                  "LABSTREAM_LIVE_AUTH_USERNAME": "reviewer", "LABSTREAM_LIVE_AUTH_PASSWORD": "s3cret"}
+        calls: list[tuple[str, str, str | None]] = []
+        def fake_request(server, method, path, *, token=None, query=None, body=None):
+            calls.append((method, path, token))
+            if path == "/Users/AuthenticateByName":
+                self.assertEqual(body, {"Username": "reviewer", "Pw": "s3cret"})
+                return {"AccessToken": "tok", "User": {"Id": "user"}}
+            if path == "/Items":
+                return {"Items": [
+                    {"Id": "resumed", "UserData": {"PlaybackPositionTicks": 5}},
+                    {"Id": "watched", "UserData": {"Played": True, "PlayCount": 1, "IsFavorite": True}},
+                    {"Id": "untouched", "UserData": {"PlaybackPositionTicks": 0, "Played": False}},
+                    {"UserData": {"Played": True}},
+                ]}
+            return None
+        with mock.patch.object(screenshots, "_review_request", side_effect=fake_request):
+            self.assertEqual(screenshots.reset_review_progress(config), 3)
+        self.assertEqual([call[:2] for call in calls], [
+            ("POST", "/Users/AuthenticateByName"), ("GET", "/Items"),
+            ("DELETE", "/UserPlayedItems/resumed"), ("DELETE", "/UserPlayedItems/watched"),
+            ("DELETE", "/UserFavoriteItems/watched"), ("POST", "/Sessions/Logout")])
+        self.assertTrue(all(token == "tok" for _, _, token in calls[1:]))
+
+    def test_review_progress_reset_keeps_named_titles_watched(self) -> None:
+        config = {"LABSTREAM_LIVE_AUTH_SERVER": "https://review.invalid",
+                  "LABSTREAM_LIVE_AUTH_USERNAME": "reviewer", "LABSTREAM_LIVE_AUTH_PASSWORD": "s3cret",
+                  "LABSTREAM_LIVE_WATCHED_TITLES": " Sample Series , Other "}
+        calls: list[tuple[str, str]] = []
+        def fake_request(server, method, path, *, token=None, query=None, body=None):
+            calls.append((method, path))
+            if path == "/Users/AuthenticateByName":
+                return {"AccessToken": "tok", "User": {"Id": "user"}}
+            if path == "/Items":
+                return {"Items": [
+                    {"Id": "series", "Name": "Sample Series", "UserData": {"Played": False}},
+                    {"Id": "episode", "Name": "Subtitles and Chapters", "SeriesName": "Sample Series",
+                     "UserData": {"Played": True, "PlayCount": 1}},
+                    {"Id": "already", "Name": "Other", "UserData": {"Played": True}},
+                    {"Id": "film", "Name": "Spring", "UserData": {"PlaybackPositionTicks": 9}},
+                ]}
+            return None
+        with mock.patch.object(screenshots, "_review_request", side_effect=fake_request):
+            self.assertEqual(screenshots.reset_review_progress(config), 2)
+        self.assertEqual(calls[2:-1], [("POST", "/UserPlayedItems/series"),
+                                       ("DELETE", "/UserPlayedItems/film")])
+
+    def test_review_progress_reset_logs_out_after_a_failure_and_never_echoes_values(self) -> None:
+        config = {"LABSTREAM_LIVE_AUTH_SERVER": "https://review.invalid",
+                  "LABSTREAM_LIVE_AUTH_USERNAME": "reviewer", "LABSTREAM_LIVE_AUTH_PASSWORD": "s3cret"}
+        paths: list[str] = []
+        def fake_request(server, method, path, *, token=None, query=None, body=None):
+            paths.append(path)
+            if path == "/Users/AuthenticateByName":
+                return {"AccessToken": "tok", "User": {"Id": "user"}}
+            if path == "/Items":
+                raise screenshots.ScreenshotError("review server refused GET Items (HTTP 500)")
+            return None
+        with mock.patch.object(screenshots, "_review_request", side_effect=fake_request):
+            with self.assertRaises(screenshots.ScreenshotError) as raised:
+                screenshots.reset_review_progress(config)
+        self.assertEqual(paths[-1], "/Sessions/Logout")
+        for private in ("review.invalid", "reviewer", "s3cret", "tok"):
+            self.assertNotIn(private, str(raised.exception))
+        with mock.patch.object(screenshots, "_review_request", return_value={}):
+            with self.assertRaisesRegex(screenshots.ScreenshotError, "no session"):
+                screenshots.reset_review_progress(config)
 
     def test_live_start_refuses_a_foreign_booted_simulator(self) -> None:
         def fake_run(command, *, output=None):
