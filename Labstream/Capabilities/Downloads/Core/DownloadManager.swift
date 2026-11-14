@@ -2168,6 +2168,9 @@ public final class DownloadManager {
             && record.lifecycle != .planned {
             requestAdmission(for: record, origin: .automatic)
         }
+        // Rows added behind the pause are already waiting requests; nothing above changes the
+        // occupancy signature for them, so ask for an admission pass directly.
+        scheduleAdmissionPump()
         rehydrateMissingOptionalSideAssetsForCompletedRows(reason: "queue_resumed")
         resumePendingServerPrepDownloads()
         resumePendingStaticRangeDownloads()

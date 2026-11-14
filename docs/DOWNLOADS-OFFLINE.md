@@ -478,7 +478,10 @@ Posters are offered as soon as an owned row is queued, including season plans an
 active rows when their matching backend session becomes available. This poster-only pass runs
 independently of media admission and server preparation; BIF, trickplay, chapters and subtitles
 keep their normal later scheduling. It uses the existing paced, authenticated side-asset transport
-and respects Pause All and network preferences. Each attempt/source gets one early offer per
+and respects network preferences. A pause stops transfers, not a row's own artwork: paused rows
+and rows waiting behind Pause All are offered a poster too, and the poster fetch has its own
+side-asset owner that Pause and Pause All never park (every other side asset stays parked with
+the attempt; Delete cancels both). Each attempt/source gets one early offer per
 launch; a failed fetch is non-fatal and remains eligible for normal later side-asset hydration.
 Validation, attempt/source-fenced staging and promotion, `sideAssetBundleOwner`, and
 `posterGeneration` are unchanged. Cached poster bytes count as side-asset storage, survive
@@ -674,8 +677,10 @@ available on visionOS, iOS/iPadOS and macOS; tvOS has no Downloads settings.
 - **Bulk controls** show **Pause All** whenever any row is active, preparing, retrying or
   waiting for admission, including paused/failed rows with a pending retry request. Mixed idle,
   completed or failed rows never hide Pause All. With no running or requested work, paused/failed
-  rows or a paused queue offer **Resume All**. The label and icon follow each published snapshot;
-  the control is disabled until startup recovery is ready.
+  rows or a paused queue offer **Resume All**. A row waiting behind Pause All (for example a
+  download added while the queue is paused) is held, not running: it does not bring Pause All
+  back, its own action is Resume, and Resume All starts it. The label and icon follow each
+  published snapshot; the control is disabled until startup recovery is ready.
 - **Pause All** closes the admission gate, withdraws waiting retry requests and pauses active
   rows, including Emby Convert preparation via the same cancellation path as a row Pause.
   This cancels local preparation pollers; remote conversion jobs retain their existing resumable

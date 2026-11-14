@@ -97,6 +97,12 @@ Commands and limitations: [workflow status and review evidence](../docs/DEVELOPM
   display from the host at each `checkpoint("name")` the test reaches (needed on visionOS, where
   in-process XCUITest screenshots are 1×1). Test output goes to a private, redacted log. See
   [visionOS XCUITest](../docs/TESTING-STRATEGY.md#visionos-xcuitest).
+- `live-download-queue-check.py` — runs the opt-in `LabstreamMobileLiveDownloadQueueUITests`
+  against the review catalog on this worktree's booted iPhone simulator (`--allow-simulator`),
+  saving a screenshot per checkpoint under the gitignored `artifacts/live-download-queue/`. It
+  checks Pause All / Resume All, a download added behind a paused queue, a mixed queue, queued-row
+  posters and the simultaneous-downloads setting with real transfers. Private values come from
+  `app-review-live.env` and are redacted from its log.
 - `app-store-screenshots.py` + `app-store-screenshot-specs.json` — App Store screenshot exporter.
   `capture` runs serial credential-free fixture captures of named scenes (home, library, detail,
   playback, downloads; no downloads on tvOS) for visionOS, iPhone 6.3- and 6.9-inch, iPad, iPhone

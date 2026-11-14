@@ -391,6 +391,18 @@ gitignored `scripts/app-review-live.env` (template: `scripts/app-review-live.env
 caller's environment, and reach the test as xcodebuild `TEST_RUNNER_` variables. The tests never
 sign out. On an app that is already signed in to another account they fail at the catalog check.
 
+`LabstreamMobileLiveDownloadQueueUITests` uses the same configuration to check the Downloads
+queue on iPhone against real transfers: it queues the catalog's two films, pauses and resumes the
+queue (including a download added behind Pause All and a mixed queue), changes the
+simultaneous-downloads setting, then deletes the downloads and restores the default limit. It
+holds at the `added-while-paused`, `resumed-all`, `mixed`, `mixed-paused` and `mixed-resumed`
+checkpoints so the host can capture the rows and their posters. Two limits of the review catalog
+shape it: the films are small, so the pause and resume steps use server-converted downloads
+(which Jellyfin runs one at a time whatever the setting), and the limit itself is checked with
+original files at 3, where both transfer together. Run it with
+`scripts/live-download-queue-check.py --allow-simulator`, which redacts private values from the log. Simulator
+evidence only; background transfers need a device.
+
 XCUITest's activity log prints typed text, including the server address and username. On tvOS,
 where the system keyboard types into the app, it also prints the password. Run the tests through
 `scripts/app-store-screenshots.py live drive`, which redacts every private value from the

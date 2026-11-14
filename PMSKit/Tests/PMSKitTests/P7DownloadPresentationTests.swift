@@ -18,6 +18,26 @@ struct P7DownloadPresentationTests {
             isRetrying: { _ in false }).rows[0]
     }
 
+    @Test("a row held behind Pause All offers Resume; an ordinary waiting row offers Pause")
+    func heldRowOffersResume() {
+        func waiting(caption: String) -> DownloadRowPresentation {
+            var record = DownloadRecord(ratingKey: "fixture", attemptID: DownloadAttemptID(rawValue: "attempt-a"),
+                title: "Fixture", localURL: URL(fileURLWithPath: "/tmp/fixture.mp4"), status: .queued,
+                metadata: OfflineMetadata(ratingKey: "fixture", title: "Fixture", type: "movie",
+                    requestedProfileLabel: "Fixture quality", backendKind: .plex))
+            record.lifecycle = .planned
+            return OfflineLibrarySnapshotBuilder.make(records: [record], isQueuePaused: true,
+                aggregateSpeedBytesPerSecond: nil, errorMessage: { _ in nil },
+                displayProgress: { _ in nil }, statusCaption: { _, _ in caption },
+                isRetrying: { _ in false }).rows[0].presentation
+        }
+        let held = waiting(caption: DownloadRowStatusCaptionPolicy.queuePausedWaitingCaption)
+        #expect(held.actions == [.resume, .delete])
+        #expect(held.compactStatusText == "Paused")
+        // Resumed by hand during Pause All and waiting for a free slot.
+        #expect(waiting(caption: "Waiting for a download slot").actions == [.pause, .delete])
+    }
+
     @Test(arguments: DownloadLifecycle.allCases)
     func colorsOnlyCarryTheirDocumentedMeaning(lifecycle: DownloadLifecycle) {
         let presentation = row(lifecycle).presentation

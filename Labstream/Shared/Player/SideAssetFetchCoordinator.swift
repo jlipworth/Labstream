@@ -715,6 +715,11 @@ extension DownloadManager {
         SideAssetOwner(rawValue: "\(key.ratingKey)\u{0}\(key.attemptID.rawValue)")
     }
 
+    /// The poster's own owner (see `fetchOptionalSideAsset`): never parked by a pause.
+    nonisolated static func posterSideAssetOwner(for key: DownloadAttemptKey) -> SideAssetOwner {
+        SideAssetOwner(rawValue: "\(key.ratingKey)\u{0}\(key.attemptID.rawValue)\u{0}poster")
+    }
+
     /// The one app-layer gateway for optional hydration payloads. Request identity is exact and
     /// process-local (method + URL + headers + body), so coalescing never crosses auth contexts.
     /// It is deliberately never logged or persisted because Plex URLs and MediaBrowser headers can
@@ -724,12 +729,19 @@ extension DownloadManager {
                                 source: OfflineSideAssetSourceIdentity,
                                 kind: DownloadSideAssetKind,
                                 resource: String? = nil) async throws -> Data {
-        let owner = Self.sideAssetOwner(for: key)
-        let version = sideAssetFetchCoordinator.downloadControlOrder.reserve()
-        let parked = store.record(for: key)?.lifecycle == .paused
-            || (isQueuePaused && !admission.isExempt(key.ratingKey))
-        await deliverOptionalSideAssetControl(.park(parked), owner: owner,
-                                              fetchEntry: true, version: version)
+        // The poster is what a paused or waiting row shows, so it is fetched under its own owner
+        // that Pause and Pause All never park. Every other payload stays parked with the attempt.
+        let owner: SideAssetOwner
+        if kind == .poster {
+            owner = Self.posterSideAssetOwner(for: key)
+        } else {
+            owner = Self.sideAssetOwner(for: key)
+            let version = sideAssetFetchCoordinator.downloadControlOrder.reserve()
+            let parked = store.record(for: key)?.lifecycle == .paused
+                || (isQueuePaused && !admission.isExempt(key.ratingKey))
+            await deliverOptionalSideAssetControl(.park(parked), owner: owner,
+                                                  fetchEntry: true, version: version)
+        }
 
         let policyRequest = Self.sideAssetRequest(applyingCellularPolicy: request)
         #if DEBUG
@@ -772,10 +784,12 @@ extension DownloadManager {
     }
 
     func cancelOptionalSideAssetHydration(for key: DownloadAttemptKey) {
-        let owner = Self.sideAssetOwner(for: key)
-        let version = sideAssetFetchCoordinator.downloadControlOrder.reserve()
-        Task { await self.deliverOptionalSideAssetControl(.cancel, owner: owner,
-                                                         fetchEntry: false, version: version) }
+        // The poster has its own owner so a pause cannot park it; a cancel still ends both.
+        for owner in [Self.sideAssetOwner(for: key), Self.posterSideAssetOwner(for: key)] {
+            let version = sideAssetFetchCoordinator.downloadControlOrder.reserve()
+            Task { await self.deliverOptionalSideAssetControl(.cancel, owner: owner,
+                                                             fetchEntry: false, version: version) }
+        }
     }
 
 }
