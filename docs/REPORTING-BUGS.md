@@ -14,10 +14,12 @@ diagnostic report to make that easy and safe.
 2. **Grab the report.** On visionOS, iPhone, iPad, or Mac, tap **Send feedback to
    developer** to review the redacted report and share it via the system share
    sheet, **Copy diagnostic report** to copy it to the clipboard, or **Export
-   diagnostic report file** if you want a text file. On Apple TV, Copy and Export
-   are not compiled in; use **Send feedback to developer** for the preview/GitHub handoff.
-   A long report may not fit in the issue URL, so treat this as a guided handoff rather than a
-   guaranteed full-report transfer.
+   diagnostic report file** if you want a text file. Apple TV has no browser, clipboard or
+   share sheet: **Send feedback to developer** opens a full-screen note field beside a QR code.
+   Scanning it with a phone opens the bug form with your note and the app and tvOS versions
+   filled in. The diagnostic report is not included there (it does not fit a scannable code).
+   On the other platforms a long report may not fit in the issue URL, so treat the link as a
+   guided handoff rather than a guaranteed full-report transfer.
 3. **Review it.** The report is redacted for you (see below) — but give it a
    quick read so you're comfortable with what it contains.
 4. **Open a bug.** Go to the

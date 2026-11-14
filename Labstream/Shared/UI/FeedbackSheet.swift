@@ -78,6 +78,82 @@ struct FeedbackSheet: View {
         return URL(string: chosen) ?? githubIssuesURL
     }
 
+    #if os(tvOS)
+    /// A QR code cannot carry the report and stay scannable from a sofa, so the Apple TV link
+    /// holds the description (trimmed) and the two version fields only.
+    private static let maxQRNoteLength = 280
+
+    private var tvIssueURL: String {
+        var items: [(String, String)] = [("template", "bug_report.yml")]
+        if !redactedNote.isEmpty {
+            items.append(("what-happened", String(redactedNote.prefix(Self.maxQRNoteLength))))
+        }
+        if !appVersionBuild.isEmpty { items.append(("app-version", appVersionBuild)) }
+        if !osVersion.isEmpty { items.append(("os-version", osVersion)) }
+        let query = items
+            .map { "\(Self.percentEncoded($0.0))=\(Self.percentEncoded($0.1))" }
+            .joined(separator: "&")
+        return "\(issuesNewBase)?\(query)"
+    }
+
+    /// Apple TV has no browser, clipboard or share sheet: the screen is a note field beside a QR
+    /// code that opens the prefilled bug form on a phone.
+    var body: some View {
+        HStack(alignment: .center, spacing: 100) {
+            VStack(alignment: .leading, spacing: 28) {
+                Text("Send feedback")
+                    .font(.title.bold())
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("What were you doing?")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("Describe the problem", text: $note)
+                        .accessibilityIdentifier("feedback.note")
+                    Text(noteWasScrubbed
+                         ? "Will be sent as: \(redactedNote)"
+                         : "Server names, addresses and file names are removed.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Sent with your note")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    LabeledContent("Labstream", value: appVersionBuild)
+                    Divider()
+                    LabeledContent("tvOS", value: osVersion)
+                }
+                Button("Cancel") { dismiss() }
+                    .accessibilityIdentifier("feedback.cancel")
+            }
+            .frame(maxWidth: 820, alignment: .leading)
+
+            VStack(spacing: 24) {
+                if let image = QRCodeRenderer.image(for: tvIssueURL) {
+                    Image(decorative: image, scale: 1)
+                        .interpolation(.none)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 420, height: 420)
+                        .padding(24)
+                        .background(.white, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                        .accessibilityLabel("QR code for the bug form")
+                        .accessibilityIdentifier("feedback.qr")
+                }
+                Text("Scan with your iPhone")
+                    .font(.headline)
+                Text("Opens the bug form, filled in. Issues are public.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(80)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Opaque: the cover is otherwise translucent and Settings shows through the text.
+        .background(Color.black.ignoresSafeArea())
+    }
+    #else
     var body: some View {
         NavigationStack {
             Form {
@@ -97,7 +173,6 @@ struct FeedbackSheet: View {
                 }
 
                 SwiftUI.Section {
-                    #if !os(tvOS)
                     Button {
                         PlatformPasteboard.copy(reportText)
                         openURL(githubIssueURL)
@@ -120,27 +195,14 @@ struct FeedbackSheet: View {
                     ) {
                         Label("Share report…", systemImage: "square.and.arrow.up")
                     }
-                    #else
-                    Button {
-                        openURL(githubIssueURL)
-                    } label: {
-                        Label("Open a GitHub issue", systemImage: "ant")
-                    }
-                    #endif
                 } footer: {
-                    #if os(tvOS)
-                    Text("The issue form opens with your description, versions, and the redacted report when it fits. Everything in a GitHub issue is public — review the preview below first.")
-                    #else
                     Text("Open a GitHub issue fills in the form with your description and versions, attaches the report when it fits, and copies it to your clipboard either way so you can paste it into the report field. Everything in a GitHub issue is public — review the preview below first.")
-                    #endif
                 }
 
                 SwiftUI.Section {
                     Text(reportText)
                         .font(.system(.footnote, design: .monospaced))
-                        #if !os(tvOS)
                         .textSelection(.enabled)
-                        #endif
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } header: {
                     Text("Diagnostic report (exactly what is shared)")
@@ -154,6 +216,8 @@ struct FeedbackSheet: View {
             }
         }
     }
+
+    #endif
 
     private func resetCopiedSoon() {
         Task { @MainActor in

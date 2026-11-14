@@ -123,12 +123,21 @@ struct SettingsView: View {
             }
         }
         #endif
-        .sheet(isPresented: $presentingFeedback) {
-            FeedbackSheet(reportText: diagnosticReportText,
-                          githubIssuesURL: LabstreamLinks.bugReport,
-                          appVersionBuild: "\(Self.appVersion) (\(Self.appBuild))",
-                          osVersion: Self.shortOSVersion)
+        #if os(tvOS)
+        // Full screen on Apple TV: the system sheet is a narrow card that truncates the form.
+        .fullScreenCover(isPresented: $presentingFeedback) { feedbackSheet }
+        #if DEBUG
+        // UI tests cannot reliably walk the long lazy form with the remote; open it directly.
+        .task {
+            if DebugUITestLaunchConfiguration.isEnabled,
+               ProcessInfo.processInfo.arguments.contains("--ui-testing-present-feedback") {
+                presentingFeedback = true
+            }
         }
+        #endif
+        #else
+        .sheet(isPresented: $presentingFeedback) { feedbackSheet }
+        #endif
         .confirmationDialog(differentServerConfirmationTitle,
                             isPresented: differentServerConfirmationBinding,
                             titleVisibility: .visible) {
@@ -285,6 +294,13 @@ struct SettingsView: View {
     }
 
     // MARK: Audio & Subtitles
+
+    private var feedbackSheet: some View {
+        FeedbackSheet(reportText: diagnosticReportText,
+                      githubIssuesURL: LabstreamLinks.bugReport,
+                      appVersionBuild: "\(Self.appVersion) (\(Self.appBuild))",
+                      osVersion: Self.shortOSVersion)
+    }
 
     private var audioSubtitlesSection: some View {
         SwiftUI.Section {
