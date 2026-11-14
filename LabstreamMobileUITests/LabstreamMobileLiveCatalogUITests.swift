@@ -29,6 +29,11 @@ final class LabstreamMobileLiveCatalogUITests: XCTestCase {
             app.launch()
         }
 
+        // iPad App Store captures can be landscape (`live drive --landscape`).
+        if ProcessInfo.processInfo.environment["LABSTREAM_LIVE_LANDSCAPE"] == "1" {
+            XCUIDevice.shared.orientation = .landscapeLeft
+            sleep(2)
+        }
         signInIfNeeded(app, config)
         let homeTab = tabButton(app, "Home")
         XCTAssertTrue(homeTab.waitForExistence(timeout: 60), "Sign-in did not reach the browse UI.")
@@ -82,12 +87,13 @@ final class LabstreamMobileLiveCatalogUITests: XCTestCase {
         checkpoint("playback")
     }
 
-    /// A root tab by name. iPhone exposes tabs inside a tab bar; the iPad top tab bar exposes
-    /// them as plain buttons outside any tab-bar element.
+    /// A root tab by name. iPhone exposes tabs as buttons inside a tab bar, the iPad top tab bar
+    /// as plain buttons, and the iPad sidebar (landscape) as cells.
     @MainActor
     private func tabButton(_ app: XCUIApplication, _ name: String) -> XCUIElement {
-        let inTabBar = app.tabBars.buttons[name].firstMatch
-        return inTabBar.exists ? inTabBar : app.buttons[name].firstMatch
+        let predicate = NSPredicate(format: "label == %@ AND elementType IN %@", name,
+                                    [XCUIElement.ElementType.button.rawValue, XCUIElement.ElementType.cell.rawValue])
+        return app.descendants(matching: .any).matching(predicate).firstMatch
     }
 
     @MainActor

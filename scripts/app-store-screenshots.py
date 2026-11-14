@@ -756,7 +756,7 @@ def load_live_config(path: Path = LIVE_CONFIG_PATH,
 
 
 def live_drive(session: Path, xctestrun: Path, *, config_path: Path = LIVE_CONFIG_PATH,
-               keep_result: bool = False) -> list[str]:
+               keep_result: bool = False, landscape: bool = False) -> list[str]:
     """Run the live-catalog UI test against the session's process and shoot each scene."""
     sys.path.insert(0, str(ROOT / "scripts"))
     import ui_checkpoint_driver as driver
@@ -774,6 +774,10 @@ def live_drive(session: Path, xctestrun: Path, *, config_path: Path = LIVE_CONFI
     checkpoints = session / "checkpoints"
     runner = {**config, "LABSTREAM_LIVE_CATALOG_ALLOWED": "1", "LABSTREAM_LIVE_ATTACH": "1",
               driver.CHECKPOINT_ENV: str(checkpoints)}
+    if landscape:
+        if target != "ipad":
+            raise ScreenshotError("--landscape applies to the ipad target only")
+        runner["LABSTREAM_LIVE_LANDSCAPE"] = "1"
     # The result bundle records typed text, so it is private and deleted unless asked to keep it.
     result_bundle = session / "private-result.xcresult"
     shutil.rmtree(result_bundle, ignore_errors=True)
@@ -866,6 +870,8 @@ def parser() -> argparse.ArgumentParser:
     drive.add_argument("session", type=Path)
     drive.add_argument("--xctestrun", type=Path, required=True)
     drive.add_argument("--config", type=Path, default=LIVE_CONFIG_PATH)
+    drive.add_argument("--landscape", action="store_true",
+                       help="rotate the iPad to landscape before the first scene")
     drive.add_argument("--keep-result", action="store_true",
                        help="keep the private .xcresult (contains typed credentials)")
     shot = live_sub.add_parser("shot")
@@ -906,7 +912,8 @@ def main(argv: list[str] | None = None) -> int:
                 print("Sign in and navigate normally, then run `live shot SESSION --scene NAME`.")
             elif args.live_command == "drive":
                 scenes = live_drive(args.session.resolve(), args.xctestrun.resolve(),
-                                    config_path=args.config, keep_result=args.keep_result)
+                                    config_path=args.config, keep_result=args.keep_result,
+                                    landscape=args.landscape)
                 print(f"PASS: captured {', '.join(scenes)}")
             elif args.live_command == "shot":
                 print(f"PASS: {live_shot(args.session.resolve(), args.scene)}")
