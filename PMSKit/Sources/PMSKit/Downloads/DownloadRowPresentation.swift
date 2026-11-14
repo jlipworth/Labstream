@@ -43,7 +43,12 @@ public struct DownloadRowPresentation: Sendable, Equatable {
             case .failed:
                 progress = .none; actions = [.retry, .delete]
             case .planned, .admitted:
-                progress = .none; actions = [.pause, .delete]
+                progress = .none
+                // Held behind Pause All: the row reads "Paused", so its action is Resume, which
+                // starts this row alone.
+                let heldByQueuePause = row.isWaitingForAdmission
+                    && row.statusCaption == DownloadRowStatusCaptionPolicy.queuePausedWaitingCaption
+                actions = [heldByQueuePause ? .resume : .pause, .delete]
             case .finalizing:
                 progress = .indeterminate; actions = [.delete]
             case .serverPrep, .transferring:

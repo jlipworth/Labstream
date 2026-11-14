@@ -33,7 +33,8 @@ struct P7SideAssetOrderingTests {
             let source = try #require(f.store.sideAssetSourceIdentity(for: f.key))
             fetch = Task { try await f.manager.fetchOptionalSideAsset(
                 URLRequest(url: URL(string: "https://media.invalid/fixture")!),
-                for: f.key, source: source, kind: .poster) }
+                // Not the poster: its fetch has its own owner that a pause never parks.
+                for: f.key, source: source, kind: .chapterImages) }
         } else {
             f.manager.setOptionalSideAssetHydrationParked(true, for: f.key)
         }
@@ -62,6 +63,40 @@ struct P7SideAssetOrderingTests {
         f.manager.optionalSideAssetControlDidDeliver = nil
         await f.finish()
     }
+    @Test func posterFetchIsNotParkedByAPausedQueue() async throws {
+        let f = try await P7PlaybackFixture(status: .complete)
+        let attemptOwner = DownloadManager.sideAssetOwner(for: f.key)
+        let posterOwner = DownloadManager.posterSideAssetOwner(for: f.key)
+        let parkedAttempt = P6Acknowledgement<Bool>()
+        f.manager.optionalSideAssetControlDidDeliver = { command, candidate, _ in
+            if candidate == attemptOwner, command == .park(true) { parkedAttempt.signal(true) }
+        }
+        f.manager.setQueuePausedForTesting(true)
+        let source = try #require(f.store.sideAssetSourceIdentity(for: f.key))
+        let poster = Task { try await f.manager.fetchOptionalSideAsset(
+            URLRequest(url: URL(string: "https://media.invalid/poster")!),
+            for: f.key, source: source, kind: .poster) }
+        // The poster request reaches the transport (and fails on the invalid host) while paused.
+        _ = await poster.result
+        var posterParked = await f.manager.sideAssetFetchCoordinator.isParkedForP7Testing(posterOwner)
+        #expect(!posterParked)
+        // Any other payload of the same attempt is still parked by the pause.
+        let chapters = Task { try await f.manager.fetchOptionalSideAsset(
+            URLRequest(url: URL(string: "https://media.invalid/chapter")!),
+            for: f.key, source: source, kind: .chapterImages) }
+        _ = await parkedAttempt.wait()
+        let attemptParked = await f.manager.sideAssetFetchCoordinator.isParkedForP7Testing(attemptOwner)
+        #expect(attemptParked)
+        posterParked = await f.manager.sideAssetFetchCoordinator.isParkedForP7Testing(posterOwner)
+        #expect(!posterParked)
+        chapters.cancel()
+        await f.manager.sideAssetFetchCoordinator.cancel(owner: attemptOwner)
+        _ = await chapters.result
+        f.manager.setQueuePausedForTesting(false)
+        f.manager.optionalSideAssetControlDidDeliver = nil
+        await f.finish()
+    }
+
     @Test func cancellationFencesOldRegistrationButAllowsLaterRepairPass() async throws {
         let coordinator = SideAssetFetchCoordinator()
         let owner = SideAssetOwner(rawValue: "fixture-owner")

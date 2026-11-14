@@ -99,7 +99,9 @@ struct OfflineLibrarySnapshotBuilderTests {
                 errorMessage: { _ in nil }, displayProgress: { _ in nil },
                 statusCaption: { _, _ in "" }, isRetrying: { _ in retrying })
         }
-        #expect(snapshot(row).queueToolbarAction == .pauseQueue)
+        // A row added behind Pause All is held, not running: the paused queue offers Resume All.
+        #expect(snapshot(row).queueToolbarAction == .resumeQueue)
+        #expect(snapshot(row).rows[0].isWaitingForAdmission)
         row.lifecycle = .paused
         row.status = .paused
         // A paused first start retains seasonPlanned as a route, not a pending request.

@@ -88,8 +88,12 @@ public enum OfflineLibrarySnapshotBuilder {
                 isQueuePaused: isQueuePaused,
                 // Admission deliberately preserves paused/failed status while a retry waits.
                 // Retry presentation also covers the async interval before its active write.
+                // A row waiting behind Pause All is held, not running: counting it as active
+                // offered Pause All on a paused queue and hid Resume All.
                 statuses: rows.map { row in
-                    row.isWaitingForAdmission || row.isRetrying ? .queued : row.status
+                    if row.isRetrying { return .queued }
+                    if row.isWaitingForAdmission { return isQueuePaused ? .paused : .queued }
+                    return row.status
                 }
             ),
             isQueuePaused: isQueuePaused,

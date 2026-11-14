@@ -15,10 +15,12 @@ extension DownloadManager {
     /// normal cache path so request pacing, file validation, ownership, generation and accounting
     /// stay identical. No filesystem observation or network wait runs on this scheduling path.
     /// Missing auth does not consume the offer: backend-ready recovery will try again.
+    /// Paused rows and rows waiting behind Pause All are offered too: a pause stops transfers,
+    /// not the row's own artwork.
     func scheduleEarlyPosters(for candidates: [DownloadRecord]) {
-        guard startupRecoveryState == .ready, !isQueuePaused,
-              seasonPlanCommitsInFlight == 0 else { return }
-        for record in candidates where record.status.isActiveWork {
+        guard startupRecoveryState == .ready, seasonPlanCommitsInFlight == 0 else { return }
+        for record in candidates
+        where record.status.isActiveWork || (record.status == .paused && record.posterURL == nil) {
             // Runs on every refresh: check the cheap offer set before store and metadata work.
             guard let key = attemptKey(for: record), let metadata = record.metadata else { continue }
             let identity = DownloadSideAssetRetryIdentity(

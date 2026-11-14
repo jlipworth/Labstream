@@ -393,6 +393,8 @@ background-session registration, or migration/recovery work.
       waiting retries are withdrawn, server preparation (including Emby Convert) parks, and the
       icon changes to **Resume All** once work is paused. Resume All changes it back even with
       more rows than available slots. A per-row Resume during queue pause exposes Pause All again.
+      Add a download while the queue is paused: the toolbar still offers **Resume All**, the new
+      row reads Paused with a Resume action, both rows show their posters, and Resume All starts it.
       During “Restoring downloads…” the bulk control is disabled.
 - [ ] Storage (P5): with a storage limit set, retrying a large partial download is not refused
       for counting its partial twice. A Jellyfin or Emby Original shows its real size in the
