@@ -22,6 +22,20 @@ struct PlaybackStatsSummaryTests {
         return d
     }
 
+    @Test func audioOutputRowNamesTheSystemRoute() {
+        #expect(PlaybackAudioOutput.label(channels: 6, connection: "HDMI") == "5.1 \u{00B7} HDMI")
+        #expect(PlaybackAudioOutput.label(channels: 2, connection: nil) == "Stereo")
+        #expect(PlaybackAudioOutput.label(channels: 8, connection: "HDMI") == "7.1 \u{00B7} HDMI")
+        #expect(PlaybackAudioOutput.label(channels: 4, connection: nil) == "4 channels")
+        #expect(PlaybackAudioOutput.label(channels: 0, connection: "HDMI") == nil)
+
+        var tracks = PlaybackStatsSummary.Tracks()
+        tracks.audioOutput = "5.1 \u{00B7} HDMI"
+        let rows = PlaybackStatsSummary.make(base(), tracks: tracks).audio[0].rows
+        #expect(rows.last == .init(label: "Output", value: "5.1 \u{00B7} HDMI"))
+        #expect(!PlaybackStatsSummary.make(base()).audio[0].rows.contains { $0.label == "Output" })
+    }
+
     @Test func directPlayDeliversTheSourceUnchanged() {
         let d = base()
         d.playbackExplanation = .plex(decision: nil, maxVideoBitrateKbps: 0,

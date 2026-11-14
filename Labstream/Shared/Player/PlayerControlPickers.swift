@@ -311,6 +311,10 @@ struct ChaptersTabView: View {
 
     @State private var currentIndex: Int?
     @State private var thumbnailCache = ChapterThumbnailImageCache()
+    #if os(tvOS)
+    /// The remote starts on the current chapter, not on whichever card is leftmost on screen.
+    @FocusState private var focusedIndex: Int?
+    #endif
 
     var body: some View {
         if chapters.isEmpty {
@@ -341,6 +345,9 @@ struct ChaptersTabView: View {
                                             onJump(startMs)
                                         })
                                 .id(index)
+                                #if os(tvOS)
+                                .focused($focusedIndex, equals: index)
+                                #endif
                         }
                     }
                     .padding(.vertical, PlayerPickerMetrics.rowVerticalPadding)
@@ -354,6 +361,11 @@ struct ChaptersTabView: View {
                         // Defer until the rail has completed layout for the first frame.
                         DispatchQueue.main.async {
                             proxy.scrollTo(target, anchor: .center)
+                            #if os(tvOS)
+                            // The lazy rail realizes the current card only once it is scrolled
+                            // into view; focus it on the following turn.
+                            DispatchQueue.main.async { focusedIndex = target }
+                            #endif
                         }
                     }
                 }
@@ -818,7 +830,11 @@ struct StatsTabView: View {
                 .padding(DS.Space.md)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .task { tracks = await loadTracks() }
+        .task {
+            var loaded = await loadTracks()
+            loaded.audioOutput = PlaybackAudioOutput.current()
+            tracks = loaded
+        }
         .task(id: diagnostics.connectionHost) {
             route = nil
             route = await PlaybackConnectionRouteResolver.resolve(host: diagnostics.connectionHost)

@@ -124,6 +124,27 @@ final class LabstreamTVLaunchTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Continue Watching"].waitForExistence(timeout: 3))
     }
 
+    /// Apple TV has no browser, clipboard or share sheet, so Send feedback is a full-screen note
+    /// field beside a QR code for the prefilled bug form; Menu returns to Settings.
+    func testSendFeedbackShowsAQRCodeAndCloses() throws {
+        let app = makeApp(backend: "plex", fixture: "browse")
+        // The remote cannot reliably reach the row in the simulator (the tab bar walk stops in
+        // the Search field and the Settings form is long and lazy), so a debug flag opens it.
+        app.launchArguments += ["--ui-testing-present-feedback"]
+        app.launch()
+        let qr = app.descendants(matching: .any)["feedback.qr"]
+
+        XCTAssertTrue(qr.waitForExistence(timeout: 15),
+                      "feedback screen shows a QR code")
+        XCTAssertTrue(app.staticTexts["Send feedback"].exists, "untruncated title")
+        XCTAssertTrue(app.buttons["feedback.cancel"].exists)
+        attachScreen(named: "tv feedback screen", app: app)
+
+        XCUIRemote.shared.press(.menu)
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: qr)
+        wait(for: [gone], timeout: 5)
+    }
+
     private func makeApp(backend: String? = nil, fixture: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing"]

@@ -562,7 +562,11 @@ A device-side value is drawn on a path-tinted chip only when the server converte
 (`AVPlayerItem.presentationSize` and the asset probe's codec and HDR), never from a guess, so an
 encode shows "—" until they arrive. Red is used only for real stalls. **See more** switches
 the same panel to Video / Audio / Network sections. These keep every diagnostic row, and the
-remembered compact/expanded choice persists. Copy writes a plain-text summary with no track
+remembered compact/expanded choice persists. The Audio section's **Output** row is the system
+audio route (`PlaybackAudioOutput`: channel layout and connection kind, such as "5.1 · HDMI"),
+not the stream: a television that advertises 5.1 makes Apple TV send 5.1 even to stereo
+speakers, which plays with very quiet dialogue until the Apple TV's audio format is set to
+Stereo. Copy writes a plain-text summary with no track
 titles. The player never shows the server host, only Local / VPN / Remote / Downloaded / Unknown.
 The route first comes from the host alone (a private or `plex.direct` literal, an mDNS or `.lan`
 name). Opening Stats then resolves the host on the device and compares the address with the

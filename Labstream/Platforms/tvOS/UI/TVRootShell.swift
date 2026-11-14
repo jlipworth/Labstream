@@ -43,6 +43,17 @@ struct PlatformRootShell: View {
         }
       }
     }
+    #if DEBUG
+    // UI tests: open Settings directly for the feedback screen. Walking the tab bar with the
+    // remote stops at Search, whose field takes focus.
+    .task {
+      if DebugUITestLaunchConfiguration.isEnabled,
+        ProcessInfo.processInfo.arguments.contains("--ui-testing-present-feedback")
+      {
+        navigation.selection = .settings
+      }
+    }
+    #endif
     .safeAreaInset(edge: .bottom) {
       if musicPlayer.current != nil {
         MiniPlayerBar(presentation: $navigation.nowPlayingPresentation)

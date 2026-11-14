@@ -132,6 +132,8 @@ extension PlaybackStatsSummary {
         var audioName: String?
         var subtitleName: String?
         var subtitlesOff = true
+        /// What the system audio route is playing, e.g. "5.1 · HDMI" (`PlaybackAudioOutput`).
+        var audioOutput: String?
     }
 
     @MainActor
@@ -291,6 +293,7 @@ extension PlaybackStatsSummary {
         var audioRows = [Row(label: "Source", value: d.audioFormatText),
                          Row(label: "On this device", value: deliveredAudioFull)]
         if let name = tracks.audioName { audioRows.append(Row(label: "Track", value: name)) }
+        if let output = tracks.audioOutput { audioRows.append(Row(label: "Output", value: output)) }
         let subtitleRows = tracks.subtitlesOff
             ? [Row(label: "Track", value: "Off")]
             : [Row(label: "Track", value: tracks.subtitleName ?? "On"),

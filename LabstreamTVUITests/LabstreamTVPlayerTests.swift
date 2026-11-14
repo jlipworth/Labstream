@@ -167,6 +167,58 @@ final class LabstreamTVPlayerTests: XCTestCase {
         }
     }
 
+    /// The Chapters menu must open with the remote on the current chapter, not on whichever
+    /// card is leftmost (found on a physical Apple TV, 2026-11-14). Jump to the last fixture
+    /// chapter, reopen the menu, and require that card to hold focus.
+    func testChaptersMenuOpensOnTheCurrentChapter() throws {
+        let app = launchPlayerFixture()
+        let timeline = app.buttons["tv.player.timeline"]
+        XCTAssertTrue(timeline.waitForExistence(timeout: 25), "player chrome")
+        let late = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Late")).firstMatch
+
+        try openChaptersMenu(app)
+        XCTAssertTrue(late.waitForExistence(timeout: 3), "Late chapter card")
+        for _ in 0..<4 where !late.hasFocus {
+            XCUIRemote.shared.press(.right)
+            if waitForFocus(late, timeout: 1) { break }
+        }
+        XCTAssertTrue(late.hasFocus, "focus should reach the Late card")
+        XCUIRemote.shared.press(.select)
+        sleep(2)
+        if app.buttons["Close menu"].exists { XCUIRemote.shared.press(.menu) }
+        sleep(1)
+
+        try openChaptersMenu(app)
+        XCTAssertTrue(late.waitForExistence(timeout: 3), "Late chapter card after reopening")
+        XCTAssertTrue(waitForFocus(late, timeout: 4),
+                      "reopened Chapters menu should focus the current chapter")
+        attachScreen(named: "chapters focus on current", app: app)
+        XCUIRemote.shared.press(.menu)
+    }
+
+    private func openChaptersMenu(_ app: XCUIApplication) throws {
+        let timeline = app.buttons["tv.player.timeline"]
+        if !timeline.exists { XCUIRemote.shared.press(.down) }
+        XCTAssertTrue(timeline.waitForExistence(timeout: 4), "chrome revealed")
+        let chapters = app.buttons["Chapters"]
+        if !chapters.hasFocus {
+            if !waitForFocus(timeline, timeout: 2) { XCUIRemote.shared.press(.down) }
+            XCUIRemote.shared.press(.up)
+            XCTAssertTrue(chapters.waitForExistence(timeout: 3))
+            for _ in 0..<5 where !app.buttons["Subtitles"].hasFocus && !chapters.hasFocus {
+                XCUIRemote.shared.press(.left)
+                usleep(400_000)
+            }
+            for _ in 0..<5 where !chapters.hasFocus {
+                XCUIRemote.shared.press(.right)
+                if waitForFocus(chapters, timeout: 1) { break }
+            }
+        }
+        XCTAssertTrue(chapters.hasFocus, "menu strip focus should reach Chapters")
+        XCUIRemote.shared.press(.select)
+        XCTAssertTrue(app.buttons["Close menu"].waitForExistence(timeout: 3), "Chapters menu should open")
+    }
+
     private func makeBrowseApp() -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--ui-testing-backend", "plex",
