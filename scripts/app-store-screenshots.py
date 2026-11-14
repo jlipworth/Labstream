@@ -646,7 +646,16 @@ def live_start(target: str, artifact_root: Path, *, allow_simulator: bool, dry_r
                        cwd=ROOT, capture_output=True)
     subprocess.run(["xcrun", "simctl", "terminate", udid, BUNDLE_ID], cwd=ROOT, capture_output=True)
     # Deliberately no launch arguments: no --ui-testing, fixture, backend or route flags.
-    _run(["xcrun", "simctl", "launch", udid, BUNDLE_ID])
+    # Right after boot the launch service can refuse the first requests even though
+    # `bootstatus` has returned; retry briefly before giving up.
+    for attempt in range(6):
+        try:
+            _run(["xcrun", "simctl", "launch", udid, BUNDLE_ID])
+            break
+        except ScreenshotError:
+            if attempt == 5:
+                raise
+            time.sleep(5)
     time.sleep(2)
     pid = _app_pid(udid)
     if pid is None:
