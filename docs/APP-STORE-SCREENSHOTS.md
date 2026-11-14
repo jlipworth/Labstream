@@ -157,7 +157,16 @@ session's product (`LabstreamMobileLiveCatalogUITests`, `LabstreamTVLiveCatalogU
 without arguments (`XCUIApplication.activate()`; the session's PID check still applies). If the app
 is signed out, the test signs in with username and password. It then goes Home → Movies → Spring
 details → play, and the driver runs `live shot` at the `home`, `library`, `detail` and `playback`
-checkpoints.
+checkpoints. Each test pauses playback past the opening title cards before the `playback` checkpoint,
+because a playing video never gives the host two identical frames. `live drive --landscape` rotates
+the iPad first, which shows the sidebar and a full-width player; without it the iPad is captured in
+portrait. `live start` retries the app launch for a few seconds, because a simulator can refuse the
+first launch right after boot.
+
+The visionOS golden simulator is signed in to Plex and must not be used. Run the visionOS session
+from a linked worktree, and make its clone signed-out first: `xcrun simctl uninstall "$SIMID"
+org.labstream.Labstream`, `xcrun simctl keychain "$SIMID" reset`, then install the build. Pass the
+main worktree's private file with `--config` on `live start` and `live drive`.
 
 ```sh
 cp scripts/app-review-live.env.example scripts/app-review-live.env   # gitignored; fill in, chmod 600
