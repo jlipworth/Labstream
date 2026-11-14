@@ -55,7 +55,14 @@ final class LabstreamTVLiveCatalogUITests: XCTestCase {
         sleep(8)
         remote.press(.down)
         XCTAssertTrue(app.buttons["tv.player.timeline"].waitForExistence(timeout: 30), "Player did not present")
-        sleep(6)  // let the chrome auto-hide so the capture shows the picture
+        // A playing video never gives the host two identical frames, and the opening seconds are
+        // title cards: skip past the opening (each side press is a 10-second skip), then pause.
+        // Pausing reveals the chrome, so the capture shows a still scene with the controls.
+        for _ in 0..<9 { remote.press(.right); usleep(700_000) }
+        sleep(4)
+        remote.press(.playPause)
+        XCTAssertTrue(app.buttons["tv.player.timeline"].waitForExistence(timeout: 10), "Pause did not reveal the chrome")
+        sleep(4)  // let the paused frame settle
         checkpoint("playback")
     }
 
