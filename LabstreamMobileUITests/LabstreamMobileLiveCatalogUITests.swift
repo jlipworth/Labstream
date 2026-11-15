@@ -29,8 +29,13 @@ final class LabstreamMobileLiveCatalogUITests: XCTestCase {
             app.launch()
         }
 
+        // iPad App Store captures can be landscape (`live drive --landscape`).
+        if ProcessInfo.processInfo.environment["LABSTREAM_LIVE_LANDSCAPE"] == "1" {
+            XCUIDevice.shared.orientation = .landscapeLeft
+            sleep(2)
+        }
         signInIfNeeded(app, config)
-        let homeTab = app.tabBars.buttons["Home"].firstMatch
+        let homeTab = tabButton(app, "Home")
         XCTAssertTrue(homeTab.waitForExistence(timeout: 60), "Sign-in did not reach the browse UI.")
         homeTab.tap()
         let title = titleButton(app, config.title)
@@ -39,7 +44,7 @@ final class LabstreamMobileLiveCatalogUITests: XCTestCase {
         settle(app)
         checkpoint("home")
 
-        let librariesTab = app.tabBars.buttons["Libraries"].firstMatch
+        let librariesTab = tabButton(app, "Libraries")
         XCTAssertTrue(librariesTab.waitForExistence(timeout: 10))
         librariesTab.tap()
         libraryChooserConfirm(app)?.tap()
@@ -82,10 +87,19 @@ final class LabstreamMobileLiveCatalogUITests: XCTestCase {
         checkpoint("playback")
     }
 
+    /// A root tab by name. iPhone exposes tabs as buttons inside a tab bar, the iPad top tab bar
+    /// as plain buttons, and the iPad sidebar (landscape) as cells.
+    @MainActor
+    private func tabButton(_ app: XCUIApplication, _ name: String) -> XCUIElement {
+        let predicate = NSPredicate(format: "label == %@ AND elementType IN %@", name,
+                                    [XCUIElement.ElementType.button.rawValue, XCUIElement.ElementType.cell.rawValue])
+        return app.descendants(matching: .any).matching(predicate).firstMatch
+    }
+
     @MainActor
     private func signInIfNeeded(_ app: XCUIApplication, _ config: LiveCatalogConfig) {
         let backend = app.buttons["Jellyfin"].firstMatch
-        let home = app.tabBars.buttons["Home"].firstMatch
+        let home = tabButton(app, "Home")
         let deadline = Date().addingTimeInterval(30)
         while Date() < deadline, !backend.exists, !home.exists { usleep(250_000) }
         guard backend.exists, !home.exists else { return }

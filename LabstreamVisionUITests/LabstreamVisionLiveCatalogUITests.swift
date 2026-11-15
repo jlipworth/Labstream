@@ -55,7 +55,21 @@ final class LabstreamVisionLiveCatalogUITests: XCTestCase {
         let opened = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in app.windows.count != windowsBefore }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [opened], timeout: 45), .completed, "Player window did not open")
-        sleep(8)
+        // A playing video never gives the host two identical frames: let the opening title
+        // cards pass, reveal the chrome with an element tap on the player window, and pause.
+        sleep(30)
+        let pause = app.buttons["Pause"].firstMatch
+        var index = app.windows.count - 1
+        while !pause.exists, index >= 0 {
+            let window = app.windows.element(boundBy: index)
+            if window.exists { window.tap() }
+            _ = pause.waitForExistence(timeout: 4)
+            index -= 1
+        }
+        XCTAssertTrue(pause.exists, "Player chrome has no Pause button")
+        pause.tap()
+        XCTAssertTrue(app.buttons["Play"].firstMatch.waitForExistence(timeout: 5), "Player did not pause")
+        sleep(4)
         checkpoint("playback")
     }
 
