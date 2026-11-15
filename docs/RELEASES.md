@@ -466,3 +466,11 @@ items not seen before (`--all` ignores it; `--since 7d` widens the window). `--l
 Review text, nicknames, tester emails, and logs are personal data: never paste them into issues,
 commits, or public docs. Endpoints that return 403/404 (common before the app is public) are listed
 as unavailable rather than failing the run. See [Scripts](SCRIPTS.md).
+
+`scripts/feedback-triage.py draft` turns that digest into private issue drafts, one per TestFlight
+feedback item and review, with suggested labels. Write a title and a summary in your own words,
+then `scripts/feedback-triage.py file <draft> --yes` creates the issue from the public part only.
+`scripts/feedback-triage.py label --yes` adds platform and backend labels to issues that arrived
+through the app's **Report a problem** form. For a crash in such a report, run
+`scripts/symbolicate-report.py --archive <the build's .xcarchive>` on the pasted report to turn
+the app's `Labstream +0x…` frames into function names.

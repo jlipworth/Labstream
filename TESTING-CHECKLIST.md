@@ -663,6 +663,19 @@ simulator navigation alone does not prove the external system invocation.
       separate passive bounded channel and nothing is uploaded automatically.
 - [ ] Feedback preview/export/share works on each affected platform and uses the expected
       filename/content type.
+- [ ] **Report a problem** opens from Settings ▸ About, Settings ▸ Diagnostics, the playback
+      failure card, and Help ▸ Report a Problem… on Mac. The Cinema failure card has no report
+      button.
+- [ ] **Open a GitHub issue** opens the short "Report from the app" form with the description,
+      the "App and device" line and the report filled in, on a signed-in browser; only the privacy
+      box and Submit remain. The clipboard holds the full report. With logging off the report
+      still names build, install source, device model, server product and version.
+- [ ] On Apple TV the QR code opens the same form on a phone with the note and the "App and
+      device" line filled in.
+- [ ] Jellyfin and Emby reports show the server version (for example `Emby 4.8.11.0`, not `[ip]`).
+- [ ] After a real crash, the next report's MetricKit section lists `Labstream +0x…` frames and
+      an app binary UUID, and `scripts/symbolicate-report.py` names the functions (device only;
+      MetricKit does not deliver in the simulator).
 - [ ] Debug performance signposts appear for instrumented flows; Release behavior remains a
       no-op and does not emit profiling detail.
 - [ ] Intentionally trigger representative auth, browse, playback, download, and timeline errors
