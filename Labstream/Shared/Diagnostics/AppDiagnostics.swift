@@ -82,6 +82,14 @@ enum AppDiagnostics {
                                         maxEvents: maxReportEvents)
     }
 
+    /// The same report split into its head and event lines, for the length-limited issue link.
+    static func reportParts(context: DiagnosticReportContext) -> DiagnosticReportRenderer.Parts {
+        DiagnosticReportRenderer.renderParts(context: context,
+                                             events: store.snapshot(),
+                                             metricKitSummaries: MetricKitDiagnostics.shared.storedSummaries(),
+                                             maxEvents: maxReportEvents)
+    }
+
     private static func logger(for category: DiagnosticCategory) -> Logger {
         Logger(subsystem: subsystem, category: category.logCategory)
     }

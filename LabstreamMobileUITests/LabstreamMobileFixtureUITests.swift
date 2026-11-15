@@ -176,6 +176,35 @@ final class LabstreamMobileFixtureUITests: XCTestCase {
         add(attachment)
     }
 
+    /// Report a problem is reachable from Settings and opens the report screen with the note
+    /// field, the GitHub handoff and a report that names the build and device.
+    @MainActor
+    func testReportAProblemOpensFromSettings() {
+        let app = XCUIApplication()
+        app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
+        app.launchArguments = ["--ui-testing", "--ui-testing-backend", "plex",
+                               "--ui-testing-fixture", "browse", "--ui-testing-initial-tab", "settings"]
+        app.launch()
+
+        // Regular width shows Settings in two columns; open the category that holds the row.
+        let about = app.buttons["labstream.settings.category.about"]
+        if about.waitForExistence(timeout: 10) { about.tap() }
+        let report = app.buttons["Report a problem"].firstMatch
+        for _ in 0..<12 where !(report.exists && report.isHittable) { app.swipeUp() }
+        XCTAssertTrue(report.exists && report.isHittable, "Settings has no reachable Report a problem row")
+        report.tap()
+
+        XCTAssertTrue(app.buttons["feedback.openIssue"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["feedback.note"].exists)
+        let model = NSPredicate(format: "label CONTAINS %@", "- Device model: ")
+        XCTAssertTrue(app.staticTexts.containing(model).firstMatch.waitForExistence(timeout: 5),
+                      "the previewed report names the device model")
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "report-a-problem"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     /// #258: for a fixed device, orientation, and chrome state, the player chrome must occupy the
     /// same screen-relative frames whatever the source aspect (pillarboxed 4:3/16:9 or
     /// letterboxed 2.39:1) and whatever menu set the item offers.

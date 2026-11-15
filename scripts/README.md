@@ -57,6 +57,16 @@ Commands and limitations: [workflow status and review evidence](../docs/DEVELOPM
   while printing counts only. `--since Nd|Nh|<ISO date>` (default `1d`), `--all` ignores the
   seen-state file, `--version`, `--logs`, and `--attachments`. See
   [After launch: monitoring](../docs/RELEASES.md#after-launch-monitoring).
+- `feedback-triage.py` — maintainer helpers for incoming feedback, dry-run unless `--yes`:
+  `label` adds `platform:*` and `backend:*` labels to open issues filed through the app's
+  **Report a problem** form (label `via-app`) from the form's "App and device" line; `draft` turns
+  the newest `asc-digest.py` digest into one private issue draft per TestFlight feedback item and
+  App Store review under `artifacts/asc-digest/<date>/drafts/`; `file <draft>` creates the issue
+  once the maintainer has written a title and a summary in their own words. Tester and reviewer
+  text stays below the draft's private marker and is never sent.
+- `symbolicate-report.py` — resolves the `Binary +0x<offset>` crash frames of a pasted diagnostic
+  report against a build's dSYM (`--archive <.xcarchive>` or `--dsym`) with `atos`, and warns when
+  the report's app binary UUID is not in that dSYM.
 - `asc-metadata.py` — `check`, `pull`, `diff`, and `push` for the App Store product-page text and
   review notes kept in `appstore/metadata/`. Uses the same credentials as `testflight-release.py`;
   `push` is a dry run unless `--yes`. Never reads or stores review contact details, demo

@@ -1,0 +1,47 @@
+name: Report from the app
+description: The short form Labstream opens from "Report a problem". The app fills it in; you only add what happened.
+labels: ["bug", "needs-triage", "via-app"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. Reports like this are how Labstream gets better, and every one is read.
+
+        The app filled in the fields below. Check them, add anything that helps, and press
+        **Submit new issue**. Everything here is public, so remove any media title, server
+        name, or personal detail you would rather not share.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you were doing, what you expected, and what you saw instead. One or two sentences is enough.
+      placeholder: Playback froze about a minute into a 4K film after I skipped forward.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: App and device
+      description: Filled in by the app (version and build, OS, device model, install source, server type and version, connection type).
+      placeholder: "Labstream 1.8.0 (1657) · iOS 27.1 · iPhone17,1 · App Store · Jellyfin 10.9.11 · https"
+    validations:
+      required: false
+  - type: textarea
+    id: report
+    attributes:
+      label: Diagnostic report (redacted)
+      description: >
+        Filled in by the app, shortened to fit a link. The full report is on your clipboard:
+        paste it over this one if you like. On Apple TV this field is empty, which is fine.
+        It never contains tokens, server names or addresses, usernames, paths, file names, or
+        media titles.
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: public-ok
+    attributes:
+      label: Before you submit
+      options:
+        - label: I understand this issue is public and I have removed anything private.
+          required: true

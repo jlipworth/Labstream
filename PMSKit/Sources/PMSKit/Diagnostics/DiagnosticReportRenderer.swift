@@ -8,12 +8,19 @@ public struct DiagnosticReportContext: Sendable, Equatable {
     public var builtAt: String?
     public var operatingSystem: String
     public var deviceName: String
+    /// Hardware model identifier such as "iPhone17,1" — a product code, not a device ID.
+    public var deviceModel: String?
+    /// "App Store", "TestFlight", or "Development".
+    public var installSource: String?
     public var platform: String?
     public var bundleIdentifier: String?
     public var keychainService: String?
     public var sandboxContainerIdentifier: String?
     public var backend: String
     public var server: String?
+    /// Server software version. Rendered through `safeVersion`, not the redactor: a four-part
+    /// version such as Emby's "4.8.11.0" looks like an IPv4 address to the redactor.
+    public var serverVersion: String?
     public var connectionScheme: String?
     public var selectedQuality: String
     public var adaptiveBitrateEnabled: Bool?
@@ -37,12 +44,15 @@ public struct DiagnosticReportContext: Sendable, Equatable {
                 builtAt: String? = nil,
                 operatingSystem: String,
                 deviceName: String,
+                deviceModel: String? = nil,
+                installSource: String? = nil,
                 platform: String? = nil,
                 bundleIdentifier: String? = nil,
                 keychainService: String? = nil,
                 sandboxContainerIdentifier: String? = nil,
                 backend: String,
                 server: String? = nil,
+                serverVersion: String? = nil,
                 connectionScheme: String? = nil,
                 selectedQuality: String,
                 adaptiveBitrateEnabled: Bool? = nil,
@@ -65,12 +75,15 @@ public struct DiagnosticReportContext: Sendable, Equatable {
         self.builtAt = builtAt
         self.operatingSystem = operatingSystem
         self.deviceName = deviceName
+        self.deviceModel = deviceModel
+        self.installSource = installSource
         self.platform = platform
         self.bundleIdentifier = bundleIdentifier
         self.keychainService = keychainService
         self.sandboxContainerIdentifier = sandboxContainerIdentifier
         self.backend = backend
         self.server = server
+        self.serverVersion = serverVersion
         self.connectionScheme = connectionScheme
         self.selectedQuality = selectedQuality
         self.adaptiveBitrateEnabled = adaptiveBitrateEnabled
@@ -90,11 +103,41 @@ public struct DiagnosticReportContext: Sendable, Equatable {
 }
 
 public enum DiagnosticReportRenderer {
+    /// The report split for a length-limited destination: everything except the event log, and
+    /// the event log one JSON line per event (oldest to newest).
+    public struct Parts: Sendable, Equatable {
+        public var head: String
+        public var eventLines: [String]
+    }
+
     public static func render(context: DiagnosticReportContext,
                               events: [DiagnosticEvent],
                               metricKitSummaries: [MetricKitDiagnosticSummary] = [],
                               maxEvents: Int = 80,
                               generatedAt: Date = Date()) -> String {
+        let parts = renderParts(context: context, events: events, metricKitSummaries: metricKitSummaries,
+                                maxEvents: maxEvents, generatedAt: generatedAt)
+        return ([parts.head] + (parts.eventLines.isEmpty ? ["(none)"] : parts.eventLines))
+            .joined(separator: "\n")
+    }
+
+    /// One line naming the build, OS, device, install source, backend and connection, for the
+    /// issue form's environment field and the Apple TV QR link.
+    public static func environmentLine(context: DiagnosticReportContext) -> String {
+        var parts = ["\(redact(context.product)) \(redact(context.appVersion)) (\(redact(context.appBuild)))",
+                     redact(context.operatingSystem)]
+        parts.append(context.deviceModel.map(safeModel) ?? redact(context.deviceName))
+        if let source = context.installSource, !source.isEmpty { parts.append(redact(source)) }
+        parts.append(serverText(context) ?? redact(context.backend))
+        if let scheme = context.connectionScheme, !scheme.isEmpty { parts.append(redact(scheme)) }
+        return parts.joined(separator: " · ")
+    }
+
+    public static func renderParts(context: DiagnosticReportContext,
+                                   events: [DiagnosticEvent],
+                                   metricKitSummaries: [MetricKitDiagnosticSummary] = [],
+                                   maxEvents: Int = 80,
+                                   generatedAt: Date = Date()) -> Parts {
         let shownEvents = Array(events.suffix(max(0, maxEvents)))
         var lines: [String] = []
         lines.append("Labstream Diagnostic Report")
@@ -106,8 +149,14 @@ public enum DiagnosticReportRenderer {
         lines.append("- Version: \(redact(context.appVersion)) (\(redact(context.appBuild)))")
         lines.append("- Build ID: \(redact(context.buildID ?? "unknown"))")
         lines.append("- Built: \(redact(context.builtAt ?? "unknown"))")
+        if let source = context.installSource, !source.isEmpty {
+            lines.append("- Install source: \(redact(source))")
+        }
         lines.append("- OS: \(redact(context.operatingSystem))")
         lines.append("- Device: \(redact(context.deviceName))")
+        if let model = context.deviceModel, !model.isEmpty {
+            lines.append("- Device model: \(safeModel(model))")
+        }
         if context.platform != nil
             || context.bundleIdentifier != nil
             || context.keychainService != nil
@@ -118,8 +167,8 @@ public enum DiagnosticReportRenderer {
             lines.append("- Sandbox/container identity: \(safeIdentity(context.sandboxContainerIdentifier))")
         }
         lines.append("- Backend: \(redact(context.backend))")
-        if let server = context.server, !server.isEmpty {
-            lines.append("- Server: \(redact(server))")
+        if let server = serverText(context) {
+            lines.append("- Server: \(server)")
         }
         if let scheme = context.connectionScheme, !scheme.isEmpty {
             lines.append("- Connection scheme: \(redact(scheme))")
@@ -163,12 +212,35 @@ public enum DiagnosticReportRenderer {
         }
         lines.append("")
         lines.append("Recent redacted events (JSONL, oldest to newest)")
-        if shownEvents.isEmpty {
-            lines.append("(none)")
-        } else {
-            lines.append(contentsOf: shownEvents.map { $0.jsonLine() })
+        return Parts(head: lines.joined(separator: "\n"), eventLines: shownEvents.map { $0.jsonLine() })
+    }
+
+    /// "Jellyfin 10.9.11": the redacted server product followed by its version.
+    private static func serverText(_ context: DiagnosticReportContext) -> String? {
+        let product = context.server.flatMap { $0.isEmpty ? nil : redact($0) }
+        let version = context.serverVersion.map(safeVersion).flatMap { $0.isEmpty ? nil : $0 }
+        switch (product, version) {
+        case let (product?, version?): return "\(product) \(version)"
+        case let (product?, nil): return product
+        case let (nil, version?): return "\(redact(context.backend)) \(version)"
+        case (nil, nil): return nil
         }
-        return lines.joined(separator: "\n")
+    }
+
+    /// The leading run of digits, dots, hyphens and letters of a software version, capped in
+    /// length, so it bypasses the redactor without being able to carry a
+    /// host, path or address-with-port.
+    static func safeVersion(_ value: String) -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-")
+        // Stop at the first other character, so text after the version cannot ride along.
+        return String(String.UnicodeScalarView(value.unicodeScalars.prefix(while: allowed.contains)).prefix(24))
+    }
+
+    /// A hardware model identifier ("iPhone17,1", "Mac15,6", "iPhone17,1 (simulator)") reduced to
+    /// letters, digits, commas, spaces and parentheses.
+    static func safeModel(_ value: String) -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789, ()")
+        return String(String.UnicodeScalarView(value.unicodeScalars.filter(allowed.contains)).prefix(32))
     }
 
     private static func byteBucket(_ bytes: Int?) -> String {

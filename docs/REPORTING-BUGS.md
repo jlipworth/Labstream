@@ -1,36 +1,52 @@
 # Report a bug
 
-Found something broken in Labstream? Here's the fastest way to get it fixed.
+**We want your reports.** Labstream is an open-source project with no analytics and no
+developer-run backend, so a report from you is the only way a crash, a stuck download or a film
+that will not play ever reaches us. Every report is read. A two-line report is useful; you do not
+need to diagnose anything.
 
-Labstream does not automatically upload diagnostic reports. The optional project-operated review/demo server retains operational records separately (see the [Privacy Policy](privacy.md)). Depending on your sign-in choice it talks to Plex services and your selected Plex server, your Jellyfin server URL, or Emby Connect plus your selected Emby server. A GitHub issue is the way we learn about a problem, and the more reproducible detail
-you give, the faster it gets fixed. The app has a built-in, **redacted**
-diagnostic report to make that easy and safe.
+Labstream does not automatically upload diagnostic reports. The optional project-operated review/demo server retains operational records separately (see the [Privacy Policy](privacy.md)). Depending on your sign-in choice it talks to Plex services and your selected Plex server, your Jellyfin server URL, or Emby Connect plus your selected Emby server.
 
-## The easy path
+## The easy path: Report a problem
 
-1. **Reproduce with logging on.** In Labstream, open
-   **Settings ▸ Diagnostics** and turn on **Enable diagnostic logging**. Then
-   make the problem happen once.
-2. **Grab the report.** On visionOS, iPhone, iPad, or Mac, tap **Send feedback to
-   developer** to review the redacted report and share it via the system share
-   sheet, **Copy diagnostic report** to copy it to the clipboard, or **Export
-   diagnostic report file** if you want a text file. Apple TV has no browser, clipboard or
-   share sheet: **Send feedback to developer** opens a full-screen note field beside a QR code.
-   Scanning it with a phone opens the bug form with your note and the app and tvOS versions
-   filled in. The diagnostic report is not included there (it does not fit a scannable code).
-   On the other platforms a long report may not fit in the issue URL, so treat the link as a
-   guided handoff rather than a guaranteed full-report transfer.
-3. **Review it.** The report is redacted for you (see below) — but give it a
-   quick read so you're comfortable with what it contains.
-4. **Open a bug.** Go to the
-   [bug report form](https://github.com/jlipworth/Labstream/issues/new?template=bug_report.yml),
-   fill in what happened and the steps to reproduce, and **paste the report** into
-   the *Diagnostic report* field.
-5. **Turn logging back off** in Settings ▸ Diagnostics if you no longer need it.
+1. **Open the report screen.** Tap **Report a problem** in any of these places:
+   - the card that appears when playback fails;
+   - **Settings ▸ About** or **Settings ▸ Diagnostics**;
+   - **Help ▸ Report a Problem…** on Mac.
+2. **Say what happened** in a sentence or two.
+3. **Tap Open a GitHub issue.** A short form opens with your description, your app and device
+   details, and the redacted report already filled in. Tick the privacy box and press
+   **Submit new issue**. This needs a free GitHub account.
 
-That's it. The form will also ask for your Labstream version and build
-(the **About** section at the bottom of Settings), your platform and OS version, which
-backend you use (Plex / Jellyfin / Emby), and how badly the problem affects you.
+On **Apple TV**, which has no browser, the same screen shows a QR code. Scan it with your phone to
+open the form with your note and your app, device and server details filled in. The diagnostic
+report itself is not included there (it does not fit a scannable code).
+
+**No GitHub account?** Use **Share report…** on the same screen and send it to
+[support@labstream.app](mailto:support@labstream.app), or just email a description.
+
+A link can only hold so much, so the form receives the report's summary (build, device, server,
+crash summaries, last playback) and as many of the most recent events as fit. The complete report
+is copied to your clipboard at the same moment; paste it over the shortened one if you want to
+send everything.
+
+### Make the report more useful
+
+Diagnostic logging is off by default. Without it the report still names your build, device,
+server type and version, and any crash the system recorded, but it has no playback details. For a
+problem you can repeat, open **Settings ▸ Diagnostics**, turn on **Enable diagnostic logging**,
+make the problem happen once, then report it. Turn logging back off afterwards if you like.
+
+**Copy diagnostic report** and **Export diagnostic report file** in Settings ▸ Diagnostics give
+you the same report as text (not on Apple TV).
+
+### The longer form
+
+Writing a report by hand, without the app? Use the
+[bug report form](https://github.com/jlipworth/Labstream/issues/new?template=bug_report.yml). It
+asks for your Labstream version and build (the **About** section at the bottom of Settings), your
+platform and OS version, which backend you use (Plex / Jellyfin / Emby), and how badly the problem
+affects you.
 
 If you are testing Mac or Apple TV, say so explicitly and include macOS or tvOS as the platform.
 All platform targets remain pre-release, and reproducible source-build or TestFlight reports are
@@ -41,13 +57,15 @@ useful when they identify the exact platform, version, and build.
 The diagnostic report is designed for public sharing. It **includes** safe context
 like:
 
-- app version/build and device/OS class
+- app version/build, where it was installed from (App Store, TestFlight, or a development
+  build), OS, and device model (a product code such as `iPhone17,1`, not a device identifier)
 - backend name (Plex / Jellyfin / Emby) and connection scheme
 - server product/version where known
 - your selected quality settings
 - download counts and queue state, with bucketed storage totals (not on Apple TV)
-- a recent playback snapshot, passive redacted MetricKit diagnostic summaries
-  when available, and up to 80 recent **redacted** events from the current app run
+- a recent playback snapshot, passive redacted MetricKit crash and hang summaries when
+  available (the crashed thread as binary names and offsets, with no memory contents), and up
+  to 80 recent **redacted** events from the current app run
 
 It is designed to **omit** sensitive values, including:
 

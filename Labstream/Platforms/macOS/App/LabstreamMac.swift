@@ -49,6 +49,11 @@ struct LabstreamMac: App {
         .commands {
             CommandGroup(replacing: .newItem) { }
             CommandGroup(replacing: .help) {
+                Button("Report a Problem…") {
+                    MacMainWindowController.shared.issue(.reportProblem)
+                }
+                .disabled(runtime?.appModel.isAuthenticated != true)
+                Divider()
                 Button("Labstream Support") { NSWorkspace.shared.open(LabstreamLinks.support) }
                 Button("Email Support…") { NSWorkspace.shared.open(LabstreamLinks.supportEmail) }
                 Button("Privacy Policy") { NSWorkspace.shared.open(LabstreamLinks.privacyPolicy) }
