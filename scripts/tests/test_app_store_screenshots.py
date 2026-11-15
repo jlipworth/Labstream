@@ -117,14 +117,17 @@ class AppStoreScreenshotTests(unittest.TestCase):
     def test_review_media_manifest_preserves_provenance_and_open_capture_gate(self) -> None:
         manifest = json.loads((ROOT / "scripts" / "app-review-media-provenance.json").read_text())
         self.assertEqual(manifest["schemaVersion"], 1)
-        self.assertEqual(manifest["catalogRelease"], "open-films-v4")
+        self.assertEqual(manifest["catalogRelease"], "open-films-v6")
         self.assertRegex(manifest["sourceManifestSha256"], r"^[0-9a-f]{64}$")
         self.assertIn("not a fresh live-server", manifest["scope"])
         self.assertIn("not yet produced", manifest["storefrontGate"])
-        self.assertEqual([film["title"] for film in manifest["openFilms"]], ["Spring", "Wing It!"])
+        self.assertEqual(
+            [film["title"] for film in manifest["openFilms"]],
+            ["Spring", "Wing It!", "Big Buck Bunny", "Sintel", "Tears of Steel", "Coffee Run"])
         paths = set()
         for film in manifest["openFilms"]:
-            self.assertEqual(film["license"]["spdx"], "CC-BY-4.0")
+            self.assertIn(film["license"]["spdx"], {"CC-BY-3.0", "CC-BY-4.0"})
+            self.assertTrue(film["license"]["commercialReuseExplicitlyPermitted"])
             self.assertTrue(film["license"]["requiredAttribution"])
             self.assertTrue(film["license"]["excludedMaterial"])
             self.assertEqual(film["source"]["authoritativeHost"], "video.blender.org")
@@ -139,7 +142,7 @@ class AppStoreScreenshotTests(unittest.TestCase):
                 self.assertNotIn(str(path), paths)
                 paths.add(str(path))
                 self.assertTrue(asset["transform"])
-        self.assertEqual(len(paths), 6)
+        self.assertEqual(len(paths), 18)
 
     def test_capture_fails_closed_without_simulator_lease_assertion(self) -> None:
         with self.assertRaisesRegex(screenshots.ScreenshotError, "--allow-simulator"):
