@@ -247,5 +247,10 @@ Outside automation:
   performance, or physical-device rendering.
 - **Editorial and legal review:** a person must inspect every final image for composition, clipped
   content, transient system UI, branding, licensed artwork, credits, and privacy.
-- **Upload:** App Store Connect authentication, localization, ordering, and upload remain a
-  release-owner action. The workflow never accepts App Store credentials.
+- **Upload:** upload remains the release owner's decision. `scripts/asc-screenshots.py status`
+  lists what App Store Connect holds, and `upload EXPORT_DIR… --yes` replaces the named sets of
+  the editable version's `en-US` localization with the exports' JPEGs in file-name order (without
+  `--yes` it only prints the plan). It reuses the TestFlight tooling's App Store Connect key,
+  maps iPhone 6.3-inch, iPhone 6.9-inch, iPad 13-inch, Apple TV, Vision Pro and Mac exports, and
+  refuses iPhone Duo exports because no screenshot set for that display is confirmed. Other
+  localizations and ordering beyond file-name order are done by hand.
