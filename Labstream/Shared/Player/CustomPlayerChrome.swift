@@ -274,6 +274,8 @@ struct CustomPlayerChrome: View {
         .background(MacPlayerWindowReader(bridge: macWindowBridge))
         #endif
         #if os(tvOS)
+        // onMoveCommand fires once per press; a held Left/Right arrives here as repeats.
+        .background(TVDirectionHoldMonitor { tvTimelineHoldRepeat($0) })
         .onMoveCommand { direction in
             tvEvidenceLog("onMoveCommand \(direction) chromeVisible=\(shouldShowChrome)")
             guard shouldShowChrome else {

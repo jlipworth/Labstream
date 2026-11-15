@@ -276,7 +276,8 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
 - [ ] **iOS/iPadOS hardware:** Control Center, lock screen, headphones, route changes, and
       interruptions control the active video rather than resuming suspended music underneath.
 - [ ] **tvOS:** Using only Siri Remote input, hidden chrome reveals predictably; the focusable
-      timeline scrubs and commits without double seeks; Menu/Back dismisses a submenu before
+      timeline scrubs and commits without double seeks; holding Left or Right keeps scrubbing
+      and speeds up, and stops on release (#458); Menu/Back dismisses a submenu before
       exiting playback; every quality/audio/subtitle/chapter/speed/Stats action is reachable; and
       focus returns coherently after auto-hide, errors, item completion, and player close.
 - [ ] **tvOS hardware:** system Play/Pause (no video Now Playing is published, by design),
