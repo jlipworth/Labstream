@@ -586,6 +586,8 @@ private struct CustomCinemaScreen: View {
                                    trickPlayProvider: session.trickPlayProvider,
                                    onRetry: onRetry,
                                    onClose: nil)
+                    // A sheet cannot be presented from the Cinema attachment.
+                    .environment(\.allowsProblemReport, false)
             } else {
                 CinemaIdlePlaceholder()
             }

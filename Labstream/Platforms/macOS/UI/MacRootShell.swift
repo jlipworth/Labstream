@@ -15,6 +15,7 @@ struct PlatformRootShell: View {
   @State private var macSearchPresented = false
   @State private var macConfirmingSignOut = false
   @State private var macConfirmingSignOutAll = false
+  @State private var macPresentingProblemReport = false
   @State private var macWasCompactWidth = false
   @State private var macColumnVisibility: NavigationSplitViewVisibility = .all
   @State private var macColumnVisibilityBeforePlayer: NavigationSplitViewVisibility = .all
@@ -108,6 +109,7 @@ struct PlatformRootShell: View {
       else { return }
       Task { await reloadMacSidebar() }
     }
+    .reportProblemSheet(isPresented: $macPresentingProblemReport, source: "help_menu")
     .onChange(of: MacMainWindowController.shared.pendingCommands) { _, requests in
       guard let request = requests.first else { return }
       handleMacWindowCommand(request)
@@ -199,6 +201,8 @@ struct PlatformRootShell: View {
       ) {
         macConfirmingSignOutAll = true
       }
+    case .reportProblem:
+      macPresentingProblemReport = true
     }
     MacMainWindowController.shared.consume(request)
   }

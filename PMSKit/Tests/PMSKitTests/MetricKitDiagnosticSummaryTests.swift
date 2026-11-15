@@ -132,3 +132,59 @@ final class MetricKitDiagnosticSummaryTests: XCTestCase {
         XCTAssertTrue(report.contains("Labstream playFoo"))
     }
 }
+
+final class MetricKitCallStackParserTests: XCTestCase {
+    private let crashTree = Data("""
+    {"callStackPerThread": true, "callStacks": [
+      {"threadAttributed": false, "callStackRootFrames": [
+        {"binaryUUID": "11111111-2222-3333-4444-555555555555", "offsetIntoBinaryTextSegment": 100,
+         "sampleCount": 1, "binaryName": "libsystem_kernel.dylib", "address": 7000000100}]},
+      {"threadAttributed": true, "callStackRootFrames": [
+        {"binaryUUID": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", "offsetIntoBinaryTextSegment": 1715772,
+         "sampleCount": 1, "binaryName": "Labstream", "address": 4311765564,
+         "subFrames": [
+           {"binaryUUID": "99999999-2222-3333-4444-555555555555", "offsetIntoBinaryTextSegment": 4096,
+            "sampleCount": 1, "binaryName": "SwiftUI", "address": 6900004096}]}]}
+    ]}
+    """.utf8)
+
+    func testKeepsOnlyTheAttributedThreadAsBinaryOffsets() {
+        let stack = MetricKitCallStackParser.stack(fromJSON: crashTree, appBinaryName: "Labstream")
+        XCTAssertEqual(stack.frames, ["Labstream +0x1a2e3c", "SwiftUI +0x1000"])
+        XCTAssertEqual(stack.appBinaryUUID, "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")
+    }
+
+    func testSampledTreeFollowsTheHeaviestBranch() {
+        let tree = Data("""
+        {"callStackPerThread": false, "callStacks": [{"callStackRootFrames": [
+          {"binaryName": "Labstream", "offsetIntoBinaryTextSegment": 16, "sampleCount": 9, "subFrames": [
+            {"binaryName": "Labstream", "offsetIntoBinaryTextSegment": 32, "sampleCount": 2},
+            {"binaryName": "Foundation", "offsetIntoBinaryTextSegment": 48, "sampleCount": 7}]}]}]}
+        """.utf8)
+        let stack = MetricKitCallStackParser.stack(fromJSON: tree, appBinaryName: "Labstream")
+        XCTAssertEqual(stack.frames, ["Labstream +0x10", "Foundation +0x30"])
+        XCTAssertNil(stack.appBinaryUUID)
+    }
+
+    func testMalformedTreeYieldsNoFrames() {
+        XCTAssertEqual(MetricKitCallStackParser.stack(fromJSON: Data("nope".utf8), appBinaryName: nil).frames, [])
+    }
+
+    func testOffsetFramesAndBinaryUUIDSurviveSummaryRendering() {
+        let stack = MetricKitCallStackParser.stack(fromJSON: crashTree, appBinaryName: "Labstream")
+        let summary = MetricKitDiagnosticSummarizer.summarize(MetricKitDiagnosticInput(
+            kind: .crash, date: Date(timeIntervalSince1970: 1_700_000_000), exceptionType: "EXC_BREAKPOINT",
+            callStackFrames: stack.frames, appBinaryUUID: stack.appBinaryUUID))
+        let lines = MetricKitDiagnosticSummarizer.reportLines(for: summary)
+        XCTAssertTrue(lines.contains("    Labstream +0x1a2e3c"), "\(lines)")
+        XCTAssertTrue(lines.contains("    app binary UUID: AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"), "\(lines)")
+    }
+
+    func testSummaryStoredByAnEarlierBuildStillDecodes() throws {
+        let old = Data(#"[{"kind":"Crash","timestamp":"2026-11-01T00:00:00Z","headline":"x","topFrames":["a"]}]"#.utf8)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode([MetricKitDiagnosticSummary].self, from: old)
+        XCTAssertNil(decoded.first?.appBinaryUUID)
+    }
+}

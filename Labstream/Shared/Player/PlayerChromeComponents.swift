@@ -56,6 +56,9 @@ struct CustomTransportStatusOverlay: View {
     let onTogglePause: () -> Void
     var layout: PlayerTransportStatusLayout = .standard
 
+    @Environment(\.allowsProblemReport) private var allowsProblemReport
+    @State private var presentingReport = false
+
     private var content: PlayerTransportStatusContent {
         PlayerTransportStatusContent(status: status)
     }
@@ -75,6 +78,7 @@ struct CustomTransportStatusOverlay: View {
             }
         }
         .animation(.easeInOut(duration: 0.28), value: showsSpinnerOnly)
+        .reportProblemSheet(isPresented: $presentingReport, source: "playback_failure")
     }
 
     private var card: some View {
@@ -134,6 +138,16 @@ struct CustomTransportStatusOverlay: View {
                                 .frame(minWidth: 160)
                         }
                         .buttonStyle(.bordered)
+                    }
+                    if allowsProblemReport {
+                        Button {
+                            presentingReport = true
+                        } label: {
+                            Label("Report a problem", systemImage: "exclamationmark.bubble")
+                                .frame(minWidth: 160)
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("playback.report")
                     }
                 }
                 .padding(.top, 2)

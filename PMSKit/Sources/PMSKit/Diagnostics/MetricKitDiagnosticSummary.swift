@@ -44,9 +44,11 @@ public struct MetricKitDiagnosticInput: Sendable, Equatable {
     public var virtualMemoryRegionInfo: String?
     /// Hang duration in seconds (hang diagnostics) — bucketed, never exact.
     public var hangDurationSeconds: Double?
-    /// Crash-thread call stack as already-symbolicated frame strings, innermost first. Symbol
-    /// names are kept (they are the actionable signal) but redacted for embedded paths.
+    /// The attributed thread's call stack as `Binary +0x<offset>` strings in MetricKit tree
+    /// order (`MetricKitCallStackParser`). MetricKit supplies no symbol names.
     public var callStackFrames: [String]
+    /// UUID of the app binary those frames refer to, for matching a dSYM.
+    public var appBinaryUUID: String?
 
     public init(kind: MetricKitDiagnosticKind,
                 date: Date? = nil,
@@ -56,7 +58,8 @@ public struct MetricKitDiagnosticInput: Sendable, Equatable {
                 terminationReason: String? = nil,
                 virtualMemoryRegionInfo: String? = nil,
                 hangDurationSeconds: Double? = nil,
-                callStackFrames: [String] = []) {
+                callStackFrames: [String] = [],
+                appBinaryUUID: String? = nil) {
         self.kind = kind
         self.date = date
         self.exceptionType = exceptionType
@@ -66,6 +69,7 @@ public struct MetricKitDiagnosticInput: Sendable, Equatable {
         self.virtualMemoryRegionInfo = virtualMemoryRegionInfo
         self.hangDurationSeconds = hangDurationSeconds
         self.callStackFrames = callStackFrames
+        self.appBinaryUUID = appBinaryUUID
     }
 }
 
@@ -77,24 +81,29 @@ public struct MetricKitDiagnosticSummary: Codable, Sendable, Equatable {
     public let timestamp: Date
     /// Already redacted, e.g. "EXC_BAD_ACCESS (SIGSEGV)" or "hang ~10s".
     public let headline: String
-    /// Already redacted top frames (symbol names only), innermost first, capped for length.
+    /// Already redacted frames (`Binary +0x<offset>`), in MetricKit tree order, capped for length.
     public let topFrames: [String]
+    /// UUID of the app binary the frames refer to (hex and hyphens only). Optional so summaries
+    /// stored by earlier builds still decode.
+    public let appBinaryUUID: String?
 
     public init(kind: MetricKitDiagnosticKind,
                 timestamp: Date,
                 headline: String,
-                topFrames: [String]) {
+                topFrames: [String],
+                appBinaryUUID: String? = nil) {
         self.kind = kind
         self.timestamp = timestamp
         self.headline = headline
         self.topFrames = topFrames
+        self.appBinaryUUID = appBinaryUUID
     }
 }
 
 public enum MetricKitDiagnosticSummarizer {
     /// How many call-stack frames we keep. The crash signature lives near the top of the stack;
     /// keeping a handful is enough to triage without turning the report into a full backtrace.
-    public static let maxFrames = 8
+    public static let maxFrames = 16
 
     /// Build a redacted summary from one diagnostic input. All text is run through
     /// `DiagnosticRedactor.redact` so embedded bundle paths / dylib paths / addresses-as-paths
@@ -105,7 +114,9 @@ public enum MetricKitDiagnosticSummarizer {
             kind: input.kind,
             timestamp: input.date ?? generatedAt,
             headline: headline(for: input),
-            topFrames: redactedFrames(input.callStackFrames)
+            topFrames: redactedFrames(input.callStackFrames),
+            appBinaryUUID: input.appBinaryUUID.map { String($0.filter { $0.isHexDigit || $0 == "-" }.prefix(36)) }
+                .flatMap { $0.isEmpty ? nil : $0 }
         )
     }
 
@@ -113,6 +124,9 @@ public enum MetricKitDiagnosticSummarizer {
     public static func reportLines(for summary: MetricKitDiagnosticSummary) -> [String] {
         let iso = ISO8601DateFormatter()
         var lines = ["- \(summary.kind.rawValue) at \(iso.string(from: summary.timestamp)): \(summary.headline)"]
+        if let uuid = summary.appBinaryUUID {
+            lines.append("    app binary UUID: \(uuid)")
+        }
         for frame in summary.topFrames {
             lines.append("    \(frame)")
         }

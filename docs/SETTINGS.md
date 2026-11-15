@@ -90,7 +90,7 @@ remaining bytes. No automatic eviction enforces the cap.
 | **Enable diagnostic logging** | Keeps a small, redacted log of app events on this device to help investigate a problem. Nothing is uploaded automatically. | Off | All |
 | **Copy diagnostic report** | Copies a redacted report to the clipboard. | — | Vision, iOS, Mac |
 | **Export diagnostic report file** | Saves the redacted report as a text file. | — | Vision, iOS, Mac |
-| **Send feedback to developer** | Opens a preview of the redacted report that you can share or attach to a GitHub bug report. | — | All |
+| **Report a problem** | Opens a preview of the redacted report that you can share or send as a GitHub issue with the form filled in. Also in **About**, on the playback failure card, and under **Help** on Mac. | — | All |
 
 Reports leave out sensitive values such as sign-in tokens, server addresses, usernames, file paths,
 and media titles. See "Reporting a problem" in [Support and troubleshooting](support.md) for the

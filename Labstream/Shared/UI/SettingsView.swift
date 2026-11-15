@@ -123,9 +123,8 @@ struct SettingsView: View {
             }
         }
         #endif
+        .reportProblemSheet(isPresented: $presentingFeedback, source: "settings")
         #if os(tvOS)
-        // Full screen on Apple TV: the system sheet is a narrow card that truncates the form.
-        .fullScreenCover(isPresented: $presentingFeedback) { feedbackSheet }
         #if DEBUG
         // UI tests cannot reliably walk the long lazy form with the remote; open it directly.
         .task {
@@ -135,8 +134,6 @@ struct SettingsView: View {
             }
         }
         #endif
-        #else
-        .sheet(isPresented: $presentingFeedback) { feedbackSheet }
         #endif
         .confirmationDialog(differentServerConfirmationTitle,
                             isPresented: differentServerConfirmationBinding,
@@ -149,14 +146,6 @@ struct SettingsView: View {
         } message: {
             Text(differentServerConfirmationMessage)
         }
-    }
-
-    /// "26.5"-style OS version for prefilling the bug form (the full
-    /// `operatingSystemVersionString` carries a build suffix the form doesn't want).
-    static var shortOSVersion: String {
-        let v = ProcessInfo.processInfo.operatingSystemVersion
-        let base = "\(v.majorVersion).\(v.minorVersion)"
-        return v.patchVersion == 0 ? base : "\(base).\(v.patchVersion)"
     }
 
     // MARK: Sections
@@ -294,13 +283,6 @@ struct SettingsView: View {
     }
 
     // MARK: Audio & Subtitles
-
-    private var feedbackSheet: some View {
-        FeedbackSheet(reportText: diagnosticReportText,
-                      githubIssuesURL: LabstreamLinks.bugReport,
-                      appVersionBuild: "\(Self.appVersion) (\(Self.appBuild))",
-                      osVersion: Self.shortOSVersion)
-    }
 
     private var audioSubtitlesSection: some View {
         SwiftUI.Section {
@@ -915,23 +897,24 @@ struct SettingsView: View {
             }
             #endif
 
-            Button {
-                AppDiagnostics.record(.settingsUI, "diagnostics.feedback_opened", fields: [
-                    "events_in_buffer": .int(AppDiagnostics.events().count),
-                    "logging_enabled": .bool(diagnosticLoggingEnabled),
-                ])
-                presentingFeedback = true
-            } label: {
-                Label("Send feedback to developer", systemImage: "exclamationmark.bubble")
-            }
+            reportProblemButton
         } header: {
             settingsHeader("Diagnostics", .diagnostics)
         } footer: {
             #if os(tvOS)
-            Text("Logging is off by default. When enabled, Labstream keeps a bounded, redacted local ring buffer. Send feedback opens the TV support handoff without copying unavailable pasteboard data.")
+            Text("Logging is off by default. When enabled, Labstream keeps a bounded, redacted local ring buffer. Report a problem shows a QR code that opens the report form on your phone, filled in.")
             #else
-            Text("Logging is off by default. When enabled, Labstream keeps a bounded local ring buffer for bug reports. Reports are copied or exported only when you tap a button, and sensitive values are omitted. Send feedback to developer opens a redacted report you can preview, share, or attach to a GitHub bug form.")
+            Text("Logging is off by default. When enabled, Labstream keeps a bounded local ring buffer for bug reports. Reports are copied or exported only when you tap a button, and sensitive values are omitted. Report a problem opens a redacted report you can preview, share, or send as a GitHub issue.")
             #endif
+        }
+    }
+
+    /// Shown in Diagnostics and again in About, where people look for help first.
+    private var reportProblemButton: some View {
+        Button {
+            presentingFeedback = true
+        } label: {
+            Label("Report a problem", systemImage: "exclamationmark.bubble")
         }
     }
 
@@ -952,6 +935,7 @@ struct SettingsView: View {
             // Product/device name exactly as sent to Plex. NEVER the client identifier —
             // it's treated as a secret in this repo.
             LabeledContent("Client", value: "\(appModel.identity.product) on \(appModel.identity.deviceName)")
+            reportProblemButton
             SupportLinkRows()
         } header: {
             settingsHeader("About", .about)
@@ -983,102 +967,18 @@ struct SettingsView: View {
         Bundle.main.object(forInfoDictionaryKey: "LabstreamBuildDateUTC") as? String
     }
 
-    /// Bug-report blob. Includes versions, server name/version, selected quality, and the
-    /// connection SCHEME only — never tokens, client identifiers, URLs/hosts, media titles,
-    /// filenames, usernames, or library paths.
+    /// The redacted report for Copy and Export (see `FeedbackReport`). The report screen builds
+    /// its own, with the server version it fetches when it opens.
     private var diagnosticReportText: String {
         #if os(tvOS)
-        return AppDiagnostics.report(context: DiagnosticReportContext(
-            product: appModel.identity.product,
-            appVersion: Self.appVersion,
-            appBuild: Self.appBuild,
-            buildID: Self.buildSlug,
-            builtAt: Self.buildDateUTC,
-            operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
-            deviceName: appModel.identity.deviceName,
-            platform: Self.platformName,
-            bundleIdentifier: Bundle.main.bundleIdentifier,
-            keychainService: Self.keychainService,
-            sandboxContainerIdentifier: Self.sandboxContainerIdentifier,
-            backend: appModel.activeBackend.displayName,
-            server: diagnosticServerLine,
-            connectionScheme: diagnosticConnectionScheme,
-            selectedQuality: "Home: \(StreamingQuality.label(kbps: homeMaxVideoBitrateKbps)); Remote: \(StreamingQuality.label(kbps: remoteMaxVideoBitrateKbps))",
-            adaptiveBitrateEnabled: adaptiveBitrateEnabled,
-            loggingEnabled: diagnosticLoggingEnabled
-        ))
+        AppDiagnostics.report(context: FeedbackReport.context(appModel: appModel, downloads: nil,
+                                                              serverVersion: nil))
         #else
-        let storageAudit = downloadManager.storageAudit
-        let downloadRecords = downloadManager.records
-        return AppDiagnostics.report(context: DiagnosticReportContext(
-            product: appModel.identity.product,
-            appVersion: Self.appVersion,
-            appBuild: Self.appBuild,
-            buildID: Self.buildSlug,
-            builtAt: Self.buildDateUTC,
-            operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
-            deviceName: appModel.identity.deviceName,
-            platform: Self.platformName,
-            bundleIdentifier: Bundle.main.bundleIdentifier,
-            keychainService: Self.keychainService,
-            sandboxContainerIdentifier: Self.sandboxContainerIdentifier,
-            backend: appModel.activeBackend.displayName,
-            server: diagnosticServerLine,
-            connectionScheme: diagnosticConnectionScheme,
-            selectedQuality: "Home: \(StreamingQuality.label(kbps: homeMaxVideoBitrateKbps)); Remote: \(StreamingQuality.label(kbps: remoteMaxVideoBitrateKbps))",
-            adaptiveBitrateEnabled: adaptiveBitrateEnabled,
-            backgroundDownloadSessionIdentifier: BackgroundDownloadSession.identifier,
-            downloadStorageLocation: Self.downloadStorageLocationDescription,
-            downloadRecordCount: downloadRecords.count,
-            activeDownloadCount: downloadRecords.filter { $0.status.isActiveWork }.count,
-            completeDownloadCount: downloadRecords.filter(\.isComplete).count,
-            downloadQueuePaused: downloadManager.isQueuePaused,
-            downloadReferencedBytes: storageAudit.referencedBytes,
-            downloadDirectoryBytes: storageAudit.directoryBytes,
-            downloadUnreferencedBytes: storageAudit.unreferencedBytes,
-            downloadOrphanCandidateCount: storageAudit.orphanCandidates.count,
-            downloadOrphanCandidateBytes: storageAudit.orphanCandidateBytes,
-            loggingEnabled: diagnosticLoggingEnabled
-        ))
+        AppDiagnostics.report(context: FeedbackReport.context(
+            appModel: appModel, downloads: FeedbackReport.downloadSummary(downloadManager),
+            serverVersion: nil))
         #endif
     }
-
-    private static var platformName: String {
-        #if os(macOS)
-        "macOS"
-        #elseif os(visionOS)
-        "visionOS"
-        #elseif os(iOS)
-        "iOS/iPadOS"
-        #else
-        "Apple"
-        #endif
-    }
-
-    private static var keychainService: String? {
-        Bundle.main.object(forInfoDictionaryKey: "LabstreamKeychainService") as? String
-    }
-
-    private static var sandboxContainerIdentifier: String? {
-        #if os(macOS)
-        // Do not export the full container path because it includes the user's home directory.
-        // The bundle id is the relevant Mac sandbox identity and is enough to distinguish
-        // production from per-worktree dev apps in a redacted diagnostic report.
-        return Bundle.main.bundleIdentifier
-        #else
-        return nil
-        #endif
-    }
-
-    #if !os(tvOS)
-    private static var downloadStorageLocationDescription: String {
-        #if os(macOS)
-        "app-container/Application Support/Labstream/Downloads"
-        #else
-        "Application Support/Labstream/Downloads"
-        #endif
-    }
-    #endif
 
     private func scheduleCopiedDiagnosticsReset() {
         let resetID = UUID()
@@ -1088,33 +988,6 @@ struct SettingsView: View {
             guard copiedDiagnosticsResetID == resetID else { return }
             copiedDiagnostics = false
             copiedDiagnosticsResetID = nil
-        }
-    }
-
-    private var diagnosticServerLine: String? {
-        switch appModel.activeBackend {
-        case .plex:
-            // Never include the user-chosen server NAME — it is often a personal name
-            // ("Some Person's Laptop") that the best-effort redactor cannot catch. Mirror the
-            // Jellyfin branch: emit only the product (and version, which is non-identifying).
-            guard let server = appModel.selectedServer else { return "Plex Media Server" }
-            let version = server.productVersion.map { " \($0)" } ?? ""
-            return "Plex Media Server\(version)"
-        case .jellyfin:
-            return "Jellyfin"
-        case .emby:
-            return "Emby"
-        }
-    }
-
-    private var diagnosticConnectionScheme: String? {
-        switch appModel.activeBackend {
-        case .plex:
-            return appModel.serverBaseURL?.scheme
-        case .jellyfin:
-            return appModel.jellyfinServerBaseURL?.scheme
-        case .emby:
-            return appModel.embyServerBaseURL?.scheme
         }
     }
 

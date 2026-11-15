@@ -124,8 +124,8 @@ final class LabstreamTVLaunchTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Continue Watching"].waitForExistence(timeout: 3))
     }
 
-    /// Apple TV has no browser, clipboard or share sheet, so Send feedback is a full-screen note
-    /// field beside a QR code for the prefilled bug form; Menu returns to Settings.
+    /// Apple TV has no browser, clipboard or share sheet, so Report a problem is a full-screen
+    /// note field beside a QR code for the prefilled report form; Menu returns to Settings.
     func testSendFeedbackShowsAQRCodeAndCloses() throws {
         let app = makeApp(backend: "plex", fixture: "browse")
         // The remote cannot reliably reach the row in the simulator (the tab bar walk stops in
@@ -136,7 +136,12 @@ final class LabstreamTVLaunchTests: XCTestCase {
 
         XCTAssertTrue(qr.waitForExistence(timeout: 15),
                       "feedback screen shows a QR code")
-        XCTAssertTrue(app.staticTexts["Send feedback"].exists, "untruncated title")
+        XCTAssertTrue(app.staticTexts["Report a problem"].exists, "untruncated title")
+        // The QR link carries this line: build, OS, device model, install source, server, scheme.
+        let environment = app.staticTexts["feedback.environment"]
+        XCTAssertTrue(environment.exists)
+        XCTAssertTrue(environment.label.contains("tvOS"), environment.label)
+        XCTAssertTrue(environment.label.contains("Plex Media Server"), environment.label)
         XCTAssertTrue(app.buttons["feedback.cancel"].exists)
         attachScreen(named: "tv feedback screen", app: app)
 
