@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "catalogRelease": "open-films-v4",
-  "verifiedOn": "2026-11-12",
-  "sourceManifestSha256": "aecb461083ffb231cb3025ebc8ac8fe60bf764328fb2d6ae9908661438c14f6a",
-  "scope": "Public source and derivative identities copied from the deployed review catalog manifest. On 2026-11-05 the six allowlisted open-film files on the live server matched these hashes in a read-only check, and the open-films-v4 seed on 2026-11-12 re-downloaded both films and verified the same six hashes before activating; this file is a dated snapshot, not a fresh live-server checksum audit at capture time.",
+  "catalogRelease": "open-films-v6",
+  "verifiedOn": "2026-11-15",
+  "sourceManifestSha256": "89dc5caf45fbef50740374099eb3e3ae0cf81cb2a236fb13c5437b35554fc0ea",
+  "scope": "Public source and derivative identities copied from the deployed review catalog manifest. The open-films-v6 seed on 2026-11-15 downloaded all six films from the official host and verified these eighteen hashes before activating, and the same seed was run beforehand on a development Mac in the pinned images with the same result; this file is a dated snapshot, not a fresh live-server checksum audit at capture time.",
   "openFilms": [
     {
       "title": "Spring",
@@ -100,6 +100,200 @@
           "sha256": "b3e79dec0aab6f553f5ba948083acfe87b1e418e69169ad4fad837cd60954582"
         }
       ]
+    },
+    {
+      "title": "Big Buck Bunny",
+      "year": 2008,
+      "copyrightHolder": "Blender Foundation",
+      "projectUrl": "https://peach.blender.org/",
+      "license": {
+        "name": "Creative Commons Attribution 3.0 Unported",
+        "spdx": "CC-BY-3.0",
+        "url": "https://creativecommons.org/licenses/by/3.0/",
+        "officialPermissionPage": "https://peach.blender.org/about/",
+        "commercialReuseExplicitlyPermitted": true,
+        "requiredAttribution": "(c) copyright 2008, Blender Foundation / www.bigbuckbunny.org",
+        "excludedMaterial": "Logos, including the Blender and Creative Commons logos, associated trademarks, and the DVD cover and disc print are excluded by the official project page. No logo, title design or cover art is used as catalog artwork.",
+        "fullFilmCondition": "The official page asks that a screening of the entire film include the entire credits roll; the complete encode is served unmodified.",
+        "verifiedOn": "2026-11-15"
+      },
+      "source": {
+        "sourcePage": "https://video.blender.org/w/pAQiVCgv2CsLg79KKXUoMw",
+        "downloadUrl": "https://video.blender.org/download/web-videos/bf1f3fb5-b119-4f9f-9930-8e20e892b898-720.mp4",
+        "sha256": "bdadaa934c09a43f198684ae2031c754d5dc9c925f64b9601a8eac77d1842cf4",
+        "bytes": 110916740,
+        "container": "MP4",
+        "video": "H.264 1280x720 24fps",
+        "audio": "AAC 5.1",
+        "durationSeconds": 596.566,
+        "authoritativeHost": "video.blender.org",
+        "verifiedOn": "2026-11-15"
+      },
+      "playable": {
+        "relativePath": "Movies/Big Buck Bunny (2008)/Big Buck Bunny (2008).mp4",
+        "transform": "None; the complete authoritative encode, including its end credits, is preserved byte-for-byte.",
+        "sha256": "bdadaa934c09a43f198684ae2031c754d5dc9c925f64b9601a8eac77d1842cf4",
+        "fullEndCreditsPreserved": true
+      },
+      "derivedArtwork": [
+        {
+          "relativePath": "Movies/Big Buck Bunny (2008)/poster.jpg",
+          "basis": "Frame from the licensed complete film at 175 seconds; no title card or logo.",
+          "transform": "Pinned Jellyfin FFmpeg 7.1.4: crop 480x720 at x=400,y=0; Lanczos scale to 600x900; JPEG q=2; metadata removed; single-threaded.",
+          "sha256": "03080d7b76abe7fee22895ad26af49bf0ebd0b105af481503080e346d42e34ee"
+        },
+        {
+          "relativePath": "Movies/Big Buck Bunny (2008)/backdrop.jpg",
+          "basis": "Frame from the licensed complete film at 175 seconds; no title card or logo.",
+          "transform": "Pinned Jellyfin FFmpeg 7.1.4: Lanczos scale to 1280x720; JPEG q=2; metadata removed; single-threaded.",
+          "sha256": "b1a0000bbf77e6188ea2ff17d79cbca53dfc1fe2369392358225e4058071ef20"
+        }
+      ]
+    },
+    {
+      "title": "Sintel",
+      "year": 2010,
+      "copyrightHolder": "Blender Foundation",
+      "projectUrl": "https://durian.blender.org/",
+      "license": {
+        "name": "Creative Commons Attribution 3.0 Unported",
+        "spdx": "CC-BY-3.0",
+        "url": "https://creativecommons.org/licenses/by/3.0/",
+        "officialPermissionPage": "https://durian.blender.org/sharing/",
+        "commercialReuseExplicitlyPermitted": true,
+        "requiredAttribution": "\u00a9 copyright Blender Foundation | durian.blender.org",
+        "excludedMaterial": "Logos, including the Blender, Durian, and Creative Commons logos, associated trademarks, and clearly third-party material are excluded by the official project page. No logo or title design is used as catalog artwork.",
+        "fullFilmCondition": "The official page asks that redistribution of the film itself include the entire credits scroll; the complete encode is served unmodified.",
+        "verifiedOn": "2026-11-15"
+      },
+      "source": {
+        "sourcePage": "https://video.blender.org/w/2PcJe5aZqozRvH7MJ8BTmC",
+        "downloadUrl": "https://video.blender.org/download/web-videos/0eb052d0-fd51-43e6-aa33-ecdbf77a5d40-818.mp4",
+        "sha256": "3e0640bc6fe3389ca27df8a8370a37cd68b6b05b11433c1d5be04699875ab31a",
+        "bytes": 239096915,
+        "container": "MP4",
+        "video": "H.264 1920x818 24fps",
+        "audio": "AAC",
+        "durationSeconds": 888.092993,
+        "authoritativeHost": "video.blender.org",
+        "verifiedOn": "2026-11-15"
+      },
+      "playable": {
+        "relativePath": "Movies/Sintel (2010)/Sintel (2010).mp4",
+        "transform": "None; the complete authoritative encode, including its end credits, is preserved byte-for-byte.",
+        "sha256": "3e0640bc6fe3389ca27df8a8370a37cd68b6b05b11433c1d5be04699875ab31a",
+        "fullEndCreditsPreserved": true
+      },
+      "derivedArtwork": [
+        {
+          "relativePath": "Movies/Sintel (2010)/poster.jpg",
+          "basis": "Frame from the licensed complete film at 574 seconds; no title card or logo.",
+          "transform": "Pinned Jellyfin FFmpeg 7.1.4: crop 545x818 at x=1140,y=0; Lanczos scale to 600x900; JPEG q=2; metadata removed; single-threaded.",
+          "sha256": "0f5cdd27bedfdc04b21db4773597a070be2db245b12827ca6113c7f9971d0d6f"
+        },
+        {
+          "relativePath": "Movies/Sintel (2010)/backdrop.jpg",
+          "basis": "Frame from the licensed complete film at 574 seconds; no title card or logo.",
+          "transform": "Pinned Jellyfin FFmpeg 7.1.4: crop 1454x818 at x=466,y=0; Lanczos scale to 1280x720; JPEG q=2; metadata removed; single-threaded.",
+          "sha256": "b0febbaa720b796f564f68301e56bd3c3f38fa73e20447a5c4cfab0a6b554333"
+        }
+      ]
+    },
+    {
+      "title": "Tears of Steel",
+      "year": 2012,
+      "copyrightHolder": "Blender Foundation",
+      "projectUrl": "https://mango.blender.org/",
+      "license": {
+        "name": "Creative Commons Attribution 3.0 Unported",
+        "spdx": "CC-BY-3.0",
+        "url": "https://creativecommons.org/licenses/by/3.0/",
+        "officialPermissionPage": "https://mango.blender.org/sharing/",
+        "commercialReuseExplicitlyPermitted": true,
+        "requiredAttribution": "(CC) Blender Foundation | mango.blender.org",
+        "excludedMaterial": "Logos, including the Blender, Mango, Creative Commons, and sponsor logos, associated trademarks, and clearly third-party material are excluded by the official project page. No logo or title design is used as catalog artwork.",
+        "verifiedOn": "2026-11-15"
+      },
+      "source": {
+        "sourcePage": "https://video.blender.org/w/hs1zJY8mdr3iH2JNmxpeGV",
+        "downloadUrl": "https://video.blender.org/download/web-videos/8533ea43-4271-4a57-9694-e9d0b35e1aa1-800.mp4",
+        "sha256": "727f3af5a80ae9763426eb8ae9b5559b0a266cf5dc20b9442dd1973f90e26193",
+        "bytes": 247686928,
+        "container": "MP4",
+        "video": "H.264 1920x800 24fps",
+        "audio": "AAC",
+        "durationSeconds": 734.215011,
+        "authoritativeHost": "video.blender.org",
+        "verifiedOn": "2026-11-15"
+      },
+      "playable": {
+        "relativePath": "Movies/Tears of Steel (2012)/Tears of Steel (2012).mp4",
+        "transform": "None; the complete authoritative encode, including its end credits, is preserved byte-for-byte.",
+        "sha256": "727f3af5a80ae9763426eb8ae9b5559b0a266cf5dc20b9442dd1973f90e26193",
+        "fullEndCreditsPreserved": true
+      },
+      "derivedArtwork": [
+        {
+          "relativePath": "Movies/Tears of Steel (2012)/poster.jpg",
+          "basis": "Frame from the licensed complete film at 302 seconds; no title card or logo.",
+          "transform": "Pinned Jellyfin FFmpeg 7.1.4: crop 533x800 at x=426,y=0; Lanczos scale to 600x900; JPEG q=2; metadata removed; single-threaded.",
+          "sha256": "802c29ca135196012ad68726cf9bebb1734d1cdfc3dbcdb836a5df4bffc4ecdf"
+        },
+        {
+          "relativePath": "Movies/Tears of Steel (2012)/backdrop.jpg",
+          "basis": "Frame from the licensed complete film at 302 seconds; no title card or logo.",
+          "transform": "Pinned Jellyfin FFmpeg 7.1.4: crop 1422x800 at x=249,y=0; Lanczos scale to 1280x720; JPEG q=2; metadata removed; single-threaded.",
+          "sha256": "0aba137e15f6aa82144ceb6e8fffc8c2ef33713d3a737ade6a72a134e8d97ffe"
+        }
+      ]
+    },
+    {
+      "title": "Coffee Run",
+      "year": 2020,
+      "copyrightHolder": "Blender Foundation",
+      "projectUrl": "https://studio.blender.org/projects/coffee-run/",
+      "license": {
+        "name": "Creative Commons Attribution 4.0 International",
+        "spdx": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "officialPermissionPage": "https://studio.blender.org/projects/coffee-run/pages/licensing/",
+        "commercialReuseExplicitlyPermitted": true,
+        "requiredAttribution": "(CC) Blender Foundation | studio.blender.org",
+        "excludedMaterial": "Logos, including the Blender, Coffee Run, and Creative Commons logos, associated trademarks, and clearly third-party material are excluded by the official project page. No logo or title design is used as catalog artwork.",
+        "verifiedOn": "2026-11-15"
+      },
+      "source": {
+        "sourcePage": "https://video.blender.org/w/xymLD6rkpHNug3fzzMyhmZ",
+        "downloadUrl": "https://video.blender.org/download/web-videos/ff8fe61b-026f-4f07-b66b-2a790d6f6ab1-804.mp4",
+        "sha256": "ae9577a8dac9acea202df72f28999cdbd089fa5cbfbd9d8e9f038e85ce5f56f9",
+        "bytes": 42603365,
+        "container": "MP4",
+        "video": "H.264 1920x804 24fps",
+        "audio": "AAC",
+        "durationSeconds": 184.669002,
+        "authoritativeHost": "video.blender.org",
+        "verifiedOn": "2026-11-15"
+      },
+      "playable": {
+        "relativePath": "Movies/Coffee Run (2020)/Coffee Run (2020).mp4",
+        "transform": "None; the complete authoritative encode, including its end credits, is preserved byte-for-byte.",
+        "sha256": "ae9577a8dac9acea202df72f28999cdbd089fa5cbfbd9d8e9f038e85ce5f56f9",
+        "fullEndCreditsPreserved": true
+      },
+      "derivedArtwork": [
+        {
+          "relativePath": "Movies/Coffee Run (2020)/poster.jpg",
+          "basis": "Frame from the licensed complete film at 97 seconds; no title card or logo.",
+          "transform": "Pinned Jellyfin FFmpeg 7.1.4: crop 536x804 at x=600,y=0; Lanczos scale to 600x900; JPEG q=2; metadata removed; single-threaded.",
+          "sha256": "f16d8cd704a5db573855000e176d3da948e0bb2f4e232f96b02d1c0df8501da2"
+        },
+        {
+          "relativePath": "Movies/Coffee Run (2020)/backdrop.jpg",
+          "basis": "Frame from the licensed complete film at 97 seconds; no title card or logo.",
+          "transform": "Pinned Jellyfin FFmpeg 7.1.4: crop 1429x804 at x=245,y=0; Lanczos scale to 1280x720; JPEG q=2; metadata removed; single-threaded.",
+          "sha256": "4d88379d324948a2bdaae63453a592808da60ee02199298c8a7cfa696aeac1cf"
+        }
+      ]
     }
   ],
   "proceduralTechnicalFixtures": {
@@ -107,7 +301,7 @@
       "path": "files/generate-media.sh",
       "runtime": "jellyfin/jellyfin:10.11.11",
       "runtimeDigest": "sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db",
-      "sourceSha256": "2721ba8165dab6ddf935f8ec82124aa9d7af1e57d92e5b90315a4edc64c82ec8",
+      "sourceSha256": "38e3449d05abbb47360481c5c59285d007564f6fd2fd79c3a292307106298f43",
       "deterministicInputs": true
     },
     "origin": "Repository-authored procedural gradients, synthesized audio, subtitles, chapters, and plain fictional technical metadata; no third-party material is incorporated.",
