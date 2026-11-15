@@ -1,13 +1,13 @@
 # Licensed demo screenshots and review notes
 
 Status: active; catalog provenance snapshot dated 2026-09-15, updated to the deployed
-`open-films-v5` release on 2026-11-15. Official license pages were rechecked 2026-09-29 and Apple
+`open-films-v6` release on 2026-11-15. Official license pages were rechecked 2026-09-29 and Apple
 screenshot classes on 2026-11-05. Final captures and clean-install candidate journeys remain
 pending; the app logo and brand colors are being redone, so no final screenshots may be taken until
 that work lands.
 No screenshots were uploaded and no App Store Connect fields were changed by this work.
 
-## Catalog release open-films-v5 — 2026-11-15
+## Catalog releases open-films-v5 and v6 — 2026-11-15
 
 Two films made the Movies grid look sparse in the 2026-11-14 captures, so the catalog gained four
 more complete official encodes from `video.blender.org`:
@@ -30,6 +30,11 @@ Each film's description on the server now ends with its credit line instead of a
 `/attribution` path, and the server's `/attribution` page lists all six films. A review-account
 catalog read on 2026-11-15 returned the six films, each with a poster, and the new descriptions.
 The media volume grew from 1 GiB to 4 GiB and the seed now removes superseded releases.
+
+`open-films-v6` followed the same day: each film's tagline had ended "see /attribution", which
+the Apple TV, Vision Pro and Mac detail pages showed as a bare path. The tagline is now the
+license name alone. The films and artwork are unchanged, and the public manifest records
+`open-films-v6`.
 
 The storefront allowlist is now six complete films and their twelve artwork crops, recorded in
 `scripts/app-review-media-provenance.json` with the matching source-manifest hash. The credit
