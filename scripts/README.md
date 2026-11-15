@@ -71,6 +71,11 @@ Commands and limitations: [workflow status and review evidence](../docs/DEVELOPM
   review notes kept in `appstore/metadata/`. Uses the same credentials as `testflight-release.py`;
   `push` is a dry run unless `--yes`. Never reads or stores review contact details, demo
   credentials, or the review server address.
+- `asc-screenshots.py` — `status` lists the screenshot sets of each platform's editable App Store
+  version; `upload EXPORT_DIR…` replaces the sets named by the exports' file-name prefixes
+  (iPhone 6.3-inch and 6.9-inch, iPad 13-inch, Apple TV, Vision Pro, Mac) with their JPEGs. It
+  prints the plan unless `--yes`, refuses iPhone Duo exports and wrong-sized or alpha images, and
+  uses the same credentials as `testflight-release.py`.
 - `check-privacy-manifest.py` — source check of the shared and tvOS `PrivacyInfo.xcprivacy`
   contracts and target membership; with `--app TARGET=PATH` for all four products it also checks
   the built app manifests. `testflight-release.py validate` runs it on archives. It is not Apple's
