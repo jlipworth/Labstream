@@ -26,7 +26,7 @@ enum FeedbackReport {
             appBuild: appBuild,
             buildID: Bundle.main.object(forInfoDictionaryKey: "LabstreamBuildSlug") as? String,
             builtAt: Bundle.main.object(forInfoDictionaryKey: "LabstreamBuildDateUTC") as? String,
-            operatingSystem: "\(PlatformClientIdentity.plexPlatform) \(ProcessInfo.processInfo.operatingSystemVersionString)",
+            operatingSystem: operatingSystem,
             deviceName: appModel.identity.deviceName,
             deviceModel: DeviceEnvironment.modelIdentifier,
             installSource: DeviceEnvironment.installSource,
@@ -85,6 +85,19 @@ enum FeedbackReport {
                                orphanCandidateBytes: audit.orphanCandidateBytes)
     }
     #endif
+
+    /// "iOS 27.1 (24B80)": platform, version and OS build, without the words "Version" and
+    /// "Build" that `operatingSystemVersionString` adds.
+    static var operatingSystem: String {
+        let v = ProcessInfo.processInfo.operatingSystemVersion
+        var text = "\(PlatformClientIdentity.plexPlatform) \(v.majorVersion).\(v.minorVersion)"
+        if v.patchVersion != 0 { text += ".\(v.patchVersion)" }
+        let full = ProcessInfo.processInfo.operatingSystemVersionString
+        if let open = full.range(of: "(Build "), let close = full.range(of: ")", range: open.upperBound..<full.endIndex) {
+            text += " (\(full[open.upperBound..<close.lowerBound]))"
+        }
+        return text
+    }
 
     static var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"

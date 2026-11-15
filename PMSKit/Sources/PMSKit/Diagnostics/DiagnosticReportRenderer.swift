@@ -236,10 +236,11 @@ public enum DiagnosticReportRenderer {
         return String(String.UnicodeScalarView(value.unicodeScalars.prefix(while: allowed.contains)).prefix(24))
     }
 
-    /// A hardware model identifier ("iPhone17,1", "Mac15,6") reduced to letters, digits and commas.
+    /// A hardware model identifier ("iPhone17,1", "Mac15,6", "iPhone17,1 (simulator)") reduced to
+    /// letters, digits, commas, spaces and parentheses.
     static func safeModel(_ value: String) -> String {
-        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,")
-        return String(String.UnicodeScalarView(value.unicodeScalars.filter(allowed.contains)).prefix(24))
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789, ()")
+        return String(String.UnicodeScalarView(value.unicodeScalars.filter(allowed.contains)).prefix(32))
     }
 
     private static func byteBucket(_ bytes: Int?) -> String {
