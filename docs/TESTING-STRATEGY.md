@@ -392,7 +392,7 @@ caller's environment, and reach the test as xcodebuild `TEST_RUNNER_` variables.
 sign out. On an app that is already signed in to another account they fail at the catalog check.
 
 `LabstreamMobileLiveDownloadQueueUITests` uses the same configuration to check the Downloads
-queue on iPhone against real transfers: it queues the catalog's two films, pauses and resumes the
+queue on iPhone against real transfers: it queues two of the catalog's films, pauses and resumes the
 queue (including a download added behind Pause All and a mixed queue), changes the
 simultaneous-downloads setting, then deletes the downloads and restores the default limit. It
 holds at the `added-while-paused`, `resumed-all`, `mixed`, `mixed-paused` and `mixed-resumed`

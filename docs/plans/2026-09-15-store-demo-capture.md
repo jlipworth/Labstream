@@ -1,11 +1,40 @@
 # Licensed demo screenshots and review notes
 
 Status: active; catalog provenance snapshot dated 2026-09-15, updated to the deployed
-`open-films-v4` release on 2026-11-12. Official license pages were rechecked 2026-09-29 and Apple
+`open-films-v5` release on 2026-11-15. Official license pages were rechecked 2026-09-29 and Apple
 screenshot classes on 2026-11-05. Final captures and clean-install candidate journeys remain
 pending; the app logo and brand colors are being redone, so no final screenshots may be taken until
 that work lands.
 No screenshots were uploaded and no App Store Connect fields were changed by this work.
+
+## Catalog release open-films-v5 — 2026-11-15
+
+Two films made the Movies grid look sparse in the 2026-11-14 captures, so the catalog gained four
+more complete official encodes from `video.blender.org`:
+
+| Film | License | Official licensing page | Required credit |
+| --- | --- | --- | --- |
+| _Big Buck Bunny_ (2008) | CC BY 3.0 | <https://peach.blender.org/about/> | (c) copyright 2008, Blender Foundation / www.bigbuckbunny.org |
+| _Sintel_ (2010) | CC BY 3.0 | <https://durian.blender.org/sharing/> | © copyright Blender Foundation \| durian.blender.org |
+| _Tears of Steel_ (2012) | CC BY 3.0 | <https://mango.blender.org/sharing/> | (CC) Blender Foundation \| mango.blender.org |
+| _Coffee Run_ (2020) | CC BY 4.0 | <https://studio.blender.org/projects/coffee-run/pages/licensing/> | (CC) Blender Foundation \| studio.blender.org |
+
+Each page names the license version and states that commercial reuse is allowed. The pages for
+_Big Buck Bunny_ and _Sintel_ ask that a screening of the whole film keep its full credits; every
+encode is served unmodified. _Sprite Fright_ was left out because its page names "Creative Commons
+Attribution 1.0" without a license link. Posters and backdrops are crops of film frames with no
+title card or logo, made in the pinned Jellyfin FFmpeg image. _Sintel_ and _Tears of Steel_ are
+rated PG in the catalog (fantasy peril and science-fiction action); the others are Family.
+
+Each film's description on the server now ends with its credit line instead of a bare
+`/attribution` path, and the server's `/attribution` page lists all six films. A review-account
+catalog read on 2026-11-15 returned the six films, each with a poster, and the new descriptions.
+The media volume grew from 1 GiB to 4 GiB and the seed now removes superseded releases.
+
+The storefront allowlist is now six complete films and their twelve artwork crops, recorded in
+`scripts/app-review-media-provenance.json` with the matching source-manifest hash. The credit
+lines for the product page need the four new films added (below) before any screenshot showing
+them is uploaded.
 
 ## Catalog release open-films-v4 — 2026-11-12
 
@@ -77,7 +106,17 @@ Use these credit lines for the relevant films, alongside the license link and mo
 >
 > Wing It! — (CC) Blender Foundation | studio.blender.org
 >
-> Film images licensed under CC BY 4.0: https://creativecommons.org/licenses/by/4.0/.
+> Coffee Run — (CC) Blender Foundation | studio.blender.org
+>
+> Big Buck Bunny — (c) copyright 2008, Blender Foundation / www.bigbuckbunny.org
+>
+> Sintel — © copyright Blender Foundation | durian.blender.org
+>
+> Tears of Steel — (CC) Blender Foundation | mango.blender.org
+>
+> Spring, Wing It! and Coffee Run images licensed under CC BY 4.0:
+> https://creativecommons.org/licenses/by/4.0/. Big Buck Bunny, Sintel and Tears of Steel images
+> licensed under CC BY 3.0: https://creativecommons.org/licenses/by/3.0/.
 > Catalog artwork cropped/resized from film frames; displayed within Labstream screenshots.
 > No affiliation with or endorsement by Blender Foundation, Blender Studio, or the filmmakers.
 
