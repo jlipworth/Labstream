@@ -84,6 +84,11 @@ or Release build.
 
 ## What simulator evidence cannot prove
 
+SwiftUI's `onMoveCommand` fires once per press on tvOS: holding a direction on the remote does not
+repeat it. The player timeline therefore pairs it with `TVDirectionHoldMonitor`, which attaches
+arrow-only long-press recognizers to the window and repeats the scrub step until release;
+`LabstreamTVPlayerTests/testHoldingRightOnTheTimelineKeepsScrubbing` covers it in the simulator.
+
 A green simulator build or UI suite does not establish physical Siri Remote behavior, native
 keyboard/dictation, HDR or Dolby Vision rendering, HDMI/audio routing, interruptions, lifecycle,
 long-play memory/energy/thermal behavior, accessibility, signing, TestFlight, or App Store readiness.

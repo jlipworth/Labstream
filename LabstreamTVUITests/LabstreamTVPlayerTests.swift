@@ -196,6 +196,41 @@ final class LabstreamTVPlayerTests: XCTestCase {
         XCUIRemote.shared.press(.menu)
     }
 
+    /// Holding Right on the timeline must keep scrubbing, not move one 10-second step and
+    /// stop (found on a physical Apple TV, 2026-11-14, #458). A three-second hold has to
+    /// travel well past what a single press does.
+    func testHoldingRightOnTheTimelineKeepsScrubbing() throws {
+        let app = launchPlayerFixture()
+        let timeline = app.buttons["tv.player.timeline"]
+        XCTAssertTrue(timeline.waitForExistence(timeout: 25), "player chrome")
+        if !timeline.exists { XCUIRemote.shared.press(.down) }
+        XCUIRemote.shared.press(.playPause)   // paused chrome stays visible
+        XCTAssertTrue(timeline.waitForExistence(timeout: 4), "chrome revealed")
+        XCTAssertTrue(waitForFocus(timeline, timeout: 4), "timeline should hold focus")
+        let before = clockSeconds(timeline.value)
+
+        XCUIRemote.shared.press(.right, forDuration: 3)
+        sleep(1)
+        let held = clockSeconds(timeline.value)
+        attachScreen(named: "timeline after holding right", app: app)
+        XCTAssertGreaterThanOrEqual(held - before, 60,
+                                    "a 3s hold moved the draft only \(held - before)s")
+
+        // Releasing must stop the scrub.
+        sleep(2)
+        XCTAssertEqual(clockSeconds(timeline.value), held, "scrub kept going after release")
+
+        XCUIRemote.shared.press(.left, forDuration: 2)
+        sleep(1)
+        XCTAssertLessThan(clockSeconds(timeline.value), held, "holding Left should scrub back")
+        XCUIRemote.shared.press(.menu)
+    }
+
+    private func clockSeconds(_ value: Any?) -> Int {
+        let parts = (value as? String ?? "").split(separator: ":").compactMap { Int($0) }
+        return parts.reduce(0) { $0 * 60 + $1 }
+    }
+
     private func openChaptersMenu(_ app: XCUIApplication) throws {
         let timeline = app.buttons["tv.player.timeline"]
         if !timeline.exists { XCUIRemote.shared.press(.down) }

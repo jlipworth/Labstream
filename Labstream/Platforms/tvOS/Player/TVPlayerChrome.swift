@@ -150,7 +150,8 @@ extension CustomPlayerChrome {
                 // the pre-seek offset and a rapid second scrub would restart from there.
                 scrubState.beginDrag(livePositionMs: scrubState.displayedPositionMs)
             }
-            // Press-streak acceleration: holding (or hammering) the direction escalates the
+            // Press-streak acceleration: hammering the direction, or holding it (repeats come
+            // from TVDirectionHoldMonitor, not from onMoveCommand), escalates the
             // stride, so long titles are traversable without giving up fine-grained steps.
             let now = Date()
             if now.timeIntervalSince(tvScrubLastStepAt) < 0.4 {
@@ -159,7 +160,7 @@ extension CustomPlayerChrome {
                 tvScrubStreak = 0
             }
             tvScrubLastStepAt = now
-            let strideMs = tvScrubStreak >= 12 ? 60_000 : (tvScrubStreak >= 5 ? 30_000 : 10_000)
+            let strideMs = Self.tvScrubStride(streak: tvScrubStreak)
             let delta = direction == .right ? strideMs : -strideMs
             let target = min(max(scrubState.displayedPositionMs + delta, 0), scrubState.durationMs)
             scrubState.updateDrag(fraction: Double(target) / Double(scrubState.durationMs))
@@ -173,6 +174,25 @@ extension CustomPlayerChrome {
             // evidence showed the chrome hiding mid-strip-traversal 5s after the reveal.
             scheduleChromeHideIfNeeded()
         }
+    }
+
+    /// Stride for the Nth consecutive step of a streak (rapid presses, or the repeats of a
+    /// hold at about eight a second): fine steps first, then faster the longer it runs, so a
+    /// three-hour film is crossed in well under half a minute.
+    static func tvScrubStride(streak: Int) -> Int {
+        switch streak {
+        case ..<5: 10_000
+        case ..<12: 30_000
+        case ..<30: 60_000
+        default: 120_000
+        }
+    }
+
+    /// A repeat from a held Left/Right (`TVDirectionHoldMonitor`). Only the focused timeline
+    /// scrubs; a hold anywhere else (menu strip, open menu, hidden chrome) is left alone.
+    func tvTimelineHoldRepeat(_ direction: MoveCommandDirection) {
+        guard shouldShowChrome, selectedMenu == nil, tvPlayerFocus == .timeline else { return }
+        tvTimelineMove(direction)
     }
 
     /// Select on the timeline: commit an open scrub draft, else toggle playback (matching the
