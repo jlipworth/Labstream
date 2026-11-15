@@ -62,8 +62,13 @@ section of Settings. Ideas belong in
 [Discussions ▸ Ideas](https://github.com/jlipworth/Labstream/discussions/categories/ideas) and
 questions in [Discussions ▸ Q&A](https://github.com/jlipworth/Labstream/discussions/categories/q-a).
 
+**We want to hear about problems.** Labstream has no analytics, so your report is the only way a
+bug reaches us, and every report is read. The quickest route is **Report a problem** in the app
+(on the playback failure card, in **Settings ▸ About**, or under **Help** on Mac): it opens a short
+GitHub form with your app, device and server details and a redacted report already filled in.
+
 For hard-to-reproduce issues, turn on **Settings ▸ Diagnostics ▸ Enable diagnostic logging**,
-reproduce the problem once, then tap **Send feedback to developer**. The report is redacted before
+reproduce the problem once, then tap **Report a problem**. The report is redacted before
 you see it (no tokens, hostnames, usernames, paths, or media titles); review it before sharing. The
 [bug reporting guide](https://github.com/jlipworth/Labstream/blob/main/docs/REPORTING-BUGS.md)
 has the full steps, per-platform options, and what the report does and does not include.

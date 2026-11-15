@@ -20,7 +20,7 @@ struct PlaybackFailureMessageTests {
         let state = PlaybackError()
         state.set(NSError(domain: "Unrecognized", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "private-server/token"]))
-        #expect(state.message?.contains("app diagnostics") == true)
+        #expect(state.message?.contains("Report a problem") == true)
         #expect(state.message?.contains("private-server") == false)
     }
 

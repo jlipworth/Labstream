@@ -7,35 +7,28 @@ import UIKit
 import UniformTypeIdentifiers
 import PMSKit
 
-/// Bug-report flow (#272 v1, no backend).
+/// Problem-report flow (#272, no backend).
 ///
-/// The fast path is **Open a GitHub issue**: it deep-links to the bug form with the user's
-/// description and version fields already filled in, attaches the redacted diagnostic report
-/// inline when it fits in the URL, and always copies the report to the clipboard as the
-/// paste-it-yourself fallback. The optional free-text note is the only new input; it is folded
-/// in ONLY through `DiagnosticRedactor.redact` (never raw) and the live "exactly what is
-/// shared" preview shows the report that ships. `ShareLink` covers the share-to-Mail/Files path.
+/// The fast path is **Open a GitHub issue**: it deep-links to the short in-app report form
+/// (`app_report.yml`) with the description, an environment line and the redacted report already
+/// filled in, and copies the complete report to the clipboard. The link always carries the
+/// report's head (build, device, server, crash summaries, last playback) and as many of the
+/// newest events as fit. The free-text note is folded in ONLY through `DiagnosticRedactor.redact`
+/// (never raw), and the preview shows the report that ships. `ShareLink` covers Mail and Files.
 struct FeedbackSheet: View {
-    /// Already redacted upstream by SettingsView's `diagnosticReportText`.
-    let reportText: String
-    /// The canonical new-issue URL (`…/issues/new?template=bug_report.yml`). Its base is reused
-    /// to build the prefilled link; on overflow it is the plain fallback.
-    let githubIssuesURL: URL
-    /// "1.2.0 (1)" — prefills the form's version field. Empty string omits it.
-    let appVersionBuild: String
-    /// "26.5" — prefills the OS-version field. Empty string omits it.
-    let osVersion: String
+    /// Built by `FeedbackSheetHost`; every string in it is redacted again when rendered.
+    let context: DiagnosticReportContext
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
 
-    /// Optional "What were you doing?" free text. Scrubbed before it joins the report.
+    /// Optional "What happened?" free text. Scrubbed before it joins the report.
     @State private var note: String = ""
     @State private var copied = false
+    @State private var openedIssue = false
 
-    /// GitHub issue forms cap how long a prefill URL they accept; past this we drop the report
-    /// from the URL and rely on the clipboard copy instead. Conservative so we never 414.
-    private static let maxPrefillURLLength = 6000
+    private var reportText: String { AppDiagnostics.report(context: context) }
+    private var environmentLine: String { DiagnosticReportRenderer.environmentLine(context: context) }
 
     /// The note exactly as it will be shared/prefilled: run through the same redactor as the
     /// report so it can never carry a token / host / IP / path / filename / email out. Empty
@@ -51,49 +44,29 @@ struct FeedbackSheet: View {
         return !trimmed.isEmpty && redactedNote != trimmed
     }
 
-    /// `…/issues/new` with no query — the base we re-attach our own prefill params to.
+    /// `…/issues/new` with no query — the base the prefill parameters are attached to.
     private var issuesNewBase: String {
-        var components = URLComponents(url: githubIssuesURL, resolvingAgainstBaseURL: false)
+        var components = URLComponents(url: LabstreamLinks.bugReport, resolvingAgainstBaseURL: false)
         components?.query = nil
-        return components?.string ?? githubIssuesURL.absoluteString
+        return components?.string ?? LabstreamLinks.bugReport.absoluteString
     }
 
-    /// The bug form prefilled by field `id`: description (`what-happened`), the two version
-    /// fields, and the redacted report (`diagnostic-report`) when it fits under the length cap.
     private var githubIssueURL: URL {
-        var items: [(String, String)] = [("template", "bug_report.yml")]
-        if !redactedNote.isEmpty { items.append(("what-happened", redactedNote)) }
-        if !appVersionBuild.isEmpty { items.append(("app-version", appVersionBuild)) }
-        if !osVersion.isEmpty { items.append(("os-version", osVersion)) }
-
-        func url(_ pairs: [(String, String)]) -> String {
-            let query = pairs
-                .map { "\(Self.percentEncoded($0.0))=\(Self.percentEncoded($0.1))" }
-                .joined(separator: "&")
-            return "\(issuesNewBase)?\(query)"
-        }
-
-        let withReport = url(items + [("diagnostic-report", reportText)])
-        let chosen = withReport.count <= Self.maxPrefillURLLength ? withReport : url(items)
-        return URL(string: chosen) ?? githubIssuesURL
+        let link = FeedbackIssueLink.make(base: issuesNewBase, note: redactedNote,
+                                          environment: environmentLine,
+                                          parts: AppDiagnostics.reportParts(context: context))
+        return URL(string: link.url) ?? LabstreamLinks.bugReport
     }
 
     #if os(tvOS)
     /// A QR code cannot carry the report and stay scannable from a sofa, so the Apple TV link
-    /// holds the description (trimmed) and the two version fields only.
+    /// holds the description (trimmed) and the one-line environment only.
     private static let maxQRNoteLength = 280
 
     private var tvIssueURL: String {
-        var items: [(String, String)] = [("template", "bug_report.yml")]
-        if !redactedNote.isEmpty {
-            items.append(("what-happened", String(redactedNote.prefix(Self.maxQRNoteLength))))
-        }
-        if !appVersionBuild.isEmpty { items.append(("app-version", appVersionBuild)) }
-        if !osVersion.isEmpty { items.append(("os-version", osVersion)) }
-        let query = items
-            .map { "\(Self.percentEncoded($0.0))=\(Self.percentEncoded($0.1))" }
-            .joined(separator: "&")
-        return "\(issuesNewBase)?\(query)"
+        FeedbackIssueLink.make(base: issuesNewBase,
+                               note: String(redactedNote.prefix(Self.maxQRNoteLength)),
+                               environment: environmentLine, parts: nil).url
     }
 
     /// Apple TV has no browser, clipboard or share sheet: the screen is a note field beside a QR
@@ -101,17 +74,17 @@ struct FeedbackSheet: View {
     var body: some View {
         HStack(alignment: .center, spacing: 100) {
             VStack(alignment: .leading, spacing: 28) {
-                Text("Send feedback")
+                Text("Report a problem")
                     .font(.title.bold())
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("What were you doing?")
+                    Text("What happened?")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     TextField("Describe the problem", text: $note)
                         .accessibilityIdentifier("feedback.note")
-                    Text(noteWasScrubbed
-                         ? "Will be sent as: \(redactedNote)"
-                         : "Server names, addresses and file names are removed.")
+                    Text(redactedNote.isEmpty
+                         ? "Server names, addresses and file names are removed."
+                         : "Will be sent as: \(redactedNote)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -120,9 +93,11 @@ struct FeedbackSheet: View {
                     Text("Sent with your note")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    LabeledContent("Labstream", value: appVersionBuild)
-                    Divider()
-                    LabeledContent("tvOS", value: osVersion)
+                    Text(environmentLine)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("feedback.environment")
                 }
                 Button("Cancel") { dismiss() }
                     .accessibilityIdentifier("feedback.cancel")
@@ -143,7 +118,7 @@ struct FeedbackSheet: View {
                 }
                 Text("Scan with your iPhone")
                     .font(.headline)
-                Text("Opens the bug form, filled in. Issues are public.")
+                Text("Opens the report form, filled in. We read every report. Issues are public.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -158,8 +133,9 @@ struct FeedbackSheet: View {
         NavigationStack {
             Form {
                 SwiftUI.Section {
-                    TextField("What were you doing?", text: $note, axis: .vertical)
+                    TextField("What happened?", text: $note, axis: .vertical)
                         .lineLimit(3...8)
+                        .accessibilityIdentifier("feedback.note")
                     if noteWasScrubbed {
                         Label("Scrubbed for privacy — will be sent as: \(redactedNote)",
                               systemImage: "checkmark.shield")
@@ -167,17 +143,26 @@ struct FeedbackSheet: View {
                             .foregroundStyle(.secondary)
                     }
                 } header: {
-                    Text("Describe the problem (optional)")
+                    Text("Describe the problem")
                 } footer: {
-                    Text("Your note is scrubbed for tokens, server name/URL/IP, usernames, paths, and filenames. Bare media titles or personal details in ordinary prose may remain, so review the preview below before sharing.")
+                    Text("Reports are how Labstream gets better, and we read every one. Your note is scrubbed for tokens, server name/URL/IP, usernames, paths, and filenames. Media titles or personal details in ordinary prose may remain, so check the preview below.")
                 }
 
                 SwiftUI.Section {
                     Button {
                         PlatformPasteboard.copy(reportText)
+                        openedIssue = true
                         openURL(githubIssueURL)
                     } label: {
                         Label("Open a GitHub issue", systemImage: "ant")
+                    }
+                    .accessibilityIdentifier("feedback.openIssue")
+                    if openedIssue {
+                        Label("The full report is also on your clipboard, in case you want to paste it over the shortened one in the form.",
+                              systemImage: "doc.on.clipboard")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("feedback.clipboardNote")
                     }
 
                     Button {
@@ -196,7 +181,7 @@ struct FeedbackSheet: View {
                         Label("Share report…", systemImage: "square.and.arrow.up")
                     }
                 } footer: {
-                    Text("Open a GitHub issue fills in the form with your description and versions, attaches the report when it fits, and copies it to your clipboard either way so you can paste it into the report field. Everything in a GitHub issue is public — review the preview below first.")
+                    Text("Open a GitHub issue fills in a short form with your description, your app and device details, and the report below. You only need to press Submit. It needs a GitHub account, and everything in an issue is public. No account? Share the report to \(LabstreamLinks.supportEmailAddress) instead.")
                 }
 
                 SwiftUI.Section {
@@ -208,7 +193,7 @@ struct FeedbackSheet: View {
                     Text("Diagnostic report (exactly what is shared)")
                 }
             }
-            .navigationTitle("Send feedback")
+            .navigationTitle("Report a problem")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -224,12 +209,5 @@ struct FeedbackSheet: View {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             copied = false
         }
-    }
-
-    /// Percent-encode a query value, allowing only alphanumerics so `&`, `=`, `+`, `#`, and
-    /// spaces are all escaped (GitHub treats a bare `+` as a space, so `.urlQueryAllowed` is
-    /// not safe here).
-    private static func percentEncoded(_ value: String) -> String {
-        value.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
     }
 }

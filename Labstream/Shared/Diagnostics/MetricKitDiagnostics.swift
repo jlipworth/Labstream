@@ -115,7 +115,8 @@ final class MetricKitDiagnostics: NSObject, MXMetricManagerSubscriber, @unchecke
                 signal: crash.signal.map { "signal \($0)" },
                 terminationReason: crash.terminationReason,
                 virtualMemoryRegionInfo: crash.virtualMemoryRegionInfo,
-                callStackFrames: frames(from: crash.callStackTree)
+                callStackFrames: stack(from: crash.callStackTree).frames,
+                appBinaryUUID: stack(from: crash.callStackTree).appBinaryUUID
             ))
         }
 
@@ -124,7 +125,8 @@ final class MetricKitDiagnostics: NSObject, MXMetricManagerSubscriber, @unchecke
                 kind: .hang,
                 date: date,
                 hangDurationSeconds: hang.hangDuration.converted(to: .seconds).value,
-                callStackFrames: frames(from: hang.callStackTree)
+                callStackFrames: stack(from: hang.callStackTree).frames,
+                appBinaryUUID: stack(from: hang.callStackTree).appBinaryUUID
             ))
         }
 
@@ -139,52 +141,12 @@ final class MetricKitDiagnostics: NSObject, MXMetricManagerSubscriber, @unchecke
         return inputs
     }
 
-    /// Pull human-readable frame strings out of MetricKit's call-stack tree. The tree is delivered
-    /// as JSON; we decode the minimal shape we need (binary name + symbol/offset) rather than
-    /// depend on the private object graph. Symbol names are the signal; redaction happens later.
-    private static func frames(from tree: MXCallStackTree) -> [String] {
-        guard let decoded = try? JSONDecoder().decode(CallStackTreeJSON.self, from: tree.jsonRepresentation()) else {
-            return []
-        }
-        var out: [String] = []
-        for root in decoded.callStacks ?? [] {
-            collect(root.callStackRootFrames, into: &out)
-        }
-        return out
+    /// The app executable's name, as MetricKit reports it in `binaryName`.
+    private static let appBinaryName = Bundle.main.executableURL?.lastPathComponent
+
+    private static func stack(from tree: MXCallStackTree) -> MetricKitCallStackParser.Stack {
+        MetricKitCallStackParser.stack(fromJSON: tree.jsonRepresentation(), appBinaryName: appBinaryName)
     }
-
-    private static func collect(_ frames: [CallStackFrameJSON]?, into out: inout [String]) {
-        for frame in frames ?? [] {
-            var label = frame.binaryName ?? "?"
-            if let symbol = frame.symbolName, !symbol.isEmpty {
-                label += " \(symbol)"
-                if let offset = frame.offsetIntoSymbolInBytes {
-                    label += " +\(offset)"
-                }
-            } else if let address = frame.address {
-                label += " 0x\(String(address, radix: 16))"
-            }
-            out.append(label)
-            collect(frame.subFrames, into: &out)
-        }
-    }
-}
-
-/// Minimal decode of `MXCallStackTree.jsonRepresentation()`. MetricKit's documented JSON keys.
-private struct CallStackTreeJSON: Decodable {
-    let callStacks: [CallStackJSON]?
-}
-
-private struct CallStackJSON: Decodable {
-    let callStackRootFrames: [CallStackFrameJSON]?
-}
-
-private struct CallStackFrameJSON: Decodable {
-    let binaryName: String?
-    let symbolName: String?
-    let offsetIntoSymbolInBytes: Int?
-    let address: UInt64?
-    let subFrames: [CallStackFrameJSON]?
 }
 
 private extension JSONDecoder {

@@ -71,13 +71,16 @@ administer or are authorized to access**. Labstream is designed to collect as li
 
 ## Diagnostic reports
 
-When you tap **Send feedback to developer**, **Copy diagnostic report**, or
+When you tap **Report a problem**, **Copy diagnostic report**, or
 **Export diagnostic report file** (Copy and Export are available on visionOS,
-iPhone, iPad, and Mac; Apple TV uses the feedback/GitHub handoff), Labstream includes safe app/server
-product/version/build information, platform and safely redacted app identity,
+iPhone, iPad, and Mac; Apple TV uses the report/GitHub handoff), Labstream includes safe app/server
+product/version/build information, the install source (App Store, TestFlight, or development
+build), the device model code (for example `iPhone17,1`; the same for every unit of that model),
+platform and safely redacted app identity,
 backend and server product (plus version where available), connection scheme, selected quality
 settings, Adaptive Bitrate state, download/storage state on download-capable products, a recent
-playback snapshot when available, passive redacted MetricKit summaries when present, and up to 80 recent
+playback snapshot when available, passive redacted MetricKit summaries when present (for a crash
+or hang: positions in the app's own code, never memory contents), and up to 80 recent
 redacted events from the current process when diagnostic logging was enabled. The diagnostics API and report
 renderer are designed to omit sensitive values such as Plex/Jellyfin/Emby tokens,
 client identifiers, hostnames/IP addresses, full URLs, usernames, library paths,

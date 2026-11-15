@@ -202,7 +202,7 @@ Start with [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md). In short:
 
 ## Privacy and bug reports
 
-Labstream does not automatically send analytics or diagnostics to the developer. If something breaks, the app can generate a local redacted diagnostic report that you review before posting to GitHub or emailing [support@labstream.app](mailto:support@labstream.app). The optional project-operated review/demo service, and anything you choose to send, are covered in the [Privacy Policy](PRIVACY.md).
+**Bug reports and feedback are wanted.** Labstream does not automatically send analytics or diagnostics to the developer, so a report from you is the only way a problem reaches the project, and every one is read. In the app, tap **Report a problem** (on the playback failure card, in Settings ▸ About, or under Help on Mac): it opens a short GitHub form with your app, device and server details and a redacted diagnostic report already filled in, which you review before posting. No GitHub account? Email [support@labstream.app](mailto:support@labstream.app). The optional project-operated review/demo service, and anything you choose to send, are covered in the [Privacy Policy](PRIVACY.md).
 
 - Bug guide: [`docs/REPORTING-BUGS.md`](docs/REPORTING-BUGS.md)
 - Bug form: <https://github.com/jlipworth/Labstream/issues/new?template=bug_report.yml>

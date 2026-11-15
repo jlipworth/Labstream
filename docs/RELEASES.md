@@ -16,11 +16,13 @@ plus the work integrated on the same branch: iPhone Duo support and the Xcode 27
 ([#419](https://github.com/jlipworth/Labstream/issues/419)), the iOS player and Stats rework,
 Emby copy-lane fixes, bounded headless codec regression testing and Mac navigation fixes.
 
-The latest recorded processed distribution is **1.8.0 (build 1656)** for all four platforms,
-archived on 2026-11-12 from clean `main` commit `9f1285c9`. It adds the labstream.app links (#440)
-and the label-colored selected tab on iPhone and iPad (#443) to build 1655. It processed to
-**VALID**, reached **IN_BETA_TESTING** and is in the **Labstream Internal** TestFlight group. Later
-that day it was selected for all four 1.8.0 App Store versions, replacing build 1655 (archived on
+The latest recorded processed distribution is **1.8.0 (build 1657)** for all four platforms,
+archived on 2026-11-14 from clean `main` commit `3647565a`. It adds the paused-queue download fixes
+(#450) and the Apple TV feedback, chapter-focus and Stats output changes (#451) to build 1656. It
+processed to **VALID**, reached **IN_BETA_TESTING** and is in the **Labstream Internal** TestFlight
+group. Later that day it was selected for all four 1.8.0 App Store versions, replacing build 1656
+(archived on 2026-11-12 from `9f1285c9`: the labstream.app links (#440) and the label-colored
+selected tab on iPhone and iPad (#443)), which had replaced build 1655 (archived on
 2026-11-05 from `b9162746`: the rebrand (#432) on top of the in-app privacy and support links (#427)
 and `downloads/overhaul` (#425)). Builds 1523–1653 were
 archived from the `downloads/overhaul` integration branch before it landed (uploaded with
@@ -28,12 +30,12 @@ archived from the `downloads/overhaul` integration branch before it landed (uplo
 
 On 2026-11-05 the four App Store Connect version drafts were renamed from 1.7.2 to **1.8.0**, and
 **1.8.0 (build 1654)** was selected for each platform; later that day **1.8.0 (build 1655)**, with the
-new icons, replaced it on all four, and on 2026-11-12 **1.8.0 (build 1656)** replaced that. 1.7.2 was never submitted or released.
+new icons, replaced it on all four, and on 2026-11-12 **1.8.0 (build 1656)** replaced that, then on 2026-11-14 **1.8.0 (build 1657)**. 1.7.2 was never submitted or released.
 Nothing has been submitted for review. The previous release was **1.6.1 (build 2)** at
 `abd1ddcac351`.
 
 `main` is squash-merged, so its commit count (the `--build-number auto` value) is about 140 below
-the integration-branch builds. Until the commit count passes 1656, pass an explicit
+the integration-branch builds. Until the commit count passes 1657, pass an explicit
 `--build-number` above the last upload; App Store Connect rejects a lower build number for the same
 version. Keep the source version and the processed
 binary version separate when reporting release status. 1.8.0 device acceptance is tracked in
@@ -42,10 +44,10 @@ runtime client identity reads the bundle version and falls back to `0.0.0`.
 
 | Product | Current source | Latest processed (internal TestFlight) | Selected for the App Store version | Open acceptance |
 | --- | --- | --- | --- | --- |
-| Apple Vision Pro (`Labstream`) | 1.8.0 (build 2) | 1.8.0 (build 1656) | 1.8.0 (build 1656) | Physical TestFlight acceptance and review access. |
-| iPhone and iPad (`LabstreamMobile`) | 1.8.0 (build 2) | 1.8.0 (build 1656) | 1.8.0 (build 1656) | Physical iPhone and iPad acceptance; Duo App Store screenshots. The maintainer has tested on a physical iPhone Duo (the 1649–1653 player-menu changes came from that testing). |
-| Apple TV (`LabstreamTV`) | 1.8.0 (build 2) | 1.8.0 (build 1656) | 1.8.0 (build 1656) | Physical Apple TV acceptance. |
-| Mac (`LabstreamMac`) | 1.8.0 (build 2) | 1.8.0 (build 1656) | 1.8.0 (build 1656) | Sandbox and live-host acceptance. A 1.6.1 (build 2) TestFlight install passed launch and receipt/signature checks; no later Mac TestFlight install is recorded. |
+| Apple Vision Pro (`Labstream`) | 1.8.0 (build 2) | 1.8.0 (build 1657) | 1.8.0 (build 1657) | Physical TestFlight acceptance and review access. |
+| iPhone and iPad (`LabstreamMobile`) | 1.8.0 (build 2) | 1.8.0 (build 1657) | 1.8.0 (build 1657) | Physical iPhone and iPad acceptance; Duo App Store screenshots. The maintainer has tested on a physical iPhone Duo (the 1649–1653 player-menu changes came from that testing). |
+| Apple TV (`LabstreamTV`) | 1.8.0 (build 2) | 1.8.0 (build 1657) | 1.8.0 (build 1657) | Physical Apple TV acceptance. |
+| Mac (`LabstreamMac`) | 1.8.0 (build 2) | 1.8.0 (build 1657) | 1.8.0 (build 1657) | Sandbox and live-host acceptance. A 1.6.1 (build 2) TestFlight install passed launch and receipt/signature checks; no later Mac TestFlight install is recorded. |
 
 ### 1.8.0 internal TestFlight builds
 
@@ -54,7 +56,7 @@ verification, and none of it is physical-device or live-backend acceptance unles
 
 | Date | Build | Commit | What it adds | Checked | Still open |
 | --- | --- | --- | --- | --- | --- |
-| 2026-11-14 | 1657 | `3647565a` | Downloads: a download added behind Pause All keeps Resume All in the toolbar, offers Resume on its row and starts on Resume All, and paused or waiting rows keep their posters ([#450](https://github.com/jlipworth/Labstream/pull/450)). Apple TV: Send feedback is a full-screen note field beside a QR code for the prefilled bug form, the Chapters menu opens on the current chapter, and Stats shows the system audio output such as "5.1 · HDMI" ([#451](https://github.com/jlipworth/Labstream/pull/451)). Internal TestFlight on all four platforms; the 1.8.0 App Store versions still use 1656. | Pre-upload validation (signing, entitlements, matching privacy manifests); iPhone hosted suite (972), iPhone UI smoke and the live Downloads-queue test on a clean simulator build; Apple TV hosted suite (416), smoke and four TV UI tests incl. feedback and chapter focus; Mac hosted suite (991); visionOS build; hermetic PMSKit; docs hygiene. | The Apple TV changes on the physical Apple TV; the detailed Stats view overflows its Apple TV panel; #404 at a limit of 1 with original files; physical acceptance (#403). |
+| 2026-11-14 | 1657 | `3647565a` | Downloads: a download added behind Pause All keeps Resume All in the toolbar, offers Resume on its row and starts on Resume All, and paused or waiting rows keep their posters ([#450](https://github.com/jlipworth/Labstream/pull/450)). Apple TV: Send feedback is a full-screen note field beside a QR code for the prefilled bug form, the Chapters menu opens on the current chapter, and Stats shows the system audio output such as "5.1 · HDMI" ([#451](https://github.com/jlipworth/Labstream/pull/451)). Internal TestFlight on all four platforms. Selected for all four 1.8.0 App Store versions on 2026-11-14, replacing 1656. | Pre-upload validation (signing, entitlements, matching privacy manifests); iPhone hosted suite (972), iPhone UI smoke and the live Downloads-queue test on a clean simulator build; Apple TV hosted suite (416), smoke and four TV UI tests incl. feedback and chapter focus; Mac hosted suite (991); visionOS build; hermetic PMSKit; docs hygiene. | The Apple TV changes on the physical Apple TV; the detailed Stats view overflows its Apple TV panel; #404 at a limit of 1 with original files; physical acceptance (#403). |
 | 2026-11-12 | 1656 | `9f1285c9` | The app's and the store listing's privacy, support and marketing links point at labstream.app ([#440](https://github.com/jlipworth/Labstream/pull/440)); the selected tab on iPhone and iPad is label color, because amber was unreadable over warm artwork under the floating tab bar ([#443](https://github.com/jlipworth/Labstream/pull/443)). Selected for all four 1.8.0 App Store versions on 2026-11-12, replacing 1655. | Pre-upload validation (signing, entitlements, matching privacy manifests); for #443 a clean iPhone-simulator build with a live review-catalog capture and the `mobile-hosted`, `mobile-ui-smoke` and `duo-ui-smoke` lanes; hermetic PMSKit; docs hygiene. | The tab change on iPad and in dark appearance; tapping the links on device; physical acceptance (#403). |
 | 2026-11-05 | 1655 | `b9162746` | Rebrand ([#432](https://github.com/jlipworth/Labstream/pull/432)): a white Inter Black L on a black tile for every app icon (Icon Composer for iPhone/iPad and Mac; regenerated visionOS and tvOS image stacks and Top Shelf art), the in-app glyph and the sign-in header; brand colors become black and white, with amber kept as a UI color only. Selected for all four 1.8.0 App Store versions, replacing 1654. | Pre-upload validation (signing, entitlements, matching privacy manifests); `generate-brand-assets.py --check`; quiet-machine Mac hosted suite 989/990 (one intermittent offline-subtitle test, [#436](https://github.com/jlipworth/Labstream/issues/436)). | Owner device check of the iPhone/iPad clear and tinted icons, visionOS icon parallax and Apple TV focus parallax; physical acceptance (#403). |
 | 2026-11-05 | 1654 | `27b6bf5a` | First 1.8.0 build from `main`: everything above plus in-app Privacy Policy, Support and support-email links in Settings ▸ About and on the sign-in screen, a QR sheet on Apple TV and the Mac Help menu ([#427](https://github.com/jlipworth/Labstream/pull/427)). Selected for all four 1.8.0 App Store versions. | Four-platform builds, Mac hosted suite, hermetic PMSKit, iPhone/iPad/Apple TV simulator screenshots of the new links, docs hygiene, pre-upload validation. | Physical-device acceptance (#403); tapping the links and the Apple TV QR sheet. |
@@ -464,3 +466,11 @@ items not seen before (`--all` ignores it; `--since 7d` widens the window). `--l
 Review text, nicknames, tester emails, and logs are personal data: never paste them into issues,
 commits, or public docs. Endpoints that return 403/404 (common before the app is public) are listed
 as unavailable rather than failing the run. See [Scripts](SCRIPTS.md).
+
+`scripts/feedback-triage.py draft` turns that digest into private issue drafts, one per TestFlight
+feedback item and review, with suggested labels. Write a title and a summary in your own words,
+then `scripts/feedback-triage.py file <draft> --yes` creates the issue from the public part only.
+`scripts/feedback-triage.py label --yes` adds platform and backend labels to issues that arrived
+through the app's **Report a problem** form. For a crash in such a report, run
+`scripts/symbolicate-report.py --archive <the build's .xcarchive>` on the pasted report to turn
+the app's `Labstream +0x…` frames into function names.

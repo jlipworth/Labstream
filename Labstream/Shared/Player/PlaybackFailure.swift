@@ -51,7 +51,7 @@ struct PlaybackFailure: LocalizedError, Equatable, Sendable {
         case .priorSessionStopUnconfirmed:
             explanation = "The previous Emby stream could not be confirmed stopped. Check the server, then tap Retry."
         case .unknown:
-            explanation = "Playback failed for an unknown reason. Tap Retry; if it fails again, share this error code and app diagnostics."
+            explanation = "Playback failed for an unknown reason. Tap Retry; if it fails again, tap Report a problem."
         }
         let status = httpStatus.map { " · HTTP \($0)" } ?? ""
         return "\(explanation) [\(code.rawValue)\(status)]"

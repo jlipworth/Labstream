@@ -53,21 +53,36 @@ The redaction layer runs when fields are constructed and when reports are render
 
 A report may include:
 
-- app version/build and OS/device class;
+- app version/build, install source (App Store, TestFlight, or development build), OS, device
+  class, and device model code (`hw.machine`, for example `iPhone17,1`: shared by every unit of
+  that model, so not a device identifier);
 - active backend;
-- server product/version where safe;
+- server product and version. Plex reports its version at discovery. For Jellyfin and Emby the
+  report screen asks the signed-in server's unauthenticated `/System/Info/Public` once when it
+  opens (the Copy and Export buttons do not). The version bypasses the general redactor, which
+  reads a four-part version such as `4.8.11.0` as an IPv4 address; it is instead cut at the
+  first character that is not a letter, digit, dot or hyphen and capped at 24 characters;
 - connection scheme, not host;
 - selected quality settings;
 - Adaptive Bitrate state;
 - exact download counts and queue state, plus bucketed storage totals and conservative
   orphan-candidate counts;
 - recent playback snapshot;
-- passive redacted MetricKit crash/hang/CPU/disk-write diagnostic summaries;
+- passive redacted MetricKit crash/hang/CPU/disk-write diagnostic summaries. A crash or hang
+  keeps one call stack (the crashed thread, or the heaviest sampled path) as up to 16
+  `Binary +0x<offset>` frames plus the app binary's UUID. MetricKit supplies no symbol names and
+  the stored offsets are positions in the shipped binary, not memory addresses; a maintainer
+  resolves them against that build's dSYM with `scripts/symbolicate-report.py`;
 - up to 80 recent redacted events from the current process ring.
 
 Download fields are absent on tvOS, which does not compile the Downloads capability. MetricKit
 summaries are unavailable on tvOS and are collected independently of the opt-in event-logging
 toggle on other platforms.
+
+**Report a problem** opens a prefilled GitHub form (`app_report.yml`). The link carries the
+redacted note, a one-line environment summary, the report's head, and as many of the newest
+events as fit in 6,000 characters (`FeedbackIssueLink`); the complete report goes to the
+clipboard. The Apple TV QR code carries the note and the environment line only.
 
 The in-app report does not reload the rotating JSONL files. Those files are collected only by the
 repository's explicit evidence tooling, and still require the user to review anything before sharing it.
