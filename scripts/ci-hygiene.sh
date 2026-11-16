@@ -296,9 +296,10 @@ if [[ -f mkdocs.yml ]]; then
   printf '== Published documentation ==\n'
   [[ -f requirements.txt ]] || fail "mkdocs.yml present but requirements.txt missing; docs build cannot run"
   uv run --with-requirements requirements.txt mkdocs build --strict
-  # labstream.app publishes the same PRIVACY.md and SUPPORT.md; these copies must name it canonical
-  # (front matter in docs/privacy.md and docs/support.md, applied by scripts/mkdocs_canonical_hook.py).
-  for page in privacy support; do
+  # labstream.app publishes the same PRIVACY.md, SUPPORT.md and CREDITS.md; these copies must name it
+  # canonical (front matter in docs/privacy.md, docs/support.md and docs/credits.md, applied by
+  # scripts/mkdocs_canonical_hook.py).
+  for page in privacy support credits; do
     grep -qF "<link rel=\"canonical\" href=\"https://labstream.app/$page/\">" "site/$page/index.html" \
       || fail "site/$page/index.html is missing its https://labstream.app/$page/ canonical tag"
   done

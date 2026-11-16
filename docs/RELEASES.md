@@ -20,10 +20,9 @@ The latest recorded processed distribution is **1.8.0 (build 1659)** for all fou
 archived on 2026-11-14 from clean `main` commit `b32e0c77`. It adds hold-to-scrub on the Apple TV
 timeline (#459) to build 1658, which added the Report a problem changes (#456) from `41276852`. It
 processed to **VALID**, reached **IN_BETA_TESTING** and is in the **Labstream Internal** TestFlight
-group. Neither 1658 nor 1659 has been selected for the App Store versions, which
-still use build 1657 (archived on 2026-11-14 from `3647565a`: the paused-queue download fixes (#450)
-and the Apple TV feedback, chapter-focus and Stats output changes (#451)). Build 1657 was selected
-for all four 1.8.0 App Store versions the same day, replacing build 1656
+group. Build 1659 was selected for all four 1.8.0 App Store versions on 2026-11-15, replacing
+build 1657 (archived on 2026-11-14 from `3647565a`: the paused-queue download fixes (#450)
+and the Apple TV feedback, chapter-focus and Stats output changes (#451)), which had replaced build 1656
 (archived on 2026-11-12 from `9f1285c9`: the labstream.app links (#440) and the label-colored
 selected tab on iPhone and iPad (#443)), which had replaced build 1655 (archived on
 2026-11-05 from `b9162746`: the rebrand (#432) on top of the in-app privacy and support links (#427)
@@ -47,10 +46,10 @@ runtime client identity reads the bundle version and falls back to `0.0.0`.
 
 | Product | Current source | Latest processed (internal TestFlight) | Selected for the App Store version | Open acceptance |
 | --- | --- | --- | --- | --- |
-| Apple Vision Pro (`Labstream`) | 1.8.0 (build 2) | 1.8.0 (build 1659) | 1.8.0 (build 1657) | Physical TestFlight acceptance and review access. |
-| iPhone and iPad (`LabstreamMobile`) | 1.8.0 (build 2) | 1.8.0 (build 1659) | 1.8.0 (build 1657) | Physical iPhone and iPad acceptance; Duo App Store screenshots. The maintainer has tested on a physical iPhone Duo (the 1649–1653 player-menu changes came from that testing). |
-| Apple TV (`LabstreamTV`) | 1.8.0 (build 2) | 1.8.0 (build 1659) | 1.8.0 (build 1657) | Physical Apple TV acceptance. |
-| Mac (`LabstreamMac`) | 1.8.0 (build 2) | 1.8.0 (build 1659) | 1.8.0 (build 1657) | Sandbox and live-host acceptance. A 1.6.1 (build 2) TestFlight install passed launch and receipt/signature checks; no later Mac TestFlight install is recorded. |
+| Apple Vision Pro (`Labstream`) | 1.8.0 (build 2) | 1.8.0 (build 1659) | 1.8.0 (build 1659) | Physical TestFlight acceptance and review access. |
+| iPhone and iPad (`LabstreamMobile`) | 1.8.0 (build 2) | 1.8.0 (build 1659) | 1.8.0 (build 1659) | Physical iPhone and iPad acceptance; Duo App Store screenshots. The maintainer has tested on a physical iPhone Duo (the 1649–1653 player-menu changes came from that testing). |
+| Apple TV (`LabstreamTV`) | 1.8.0 (build 2) | 1.8.0 (build 1659) | 1.8.0 (build 1659) | Physical Apple TV acceptance. |
+| Mac (`LabstreamMac`) | 1.8.0 (build 2) | 1.8.0 (build 1659) | 1.8.0 (build 1659) | Sandbox and live-host acceptance. A 1.6.1 (build 2) TestFlight install passed launch and receipt/signature checks; no later Mac TestFlight install is recorded. |
 
 ### 1.8.0 internal TestFlight builds
 
@@ -382,6 +381,13 @@ and App Store Connect state before relying on them for a new submission.
       Apple's current
       [screenshot specifications](https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications)
       before capture because requirements can change.
+      On 2026-11-15 the placeholders were replaced through `scripts/asc-screenshots.py` with
+      four live-catalog images each (Home, Movies, details, playback) for iPhone 6.3-inch and
+      6.9-inch, iPad 13-inch (landscape), Apple TV, Apple Vision Pro and Mac, captured against
+      review catalog `open-films-v6` and approved by the release owner. iPhone Duo sets are not
+      uploaded (not required until April 2027; only the outer display is captured). The film
+      credits are published at <https://labstream.app/credits/> and linked from each description;
+      the descriptions in App Store Connect still need `asc-metadata.py push`.
 - [ ] Final screenshots show only licensed demo media and contain no account, server, network, or
       personal information. At minimum, cover Home, library browsing, a title detail surface, and
       playback; add Downloads only on platforms that ship it and platform-specific features only
