@@ -85,73 +85,23 @@ struct SearchView: View {
         }
     }
 
-    /// `.searchable`'s navigation-owned search field can display the tvOS keyboard without
-    /// retaining an editable first responder. The focus engine then moves across letters, but
-    /// Select is discarded and the bound query never changes. A real `TextField` gives tvOS one
-    /// explicit input owner while retaining the system keyboard, dictation, and Remote app input.
+    /// Every platform uses the system search field. On Apple TV that is the inline keyboard row
+    /// with live results below it, so dictation needs no Done step. tvOS has no
+    /// `searchFocused`; focus reaches the keyboard through the focus engine.
     @ViewBuilder
     private var searchSurface: some View {
-        #if os(tvOS)
-        VStack(spacing: 0) {
-            HStack(spacing: 18) {
-                Image(systemName: "magnifyingglass")
-                    .font(.title2.weight(.medium))
-                    .foregroundStyle(.secondary)
-
-                TextField("Movies, shows, music…", text: queryBinding)
-                    .focused($searchFieldFocused)
-                    .textFieldStyle(.plain)
-                    .font(.title3)
-                    .accessibilityIdentifier("tv.search.field")
-
-                if showsClearSearchButton {
-                    Button {
-                        clearSearch()
-                        searchFieldFocused = true
-                    } label: {
-                        Label("Clear search", systemImage: "xmark.circle.fill")
-                            .labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Clear search")
-                }
-            }
-            .padding(.horizontal, 28)
-            .frame(width: 920, height: 70)
-            .background(.thinMaterial, in: Capsule())
-            .padding(.top, 28)
-            .padding(.bottom, 12)
-
-            searchResultsContent
-        }
-        .task {
-            // Selecting the Search tab should immediately make the system keyboard usable.
-            // Defer one run-loop turn so the tab transition has installed this field.
-            await Task.yield()
-            searchFieldFocused = true
-        }
-        #if DEBUG
-        // TVUI-004 evidence: log binding-level transitions so a manual session shows
-        // whether keyboard Selects ever reach the binding (query length only, never text).
-        .onChange(of: queryText) { _, value in
-            NSLog("%@", "TVSearchEvidence: query length -> \(value.count)")
-        }
-        .onChange(of: searchFieldFocused) { _, focused in
-            NSLog("%@", "TVSearchEvidence: field focused -> \(focused)")
-        }
-        #endif
-        #else
         Group {
             if externalQuery == nil {
                 searchResultsContent
                     .searchable(text: queryBinding, placement: Self.searchFieldPlacement,
                                 prompt: "Movies, shows, music…")
+                    #if !os(tvOS)
                     .searchFocused($searchFieldFocused)
+                    #endif
             } else {
                 searchResultsContent
             }
         }
-        #endif
     }
 
     private var searchResultsContent: some View {

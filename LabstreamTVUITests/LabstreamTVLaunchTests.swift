@@ -89,6 +89,49 @@ final class LabstreamTVLaunchTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Continue Watching"].waitForExistence(timeout: 3))
     }
 
+    /// Found on a physical Apple TV, 2026-11-15: from a result's detail page, going back up to the
+    /// tab bar and pressing Select on Search dropped focus onto the detail's Play button instead
+    /// of returning to Search.
+    func testSelectingSearchTabFromAPushedResultReturnsToSearch() throws {
+        let app = makeApp(backend: "plex", fixture: "browse")
+        app.launchArguments += ["--ui-testing-search-query", "Orbit"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["The Long Orbit"].waitForExistence(timeout: 5))
+
+        XCUIRemote.shared.press(.right)
+        XCUIRemote.shared.press(.right)
+        let field = app.searchFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "Search shows the system search field")
+        let result = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "The Long Orbit")).firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 8), "fixture search should return the film")
+        attachScreen(named: "search with results", app: app)
+
+        // Tab bar → keyboard row → results.
+        for _ in 0..<5 where !result.hasFocus {
+            XCUIRemote.shared.press(.down)
+            usleep(600_000)
+        }
+        XCTAssertTrue(result.hasFocus, "Down should reach the first result")
+        XCUIRemote.shared.press(.select)
+        let detail = app.staticTexts["Some signals should stay distant."]
+        XCTAssertTrue(detail.waitForExistence(timeout: 5))
+
+        let searchTab = app.tabBars.buttons["Search"].firstMatch
+        for _ in 0..<6 where !searchTab.hasFocus {
+            XCUIRemote.shared.press(.up)
+            usleep(600_000)
+        }
+        XCTAssertTrue(searchTab.hasFocus, "Up should reach the Search tab")
+        XCUIRemote.shared.press(.select)
+
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: detail)
+        let outcome = XCTWaiter().wait(for: [gone], timeout: 5)
+        attachScreen(named: "after selecting search tab", app: app)
+        XCTAssertEqual(outcome, .completed, "Select on the Search tab should leave the detail page")
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "the search field should be back on screen")
+        XCTAssertTrue(result.exists, "the query and its results should still be there")
+    }
+
     /// Regression for the 2026-07-21 manual-session crash: SwiftUI DynamicContainer fatal
     /// error (lazy-container item removal) fired on a Down row change while browsing Home.
     /// Replays that session's shape — sweep right along a rail, back left, then repeated
@@ -128,8 +171,8 @@ final class LabstreamTVLaunchTests: XCTestCase {
     /// note field beside a QR code for the prefilled report form; Menu returns to Settings.
     func testSendFeedbackShowsAQRCodeAndCloses() throws {
         let app = makeApp(backend: "plex", fixture: "browse")
-        // The remote cannot reliably reach the row in the simulator (the tab bar walk stops in
-        // the Search field and the Settings form is long and lazy), so a debug flag opens it.
+        // The remote cannot reliably reach the row in the simulator (the Settings form is long
+        // and lazy), so a debug flag opens it.
         app.launchArguments += ["--ui-testing-present-feedback"]
         app.launch()
         let qr = app.descendants(matching: .any)["feedback.qr"]

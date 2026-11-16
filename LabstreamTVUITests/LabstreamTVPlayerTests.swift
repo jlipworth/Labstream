@@ -121,10 +121,9 @@ final class LabstreamTVPlayerTests: XCTestCase {
         attachScreen(named: "after hidden-chrome press sweep", app: app)
     }
 
-    /// TVUI-004 regression guard: drives the REAL Search tab (browse fixture hosts the production
-    /// RootView/SearchView) with the same remote presses as the original failing manual session —
-    /// focus the field, Select to open the keyboard, Select on a letter — and requires the
-    /// letter to land in the field. It covers every layer the retired bisection fixtures replicated.
+    /// TVUI-004 regression guard: drives the real Search tab (the browse fixture hosts the
+    /// production RootView/SearchView) with remote presses only: move down onto the system
+    /// search keyboard, Select a letter, and require the letter to land in the query.
     func testLiveSearchTabSystemKeyboardInsertsLetter() throws {
         let app = makeBrowseApp()
         app.launch()
@@ -134,22 +133,18 @@ final class LabstreamTVPlayerTests: XCTestCase {
         // (tvOS tab bars switch selection on focus).
         XCUIRemote.shared.press(.right)
         XCUIRemote.shared.press(.right)
-        let field = app.textFields["tv.search.field"]
+        let field = app.searchFields.firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 5),
-                      "focusing the Search tab should mount SearchView's field")
-        // SearchView auto-focuses the field on appearance; fall back to a Down press.
-        if !waitForFocus(field, timeout: 4) {
-            XCUIRemote.shared.press(.down)
-            XCTAssertTrue(waitForFocus(field, timeout: 3), "field should take focus")
-        }
+                      "focusing the Search tab should mount the system search field")
 
-        XCUIRemote.shared.press(.select)
-        let focusedKey = app.keys.matching(NSPredicate(format: "hasFocus == true")).firstMatch
-        if !focusedKey.waitForExistence(timeout: 4),
-           !app.keys.firstMatch.waitForExistence(timeout: 2) {
-            XCTAssertTrue(waitForFocus(field, timeout: 4),
-                          "after Select the keyboard should be up")
+        // tvOS reports focus on the keyboard as a whole, not on the highlighted key.
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+        for _ in 0..<3 where !keyboard.hasFocus {
+            XCUIRemote.shared.press(.down)
+            usleep(600_000)
         }
+        XCTAssertTrue(keyboard.hasFocus, "Down should reach the keyboard row")
         attachScreen(named: "live search keyboard", app: app)
 
         XCUIRemote.shared.press(.select)

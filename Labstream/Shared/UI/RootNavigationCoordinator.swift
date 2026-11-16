@@ -91,6 +91,11 @@ final class RootNavigationCoordinator {
     searchPath = NavigationPath()
   }
 
+  /// Apple TV: Select was pressed on the tab that is already showing. Return to its root.
+  func tabReselected() {
+    resetPath(for: selection)
+  }
+
   func exitSearch() {
     searchPath = NavigationPath()
     selection = lastNonSearchSelection == .search ? .home : lastNonSearchSelection
