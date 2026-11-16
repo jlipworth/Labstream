@@ -82,70 +82,14 @@ struct SearchView: View {
             // a tab switch mounts this view.
             try? await Task.sleep(for: .milliseconds(50))
             searchFieldFocused = true
-            #if os(tvOS)
-            // Returning from a pushed result, the pop restores focus to the result card after
-            // this request. Ask again until the field holds focus or the pop has settled.
-            for _ in 0..<8 where !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(150))
-                if searchFieldFocused { break }
-                searchFieldFocused = true
-            }
-            #endif
         }
     }
 
-    /// `.searchable`'s navigation-owned search field can display the tvOS keyboard without
-    /// retaining an editable first responder. The focus engine then moves across letters, but
-    /// Select is discarded and the bound query never changes. A real `TextField` gives tvOS one
-    /// explicit input owner while retaining the system keyboard, dictation, and Remote app input.
+    /// Every platform uses the system search field. On Apple TV that is the inline keyboard row
+    /// with live results below it, so dictation needs no Done step. tvOS has no
+    /// `searchFocused`; focus reaches the keyboard through the focus engine.
     @ViewBuilder
     private var searchSurface: some View {
-        #if os(tvOS) && LEGACY_TV_FIELD
-        VStack(spacing: 0) {
-            // The system text field draws its own platter and focus state. It stands alone: an
-            // outer capsule behind it showed as a second, shorter bubble around the field.
-            TextField("Movies, shows, music…", text: queryBinding)
-                .focused($searchFieldFocused)
-                .font(.title3)
-                .frame(width: 920)
-                .accessibilityIdentifier("tv.search.field")
-                // Beside the field, outside its width, so the field stays centred.
-                .overlay(alignment: .trailing) {
-                    if showsClearSearchButton {
-                        Button {
-                            clearSearch()
-                            searchFieldFocused = true
-                        } label: {
-                            Label("Clear search", systemImage: "xmark")
-                                .labelStyle(.iconOnly)
-                        }
-                        .buttonBorderShape(.circle)
-                        .accessibilityLabel("Clear search")
-                        .offset(x: 92)
-                    }
-                }
-            .padding(.top, 28)
-            .padding(.bottom, 12)
-
-            searchResultsContent
-        }
-        .task {
-            // Selecting the Search tab should immediately make the system keyboard usable.
-            // Defer one run-loop turn so the tab transition has installed this field.
-            await Task.yield()
-            searchFieldFocused = true
-        }
-        #if DEBUG
-        // TVUI-004 evidence: log binding-level transitions so a manual session shows
-        // whether keyboard Selects ever reach the binding (query length only, never text).
-        .onChange(of: queryText) { _, value in
-            NSLog("%@", "TVSearchEvidence: query length -> \(value.count)")
-        }
-        .onChange(of: searchFieldFocused) { _, focused in
-            NSLog("%@", "TVSearchEvidence: field focused -> \(focused)")
-        }
-        #endif
-        #else
         Group {
             if externalQuery == nil {
                 searchResultsContent
@@ -158,7 +102,6 @@ struct SearchView: View {
                 searchResultsContent
             }
         }
-        #endif
     }
 
     private var searchResultsContent: some View {

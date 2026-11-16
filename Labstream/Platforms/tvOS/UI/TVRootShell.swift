@@ -44,8 +44,8 @@ struct PlatformRootShell: View {
       }
     }
     #if DEBUG
-    // UI tests: open Settings directly for the feedback screen. Walking the tab bar with the
-    // remote stops at Search, whose field takes focus.
+    // UI tests: open Settings directly for the feedback screen instead of walking the tab
+    // bar and the long, lazy Settings form with the remote.
     .task {
       if DebugUITestLaunchConfiguration.isEnabled,
         ProcessInfo.processInfo.arguments.contains("--ui-testing-present-feedback")
@@ -54,8 +54,8 @@ struct PlatformRootShell: View {
       }
     }
     #endif
-    // Select on the tab that is already showing returns to that tab's root; on Search it
-    // also puts focus back in the field. tvOS reports nothing for this press on its own.
+    // Select on the tab that is already showing returns to that tab's root. tvOS reports
+    // nothing for this press on its own.
     .background {
       TVTabReselectMonitor { navigation.tabReselected() }
     }
