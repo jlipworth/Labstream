@@ -468,6 +468,9 @@ background.
 - `Labstream/Shared/Diagnostics/AppDiagnostics.swift` is the opt-in app-side facade.
 - `DiagnosticFileLogSink.swift` owns the rotating local JSONL sink.
 - `DiagnosticReportArtifact.swift` owns export/share wrappers.
+- `Labstream/Platforms/tvOS/Diagnostics/` owns Apple TV's **Send log to iPhone**: the listener
+  that serves the report and event log on the local network while its screen is open. The
+  request routing and download page are `PMSKit/.../Diagnostics/DiagnosticLogShareHTTP.swift`.
 - `BrowseDiagnostics.swift` creates privacy-safe browse facts.
 - `MetricKitDiagnostics.swift` stores a bounded set of redacted crash/hang summaries for
   user-generated feedback; it does not upload them.

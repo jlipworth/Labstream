@@ -13,6 +13,9 @@ flowchart TD
   Support --> Diagnostics[Bounded opt-in diagnostic files]
 ```
 
+Apple TV has no Downloads capability, and its hardware refuses writes to Application Support, so
+its only file state is the bounded diagnostic log, kept under Caches.
+
 The versioned media root and independent authority directory have different lifetimes. Deleting a
 row or resetting an old media schema cannot erase its server-cleanup obligation. File effects and
 revisioned index outcomes are ordered through the async store/artifact contract described below;

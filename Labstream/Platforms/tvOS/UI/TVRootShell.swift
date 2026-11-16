@@ -49,6 +49,7 @@ struct PlatformRootShell: View {
     .task {
       if DebugUITestLaunchConfiguration.isEnabled,
         ProcessInfo.processInfo.arguments.contains("--ui-testing-present-feedback")
+          || ProcessInfo.processInfo.arguments.contains("--ui-testing-present-log-share")
       {
         navigation.selection = .settings
       }

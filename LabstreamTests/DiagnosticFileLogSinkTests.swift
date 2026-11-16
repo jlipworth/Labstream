@@ -72,4 +72,36 @@ struct DiagnosticFileLogSinkTests {
         #expect(FileManager.default.fileExists(
             atPath: directory.appendingPathComponent("app-diagnostics.jsonl.1").path))
     }
+
+    @Test
+    func snapshotReturnsArchivesOldestFirstIncludingBufferedEvents() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diagnostic-snapshot-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("oldest\n".utf8).write(to: directory.appendingPathComponent("app-diagnostics.jsonl.2"))
+        try Data("older\n".utf8).write(to: directory.appendingPathComponent("app-diagnostics.jsonl.1"))
+        try Data("live\n".utf8).write(to: directory.appendingPathComponent("app-diagnostics.jsonl"))
+        let sink = DiagnosticFileLogSink(
+            archiveCount: 3,
+            flushInterval: 60,
+            flushByteThreshold: 64_000,
+            directoryURL: directory)
+
+        sink.append(DiagnosticEvent(category: .playback, name: "still-buffered"))
+        let lines = String(decoding: sink.snapshot(), as: UTF8.self)
+            .split(separator: "\n").map(String.init)
+
+        #expect(lines.count == 4)
+        #expect(Array(lines.prefix(3)) == ["oldest", "older", "live"])
+        #expect(lines.last?.contains("still-buffered") == true)
+    }
+
+    @Test
+    func snapshotIsEmptyWhenNothingWasRecorded() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diagnostic-empty-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #expect(DiagnosticFileLogSink(directoryURL: directory).snapshot().isEmpty)
+    }
 }

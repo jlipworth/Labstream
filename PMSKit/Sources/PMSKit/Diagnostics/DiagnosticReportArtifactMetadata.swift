@@ -7,4 +7,6 @@ import Foundation
 public enum DiagnosticReportArtifactMetadata {
     public static let exportFilename = "Labstream-Diagnostic-Report"
     public static let feedbackFilename = "Labstream-Feedback.txt"
+    /// The raw event log Apple TV serves beside the report (`DiagnosticLogShareHTTP`).
+    public static let eventLogFilename = "Labstream-Diagnostic-Events.jsonl"
 }

@@ -71,6 +71,12 @@ enum AppDiagnostics {
         return event
     }
 
+    /// The on-disk event log as JSON lines, oldest first. It reaches further back than the
+    /// report's `maxReportEvents`, which is what a problem seen an hour into a film needs.
+    static func eventLogSnapshot() -> Data {
+        fileSink.snapshot()
+    }
+
     static func events(limit: Int? = nil) -> [DiagnosticEvent] {
         store.snapshot(limit: limit)
     }

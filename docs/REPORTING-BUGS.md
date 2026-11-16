@@ -22,6 +22,12 @@ On **Apple TV**, which has no browser, the same screen shows a QR code. Scan it 
 open the form with your note and your app, device and server details filled in. The diagnostic
 report itself is not included there (it does not fit a scannable code).
 
+To get the report off an Apple TV, open **Settings ▸ Diagnostics ▸ Send log to iPhone**. It shows
+a second QR code; scan it with an iPhone or iPad on the same network and download the
+**Diagnostic report** (the same text the other platforms copy or export) or the **Full event
+log**, which reaches further back. The link works only while that screen is open. Attach the
+file to your issue or email.
+
 **No GitHub account?** Use **Share report…** on the same screen and send it to
 [support@labstream.app](mailto:support@labstream.app), or just email a description.
 
@@ -38,7 +44,7 @@ problem you can repeat, open **Settings ▸ Diagnostics**, turn on **Enable diag
 make the problem happen once, then report it. Turn logging back off afterwards if you like.
 
 **Copy diagnostic report** and **Export diagnostic report file** in Settings ▸ Diagnostics give
-you the same report as text (not on Apple TV).
+you the same report as text. Apple TV has **Send log to iPhone** instead (see above).
 
 ### The longer form
 
