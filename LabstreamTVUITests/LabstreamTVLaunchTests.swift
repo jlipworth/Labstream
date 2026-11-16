@@ -89,6 +89,26 @@ final class LabstreamTVLaunchTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Continue Watching"].waitForExistence(timeout: 3))
     }
 
+    func testInlineSearchProbe() throws {
+        let app = makeApp(backend: "plex", fixture: "browse")
+        app.launch()
+        XCTAssertTrue(app.staticTexts["The Long Orbit"].waitForExistence(timeout: 5))
+        XCUIRemote.shared.press(.right)
+        XCUIRemote.shared.press(.right)
+        sleep(3)
+        attachScreen(named: "inline 1 tab", app: app)
+        XCUIRemote.shared.press(.down)
+        sleep(1)
+        attachScreen(named: "inline 2 down", app: app)
+        XCUIRemote.shared.press(.select)
+        sleep(1)
+        XCUIRemote.shared.press(.right)
+        XCUIRemote.shared.press(.select)
+        sleep(3)
+        attachScreen(named: "inline 3 after two letters", app: app)
+        let dump = XCTAttachment(string: app.debugDescription); dump.name = "hier.txt"; dump.lifetime = .keepAlways; add(dump)
+    }
+
     /// Found on a physical Apple TV, 2026-11-15: from a result's detail page, going back up to the
     /// tab bar and pressing Select on Search dropped focus onto the detail's Play button instead
     /// of returning to the search field.

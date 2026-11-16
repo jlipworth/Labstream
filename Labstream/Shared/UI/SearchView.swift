@@ -100,7 +100,7 @@ struct SearchView: View {
     /// explicit input owner while retaining the system keyboard, dictation, and Remote app input.
     @ViewBuilder
     private var searchSurface: some View {
-        #if os(tvOS)
+        #if os(tvOS) && LEGACY_TV_FIELD
         VStack(spacing: 0) {
             // The system text field draws its own platter and focus state. It stands alone: an
             // outer capsule behind it showed as a second, shorter bubble around the field.
@@ -151,7 +151,9 @@ struct SearchView: View {
                 searchResultsContent
                     .searchable(text: queryBinding, placement: Self.searchFieldPlacement,
                                 prompt: "Movies, shows, music…")
+                    #if !os(tvOS)
                     .searchFocused($searchFieldFocused)
+                    #endif
             } else {
                 searchResultsContent
             }
