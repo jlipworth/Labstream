@@ -82,6 +82,15 @@ struct SearchView: View {
             // a tab switch mounts this view.
             try? await Task.sleep(for: .milliseconds(50))
             searchFieldFocused = true
+            #if os(tvOS)
+            // Returning from a pushed result, the pop restores focus to the result card after
+            // this request. Ask again until the field holds focus or the pop has settled.
+            for _ in 0..<8 where !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(150))
+                if searchFieldFocused { break }
+                searchFieldFocused = true
+            }
+            #endif
         }
     }
 
@@ -93,32 +102,28 @@ struct SearchView: View {
     private var searchSurface: some View {
         #if os(tvOS)
         VStack(spacing: 0) {
-            HStack(spacing: 18) {
-                Image(systemName: "magnifyingglass")
-                    .font(.title2.weight(.medium))
-                    .foregroundStyle(.secondary)
-
-                TextField("Movies, shows, music…", text: queryBinding)
-                    .focused($searchFieldFocused)
-                    .textFieldStyle(.plain)
-                    .font(.title3)
-                    .accessibilityIdentifier("tv.search.field")
-
-                if showsClearSearchButton {
-                    Button {
-                        clearSearch()
-                        searchFieldFocused = true
-                    } label: {
-                        Label("Clear search", systemImage: "xmark.circle.fill")
-                            .labelStyle(.iconOnly)
+            // The system text field draws its own platter and focus state. It stands alone: an
+            // outer capsule behind it showed as a second, shorter bubble around the field.
+            TextField("Movies, shows, music…", text: queryBinding)
+                .focused($searchFieldFocused)
+                .font(.title3)
+                .frame(width: 920)
+                .accessibilityIdentifier("tv.search.field")
+                // Beside the field, outside its width, so the field stays centred.
+                .overlay(alignment: .trailing) {
+                    if showsClearSearchButton {
+                        Button {
+                            clearSearch()
+                            searchFieldFocused = true
+                        } label: {
+                            Label("Clear search", systemImage: "xmark")
+                                .labelStyle(.iconOnly)
+                        }
+                        .buttonBorderShape(.circle)
+                        .accessibilityLabel("Clear search")
+                        .offset(x: 92)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Clear search")
                 }
-            }
-            .padding(.horizontal, 28)
-            .frame(width: 920, height: 70)
-            .background(.thinMaterial, in: Capsule())
             .padding(.top, 28)
             .padding(.bottom, 12)
 

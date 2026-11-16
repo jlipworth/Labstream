@@ -120,6 +120,10 @@ layout code changed.
       Mac, editing the toolbar query to a new non-empty value shows its results, not the
       detail ([#334](https://github.com/jlipworth/Labstream/issues/334),
       [#335](https://github.com/jlipworth/Labstream/issues/335)).
+- [ ] Apple TV: with a search result's detail open, move up to the tab bar and press Select
+      on Search. The detail closes and focus lands in the search field (Select on any other
+      current tab returns to that tab's root). Moving back Down instead keeps the detail. The
+      search field shows one platter, not a second capsule behind it.
 - [ ] Detail refreshes authoritative metadata, keeps the selected media version valid, and
       applies watched/unwatched changes to subsequent browse state.
 - [ ] Play and Download operate on the leaf/version shown in detail, not its show/season

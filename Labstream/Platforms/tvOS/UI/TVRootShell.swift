@@ -54,6 +54,11 @@ struct PlatformRootShell: View {
       }
     }
     #endif
+    // Select on the tab that is already showing returns to that tab's root; on Search it
+    // also puts focus back in the field. tvOS reports nothing for this press on its own.
+    .background {
+      TVTabReselectMonitor { navigation.tabReselected() }
+    }
     .safeAreaInset(edge: .bottom) {
       if musicPlayer.current != nil {
         MiniPlayerBar(presentation: $navigation.nowPlayingPresentation)

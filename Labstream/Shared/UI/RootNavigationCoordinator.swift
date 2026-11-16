@@ -91,6 +91,16 @@ final class RootNavigationCoordinator {
     searchPath = NavigationPath()
   }
 
+  /// Apple TV: Select was pressed on the tab that is already showing. Return to its root, and
+  /// on Search hand focus back to the field instead of leaving it on the pushed page.
+  func tabReselected() {
+    let wasPushed = canNavigateBack(in: selection)
+    resetPath(for: selection)
+    if selection == .search, wasPushed {
+      searchFocusRequest += 1
+    }
+  }
+
   func exitSearch() {
     searchPath = NavigationPath()
     selection = lastNonSearchSelection == .search ? .home : lastNonSearchSelection
