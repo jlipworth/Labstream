@@ -16,7 +16,13 @@ plus the work integrated on the same branch: iPhone Duo support and the Xcode 27
 ([#419](https://github.com/jlipworth/Labstream/issues/419)), the iOS player and Stats rework,
 Emby copy-lane fixes, bounded headless codec regression testing and Mac navigation fixes.
 
-The latest recorded processed distribution is **1.8.0 (build 1659)** for all four platforms,
+An Apple TV-only build, **1.8.0 (build 1660)**, was archived on 2026-11-15 from clean `main` commit
+`501e7024`. It moves Apple TV search to the system inline keyboard and makes Select on the current
+tab return to that tab's root (#464). It processed to **VALID**, reached **IN_BETA_TESTING** and is
+in the **Labstream Internal** TestFlight group. It is not selected for the App Store version, and
+the other three platforms stay on build 1659.
+
+The latest recorded processed distribution for all four platforms is **1.8.0 (build 1659)**,
 archived on 2026-11-14 from clean `main` commit `b32e0c77`. It adds hold-to-scrub on the Apple TV
 timeline (#459) to build 1658, which added the Report a problem changes (#456) from `41276852`. It
 processed to **VALID**, reached **IN_BETA_TESTING** and is in the **Labstream Internal** TestFlight
@@ -37,7 +43,7 @@ Nothing has been submitted for review. The previous release was **1.6.1 (build 2
 `abd1ddcac351`.
 
 `main` is squash-merged, so its commit count (the `--build-number auto` value) is about 140 below
-the integration-branch builds. Until the commit count passes 1659, pass an explicit
+the integration-branch builds. Until the commit count passes 1660, pass an explicit
 `--build-number` above the last upload; App Store Connect rejects a lower build number for the same
 version. Keep the source version and the processed
 binary version separate when reporting release status. 1.8.0 device acceptance is tracked in
@@ -48,7 +54,7 @@ runtime client identity reads the bundle version and falls back to `0.0.0`.
 | --- | --- | --- | --- | --- |
 | Apple Vision Pro (`Labstream`) | 1.8.0 (build 2) | 1.8.0 (build 1659) | 1.8.0 (build 1659) | Physical TestFlight acceptance and review access. |
 | iPhone and iPad (`LabstreamMobile`) | 1.8.0 (build 2) | 1.8.0 (build 1659) | 1.8.0 (build 1659) | Physical iPhone and iPad acceptance; Duo App Store screenshots. The maintainer has tested on a physical iPhone Duo (the 1649–1653 player-menu changes came from that testing). |
-| Apple TV (`LabstreamTV`) | 1.8.0 (build 2) | 1.8.0 (build 1659) | 1.8.0 (build 1659) | Physical Apple TV acceptance. |
+| Apple TV (`LabstreamTV`) | 1.8.0 (build 2) | 1.8.0 (build 1660) | 1.8.0 (build 1659) | Physical Apple TV acceptance. |
 | Mac (`LabstreamMac`) | 1.8.0 (build 2) | 1.8.0 (build 1659) | 1.8.0 (build 1659) | Sandbox and live-host acceptance. A 1.6.1 (build 2) TestFlight install passed launch and receipt/signature checks; no later Mac TestFlight install is recorded. |
 
 ### 1.8.0 internal TestFlight builds
@@ -58,6 +64,7 @@ verification, and none of it is physical-device or live-backend acceptance unles
 
 | Date | Build | Commit | What it adds | Checked | Still open |
 | --- | --- | --- | --- | --- | --- |
+| 2026-11-15 | 1660 | `501e7024` | Apple TV only: search uses the system inline keyboard with live results, so dictation needs no Done step; Select on the tab that is already showing returns to its root ([#464](https://github.com/jlipworth/Labstream/pull/464)). Internal TestFlight on Apple TV. Not selected for the App Store version. | Pre-upload validation (signing, entitlements; the four-platform privacy manifest comparison is skipped for a single platform); Apple TV simulator UI tests for the Search-tab press, keyboard letter entry, Home browse, feedback screen and launch; docs hygiene. | Dictation and the physical Siri Remote on the new keyboard; the tvOS hosted suite was not rerun; everything open on 1659; physical acceptance (#403). |
 | 2026-11-14 | 1659 | `b32e0c77` | Apple TV: holding Left or Right on the player timeline keeps scrubbing and speeds up (10, 30, 60, then 120 seconds a step) instead of moving one step ([#459](https://github.com/jlipworth/Labstream/pull/459)). Internal TestFlight on all four platforms. Not selected for the App Store versions. | Pre-upload validation (signing, entitlements, matching privacy manifests); clean tvOS simulator build with the Apple TV player (7) and Stats (1) UI tests, including the new hold test, which failed before the fix; docs hygiene. | The hold on the physical Siri Remote and its pace; a hold that starts with the controls hidden; the tvOS hosted suite was not rerun; everything open on 1658; physical acceptance (#403). |
 | 2026-11-14 | 1658 | `41276852` | Report a problem: a short prefilled "Report from the app" form, a report that always carries its summary and newest events, device model, install source and Jellyfin/Emby server version in the report, crash frames as binary offsets, the environment line in the Apple TV QR code, and new entry points on the playback failure card, the Mac Help menu and Settings ▸ About ([#456](https://github.com/jlipworth/Labstream/pull/456)). Internal TestFlight on all four platforms. Not selected for the App Store versions. | Pre-upload validation (signing, entitlements, matching privacy manifests); hermetic PMSKit (1801); iPhone hosted suite (974) and UI smoke incl. the report screen opening from Settings; Apple TV hosted suite (417), smoke and the QR screen test; Duo and visionOS UI smoke; all four targets build; docs hygiene. | The Mac hosted suite did not pass as a whole (`aRefreshOutageDefersAPlannedRowInsteadOfFailingIt` fails in full runs and passes alone); the prefilled link against the live form; the failure-card button and Mac Help item on screen; a real crash payload and symbolication; TestFlight and App Store install-source values; physical acceptance (#403). |
 | 2026-11-14 | 1657 | `3647565a` | Downloads: a download added behind Pause All keeps Resume All in the toolbar, offers Resume on its row and starts on Resume All, and paused or waiting rows keep their posters ([#450](https://github.com/jlipworth/Labstream/pull/450)). Apple TV: Send feedback is a full-screen note field beside a QR code for the prefilled bug form, the Chapters menu opens on the current chapter, and Stats shows the system audio output such as "5.1 · HDMI" ([#451](https://github.com/jlipworth/Labstream/pull/451)). Internal TestFlight on all four platforms. Selected for all four 1.8.0 App Store versions on 2026-11-14, replacing 1656. | Pre-upload validation (signing, entitlements, matching privacy manifests); iPhone hosted suite (972), iPhone UI smoke and the live Downloads-queue test on a clean simulator build; Apple TV hosted suite (416), smoke and four TV UI tests incl. feedback and chapter focus; Mac hosted suite (991); visionOS build; hermetic PMSKit; docs hygiene. | The Apple TV changes on the physical Apple TV; the detailed Stats view overflows its Apple TV panel; #404 at a limit of 1 with original files; physical acceptance (#403). |
