@@ -16,7 +16,15 @@ plus the work integrated on the same branch: iPhone Duo support and the Xcode 27
 ([#419](https://github.com/jlipworth/Labstream/issues/419)), the iOS player and Stats rework,
 Emby copy-lane fixes, bounded headless codec regression testing and Mac navigation fixes.
 
-An Apple TV-only build, **1.8.0 (build 1660)**, was archived on 2026-11-15 from clean `main` commit
+A further Apple TV-only build, **1.8.0 (build 1661)**, was archived on 2026-11-16 from clean `main`
+commit `58b17d87`. It adds **Send log to iPhone** under Settings ▸ Diagnostics and moves the Apple
+TV event log to Caches (#466). It processed to **VALID**, reached **IN_BETA_TESTING** and is in the
+**Labstream Internal** TestFlight group. It is not selected for the App Store version. The same
+commit was first uploaded as **build 1549** because `--build-number auto` was used; that build is
+identical in source, also in the internal group, and sorts below 1660, so 1661 is the one to
+install.
+
+An earlier Apple TV-only build, **1.8.0 (build 1660)**, was archived on 2026-11-15 from clean `main` commit
 `501e7024`. It moves Apple TV search to the system inline keyboard and makes Select on the current
 tab return to that tab's root (#464). It processed to **VALID**, reached **IN_BETA_TESTING** and is
 in the **Labstream Internal** TestFlight group. It is not selected for the App Store version, and
@@ -54,7 +62,7 @@ runtime client identity reads the bundle version and falls back to `0.0.0`.
 | --- | --- | --- | --- | --- |
 | Apple Vision Pro (`Labstream`) | 1.8.0 (build 2) | 1.8.0 (build 1659) | 1.8.0 (build 1659) | Physical TestFlight acceptance and review access. |
 | iPhone and iPad (`LabstreamMobile`) | 1.8.0 (build 2) | 1.8.0 (build 1659) | 1.8.0 (build 1659) | Physical iPhone and iPad acceptance; Duo App Store screenshots. The maintainer has tested on a physical iPhone Duo (the 1649–1653 player-menu changes came from that testing). |
-| Apple TV (`LabstreamTV`) | 1.8.0 (build 2) | 1.8.0 (build 1660) | 1.8.0 (build 1659) | Physical Apple TV acceptance. |
+| Apple TV (`LabstreamTV`) | 1.8.0 (build 2) | 1.8.0 (build 1661) | 1.8.0 (build 1659) | Physical Apple TV acceptance. |
 | Mac (`LabstreamMac`) | 1.8.0 (build 2) | 1.8.0 (build 1659) | 1.8.0 (build 1659) | Sandbox and live-host acceptance. A 1.6.1 (build 2) TestFlight install passed launch and receipt/signature checks; no later Mac TestFlight install is recorded. |
 
 ### 1.8.0 internal TestFlight builds
@@ -64,6 +72,7 @@ verification, and none of it is physical-device or live-backend acceptance unles
 
 | Date | Build | Commit | What it adds | Checked | Still open |
 | --- | --- | --- | --- | --- | --- |
+| 2026-11-16 | 1661 (and 1549) | `58b17d87` | Apple TV only: Settings ▸ Diagnostics ▸ Send log to iPhone serves the redacted report and event log to a phone on the same network through a QR code while the screen is open; the Apple TV event log moves to Caches ([#466](https://github.com/jlipworth/Labstream/pull/466)). Internal TestFlight on Apple TV. Not selected for the App Store version. Build 1549 is the same commit uploaded with an automatic build number below 1660. | Pre-upload validation (signing, entitlements; the four-platform privacy manifest comparison is skipped for a single platform); Apple TV simulator UI tests for the log screen (download over loopback, wrong-token 404, link closed with the screen) and the feedback screen; hermetic PMSKit suite; iOS and visionOS builds; docs hygiene. | A phone reaching the Apple TV over the network; no local-network prompt on the Apple TV; the event log surviving relaunch in Caches; the macOS hosted lane has an intermittent downloads-test failure that also occurs on `main`; everything open on 1660 and 1659; physical acceptance (#403). |
 | 2026-11-15 | 1660 | `501e7024` | Apple TV only: search uses the system inline keyboard with live results, so dictation needs no Done step; Select on the tab that is already showing returns to its root ([#464](https://github.com/jlipworth/Labstream/pull/464)). Internal TestFlight on Apple TV. Not selected for the App Store version. | Pre-upload validation (signing, entitlements; the four-platform privacy manifest comparison is skipped for a single platform); Apple TV simulator UI tests for the Search-tab press, keyboard letter entry, Home browse, feedback screen and launch; docs hygiene. | Dictation and the physical Siri Remote on the new keyboard; the tvOS hosted suite was not rerun; everything open on 1659; physical acceptance (#403). |
 | 2026-11-14 | 1659 | `b32e0c77` | Apple TV: holding Left or Right on the player timeline keeps scrubbing and speeds up (10, 30, 60, then 120 seconds a step) instead of moving one step ([#459](https://github.com/jlipworth/Labstream/pull/459)). Internal TestFlight on all four platforms. Not selected for the App Store versions. | Pre-upload validation (signing, entitlements, matching privacy manifests); clean tvOS simulator build with the Apple TV player (7) and Stats (1) UI tests, including the new hold test, which failed before the fix; docs hygiene. | The hold on the physical Siri Remote and its pace; a hold that starts with the controls hidden; the tvOS hosted suite was not rerun; everything open on 1658; physical acceptance (#403). |
 | 2026-11-14 | 1658 | `41276852` | Report a problem: a short prefilled "Report from the app" form, a report that always carries its summary and newest events, device model, install source and Jellyfin/Emby server version in the report, crash frames as binary offsets, the environment line in the Apple TV QR code, and new entry points on the playback failure card, the Mac Help menu and Settings ▸ About ([#456](https://github.com/jlipworth/Labstream/pull/456)). Internal TestFlight on all four platforms. Not selected for the App Store versions. | Pre-upload validation (signing, entitlements, matching privacy manifests); hermetic PMSKit (1801); iPhone hosted suite (974) and UI smoke incl. the report screen opening from Settings; Apple TV hosted suite (417), smoke and the QR screen test; Duo and visionOS UI smoke; all four targets build; docs hygiene. | The Mac hosted suite did not pass as a whole (`aRefreshOutageDefersAPlannedRowInsteadOfFailingIt` fails in full runs and passes alone); the prefilled link against the live form; the failure-card button and Mac Help item on screen; a real crash payload and symbolication; TestFlight and App Store install-source values; physical acceptance (#403). |
