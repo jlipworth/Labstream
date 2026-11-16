@@ -34,7 +34,15 @@ final class DiagnosticFileLogSink: @unchecked Sendable {
         self.archiveCount = max(0, archiveCount)
         self.flushInterval = max(0, flushInterval)
         self.flushByteThreshold = max(1, flushByteThreshold)
-        let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+        // Apple TV hardware refuses writes to Application Support (the simulator allows them), so
+        // the log lives in Caches there. tvOS may purge it under storage pressure; diagnostics
+        // are best-effort and the in-memory report does not depend on the file.
+        #if os(tvOS)
+        let baseDirectory = FileManager.SearchPathDirectory.cachesDirectory
+        #else
+        let baseDirectory = FileManager.SearchPathDirectory.applicationSupportDirectory
+        #endif
+        let support = fileManager.urls(for: baseDirectory, in: .userDomainMask)
             .first ?? fileManager.temporaryDirectory
         self.directoryURL = providedDirectoryURL ?? support
             .appendingPathComponent("Labstream", isDirectory: true)
@@ -60,6 +68,20 @@ final class DiagnosticFileLogSink: @unchecked Sendable {
     /// configured interval or byte threshold; a lifecycle flush reduces that window to zero.
     func flush() {
         queue.sync { flushBufferedLines() }
+    }
+
+    /// Everything on disk as one JSON-lines blob, oldest archive first, after flushing what is
+    /// buffered. Bounded by `maxBytes * (archiveCount + 1)`.
+    func snapshot() -> Data {
+        queue.sync {
+            flushBufferedLines()
+            var data = Data()
+            let urls = (archiveCount > 0 ? (1...archiveCount).reversed().map(archiveURL) : []) + [fileURL]
+            for url in urls {
+                if let contents = try? Data(contentsOf: url) { data.append(contents) }
+            }
+            return data
+        }
     }
 
     private func flushBufferedLines() {

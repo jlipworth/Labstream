@@ -25,7 +25,9 @@ flowchart TD
 - Events stay local in a 300-event process ring and, while logging is enabled, one
   approximately 1 MB JSONL file plus up to three rotated archives. The same redacted event summary
   is also emitted to Apple's local unified log. The disk copy is already redacted and exists for
-  user-initiated headset evidence after suspension or termination.
+  user-initiated headset evidence after suspension or termination. The files live under
+  Application Support, except on Apple TV, whose hardware refuses writes there: tvOS keeps them
+  under Caches, where the system may purge them under storage pressure.
 - Reports are copied, exported, or shared only after a user action.
 - The app does not upload diagnostic reports automatically. An explicit feedback/share action may
   hand the report to GitHub or another destination selected by the user.
@@ -85,7 +87,27 @@ events as fit in 6,000 characters (`FeedbackIssueLink`); the complete report goe
 clipboard. The Apple TV QR code carries the note and the environment line only.
 
 The in-app report does not reload the rotating JSONL files. Those files are collected only by the
-repository's explicit evidence tooling, and still require the user to review anything before sharing it.
+repository's explicit evidence tooling and by Apple TV's **Send log to iPhone**, and still require
+the user to review anything before sharing it.
+
+### Apple TV: Send log to iPhone
+
+tvOS has no clipboard, share sheet or file exporter, so **Settings ▸ Diagnostics ▸ Send log to
+iPhone** serves the redacted material to a browser on the same network instead
+(`TVDiagnosticLogShareServer`, `DiagnosticLogShareHTTP`):
+
+- A plain-HTTP listener on an ephemeral port exists only while that screen is open, and stops
+  when it closes. Nothing is advertised over Bonjour, and nothing leaves the local network.
+- Every path sits under a random 16-character token that only the on-screen QR code and address
+  carry; any other request gets 404. Only `GET` and `HEAD` are answered.
+- The page offers two downloads, both snapshotted when the screen opens: the diagnostic report
+  (identical to the other platforms' copy/export text) and the rotating JSONL event log, oldest
+  first.
+- The connection is unencrypted, so a device that can observe the local network could read the
+  already-redacted files while a download is in flight.
+
+Not yet checked on Apple TV hardware: that the log survives in Caches across launches, and that
+a phone reaches the listener without a local-network prompt on the Apple TV.
 
 The Mac target uses the same typed/redacted report pipeline and may add safe platform,
 effective bundle-identity, sandbox-storage, download, and playback facts. Per-worktree bundle IDs

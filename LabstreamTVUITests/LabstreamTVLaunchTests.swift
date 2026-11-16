@@ -193,6 +193,57 @@ final class LabstreamTVLaunchTests: XCTestCase {
         wait(for: [gone], timeout: 5)
     }
 
+    /// Apple TV cannot copy or export a diagnostic report, so Settings serves it to a phone on the
+    /// same network: a QR code for an address that works only while the screen is open.
+    func testSendLogToIPhoneServesTheReportWhileOpen() throws {
+        let app = makeApp(backend: "plex", fixture: "browse")
+        app.launchArguments += ["--ui-testing-present-log-share"]
+        app.launch()
+        let qr = app.descendants(matching: .any)["logShare.qr"]
+
+        XCTAssertTrue(qr.waitForExistence(timeout: 15), "log screen shows a QR code")
+        XCTAssertTrue(app.staticTexts["Send log to iPhone"].exists, "untruncated title")
+        let address = app.staticTexts["logShare.address"].label
+        var components = try XCTUnwrap(URLComponents(string: address), address)
+        XCTAssertEqual(components.scheme, "http", address)
+        XCTAssertEqual(components.path.count, 18, "a 16-character token between slashes: \(address)")
+        // The simulator shares the Mac's network stack, and the Mac's firewall drops inbound
+        // connections on its LAN address, so the test fetches over loopback.
+        components.host = "127.0.0.1"
+        let page = try XCTUnwrap(components.url)
+        let report = page.appendingPathComponent("report.txt")
+
+        XCTAssertEqual(fetch(page).status, 200)
+        XCTAssertFalse(app.staticTexts["Downloaded"].exists, "opening the page is not a download")
+        let fetched = fetch(report)
+        XCTAssertEqual(fetched.status, 200)
+        XCTAssertTrue(fetched.body.hasPrefix("Labstream Diagnostic Report"), String(fetched.body.prefix(80)))
+        XCTAssertTrue(app.staticTexts["Downloaded"].waitForExistence(timeout: 5))
+        components.path = "/0000000000000000/report.txt"
+        XCTAssertEqual(fetch(try XCTUnwrap(components.url)).status, 404, "wrong token")
+        attachScreen(named: "tv send log screen", app: app)
+
+        XCUIRemote.shared.press(.menu)
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: qr)
+        wait(for: [gone], timeout: 5)
+        XCTAssertNil(fetch(report).status, "the link stops working when the screen closes")
+    }
+
+    /// `status` is nil when the connection fails.
+    private func fetch(_ url: URL) -> (status: Int?, body: String) {
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 5)
+        request.httpMethod = "GET"
+        let done = expectation(description: "fetch \(url.lastPathComponent)")
+        nonisolated(unsafe) var result: (status: Int?, body: String) = (nil, "")
+        URLSession(configuration: .ephemeral).dataTask(with: request) { data, response, _ in
+            result = ((response as? HTTPURLResponse)?.statusCode,
+                      String(decoding: data ?? Data(), as: UTF8.self))
+            done.fulfill()
+        }.resume()
+        wait(for: [done], timeout: 10)
+        return result
+    }
+
     private func makeApp(backend: String? = nil, fixture: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing"]

@@ -53,6 +53,9 @@ struct SettingsView: View {
     @State private var diagnosticExportDocument = DiagnosticReportArtifact.Document()
     #endif
     @State private var presentingFeedback = false
+    #if os(tvOS)
+    @State private var presentingLogShare = false
+    #endif
     @State private var switchingBackend: MediaBackendKind?
 
     @AppStorage(PlaybackPreferences.Keys.homeQualityKbps) private var homeMaxVideoBitrateKbps = PlaybackPreferences.defaultHomeQualityKbps
@@ -125,12 +128,20 @@ struct SettingsView: View {
         #endif
         .reportProblemSheet(isPresented: $presentingFeedback, source: "settings")
         #if os(tvOS)
+        .fullScreenCover(isPresented: $presentingLogShare) {
+            TVDiagnosticLogShareScreen(reportText: diagnosticReportText)
+        }
         #if DEBUG
         // UI tests cannot reliably walk the long lazy form with the remote; open it directly.
         .task {
-            if DebugUITestLaunchConfiguration.isEnabled,
-               ProcessInfo.processInfo.arguments.contains("--ui-testing-present-feedback") {
+            guard DebugUITestLaunchConfiguration.isEnabled else { return }
+            let arguments = ProcessInfo.processInfo.arguments
+            if arguments.contains("--ui-testing-present-feedback") {
                 presentingFeedback = true
+            } else if arguments.contains("--ui-testing-present-log-share") {
+                // Seed an event so the screen has a log to serve.
+                AppDiagnostics.setEnabled(true)
+                presentingLogShare = true
             }
         }
         #endif
@@ -897,12 +908,20 @@ struct SettingsView: View {
             }
             #endif
 
+            #if os(tvOS)
+            Button {
+                presentingLogShare = true
+            } label: {
+                Label("Send log to iPhone", systemImage: "qrcode")
+            }
+            #endif
+
             reportProblemButton
         } header: {
             settingsHeader("Diagnostics", .diagnostics)
         } footer: {
             #if os(tvOS)
-            Text("Logging is off by default. When enabled, Labstream keeps a bounded, redacted local ring buffer. Report a problem shows a QR code that opens the report form on your phone, filled in.")
+            Text("Logging is off by default. When enabled, Labstream keeps a bounded, redacted local log. Send log to iPhone shows a QR code for downloading it to a phone on the same network. Report a problem shows a QR code that opens the report form on your phone, filled in.")
             #else
             Text("Logging is off by default. When enabled, Labstream keeps a bounded local ring buffer for bug reports. Reports are copied or exported only when you tap a button, and sensitive values are omitted. Report a problem opens a redacted report you can preview, share, or send as a GitHub issue.")
             #endif

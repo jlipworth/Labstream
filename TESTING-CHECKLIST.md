@@ -678,6 +678,10 @@ simulator navigation alone does not prove the external system invocation.
       still names build, install source, device model, server product and version.
 - [ ] On Apple TV the QR code opens the same form on a phone with the note and the "App and
       device" line filled in.
+- [ ] On Apple TV hardware, Settings ▸ Diagnostics ▸ Send log to iPhone: scanning the QR code on
+      a phone on the same network opens the download page with no local-network prompt on the
+      Apple TV; both files download; the Apple TV shows "Downloaded"; the link fails after Done.
+      With logging on, the event log still holds earlier events after quitting and relaunching.
 - [ ] Jellyfin and Emby reports show the server version (for example `Emby 4.8.11.0`, not `[ip]`).
 - [ ] After a real crash, the next report's MetricKit section lists `Labstream +0x…` frames and
       an app binary UUID, and `scripts/symbolicate-report.py` names the functions (device only;
