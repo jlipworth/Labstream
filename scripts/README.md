@@ -126,7 +126,10 @@ Commands and limitations: [workflow status and review evidence](../docs/DEVELOPM
   for the review catalog; `live drive` runs the opt-in live-catalog UI test against that process
   (sign-in from the gitignored `app-review-live.env`, then Home → Movies → Spring → play) and
   shoots each scene; `live start` first clears the review account's watch progress so captures are
-  reproducible (`--skip-reset` keeps it) and `--dry-run` labels an export as automation evidence only. `validate` checks sizes, alpha, checksums and mode wording; `coverage`
+  reproducible (`--skip-reset` keeps it) and `--dry-run` labels an export as automation evidence only.
+  `live start` and `live drive` stop as `blocked` when an iPhone, iPad or iPhone Duo simulator was
+  left rotated; the opt-in `live start --reset-simulator` erases it (removing the app and its
+  sign-in). `validate` checks sizes, alpha, checksums and mode wording; `coverage`
   checks every Apple-required display class. It uses exact worktree simulator IDs and exports only
   JPEGs plus a sanitized manifest. See
   [App Store screenshot automation](../docs/APP-STORE-SCREENSHOTS.md).
