@@ -30,6 +30,7 @@ import math
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -624,6 +625,54 @@ def reset_review_progress(config: dict[str, str]) -> int:
     return cleared
 
 
+def check_orientation(specs: dict[str, Any], target: str, pixels: tuple[int, int], *,
+                      landscape: bool = False) -> None:
+    """Stop when a probe frame is not in the orientation the target captures in (#469).
+
+    A simulator keeps the rotation an earlier session left it in, so a portrait target would
+    otherwise export every scene sideways and fail only at `validate`.
+    """
+    capture_width, capture_height = specs["targets"][target]["capturePixels"]
+    expected = landscape or capture_width > capture_height
+    width, height = pixels
+    if (width > height) == expected:
+        return
+    shown = f"{target} shows {'landscape' if width > height else 'portrait'} {width}x{height}"
+    if expected:
+        raise ScreenshotError(
+            f"blocked: {shown} at the first scene, but this capture expects landscape; the "
+            "--landscape rotation did not take effect.")
+    raise ScreenshotError(
+        f"blocked: {shown}, but this capture expects portrait. The simulator was left rotated "
+        "by an earlier session (a `live drive --landscape` run that was never finished, or a "
+        "manual rotation). Shut the simulator down (`live finish`, or `xcrun simctl shutdown "
+        "<udid>`), which clears a rotation set by a UI test, and start a new session. If the new "
+        f"session is blocked again, run `live start --target {target} --allow-simulator "
+        "--reset-simulator`: it erases the simulator, including the app and its sign-in, so "
+        "reinstall the app and sign in again afterwards.")
+
+
+def _probe_orientation(udid: str, target: str, *, landscape: bool = False) -> None:
+    display = LIVE_DISPLAYS.get(target)
+    with tempfile.TemporaryDirectory() as directory:
+        frame = Path(directory) / "orientation-probe.png"
+        _run(["xcrun", "simctl", "io", udid, "screenshot",
+              *([f"--display={display}"] if display else []), str(frame)])
+        width, height, _ = image_properties(frame)
+    check_orientation(load_specs(), target, (width, height), landscape=landscape)
+
+
+def reset_simulator(target: str, *, allow_simulator: bool) -> None:
+    """Erase the target's simulator so it boots upright again. Removes the app and its sign-in."""
+    if target not in MOBILE_TARGETS:
+        raise ScreenshotError("--reset-simulator applies to the iPhone, iPad and iPhone Duo targets only")
+    if not allow_simulator:
+        raise ScreenshotError("--reset-simulator requires --allow-simulator after acquiring the lease")
+    udid = _simulator_udid(target)
+    subprocess.run(["xcrun", "simctl", "shutdown", udid], cwd=ROOT, capture_output=True)
+    _run(["xcrun", "simctl", "erase", udid])
+
+
 def live_start(target: str, artifact_root: Path, *, allow_simulator: bool, dry_run: bool = False,
                reset_progress: bool = True, config_path: Path = LIVE_CONFIG_PATH) -> Path:
     if target not in SIMULATOR_TARGETS:
@@ -660,6 +709,14 @@ def live_start(target: str, artifact_root: Path, *, allow_simulator: bool, dry_r
     pid = _app_pid(udid)
     if pid is None:
         raise ScreenshotError("Labstream did not register a running process after launch")
+    if target in MOBILE_TARGETS:
+        try:
+            _probe_orientation(udid, target)
+        except ScreenshotError:
+            # Shutting down clears a UI-test rotation and frees the one-simulator lease.
+            subprocess.run(["xcrun", "simctl", "status_bar", udid, "clear"], cwd=ROOT, capture_output=True)
+            subprocess.run(["xcrun", "simctl", "shutdown", udid], cwd=ROOT, capture_output=True)
+            raise
     session_name = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     session = artifact_root.resolve() / f"{session_name}-live-{target}"
     (session / "export").mkdir(parents=True)
@@ -778,6 +835,10 @@ def live_drive(session: Path, xctestrun: Path, *, config_path: Path = LIVE_CONFI
         if target != "ipad":
             raise ScreenshotError("--landscape applies to the ipad target only")
         runner["LABSTREAM_LIVE_LANDSCAPE"] = "1"
+    elif target in MOBILE_TARGETS:
+        # Before the test drives anything. A landscape run is checked at its first scene instead,
+        # because the test itself rotates the iPad after it attaches.
+        _probe_orientation(udid, target)
     # The result bundle records typed text, so it is private and deleted unless asked to keep it.
     result_bundle = session / "private-result.xcresult"
     shutil.rmtree(result_bundle, ignore_errors=True)
@@ -786,8 +847,20 @@ def live_drive(session: Path, xctestrun: Path, *, config_path: Path = LIVE_CONFI
                "-parallel-testing-enabled", "NO", "-collect-test-diagnostics", "never",
                "-resultBundlePath", str(result_bundle)]
     scenes = set(live_scenes(target))
+    blocked: list[ScreenshotError] = []
+    probed = not landscape
 
     def shoot(name: str) -> None:
+        nonlocal probed
+        if blocked:
+            raise blocked[0]
+        if not probed:
+            try:
+                _probe_orientation(udid, target, landscape=True)
+            except ScreenshotError as error:
+                blocked.append(error)
+                raise
+            probed = True
         if name in scenes:
             live_shot(session, name)
 
@@ -801,6 +874,8 @@ def live_drive(session: Path, xctestrun: Path, *, config_path: Path = LIVE_CONFI
             shutil.rmtree(result_bundle, ignore_errors=True)
         shutil.rmtree(checkpoints, ignore_errors=True)
     shot = [name for name in seen if name in scenes]
+    if blocked:
+        raise blocked[0]
     if code != 0:
         raise ScreenshotError(f"live UI test failed after {shot or 'no'} scenes; see {session.name}/private-test.log")
     return shot
@@ -866,6 +941,11 @@ def parser() -> argparse.ArgumentParser:
                        help="do not clear the review account's watch progress first (the default "
                             "reset needs the private live values and keeps captures reproducible)")
     start.add_argument("--config", type=Path, default=LIVE_CONFIG_PATH)
+    start.add_argument("--reset-simulator", action="store_true",
+                       help="DESTRUCTIVE, never implied: erase the target's simulator (iPhone, iPad, "
+                            "iPhone Duo) so it boots upright again, then stop without starting a "
+                            "session. This removes the app and its sign-in; reinstall the app, sign "
+                            "in again, and run `live start` without this flag")
     drive = live_sub.add_parser("drive", help="sign in and navigate with the live-catalog UI test")
     drive.add_argument("session", type=Path)
     drive.add_argument("--xctestrun", type=Path, required=True)
@@ -904,7 +984,11 @@ def main(argv: list[str] | None = None) -> int:
                              scenes=parse_scenes(args.scene))
             print(f"PASS: {output}")
         elif args.command == "live":
-            if args.live_command == "start":
+            if args.live_command == "start" and args.reset_simulator:
+                reset_simulator(args.target, allow_simulator=args.allow_simulator)
+                print(f"RESET: erased the {args.target} simulator, including the app and its sign-in.")
+                print("Reinstall the app, sign in again, then run `live start` without --reset-simulator.")
+            elif args.live_command == "start":
                 session = live_start(args.target, args.artifact_root,
                                      allow_simulator=args.allow_simulator, dry_run=args.dry_run,
                                      reset_progress=not args.skip_reset, config_path=args.config)

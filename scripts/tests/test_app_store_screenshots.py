@@ -242,6 +242,7 @@ class AppStoreScreenshotTests(unittest.TestCase):
                 mock.patch.object(screenshots.time, "sleep"), \
                 mock.patch.object(screenshots, "_app_pid", return_value=42), \
                 mock.patch.object(screenshots, "_installed_version", return_value={"buildNumber": "1"}), \
+                mock.patch.object(screenshots, "_probe_orientation"), \
                 mock.patch.object(screenshots, "load_live_config", return_value={"k": "v"}), \
                 mock.patch.object(screenshots, "reset_review_progress",
                                   side_effect=lambda config: calls.append(["reset"]) or 3) as reset:
@@ -342,6 +343,113 @@ class AppStoreScreenshotTests(unittest.TestCase):
             screenshots.live_start("ipad", Path("ignored"), allow_simulator=False)
         with self.assertRaisesRegex(screenshots.ScreenshotError, "simulator targets"):
             screenshots.live_start("macos", Path("ignored"), allow_simulator=True)
+
+    def test_orientation_check_stops_a_rotated_simulator(self) -> None:
+        specs = screenshots.load_specs()
+        for target in ("iphone", "iphone69", "ipad", "duo-outer", "duo-inner"):
+            width, height = specs["targets"][target]["capturePixels"]
+            screenshots.check_orientation(specs, target, (width, height))
+            with self.assertRaisesRegex(screenshots.ScreenshotError,
+                                        "left rotated.*shutdown.*--reset-simulator.*sign in again"):
+                screenshots.check_orientation(specs, target, (height, width))
+        # `live drive --landscape` rotates the iPad on purpose, so there landscape is expected.
+        screenshots.check_orientation(specs, "ipad", (2752, 2064), landscape=True)
+        with self.assertRaisesRegex(screenshots.ScreenshotError, "expects landscape"):
+            screenshots.check_orientation(specs, "ipad", (2064, 2752), landscape=True)
+
+    def _live_start_with_probe(self, pixels: tuple[int, int], directory: str):
+        def fake_run(command, *, output=None):
+            if command[0] == "scripts/worktree-sim.sh":
+                return "SIM\n"
+            if command[:4] == ["xcrun", "simctl", "list", "devices"]:
+                return json.dumps({"devices": {"r": [{"udid": "SIM", "state": "Shutdown"}]}})
+            return ""
+        with mock.patch.object(screenshots, "_run", side_effect=fake_run), \
+                mock.patch.object(screenshots.subprocess, "run") as run, \
+                mock.patch.object(screenshots.time, "sleep"), \
+                mock.patch.object(screenshots, "_app_pid", return_value=42), \
+                mock.patch.object(screenshots, "_installed_version", return_value={}), \
+                mock.patch.object(screenshots, "image_properties", return_value=(*pixels, False)):
+            try:
+                return screenshots.live_start("iphone", Path(directory), allow_simulator=True,
+                                              reset_progress=False), run
+            except screenshots.ScreenshotError as error:
+                return error, run
+
+    def test_live_start_stops_before_a_session_when_the_simulator_is_rotated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session, _ = self._live_start_with_probe((1206, 2622), directory)
+            self.assertTrue((session / "live-session.json").is_file())
+        with tempfile.TemporaryDirectory() as directory:
+            error, run = self._live_start_with_probe((2622, 1206), directory)
+            self.assertIsInstance(error, screenshots.ScreenshotError)
+            self.assertRegex(str(error), "blocked: iphone shows landscape 2622x1206")
+            self.assertEqual(list(Path(directory).iterdir()), [])
+            # The rotated simulator is shut down so the erase can run and the lease is free.
+            self.assertEqual(run.call_args_list[-1].args[0], ["xcrun", "simctl", "shutdown", "SIM"])
+
+    def test_live_drive_probes_orientation_before_running_the_test(self) -> None:
+        def drive(target: str, pixels: tuple[int, int], *, landscape: bool = False):
+            driver = mock.Mock(CHECKPOINT_ENV="CHECKPOINTS")
+            driver.runner_environment.side_effect = dict
+            def run(command, *, on_checkpoint, **_):
+                try:
+                    on_checkpoint("home")
+                except screenshots.ScreenshotError:
+                    return 1, []
+                return 0, ["home"]
+            driver.run.side_effect = run
+            with tempfile.TemporaryDirectory() as directory:
+                session = Path(directory)
+                (session / "live-session.json").write_text(json.dumps({"target": target, "pid": 42}))
+                xctestrun = session / "run.xctestrun"
+                xctestrun.write_text("")
+                config = {key: "https://x" for key in screenshots.LIVE_SECRET_KEYS}
+                with mock.patch.dict("sys.modules", {"ui_checkpoint_driver": driver}), \
+                        mock.patch.object(screenshots, "load_live_config", return_value=config), \
+                        mock.patch.object(screenshots, "_simulator_udid", return_value="SIM"), \
+                        mock.patch.object(screenshots, "_app_pid", return_value=42), \
+                        mock.patch.object(screenshots, "_run", return_value=""), \
+                        mock.patch.object(screenshots, "image_properties", return_value=(*pixels, False)), \
+                        mock.patch.object(screenshots, "live_shot") as shot:
+                    try:
+                        screenshots.live_drive(session, xctestrun, landscape=landscape)
+                    except screenshots.ScreenshotError as error:
+                        return error, driver.run.called, shot.called
+                    return None, driver.run.called, shot.called
+
+        self.assertEqual(drive("iphone", (1206, 2622)), (None, True, True))
+        error, test_ran, shot = drive("iphone", (2622, 1206))
+        self.assertRegex(str(error), "left rotated")
+        self.assertFalse(test_ran)
+        self.assertFalse(shot)
+        # --landscape: the test rotates the iPad itself, so the check runs at the first scene.
+        self.assertEqual(drive("ipad", (2752, 2064), landscape=True), (None, True, True))
+        error, test_ran, shot = drive("ipad", (2064, 2752), landscape=True)
+        self.assertRegex(str(error), "expects landscape")
+        self.assertTrue(test_ran)
+        self.assertFalse(shot)
+
+    def test_reset_simulator_is_opt_in_and_erases_only_mobile_simulators(self) -> None:
+        self.assertFalse(screenshots.parser().parse_args(
+            ["live", "start", "--target", "iphone"]).reset_simulator)
+        commands: list[list[str]] = []
+        def fake_run(command, *, output=None):
+            commands.append(command)
+            return "SIM\n"
+        with mock.patch.object(screenshots, "_run", side_effect=fake_run), \
+                mock.patch.object(screenshots.subprocess, "run") as run, \
+                mock.patch.object(screenshots, "live_start") as start:
+            self.assertEqual(screenshots.main(["live", "start", "--target", "iphone", "--allow-simulator",
+                                               "--reset-simulator"]), 0)
+            self.assertEqual(run.call_args.args[0], ["xcrun", "simctl", "shutdown", "SIM"])
+            self.assertEqual(commands[-1], ["xcrun", "simctl", "erase", "SIM"])
+            start.assert_not_called()
+            commands.clear()
+            for arguments in (["--target", "iphone"], ["--target", "visionos", "--allow-simulator"],
+                              ["--target", "tvos", "--allow-simulator"]):
+                self.assertEqual(screenshots.main(["live", "start", *arguments, "--reset-simulator"]), 2)
+            self.assertEqual(commands, [])
 
     def test_live_shot_rejects_a_relaunched_process(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

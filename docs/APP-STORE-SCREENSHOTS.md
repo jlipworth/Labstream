@@ -129,6 +129,37 @@ clears the status bar and shuts the simulator down. A session's export lives at
 `<session>/export`. macOS has no live lane yet; capture its window by hand with the isolated host
 path and apply the same checks.
 
+### Simulator orientation guard
+
+A simulator keeps the rotation an earlier session left it in, and `simctl` has no command to rotate
+it back. On the iPhone, iPad and iPhone Duo targets, `live start` therefore takes a probe screenshot
+after launch and compares its orientation with the target's `capturePixels` in the specification
+manifest. `live drive` does the same before it runs the UI test. A portrait target that shows a
+landscape frame stops as `blocked` before any scene is driven, instead of exporting every scene
+sideways and failing at `validate`. A blocked `live start` creates no session and shuts the
+simulator down. `live drive --landscape` rotates the iPad on purpose, so that run is checked at its
+first scene and must be landscape there.
+
+Recovery, in order:
+
+1. Shut the simulator down and start a new session. A rotation set by a UI test (including
+   `live drive --landscape`) does not survive a shutdown, and `live finish` always shuts the
+   simulator down, so a finished landscape session does not leak into the next one. This was
+   verified on the iPhone and iPad simulators (Xcode 27.1); the leak needs a session that was never
+   finished.
+2. If the new session is blocked again, the rotation is stored in the simulator. During the 1.8.0
+   capture only an erase cleared that state; setting `XCUIDevice.shared.orientation` did not. Run
+   the explicit reset, then reinstall the app and sign in again:
+
+```sh
+scripts/app-store-screenshots.py live start --target iphone --allow-simulator --reset-simulator
+```
+
+`--reset-simulator` is never implied. It shuts the target's simulator down, runs
+`xcrun simctl erase` on it, and stops without starting a session, because the erase removes the app
+and its sign-in and the script does not know which build to reinstall. It accepts the iPhone, iPad
+and iPhone Duo targets only; the visionOS and tvOS simulators do not rotate.
+
 ### Watch-progress reset
 
 Every `live start` first clears the review account's resume positions, played marks, play counts
