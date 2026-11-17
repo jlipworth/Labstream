@@ -125,7 +125,10 @@ Commands and limitations: [workflow status and review evidence](../docs/DEVELOPM
   evidence only. `live start|shot|finish` captures an ordinary session launched without arguments
   for the review catalog; `live drive` runs the opt-in live-catalog UI test against that process
   (sign-in from the gitignored `app-review-live.env`, then Home → Movies → Spring → play) and
-  shoots each scene; `live start` first clears the review account's watch progress so captures are
+  shoots each scene; for `--target macos` the same commands drive this worktree's isolated host
+  app through `agent-macos-ax-driver.swift live …` (Accessibility only, window-only capture sized
+  to 2560 × 1600, no `--xctestrun`, `blocked` on a missing host permission or a window that will
+  not keep its size); `live start` first clears the review account's watch progress so captures are
   reproducible (`--skip-reset` keeps it) and `--dry-run` labels an export as automation evidence only. `validate` checks sizes, alpha, checksums and mode wording; `coverage`
   checks every Apple-required display class. It uses exact worktree simulator IDs and exports only
   JPEGs plus a sanitized manifest. See
@@ -396,7 +399,11 @@ scripts/perf-compare.py compare \
   `--duo-display outer|inner`.
 - `agent-tvos-run.sh` — credential-free tvOS semantic Home-to-detail and deterministic local-player evidence; it requires `--allow-simulator` as the lease assertion. Its passive scenario accepts `--fixture browse|player`, `--launch-arg` capture routes, and `--skip-build`. `agent-sim-run.sh` (visionOS) and `agent-macos-run.sh` accept the same `--launch-arg` routes for their passive fixture scenarios; the Mac runner also accepts `--fixture`.
 - `agent-macos-run.sh` / `agent-macos-ax-driver.swift` — isolated credential-free macOS fixture
-  run using semantic Accessibility actions and Labstream-window-only screenshots.
+  run using semantic Accessibility actions and Labstream-window-only screenshots. The driver's
+  `live <operation> --pid N` mode gives `app-store-screenshots.py` one-shot primitives for the Mac
+  live lane (`preflight`, `window`, `activate`, `resize`, `count`, `wait`, `press`, `select-row`,
+  `focus`, `action`, `set-value --env NAME`, `capture`, `dump`, `quit`); each prints one JSON
+  object and exits 0 passed, 1 failed, 2 blocked. It posts no mouse or keyboard events.
 
 ## Local Mac development
 

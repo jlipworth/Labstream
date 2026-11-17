@@ -192,6 +192,31 @@ not fall back to coordinates or full-desktop capture.
 Credential-free App Store capture composes this runner with the other platform runners into a
 serial, exact-worktree-ID workflow; see [App Store screenshot automation](APP-STORE-SCREENSHOTS.md).
 
+The same driver has a `live` mode for the live-catalog screenshot lane
+(`scripts/app-store-screenshots.py live … --target macos`). It attaches to the exact PID of the
+staged development-identity app and offers one-shot operations: host-permission preflight, window
+frame and display scale, activation, resizing, element queries by role, identifier or label,
+`AXPress`, source-list row selection, keyboard focus, named accessibility actions, setting a text
+field from a named environment variable, window-only capture, a structure-only tree dump for
+maintenance, and an ordinary quit. Queries walk the app's windows only, never its menu bar.
+
+Findings from driving the real Mac shell this way (verified on macOS 27 with Xcode 27.1):
+
+- The sidebar is an `AXOutline` labelled `Sidebar`. Setting `AXSelected` on a row navigates, but
+  the selected row is drawn grey until the outline has keyboard focus in the frontmost app.
+  Setting `AXFocused` on the outline gives the amber selection without a real mouse click, so the
+  driver posts no synthetic events at all.
+- The player hides its controls while playing, and hidden controls are absent from the
+  Accessibility tree. The `playback.surface` group exposes a named action, "Show playback
+  controls", that brings them back and keeps them visible.
+- A tiling window manager re-tiles a new window a moment after an `AXSize` request, so a resize
+  must be checked after a settle period. AeroSpace addresses windows by their CoreGraphics window
+  number, the same number `screencapture -l` takes.
+- `screencapture -o -l <window>` yields exactly the window's pixel size but leaves the rounded
+  corners transparent; flatten the image before converting it to a format without alpha.
+- SwiftUI text fields on the sign-in form have no identifiers; their `AXPlaceholderValue` is the
+  stable handle, and setting `AXValue` updates the bound value.
+
 The script retains its issue-era filename for now. It covers static identity checks, the Mac
 build, extra visionOS and iPhone `xcodebuild` compile steps against this worktree's concrete
 simulator IDs (those lookups may provision sims; this is not a leased simulator test run),
