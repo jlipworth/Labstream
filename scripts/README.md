@@ -129,7 +129,10 @@ Commands and limitations: [workflow status and review evidence](../docs/DEVELOPM
   app through `agent-macos-ax-driver.swift live …` (Accessibility only, window-only capture sized
   to 2560 × 1600, no `--xctestrun`, `blocked` on a missing host permission or a window that will
   not keep its size); `live start` first clears the review account's watch progress so captures are
-  reproducible (`--skip-reset` keeps it) and `--dry-run` labels an export as automation evidence only. `validate` checks sizes, alpha, checksums and mode wording; `coverage`
+  reproducible (`--skip-reset` keeps it) and `--dry-run` labels an export as automation evidence only.
+  `live start` and `live drive` stop as `blocked` when an iPhone, iPad or iPhone Duo simulator was
+  left rotated; the opt-in `live start --reset-simulator` erases it (removing the app and its
+  sign-in). `validate` checks sizes, alpha, checksums and mode wording; `coverage`
   checks every Apple-required display class. It uses exact worktree simulator IDs and exports only
   JPEGs plus a sanitized manifest. See
   [App Store screenshot automation](../docs/APP-STORE-SCREENSHOTS.md).
