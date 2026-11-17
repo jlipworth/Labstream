@@ -8,12 +8,14 @@ Two capture modes share one export format:
   upload; the manifest says so.
 * ``live start`` / ``live shot`` / ``live finish`` (live-catalog mode) launch the installed app with
   no arguments at all, let a person sign in to the review catalog and navigate normally, and then
-  capture the exact simulator display after two identical frames. The manifest records the
-  zero-argument launch and the unchanged process, never credentials, endpoints or IDs.
+  capture the exact simulator display (for ``macos``, the isolated host app's window only) after
+  two identical frames. The manifest records the zero-argument launch and the unchanged process,
+  never credentials, endpoints or IDs.
   ``live drive`` replaces the person with the opt-in live-catalog UI test: it attaches to the same
   process, signs in with private runner values from the gitignored ``scripts/app-review-live.env``,
-  navigates, and calls ``live shot`` at each scene checkpoint. ``live start --dry-run`` labels the
-  export as automation evidence that is never a final screenshot.
+  navigates, and calls ``live shot`` at each scene checkpoint. On ``macos`` the same steps run
+  through the isolated Accessibility driver instead of a UI test. ``live start --dry-run`` labels
+  the export as automation evidence that is never a final screenshot.
 
 Raw runner evidence stays under the ignored artifact root. The export contains only flattened JPEG
 screenshots and a sanitized manifest: no logs, simulator IDs, absolute paths, credentials, or
@@ -675,8 +677,9 @@ def reset_simulator(target: str, *, allow_simulator: bool) -> None:
 
 def live_start(target: str, artifact_root: Path, *, allow_simulator: bool, dry_run: bool = False,
                reset_progress: bool = True, config_path: Path = LIVE_CONFIG_PATH) -> Path:
-    if target not in SIMULATOR_TARGETS:
-        raise ScreenshotError("live mode supports simulator targets; capture macOS by hand")
+    if target == "macos":
+        return _live_start_macos(artifact_root, dry_run=dry_run, reset_progress=reset_progress,
+                                 config_path=config_path)
     if not allow_simulator:
         raise ScreenshotError("live capture requires --allow-simulator after acquiring the lease")
     udid = _simulator_udid(target)
@@ -750,6 +753,8 @@ def live_shot(session: Path, scene: str) -> Path:
     target = state["target"]
     if scene not in live_scenes(target):
         raise ScreenshotError(f"{target} has no {scene} scene")
+    if target == "macos":
+        return _live_shot_macos(session, scene, specs, state)
     udid = _simulator_udid(target)
     if udid not in _booted_udids():
         raise ScreenshotError("the session's simulator is no longer booted")
@@ -884,10 +889,358 @@ def live_drive(session: Path, xctestrun: Path, *, config_path: Path = LIVE_CONFI
 def live_finish(session: Path) -> Path:
     state = _session_state(session)
     target = state["target"]
+    if target == "macos":
+        return _live_finish_macos(session, state)
     udid = _simulator_udid(target)
     if target in MOBILE_TARGETS:
         subprocess.run(["xcrun", "simctl", "status_bar", udid, "clear"], cwd=ROOT, capture_output=True)
     subprocess.run(["xcrun", "simctl", "shutdown", udid], cwd=ROOT, capture_output=True)
+    shutil.rmtree(session / "frames", ignore_errors=True)
+    export_dir = session / "export"
+    if (export_dir / "manifest.json").exists():
+        validate_export(export_dir)
+    return export_dir
+
+
+# --- live-catalog mode: macOS host -----------------------------------------------------------
+#
+# There is no macOS simulator: the live lane drives this worktree's isolated host build
+# (`scripts/deploy-macos-to-host.sh`, never the production bundle id) through the `live`
+# operations of the same Accessibility driver the fixture runner uses. Everything is semantic
+# Accessibility: no mouse or keyboard events are posted and the pointer never moves.
+
+MAC_DRIVER_SOURCE = ROOT / "scripts" / "agent-macos-ax-driver.swift"
+MAC_DRIVER_BINARY = ROOT / "build" / "agent-macos-ax-driver"
+MAC_PERMISSION_HOLDER = ("the app that runs this command (the terminal or agent host, as listed in "
+                         "System Settings > Privacy & Security)")
+MAC_BLOCKED = {
+    "accessibility_not_trusted":
+        f"blocked: Accessibility permission is missing; grant it to {MAC_PERMISSION_HOLDER}",
+    "screen_recording_not_permitted":
+        "blocked: Screen & System Audio Recording permission is missing; grant it to "
+        f"{MAC_PERMISSION_HOLDER}. The window is never captured through the full desktop instead",
+}
+# The sidebar's selected row is amber only while the sidebar has keyboard focus in the frontmost
+# app; Accessibility focus on the outline gives the same result as a real click on the row.
+MAC_SIDEBAR = ["--role", "AXOutline", "--label", "Sidebar"]
+MAC_PLAY_PAUSE = ["--identifier", "playback.playPause"]
+MAC_CORNER_MATTE = "101014"  # opaque fill behind the window's transparent rounded corners
+MAC_PLAYBACK_SKIPS = 3  # 30-second skips past the opening title cards, as in the UI tests
+
+
+class MacDriverError(ScreenshotError):
+    def __init__(self, message: str, code: str, payload: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.code = code
+        self.payload = payload
+
+
+def _mac_driver_binary() -> Path:
+    if (not MAC_DRIVER_BINARY.is_file()
+            or MAC_DRIVER_BINARY.stat().st_mtime < MAC_DRIVER_SOURCE.stat().st_mtime):
+        MAC_DRIVER_BINARY.parent.mkdir(parents=True, exist_ok=True)
+        _run(["xcrun", "swiftc", str(MAC_DRIVER_SOURCE), "-o", str(MAC_DRIVER_BINARY)])
+    return MAC_DRIVER_BINARY
+
+
+def _mac_driver_command(pid: int, operation: str, *arguments: str, timeout: int = 15) -> list[str]:
+    return [str(MAC_DRIVER_BINARY), "live", operation, "--pid", str(pid), "--timeout", str(timeout),
+            *arguments]
+
+
+def _mac_driver(pid: int, operation: str, *arguments: str, timeout: int = 15, step: str | None = None,
+                env: dict[str, str] | None = None) -> dict[str, Any]:
+    """Run one driver operation. Errors name the step and code only, never a value."""
+    _mac_driver_binary()
+    result = subprocess.run(_mac_driver_command(pid, operation, *arguments, timeout=timeout),
+                            cwd=ROOT, text=True, capture_output=True,
+                            env={**os.environ, **env} if env else None)
+    try:
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError):
+        payload = {}
+    if result.returncode == 0 and payload.get("status") == "passed":
+        return payload
+    code = str(payload.get("errorCode") or "driver_failed")
+    message = MAC_BLOCKED.get(code) or f"macOS live step failed: {step or operation} ({code})"
+    raise MacDriverError(message, code, payload)
+
+
+def _mac_app_pid(executable: str) -> int | None:
+    """PID of the process running exactly this staged executable."""
+    for line in _run(["/bin/ps", "-axo", "pid=,command="]).splitlines():
+        fields = line.split(None, 1)
+        if len(fields) == 2 and fields[0].isdigit() and (
+                fields[1] == executable or fields[1].startswith(executable + " ")):
+            return int(fields[0])
+    return None
+
+
+def _mac_app_version(app: Path) -> dict[str, str]:
+    version: dict[str, str] = {}
+    for key, name in (("CFBundleShortVersionString", "marketingVersion"),
+                      ("CFBundleVersion", "buildNumber")):
+        result = subprocess.run(["/usr/libexec/PlistBuddy", "-c", f"Print :{key}",
+                                 str(app / "Contents" / "Info.plist")], text=True, capture_output=True)
+        if result.returncode == 0:
+            version[name] = result.stdout.strip()
+    return version
+
+
+def _mac_quit(pid: int) -> None:
+    try:
+        _mac_driver(pid, "quit")
+    except ScreenshotError:
+        # Without Accessibility the driver cannot ask; still never leave the app behind.
+        subprocess.run(["/bin/kill", str(pid)], capture_output=True)
+
+
+def _live_start_macos(artifact_root: Path, *, dry_run: bool, reset_progress: bool,
+                      config_path: Path) -> Path:
+    # Before the app launches, so its first Home load already sees the clean state.
+    cleared = reset_review_progress(load_live_config(config_path)) if reset_progress else None
+    try:
+        # The staged isolated build, relaunched with `open -n` and no arguments at all.
+        deployed = _run(["scripts/deploy-macos-to-host.sh", "--no-build", "--launch"])
+    except ScreenshotError as error:
+        raise ScreenshotError("blocked: no staged isolated Mac app to launch; run "
+                              f"scripts/deploy-macos-to-host.sh first ({error})") from None
+    apps = [line.split(":", 1)[1].strip() for line in deployed.splitlines() if line.startswith("app:")]
+    if not apps or not Path(apps[-1]).is_dir():
+        raise ScreenshotError("could not resolve the staged isolated Mac app")
+    app = Path(apps[-1])
+    executable = str(app / "Contents" / "MacOS" / "Labstream")
+    pid = None
+    for _ in range(50):
+        pid = _mac_app_pid(executable)
+        if pid is not None:
+            break
+        time.sleep(0.2)
+    if pid is None:
+        raise ScreenshotError("Labstream did not register a running process after launch")
+    try:
+        # Fail closed on host permissions before anyone signs in or navigates.
+        _mac_driver(pid, "preflight", timeout=30, step="find the Labstream window")
+    except ScreenshotError:
+        _mac_quit(pid)
+        raise
+    session_name = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    session = artifact_root.resolve() / f"{session_name}-live-macos"
+    (session / "export").mkdir(parents=True)
+    state = {"schemaVersion": 1, "target": "macos", "pid": pid, "launchArguments": [],
+             "app": _mac_app_version(app), "executable": executable,
+             "startedAt": datetime.now(timezone.utc).isoformat(),
+             "dryRun": dry_run, "watchProgressReset": reset_progress}
+    if cleared is not None:
+        state["watchProgressItemsCleared"] = cleared
+    (session / "live-session.json").write_text(json.dumps(state, indent=2) + "\n")
+    return session
+
+
+def _mac_session_pid(state: dict[str, Any]) -> int:
+    pid = _mac_app_pid(state["executable"])
+    if pid is None or pid != state["pid"]:
+        raise ScreenshotError(
+            "Labstream is not the process this session launched without arguments; start a new session"
+        )
+    return pid
+
+
+def _mac_size_window(pid: int, specs: dict[str, Any]) -> None:
+    """Size the window so a window-only capture is exactly the macOS capture size."""
+    wanted_width, wanted_height = specs["targets"]["macos"]["capturePixels"]
+    info = _mac_driver(pid, "window", step="read the Labstream window")
+    scale = float(info.get("scale") or 0)
+    if scale <= 0 or wanted_width % scale or wanted_height % scale:
+        raise ScreenshotError(f"blocked: display scale {scale:g} cannot produce a "
+                              f"{wanted_width}x{wanted_height} window capture")
+    width, height = int(wanted_width / scale), int(wanted_height / scale)
+    if (info.get("width"), info.get("height")) == (width, height):
+        return
+    resize = ["--width", str(width), "--height", str(height)]
+    try:
+        _mac_driver(pid, "resize", *resize, step="resize the window")
+        return
+    except MacDriverError as error:
+        if error.code != "window_size_mismatch":
+            raise
+    # A tiling window manager re-tiles the window right after the resize. AeroSpace addresses
+    # windows by their CoreGraphics window number; floating this one window lets the size hold,
+    # and the setting disappears with the window when the session finishes.
+    aerospace = shutil.which("aerospace")
+    if aerospace and info.get("windowID"):
+        subprocess.run([aerospace, "layout", "floating", "--window-id", str(info["windowID"])],
+                       capture_output=True)
+        try:
+            _mac_driver(pid, "resize", *resize, step="resize the floating window")
+            return
+        except MacDriverError as error:
+            if error.code != "window_size_mismatch":
+                raise
+    raise ScreenshotError(
+        f"blocked: the Labstream window did not keep {width}x{height} points after the resize; a "
+        "tiling window manager or a small display is constraining it. Float the window (only "
+        "AeroSpace is handled automatically) or use a larger display, then retry")
+
+
+def _mac_stable_frame(pid: int, work: Path, *, attempts: int = 5, interval: float = 2.0) -> Path:
+    previous: str | None = None
+    for attempt in range(attempts):
+        frame = work / f"frame-{attempt}.png"
+        _mac_driver(pid, "capture", "--output", str(frame), "--matte", MAC_CORNER_MATTE,
+                    step="capture the Labstream window")
+        digest = hashlib.sha256(frame.read_bytes()).hexdigest()
+        if digest == previous:
+            return frame
+        previous = digest
+        time.sleep(interval)
+    raise ScreenshotError("the window never settled into two identical frames; wait and retry")
+
+
+def _live_shot_macos(session: Path, scene: str, specs: dict[str, Any], state: dict[str, Any]) -> Path:
+    pid = _mac_session_pid(state)
+    # An inactive window is dimmed and its sidebar selection grey, so never capture one.
+    if not _mac_driver(pid, "activate", step="bring Labstream to the front").get("frontmost"):
+        raise ScreenshotError("blocked: Labstream could not be made the frontmost app; leave the "
+                              "Mac idle and unlocked during a capture, then retry")
+    _mac_size_window(pid, specs)
+    work = session / "frames" / scene
+    if work.exists():
+        shutil.rmtree(work)
+    work.mkdir(parents=True)
+    frame = _mac_stable_frame(pid, work)
+    width, height, _ = image_properties(frame)
+    if (width, height) not in accepted_pixels(specs, "macos"):
+        raise ScreenshotError(f"macos window produced {width}x{height}, not an accepted size")
+    export_dir = session / "export"
+    for stale in export_dir.glob(f"macos-*-{scene}-*.jpg"):
+        stale.unlink()
+    destination = export_dir / export_name("macos", scene, (width, height))
+    _convert_to_store_jpeg(frame, destination, "macos", (width, height))
+    entries = [entry for entry in _live_entries(session) if entry["scene"] != scene]
+    entries.append(_entry(specs, "macos", scene, destination, mode="live", launch_arguments=[]))
+    entries.sort(key=lambda entry: SCENE_ORDER.index(entry["scene"]))
+    extra: dict[str, Any] = {"app": state["app"], "launchedWithoutArguments": True}
+    if state.get("dryRun"):
+        extra |= {"dryRun": True, "dryRunNote": DRY_RUN_NOTE}
+    _write_manifest(export_dir, specs, entries, mode="live", dirty=_git_dirty(), extra=extra)
+    validate_export(export_dir, specs)
+    return destination
+
+
+def _mac_count(pid: int, *query: str) -> int:
+    return int(_mac_driver(pid, "count", *query).get("matches", 0))
+
+
+def _mac_sign_in(pid: int, config: dict[str, str]) -> None:
+    """Username/password sign-in to the review server. Values travel by environment only."""
+    def fill(placeholder: str, key: str, step: str) -> None:
+        _mac_driver(pid, "set-value", "--role", "AXTextField", "--label", placeholder, "--env", key,
+                    step=step, env={key: config[key]})
+
+    _mac_driver(pid, "press", "--role", "AXRadioButton", "--label", "Jellyfin",
+                step="choose the Jellyfin backend")
+    fill("https://jellyfin.example.com", "LABSTREAM_LIVE_AUTH_SERVER", "enter the server")
+    _mac_driver(pid, "press", "--role", "AXButton", "--label", "Username / Password",
+                step="choose username and password sign-in")
+    fill("Username", "LABSTREAM_LIVE_AUTH_USERNAME", "enter the username")
+    fill("Password", "LABSTREAM_LIVE_AUTH_PASSWORD", "enter the password")
+    _mac_driver(pid, "press", "--role", "AXButton", "--label", "Sign in with Jellyfin",
+                step="submit the sign-in form")
+
+
+def _mac_title_query(pid: int, title: str) -> list[str]:
+    """Poster buttons are labelled "Title, Year" (or just the title when no year is known)."""
+    exact = ["--role", "AXButton", "--label", title]
+    return exact if _mac_count(pid, *exact) else ["--role", "AXButton", "--label-prefix", f"{title}, "]
+
+
+def live_drive_macos(session: Path, *, config_path: Path = LIVE_CONFIG_PATH) -> list[str]:
+    """Sign in if needed, then Home → library → title details → play, shooting each scene."""
+    state = _session_state(session)
+    if state["target"] != "macos":
+        raise ScreenshotError("live_drive_macos needs a macos session")
+    config = load_live_config(config_path)
+    specs = load_specs()
+    pid = _mac_session_pid(state)
+    library = config.get("LABSTREAM_LIVE_LIBRARY", "Movies")
+    title = config.get("LABSTREAM_LIVE_TITLE", "Spring")
+    home = ["--identifier", "performance.mac.sidebar.home"]
+    shot: list[str] = []
+
+    def shoot(scene: str, settle: float) -> None:
+        time.sleep(settle)
+        live_shot(session, scene)
+        shot.append(scene)
+
+    _mac_driver(pid, "activate", step="bring Labstream to the front")
+    _mac_driver(pid, "wait", "--role", "AXWindow", timeout=30, step="find the Labstream window")
+    if _mac_count(pid, "--identifier", "performance.login.backend-picker"):
+        _mac_sign_in(pid, config)
+    _mac_driver(pid, "wait", *home, timeout=60, step="reach the browse UI after sign-in")
+    # A first sign-in offers the library chooser a moment after the browse UI appears.
+    chooser = ["--identifier", "performance.library-visibility.done"]
+    for _ in range(10):
+        if _mac_count(pid, *chooser):
+            _mac_driver(pid, "press", *chooser, step="confirm the library chooser")
+            break
+        time.sleep(0.5)
+    _mac_size_window(pid, specs)
+
+    _mac_driver(pid, "select-row", *home, step="select Home in the sidebar")
+    _mac_driver(pid, "focus", *MAC_SIDEBAR, step="focus the sidebar")
+    _mac_driver(pid, "wait", "--role", "AXButton", "--label-prefix", title, timeout=30,
+                step=f"find {title} on Home (is the app signed in to the review catalog?)")
+    shoot("home", 4)
+
+    _mac_driver(pid, "select-row", "--identifier", "performance.mac.sidebar.library",
+                "--label", library, step=f"select the {library} library")
+    _mac_driver(pid, "focus", *MAC_SIDEBAR, step="focus the sidebar")
+    _mac_driver(pid, "wait", "--identifier", "performance.mac.library-grid.first-item", timeout=30,
+                step=f"load the {library} grid")
+    _mac_driver(pid, "wait", "--role", "AXButton", "--label-prefix", title, timeout=20,
+                step=f"find {title} in {library}")
+    shoot("library", 4)
+
+    _mac_driver(pid, "press", *_mac_title_query(pid, title), step=f"open {title}")
+    play = None
+    for _ in range(40):
+        play = next((label for label in ("Play", "Resume")
+                     if _mac_count(pid, "--role", "AXButton", "--label", label) == 1), None)
+        if play:
+            break
+        time.sleep(0.5)
+    if play is None:
+        raise ScreenshotError(f"macOS live step failed: {title} details have no Play button")
+    shoot("detail", 3)
+
+    _mac_driver(pid, "press", "--role", "AXButton", "--label", play, step="start playback")
+    surface = ["--identifier", "playback.surface"]
+    reveal = ["action", *surface, "--name", "Show playback controls"]
+    _mac_driver(pid, "wait", *surface, timeout=45, step="present the player")
+    # A playing video never gives two identical frames, and the opening seconds are title cards:
+    # pause, then skip past the opening so the capture holds a still scene.
+    time.sleep(4)
+    _mac_driver(pid, *reveal, step="show the playback controls")
+    _mac_driver(pid, "wait", *MAC_PLAY_PAUSE, timeout=20, step="find the play/pause control")
+    if _mac_count(pid, *MAC_PLAY_PAUSE, "--label", "Pause"):
+        _mac_driver(pid, "press", *MAC_PLAY_PAUSE, "--label", "Pause", step="pause playback")
+    for _ in range(MAC_PLAYBACK_SKIPS):
+        _mac_driver(pid, "press", "--identifier", "playback.skip.30", step="skip forward")
+        time.sleep(0.5)
+    _mac_driver(pid, "wait", *MAC_PLAY_PAUSE, "--label", "Play", timeout=10,
+                step="confirm playback stayed paused")
+    _mac_driver(pid, *reveal, step="keep the playback controls visible")
+    # Let the paused frame decode after the seek.
+    shoot("playback", 4)
+    return shot
+
+
+def _live_finish_macos(session: Path, state: dict[str, Any]) -> Path:
+    # Quit only the exact process this session launched; another run's app is not ours to stop.
+    pid = _mac_app_pid(state["executable"])
+    if pid is not None and pid == state["pid"]:
+        _mac_quit(pid)
     shutil.rmtree(session / "frames", ignore_errors=True)
     export_dir = session / "export"
     if (export_dir / "manifest.json").exists():
@@ -932,7 +1285,7 @@ def parser() -> argparse.ArgumentParser:
     live_parser = subparsers.add_parser("live", help="live-catalog captures of an ordinary session")
     live_sub = live_parser.add_subparsers(dest="live_command", required=True)
     start = live_sub.add_parser("start")
-    start.add_argument("--target", required=True, choices=sorted(SIMULATOR_TARGETS))
+    start.add_argument("--target", required=True, choices=sorted(TARGET_ORDER))
     start.add_argument("--artifact-root", type=Path, default=default_root)
     start.add_argument("--allow-simulator", action="store_true")
     start.add_argument("--dry-run", action="store_true",
@@ -948,7 +1301,8 @@ def parser() -> argparse.ArgumentParser:
                             "in again, and run `live start` without this flag")
     drive = live_sub.add_parser("drive", help="sign in and navigate with the live-catalog UI test")
     drive.add_argument("session", type=Path)
-    drive.add_argument("--xctestrun", type=Path, required=True)
+    drive.add_argument("--xctestrun", type=Path,
+                       help="required for simulator targets; macos uses the Accessibility driver")
     drive.add_argument("--config", type=Path, default=LIVE_CONFIG_PATH)
     drive.add_argument("--landscape", action="store_true",
                        help="rotate the iPad to landscape before the first scene")
@@ -994,7 +1348,16 @@ def main(argv: list[str] | None = None) -> int:
                                      reset_progress=not args.skip_reset, config_path=args.config)
                 print(f"SESSION: {session}")
                 print("Sign in and navigate normally, then run `live shot SESSION --scene NAME`.")
+            elif (args.live_command == "drive"
+                  and _session_state(args.session.resolve())["target"] == "macos"):
+                if args.xctestrun or args.landscape or args.keep_result:
+                    raise ScreenshotError(
+                        "--xctestrun, --landscape and --keep-result do not apply to macos")
+                scenes = live_drive_macos(args.session.resolve(), config_path=args.config)
+                print(f"PASS: captured {', '.join(scenes)}")
             elif args.live_command == "drive":
+                if args.xctestrun is None:
+                    raise ScreenshotError("live drive needs --xctestrun for simulator targets")
                 scenes = live_drive(args.session.resolve(), args.xctestrun.resolve(),
                                     config_path=args.config, keep_result=args.keep_result,
                                     landscape=args.landscape)

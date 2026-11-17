@@ -409,7 +409,9 @@ where the system keyboard types into the app, it also prints the password. Run t
 log it keeps and deletes the result bundle. See [App Store screenshots](APP-STORE-SCREENSHOTS.md).
 With placeholder values (`https://jellyfin.example.invalid`), the sign-in form path was verified up to
 Submit on the iPhone, Apple TV, and visionOS simulators on 2026-11-05. The test then failed, as
-designed, waiting for Home. The macOS Accessibility runner has no live sign-in path yet.
+designed, waiting for Home. On macOS the same sign-in and
+navigation run through the Accessibility driver's `live` mode (`live drive` on a `macos` session);
+private values reach it only as environment variables, so nothing typed is logged.
 
 ### Download transport fault probes
 

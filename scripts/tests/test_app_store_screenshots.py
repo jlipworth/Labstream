@@ -16,6 +16,349 @@ SCRIPT = ROOT / "scripts" / "app-store-screenshots.py"
 screenshots = load_script("app_store_screenshots", SCRIPT)
 
 
+class MacLiveLaneTests(unittest.TestCase):
+    """The macOS live lane: isolated host app, Accessibility driver, window-only capture."""
+
+    CONFIG = {"LABSTREAM_LIVE_AUTH_SERVER": "https://review.invalid",
+              "LABSTREAM_LIVE_AUTH_USERNAME": "reviewer", "LABSTREAM_LIVE_AUTH_PASSWORD": "s3cret"}
+
+    def _session(self, directory: str, **extra) -> Path:
+        session = Path(directory)
+        (session / "export").mkdir(exist_ok=True)
+        (session / "live-session.json").write_text(json.dumps(
+            {"target": "macos", "pid": 42, "app": {}, "launchArguments": [],
+             "executable": "/staged/Labstream.app/Contents/MacOS/Labstream", **extra}))
+        return session
+
+    def test_start_launches_the_staged_isolated_app_without_arguments(self) -> None:
+        calls: list[list[str]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory) / "Labstream.app"
+            app.mkdir()
+            def fake_run(command, *, output=None):
+                calls.append(command)
+                return f"bundle:   org.example.dev\napp:      {app}\n"
+            with mock.patch.object(screenshots, "_run", side_effect=fake_run), \
+                    mock.patch.object(screenshots, "_mac_app_pid", return_value=42) as app_pid, \
+                    mock.patch.object(screenshots, "_mac_driver", return_value={}) as driver, \
+                    mock.patch.object(screenshots, "_mac_app_version", return_value={"buildNumber": "7"}), \
+                    mock.patch.object(screenshots, "load_live_config", return_value=self.CONFIG), \
+                    mock.patch.object(screenshots, "reset_review_progress",
+                                      side_effect=lambda config: calls.append(["reset"]) or 2):
+                # No simulator lease assertion is needed for the host target.
+                session = screenshots.live_start("macos", Path(directory) / "out", allow_simulator=False,
+                                                 dry_run=True)
+            state = json.loads((session / "live-session.json").read_text())
+        launch = ["scripts/deploy-macos-to-host.sh", "--no-build", "--launch"]
+        self.assertEqual(calls, [["reset"], launch])
+        self.assertNotIn("--use-production-bundle-id", launch)
+        app_pid.assert_called_with(str(app / "Contents" / "MacOS" / "Labstream"))
+        self.assertEqual(driver.call_args.args[:2], (42, "preflight"))
+        self.assertTrue(session.name.endswith("-live-macos"))
+        self.assertEqual((state["target"], state["pid"], state["launchArguments"]), ("macos", 42, []))
+        self.assertEqual(state["app"], {"buildNumber": "7"})
+        self.assertEqual((state["dryRun"], state["watchProgressReset"], state["watchProgressItemsCleared"]),
+                         (True, True, 2))
+
+    def test_start_fails_closed_and_quits_when_a_host_permission_is_missing(self) -> None:
+        for code, wording in (("accessibility_not_trusted", "blocked: Accessibility permission"),
+                              ("screen_recording_not_permitted", "blocked: Screen & System Audio Recording")):
+            with tempfile.TemporaryDirectory() as directory:
+                app = Path(directory) / "Labstream.app"
+                app.mkdir()
+                blocked = screenshots.MacDriverError(screenshots.MAC_BLOCKED[code], code, {})
+                with mock.patch.object(screenshots, "_run", return_value=f"app: {app}\n"), \
+                        mock.patch.object(screenshots, "_mac_app_pid", return_value=42), \
+                        mock.patch.object(screenshots, "_mac_driver", side_effect=blocked), \
+                        mock.patch.object(screenshots, "_mac_quit") as quit_app:
+                    with self.assertRaisesRegex(screenshots.ScreenshotError, wording) as raised:
+                        screenshots.live_start("macos", Path(directory) / "out", allow_simulator=False,
+                                               reset_progress=False)
+                self.assertIn("the app that runs this command", str(raised.exception))
+                quit_app.assert_called_once_with(42)
+                self.assertFalse((Path(directory) / "out").exists())
+
+    def test_start_is_blocked_without_a_staged_app(self) -> None:
+        failure = screenshots.ScreenshotError("command failed (1): deploy")
+        with mock.patch.object(screenshots, "_run", side_effect=failure):
+            with self.assertRaisesRegex(screenshots.ScreenshotError, "blocked: no staged isolated Mac app"):
+                screenshots.live_start("macos", Path("ignored"), allow_simulator=False,
+                                       reset_progress=False)
+
+    def test_driver_commands_and_errors_never_carry_values(self) -> None:
+        command = screenshots._mac_driver_command(42, "set-value", "--label", "Password",
+                                                  "--env", "LABSTREAM_LIVE_AUTH_PASSWORD", timeout=20)
+        self.assertEqual(command[1:], ["live", "set-value", "--pid", "42", "--timeout", "20",
+                                       "--label", "Password", "--env", "LABSTREAM_LIVE_AUTH_PASSWORD"])
+        def completed(code, payload):
+            return mock.Mock(returncode=code, stdout=json.dumps(payload) + "\n", stderr="")
+        with mock.patch.object(screenshots, "_mac_driver_binary"), \
+                mock.patch.object(screenshots.subprocess, "run") as run:
+            run.return_value = completed(0, {"status": "passed", "matches": 1})
+            self.assertEqual(screenshots._mac_driver(
+                42, "count", "--label", "Play", env={"LABSTREAM_LIVE_AUTH_PASSWORD": "s3cret"})["matches"], 1)
+            self.assertEqual(run.call_args.kwargs["env"]["LABSTREAM_LIVE_AUTH_PASSWORD"], "s3cret")
+            self.assertNotIn("s3cret", run.call_args.args[0])
+            run.return_value = completed(1, {"status": "failed", "errorCode": "target_not_found"})
+            with self.assertRaises(screenshots.MacDriverError) as failed:
+                screenshots._mac_driver(42, "set-value", "--env", "LABSTREAM_LIVE_AUTH_PASSWORD",
+                                        step="enter the password", env={"LABSTREAM_LIVE_AUTH_PASSWORD": "s3cret"})
+            self.assertEqual(str(failed.exception),
+                             "macOS live step failed: enter the password (target_not_found)")
+            self.assertEqual(failed.exception.code, "target_not_found")
+            run.return_value = completed(2, {"status": "blocked", "errorCode": "accessibility_not_trusted"})
+            with self.assertRaisesRegex(screenshots.ScreenshotError, "blocked: Accessibility permission"):
+                screenshots._mac_driver(42, "press", "--label", "Play")
+            run.return_value = mock.Mock(returncode=1, stdout="", stderr="crash")
+            with self.assertRaisesRegex(screenshots.ScreenshotError, r"window \(driver_failed\)"):
+                screenshots._mac_driver(42, "window")
+
+    def test_app_pid_matches_only_the_exact_staged_executable(self) -> None:
+        listing = (" 10 /staged/Labstream.app/Contents/MacOS/Labstream-helper\n"
+                   " 11 /Applications/Labstream.app/Contents/MacOS/Labstream\n"
+                   " 12 /staged/Labstream.app/Contents/MacOS/Labstream -NSDocumentRevisionsDebugMode YES\n")
+        with mock.patch.object(screenshots, "_run", return_value=listing):
+            self.assertEqual(screenshots._mac_app_pid("/staged/Labstream.app/Contents/MacOS/Labstream"), 12)
+            self.assertIsNone(screenshots._mac_app_pid("/other/Labstream.app/Contents/MacOS/Labstream"))
+
+    def _size_window(self, *, window, resize_results, aerospace="/opt/bin/aerospace"):
+        """Run _mac_size_window with scripted driver results; return (driver calls, floating calls)."""
+        calls: list[tuple[str, ...]] = []
+        results = iter(resize_results)
+        def driver(pid, operation, *arguments, **kwargs):
+            calls.append((operation, *arguments))
+            if operation == "window":
+                return window
+            outcome = next(results)
+            if outcome is not None:
+                raise screenshots.MacDriverError("failed", outcome, {})
+            return {}
+        with mock.patch.object(screenshots, "_mac_driver", side_effect=driver), \
+                mock.patch.object(screenshots.shutil, "which", return_value=aerospace), \
+                mock.patch.object(screenshots.subprocess, "run") as run:
+            try:
+                screenshots._mac_size_window(42, screenshots.load_specs())
+            finally:
+                self.floating = [call.args[0] for call in run.call_args_list]
+        return calls
+
+    def test_window_is_sized_in_points_from_the_display_scale(self) -> None:
+        window = {"scale": 2, "width": 900, "height": 700, "windowID": 77}
+        calls = self._size_window(window=window, resize_results=[None])
+        self.assertEqual(calls[-1], ("resize", "--width", "1280", "--height", "800"))
+        self.assertEqual(self.floating, [])
+        # Already the right size: nothing is moved.
+        sized = {"scale": 2, "width": 1280.0, "height": 800.0, "windowID": 77}
+        self.assertEqual(self._size_window(window=sized, resize_results=[]), [("window",)])
+        # A 1x display needs the full 2560 x 1600 points.
+        calls = self._size_window(window={**window, "scale": 1}, resize_results=[None])
+        self.assertEqual(calls[-1], ("resize", "--width", "2560", "--height", "1600"))
+        with self.assertRaisesRegex(screenshots.ScreenshotError, "blocked: display scale 3"):
+            self._size_window(window={**window, "scale": 3}, resize_results=[])
+
+    def test_tiled_window_is_floated_only_through_aerospace_and_otherwise_blocks(self) -> None:
+        window = {"scale": 2, "width": 1276, "height": 1405, "windowID": 77}
+        calls = self._size_window(window=window, resize_results=["window_size_mismatch", None])
+        self.assertEqual([call[0] for call in calls], ["window", "resize", "resize"])
+        self.assertEqual(self.floating, [["/opt/bin/aerospace", "layout", "floating", "--window-id", "77"]])
+        with self.assertRaisesRegex(screenshots.ScreenshotError, "blocked: the Labstream window did not keep"):
+            self._size_window(window=window, resize_results=["window_size_mismatch"], aerospace=None)
+        self.assertEqual(self.floating, [])
+        with self.assertRaisesRegex(screenshots.ScreenshotError, "blocked: the Labstream window did not keep"):
+            self._size_window(window=window,
+                              resize_results=["window_size_mismatch", "window_size_mismatch"])
+        # Any other failure is reported as itself, without touching the window manager.
+        with self.assertRaises(screenshots.MacDriverError):
+            self._size_window(window=window, resize_results=["window_unavailable"])
+        self.assertEqual(self.floating, [])
+
+    def test_stable_frame_captures_the_window_only_until_two_frames_match(self) -> None:
+        frames = iter([b"a", b"b", b"b"])
+        commands: list[tuple[str, ...]] = []
+        def driver(pid, operation, *arguments, **kwargs):
+            commands.append((operation, *arguments))
+            Path(arguments[1]).write_bytes(next(frames))
+            return {}
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(screenshots, "_mac_driver", side_effect=driver), \
+                mock.patch.object(screenshots.time, "sleep"):
+            frame = screenshots._mac_stable_frame(42, Path(directory))
+            self.assertEqual(frame.read_bytes(), b"b")
+        self.assertTrue(all(command[0] == "capture" and command[-2:] == ("--matte", "101014")
+                            for command in commands))
+        counter = itertools.count()
+        def changing(pid, operation, *arguments, **kwargs):
+            Path(arguments[1]).write_bytes(str(next(counter)).encode())
+            return {}
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(screenshots, "_mac_driver", side_effect=changing), \
+                mock.patch.object(screenshots.time, "sleep"):
+            with self.assertRaisesRegex(screenshots.ScreenshotError, "never settled"):
+                screenshots._mac_stable_frame(42, Path(directory))
+
+    def test_shot_rejects_a_relaunched_or_background_app(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session = self._session(directory)
+            with mock.patch.object(screenshots, "_mac_app_pid", return_value=43):
+                with self.assertRaisesRegex(screenshots.ScreenshotError, "without arguments"):
+                    screenshots.live_shot(session, "home")
+            with mock.patch.object(screenshots, "_mac_app_pid", return_value=42), \
+                    mock.patch.object(screenshots, "_mac_driver", return_value={"frontmost": False}), \
+                    mock.patch.object(screenshots, "_mac_stable_frame") as capture:
+                with self.assertRaisesRegex(screenshots.ScreenshotError, "blocked: Labstream could not be made"):
+                    screenshots.live_shot(session, "home")
+                capture.assert_not_called()
+
+    def test_shot_exports_a_validated_live_entry_and_checks_the_size(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session = self._session(directory, dryRun=True)
+            frame = session / "frame.png"
+            frame.write_bytes(b"frame")
+            def convert(source, destination, target, pixels):
+                destination.write_bytes(b"jpeg")
+            with mock.patch.object(screenshots, "_mac_app_pid", return_value=42), \
+                    mock.patch.object(screenshots, "_mac_driver", return_value={"frontmost": True}), \
+                    mock.patch.object(screenshots, "_mac_size_window") as size, \
+                    mock.patch.object(screenshots, "_mac_stable_frame", return_value=frame), \
+                    mock.patch.object(screenshots, "_convert_to_store_jpeg", side_effect=convert), \
+                    mock.patch.object(screenshots, "_git_dirty", return_value=False):
+                with mock.patch.object(screenshots, "image_properties", return_value=(2560, 1600, False)):
+                    destination = screenshots.live_shot(session, "library")
+                    manifest = json.loads((session / "export" / "manifest.json").read_text())
+                with mock.patch.object(screenshots, "image_properties", return_value=(2552, 2810, False)):
+                    with self.assertRaisesRegex(screenshots.ScreenshotError, "not an accepted size"):
+                        screenshots.live_shot(session, "home")
+            size.assert_called_with(42, mock.ANY)
+        self.assertEqual(destination.name, "macos-02-library-2560x1600.jpg")
+        entry = manifest["screenshots"][0]
+        self.assertEqual((entry["target"], entry["mode"], entry["launchArguments"]), ("macos", "live", []))
+        self.assertTrue(manifest["dryRun"] and manifest["launchedWithoutArguments"])
+
+    def _drive(self, directory: str, *, signed_out: bool):
+        events: list[tuple[str, ...]] = []
+        environments: list[dict[str, str]] = []
+        def driver(pid, operation, *arguments, timeout=15, step=None, env=None):
+            events.append((operation, *arguments))
+            environments.append(env or {})
+            return {}
+        def count(pid, *query):
+            if "performance.login.backend-picker" in query:
+                return 1 if signed_out else 0
+            if "performance.library-visibility.done" in query:
+                return 1 if signed_out else 0
+            if query[-2:] == ("--label", "Spring"):
+                return 0  # posters are labelled "Spring, 2019"
+            if query[-2:] == ("--label", "Resume"):
+                return 0
+            return 1
+        session = self._session(directory)
+        with mock.patch.object(screenshots, "_mac_app_pid", return_value=42), \
+                mock.patch.object(screenshots, "_mac_driver", side_effect=driver), \
+                mock.patch.object(screenshots, "_mac_count", side_effect=count), \
+                mock.patch.object(screenshots, "_mac_size_window",
+                                  side_effect=lambda pid, specs: events.append(("size",))), \
+                mock.patch.object(screenshots, "live_shot",
+                                  side_effect=lambda session, scene: events.append(("shot", scene))), \
+                mock.patch.object(screenshots, "load_live_config", return_value=self.CONFIG), \
+                mock.patch.object(screenshots.time, "sleep"):
+            scenes = screenshots.live_drive_macos(session)
+        return scenes, events, environments
+
+    def test_drive_signs_in_by_environment_and_shoots_each_scene_in_order(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scenes, events, environments = self._drive(directory, signed_out=True)
+        self.assertEqual(scenes, ["home", "library", "detail", "playback"])
+        fills = [event for event in events if event[0] == "set-value"]
+        self.assertEqual([fill[-1] for fill in fills], list(screenshots.LIVE_SECRET_KEYS))
+        # Values reach the driver only through its environment, one variable per field.
+        self.assertEqual([env for env in environments if env],
+                         [{key: self.CONFIG[key]} for key in screenshots.LIVE_SECRET_KEYS])
+        for value in self.CONFIG.values():
+            self.assertFalse(any(value in argument for event in events for argument in event))
+        self.assertIn(("press", "--identifier", "performance.library-visibility.done"), events)
+        # The window is sized before the first scene, and each sidebar scene focuses the sidebar.
+        order = [event for event in events if event[0] in {"size", "shot", "focus", "select-row"}]
+        self.assertEqual(order[0], ("size",))
+        self.assertEqual([event[0] for event in order[1:7]],
+                         ["select-row", "focus", "shot", "select-row", "focus", "shot"])
+        self.assertIn(("select-row", "--identifier", "performance.mac.sidebar.library", "--label", "Movies"),
+                      events)
+        self.assertIn(("press", "--role", "AXButton", "--label-prefix", "Spring, "), events)
+        # Playback is paused and skipped past the opening before its shot.
+        pause = events.index(("press", "--identifier", "playback.playPause", "--label", "Pause"))
+        paused = events.index(("wait", "--identifier", "playback.playPause", "--label", "Play"))
+        skips = [index for index, event in enumerate(events) if event[-1] == "playback.skip.30"]
+        self.assertEqual(len(skips), screenshots.MAC_PLAYBACK_SKIPS)
+        self.assertLess(pause, skips[0])
+        self.assertLess(skips[-1], paused)
+        self.assertLess(paused, events.index(("shot", "playback")))
+        self.assertLess(events.index(("shot", "detail")), pause)
+
+    def test_drive_skips_sign_in_when_already_signed_in(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scenes, events, environments = self._drive(directory, signed_out=False)
+        self.assertEqual(scenes, ["home", "library", "detail", "playback"])
+        self.assertFalse([event for event in events if event[0] == "set-value"])
+        self.assertFalse([env for env in environments if env])
+
+    def test_drive_rejects_a_relaunched_process_before_touching_the_app(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session = self._session(directory)
+            with mock.patch.object(screenshots, "_mac_app_pid", return_value=None), \
+                    mock.patch.object(screenshots, "load_live_config", return_value=self.CONFIG), \
+                    mock.patch.object(screenshots, "_mac_driver") as driver:
+                with self.assertRaisesRegex(screenshots.ScreenshotError, "start a new session"):
+                    screenshots.live_drive_macos(session)
+                driver.assert_not_called()
+
+    def test_finish_quits_only_the_process_the_session_launched(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session = self._session(directory)
+            (session / "frames").mkdir()
+            with mock.patch.object(screenshots, "_mac_quit") as quit_app:
+                with mock.patch.object(screenshots, "_mac_app_pid", return_value=42):
+                    self.assertEqual(screenshots.live_finish(session), session / "export")
+                quit_app.assert_called_once_with(42)
+                with mock.patch.object(screenshots, "_mac_app_pid", return_value=99):
+                    screenshots.live_finish(session)
+                quit_app.assert_called_once()
+            self.assertFalse((session / "frames").exists())
+        # Without Accessibility the driver cannot ask the app to quit; it is still not left behind.
+        with mock.patch.object(screenshots, "_mac_driver",
+                               side_effect=screenshots.ScreenshotError("blocked")), \
+                mock.patch.object(screenshots.subprocess, "run") as run:
+            screenshots._mac_quit(42)
+        self.assertEqual(run.call_args.args[0], ["/bin/kill", "42"])
+
+    def test_command_line_routes_macos_sessions_to_the_accessibility_drive(self) -> None:
+        arguments = screenshots.parser().parse_args(["live", "start", "--target", "macos"])
+        self.assertEqual((arguments.target, arguments.allow_simulator), ("macos", False))
+        with tempfile.TemporaryDirectory() as directory:
+            session = self._session(directory)
+            with mock.patch.object(screenshots, "live_drive_macos", return_value=["home"]) as drive, \
+                    mock.patch.object(screenshots, "live_drive") as simulator_drive:
+                self.assertEqual(screenshots.main(["live", "drive", str(session)]), 0)
+                self.assertEqual(drive.call_args.args[0], session.resolve())
+                self.assertEqual(screenshots.main(
+                    ["live", "drive", str(session), "--xctestrun", "x.xctestrun"]), 2)
+                self.assertEqual(screenshots.main(["live", "drive", str(session), "--landscape"]), 2)
+                drive.assert_called_once()
+                # Simulator sessions still need their .xctestrun.
+                (session / "live-session.json").write_text(json.dumps({"target": "ipad", "pid": 1}))
+                self.assertEqual(screenshots.main(["live", "drive", str(session)]), 2)
+                simulator_drive.assert_not_called()
+
+    def test_driver_live_mode_is_semantic_and_window_scoped(self) -> None:
+        source = (ROOT / "scripts" / "agent-macos-ax-driver.swift").read_text()
+        # No synthetic mouse or keyboard events and no pointer moves: the lane must not act on
+        # the person's desktop outside the app's own Accessibility tree.
+        for forbidden in ("CGEvent", "CGWarpMouseCursorPosition", "CGDisplayCreateImage"):
+            self.assertNotIn(forbidden, source)
+        for required in ("CGPreflightScreenCaptureAccess", "screen_recording_not_permitted",
+                         "window_size_mismatch", '"-x", "-o", "-l\\(windowID)"', "kAXWindowsAttribute"):
+            self.assertIn(required, source)
+
+
 class AppStoreScreenshotTests(unittest.TestCase):
     def test_checked_spec_manifest_covers_every_native_target(self) -> None:
         manifest = screenshots.load_specs()
@@ -341,8 +684,6 @@ class AppStoreScreenshotTests(unittest.TestCase):
                 screenshots.live_start("ipad", Path("ignored"), allow_simulator=True)
         with self.assertRaisesRegex(screenshots.ScreenshotError, "--allow-simulator"):
             screenshots.live_start("ipad", Path("ignored"), allow_simulator=False)
-        with self.assertRaisesRegex(screenshots.ScreenshotError, "simulator targets"):
-            screenshots.live_start("macos", Path("ignored"), allow_simulator=True)
 
     def test_orientation_check_stops_a_rotated_simulator(self) -> None:
         specs = screenshots.load_specs()

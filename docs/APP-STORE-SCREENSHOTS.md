@@ -7,10 +7,11 @@ validator:
   catalog and launch routes. It does not authenticate, contact a media server, or read persisted
   accounts. Its images are **layout evidence only**: every manifest says so, and none may be
   uploaded.
-- **Live-catalog mode** (`live start|shot|finish`) captures an ordinary signed-in session against
-  the controlled licensed review catalog. The exporter launches the installed app with no arguments
-  at all, a person signs in and navigates normally, and each shot requires the same process to
-  still be running. This is the only lane that can produce final images; see the
+- **Live-catalog mode** (`live start|shot|drive|finish`) captures an ordinary signed-in session
+  against the controlled licensed review catalog. The exporter launches the installed app with no
+  arguments at all, a person (or `live drive`) signs in and navigates normally, and each shot
+  requires the same process to still be running. Simulator targets and the isolated Mac host app
+  share the commands. This is the only lane that can produce final images; see the
   [licensed-media capture plan](https://github.com/jlipworth/Labstream/blob/main/docs/plans/2026-09-15-store-demo-capture.md).
 
 The licensed catalog's public source and license provenance is checked in at
@@ -126,8 +127,8 @@ progress (below), overrides the iPhone/iPad status bar to 9:41 with full signal,
 arguments, and records the process ID plus the installed marketing/build version. `live shot` refuses a relaunched process, waits for two identical frames,
 checks the display-class size, and replaces any earlier shot of the same scene. `live finish`
 clears the status bar and shuts the simulator down. A session's export lives at
-`<session>/export`. macOS has no live lane yet; capture its window by hand with the isolated host
-path and apply the same checks.
+`<session>/export`. The `macos` target uses the same four commands against the isolated host app
+instead of a simulator; see [macOS live lane](#macos-live-lane).
 
 ### Simulator orientation guard
 
@@ -223,6 +224,62 @@ themselves skip. XCUITest logs typed text, so the driver keeps only a redacted
 debugging; it contains the typed values). The test never signs out. An app signed in to another
 account fails at the catalog check, so sign out by hand first.
 
+### macOS live lane
+
+There is no macOS simulator, so `--target macos` drives this worktree's isolated host build (the
+per-worktree development identity from `scripts/deploy-macos-to-host.sh`; never the production
+bundle ID and never `/Applications/Labstream.app`). It needs no simulator lease and no
+`--allow-simulator`, but it does use the real desktop: leave the Mac unlocked and idle while it
+runs.
+
+```sh
+scripts/deploy-macos-to-host.sh                       # build and stage the isolated app once
+SESSION=$(scripts/app-store-screenshots.py live start --target macos --dry-run \
+  | sed -n 's/^SESSION: //p')
+scripts/app-store-screenshots.py live drive "$SESSION"   # no --xctestrun on macOS
+scripts/app-store-screenshots.py live finish "$SESSION"
+scripts/app-store-screenshots.py validate "$SESSION/export"
+```
+
+- `live start` runs the watch-progress reset, relaunches the staged app with no arguments
+  (`deploy-macos-to-host.sh --no-build --launch`), checks both host permissions, and records the
+  process ID and the staged app's marketing/build version. It stops as `blocked` when no app is
+  staged.
+- `live drive` uses the `live` operations of `scripts/agent-macos-ax-driver.swift`, the same
+  Accessibility driver as the fixture runner, in place of a UI test. If the app is signed out it
+  fills the Jellyfin username/password form by setting the text fields' values; the private values
+  reach the driver as environment variables and never appear in a command line, a log or an error.
+  It confirms the first-run library chooser, sizes the window, then goes Home → Movies → Spring
+  details → play and shoots `home`, `library`, `detail` and `playback`. Before the playback shot
+  it reveals the player controls, pauses, and skips forward three times, like the UI tests.
+- `live shot` requires the session's process, brings the app to the front, sizes the window so
+  that a window-only capture is exactly 2560 × 1600 pixels (1280 × 800 points on a 2× display;
+  2560 × 1600 points on a 1× display), waits for two identical frames of `screencapture -l` for
+  that one window without its shadow, and applies the same size check, export and manifest rules
+  as the simulator targets. The capture is flattened onto a dark matte, because a window capture
+  is transparent outside the rounded corners and a JPEG would turn them white. A hand-driven
+  session can use `live shot` the same way.
+- `live finish` quits only the process the session launched and validates the export.
+
+Everything is semantic Accessibility. The lane posts no mouse or keyboard events and never moves
+the pointer. The sidebar's selected row is amber only while the sidebar has keyboard focus in the
+frontmost app, so each sidebar scene selects the row and then focuses the sidebar outline through
+Accessibility; that gives the same highlight as a real click.
+
+The lane fails closed with a `blocked` message when:
+
+- Accessibility or Screen Recording permission is missing for the app that runs the command (the
+  terminal or agent host). It never falls back to a full-desktop capture.
+- The window does not keep the requested size. A tiling window manager re-tiles a new window
+  right after the resize; when `aerospace` is on `PATH` the lane sets that one window to floating
+  (`aerospace layout floating --window-id N`) and retries once. The setting disappears with the
+  window at `live finish`. Other window managers, or a display too small for the window, stop the
+  run.
+- Labstream cannot be made the frontmost app. An inactive window is dimmed and its selection is
+  grey, so it is never captured.
+
+`--landscape`, `--keep-result` and `--xctestrun` do not apply to a `macos` session.
+
 `--dry-run` on `live start` adds `"dryRun": true` and a note to the export manifest. Dry-run
 exports prove that the automation works and are never final screenshots: `coverage --live-only`
 rejects them. Final screenshots come from a later live session without `--dry-run`, reviewed by
@@ -271,9 +328,10 @@ Outside automation:
   headset rendering. Coordinate clicking must not be used.
 - **iPhone Duo folding:** the inner fixture image is an appResize proxy; a real unfold (Device Hub
   or hardware) is required for final inner images.
-- **Mac host permissions:** the isolated Accessibility driver and window-only capture require the
-  host permissions in [macOS development](MACOS.md). A missing permission is a blocker, not a reason
-  to capture the full desktop.
+- **Mac host permissions and desktop:** the isolated Accessibility driver and window-only capture
+  require the host permissions in [macOS development](MACOS.md). A missing permission is a blocker,
+  not a reason to capture the full desktop. The Mac live lane runs on the real desktop, so it also
+  needs an unlocked, idle session and a display that fits the capture window.
 - **Hardware truth:** simulator images do not prove HDR, HDMI/audio, Siri Remote, gaze, comfort,
   performance, or physical-device rendering.
 - **Editorial and legal review:** a person must inspect every final image for composition, clipped
