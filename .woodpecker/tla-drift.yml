@@ -12,6 +12,7 @@ steps:
     commands:
       - apt-get update && apt-get install -y --no-install-recommends git
       - rm -rf /var/lib/apt/lists/*
-      # The clone may hold only the pull request's commits; the range needs the base branch.
-      - git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+      # Woodpecker clones shallowly by default; a shallow PR clone may have no merge base
+      # with main, so deepen it before computing the range.
+      - if [ "$(git rev-parse --is-shallow-repository)" = true ]; then git fetch --no-tags --unshallow origin +refs/heads/main:refs/remotes/origin/main; else git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main; fi
       - python scripts/check-tla-drift.py origin/main...HEAD
