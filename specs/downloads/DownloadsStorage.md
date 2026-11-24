@@ -72,6 +72,7 @@ foreign bytes, a cap of 3 (or Unlimited), headroom 1 (or 0).
 | `Storage-Current-Mixed` | pass | 14,456 | 2 s |
 | `Storage-Current-Unknown` | pass | 88,087 | 4 s |
 | `Storage-Current-Unlimited` (symmetry) | pass | 43,234 | 3 s |
+| `Storage-Current-ThreeStatic` (symmetry) | pass | 120,254 | 10 s |
 | `Storage-Proposed-S1-DurableParkGate` (symmetry) | pass | 60,204 | 4 s |
 | `Storage-Faithful-B01-off` | `PreflightRefusalJustified` violated | first error | < 1 s |
 | `Storage-Faithful-B24-off` | `RetryCountedOnce` violated | first error | < 1 s |
@@ -81,11 +82,14 @@ foreign bytes, a cap of 3 (or Unlimited), headroom 1 (or 0).
 | `Storage-Faithful-B19-off` | `AuditCountsHiddenStaging` violated | first error | < 1 s |
 | `Storage-Faithful-B86-off` | `NoOrphanAfterStartup` violated | first error | < 1 s |
 | `Storage-Finding-S1-RequeueErasesPark` | `NoBlindRedrive` violated | first error | < 1 s |
-| `Storage-Deep-ThreeStatic` (deep tier, symmetry) | pass | DEEP_STATES | DEEP_TIME |
 
 `Storage-Current-TwoStatic` lets the backend session come and go and checks every property
 except the two finding S1 breaks (`ParkIsDurable`, `NoBlindRedrive`). The other `Current-*`
 configs keep the backend session and check those two as well.
+
+`Storage-Current-ThreeStatic` has three rows, no side assets, at most 2 foreign bytes and a cap of 4.
+There is no deep config: three rows at the two-row bounds with side assets and a backend session
+that comes and goes (disk 8, cap 5) did not finish in 10 minutes at these settings and was dropped.
 
 ### Faithfulness
 
