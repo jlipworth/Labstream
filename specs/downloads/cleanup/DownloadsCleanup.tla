@@ -38,7 +38,22 @@
 (*    disk.  "This revision is committed" is "this row's durable copy      *)
 (*    equals its in-memory copy" (Durable).                                *)
 (*  - The volume is full or not.  When it is full every index and journal  *)
-(*    commit fails; unlinking a file makes room again.                     *)
+(*    commit fails; unlinking a file makes room again.  The PROPOSED       *)
+(*    reserve (FixB30) is counted in writes: ReserveUnits full-snapshot or *)
+(*    journal writes that a Delete may make on a full volume.  Each such   *)
+(*    write uses one unit up, and the units come back only when the volume *)
+(*    has room again (RefillReserve).                                      *)
+(*  - The deletion recipe is unlinked in the order Swift sorts it          *)
+(*    (stageRowDeletionLocked sorts, executeRowDeletion keeps the order).  *)
+(*    The working body is `.attempt-stage-v1-<digest>.stage`; the stable   *)
+(*    body is `<key>.<ext>`.  StableSortsFirst says which comes first.     *)
+(*  - An unlink can fail with the file still there, and the directory sync *)
+(*    after the unlinks can fail.  Both leave the intent queued with       *)
+(*    failedArtifactIOIntentIDs set.                                       *)
+(*  - A Delete tapped again for an intent with no live ticket registers a  *)
+(*    new one whose prepared revision is a fresh snapshot (submitRemove    *)
+(*    calls enqueueAttemptPersistenceLocked), so it needs one more index   *)
+(*    write even when the disk already holds the intent (`fresh`).         *)
 (*  - A row has at most one server job, and every job is resumable (an     *)
 (*    Emby Convert job): a failed row keeps it for Retry.  Encoders,       *)
 (*    abandonment intents and the ownership recheck against other rows are *)
@@ -73,6 +88,13 @@ CONSTANTS
     FixB27Fence,       \* PROPOSED (not in the code): that Delete and the launch recovery
                        \*   exclude each other
     FixB30,            \* PROPOSED (not in the code): reserved capacity for Delete's own writes
+    ReserveUnits,      \* PROPOSED: how many writes that reserve covers on a full volume
+    FixB30Reuse,       \* PROPOSED (not in the code): a Delete tapped again reuses an intent
+                       \*   the disk already holds instead of waiting for a fresh snapshot
+    StableSortsFirst,  \* the stable name sorts before `.attempt-stage-v1-...` (its first
+                       \*   character is below "."); FALSE for every generated name
+    UnlinkFails,       \* an unlink may fail with the file still there
+    SyncFails,         \* the directory sync after the unlinks may fail
     ExplicitRecovery,  \* other work in the process triggers explicit artifact recovery
     DiskFills,         \* the volume may become completely full
     DiskFrees,         \* something outside the app may free space
@@ -85,7 +107,7 @@ FileNames == {"working", "stable"}
 
 ASSUME /\ InitKinds \subseteq RowKinds /\ InitKinds # {}
        /\ LegacyFiles \subseteq SUBSET FileNames /\ LegacyFiles # {}
-       /\ EnvBudget \in Nat
+       /\ EnvBudget \in Nat /\ ReserveUnits \in Nat
 
 \* SYMMETRY for safety configs: rows are model values and every row draws its
 \* kind from the same set, so nothing tells two rows apart.
@@ -102,6 +124,7 @@ VARIABLES
     \* ---- durable: files, the volume, the cleanup journal ----
     files,     \* [Rows -> SUBSET FileNames]
     full,      \* BOOLEAN   the volume has no free block
+    reserve,   \* 0..ReserveUnits  writes the PROPOSED reserve still covers
     jrnl,      \* [Rows -> JournalEntries]  download-cleanup-intents.json
     jSynced,   \* [Rows -> BOOLEAN]  the entry would survive power loss
     \* ---- the server (survives Crash) ----
@@ -115,6 +138,9 @@ VARIABLES
     waived,    \* [Rows -> BOOLEAN]  the active head's ticket has preparedRevision 0
     headIO,    \* [Rows -> BOOLEAN]  failedArtifactIOIntentIDs: no automatic retry
     todo,      \* [Rows -> SUBSET FileNames]  paths the deletion worker has yet to unlink
+    delFail,   \* [Rows -> BOOLEAN]  executeRowDeletion's `failures` is above zero
+    fresh,     \* [Rows -> BOOLEAN]  the head's ticket waits for a snapshot submitted
+               \*   after the row last changed (a Delete tapped again)
     saved,     \* [Rows -> row]  the row a worker took out of memory, for restore
     prep,      \* [Rows -> PrepStates]  deletionPreparationTasks
     recov,     \* [Rows -> RecovStates]  the legacy promotion recovery pass
@@ -129,8 +155,8 @@ Retiring == {"delCommit", "promoCommit", "retireCommit"}
 PrepStates == {"idle", "reserving", "journaled", "journalFailed"}
 RecovStates == {"idle", "pending", "renamed"}
 
-durVars == <<dIdx, files, full, jrnl, jSynced, job, userWants>>
-memVars == <<mIdx, wk, waived, headIO, todo, saved, prep, recov>>
+durVars == <<dIdx, files, full, reserve, jrnl, jSynced, job, userWants>>
+memVars == <<mIdx, wk, waived, headIO, todo, delFail, fresh, saved, prep, recov>>
 vars    == <<durVars, up, memVars, budget>>
 
 -----------------------------------------------------------------------------
@@ -169,15 +195,25 @@ KindFiles(k, legacyFiles) ==
 
 \* Every revision that touched this row is committed.
 Durable(r) == dIdx[r] = mIdx[r]
+\* waitForPersistence(through: ticket.preparedRevision) has returned committed.
+Prepared(r) == Durable(r) /\ ~fresh[r]
+
+\* Row.ArtifactIntentOperation.rowDeletion(relativePaths:), sorted.
+UnlinkOrder == IF StableSortsFirst THEN <<"stable", "working">> ELSE <<"working", "stable">>
+NextUnlink(r) == IF UnlinkOrder[1] \in todo[r] THEN UnlinkOrder[1] ELSE UnlinkOrder[2]
 
 \* A Delete is under way for this row (what FixB30's reserve may be spent on).
 DeleteInFlight(r) ==
     \/ mIdx[r].delPending \/ HasDel(mIdx[r])
     \/ wk[r] = "delCommit" \/ prep[r] # "idle"
+\* The reserve has a unit left for a Delete's write.
+ReserveLeft == FixB30 /\ reserve > 0
 \* An index commit can succeed.
-CanCommit == ~full \/ (FixB30 /\ \E r \in Rows : DeleteInFlight(r))
+CanCommit == ~full \/ (ReserveLeft /\ \E r \in Rows : DeleteInFlight(r))
 \* The journal write that Delete makes can succeed.
-CanJournalDelete == ~full \/ FixB30
+CanJournalDelete == ~full \/ ReserveLeft
+\* A write that lands on a full volume uses one unit of the reserve up.
+SpendReserve == reserve' = IF full THEN reserve - 1 ELSE reserve
 
 \* Environment steps.  Liveness runs bound them.
 Spend == IF BoundEnvironment
@@ -196,6 +232,9 @@ TypeOK ==
     /\ \A r \in Rows : RowOK(dIdx[r]) /\ RowOK(mIdx[r]) /\ RowOK(saved[r])
     /\ files \in [Rows -> SUBSET FileNames]
     /\ full \in BOOLEAN
+    /\ reserve \in 0..ReserveUnits
+    /\ delFail \in [Rows -> BOOLEAN]
+    /\ fresh \in [Rows -> BOOLEAN]
     /\ jrnl \in [Rows -> JournalEntries]
     /\ jSynced \in [Rows -> BOOLEAN]
     /\ job \in [Rows -> {"none", "running", "cancelled"}]
@@ -216,6 +255,9 @@ Init ==
         /\ mIdx = dIdx
         /\ files = [r \in Rows |-> KindFiles(kinds[r], lf[r])]
         /\ full = FALSE
+        /\ reserve = IF FixB30 THEN ReserveUnits ELSE 0
+        /\ delFail = Const(Rows, FALSE)
+        /\ fresh = Const(Rows, FALSE)
         /\ jrnl = Const(Rows, "none")
         /\ jSynced = Const(Rows, TRUE)
         /\ job = [r \in Rows |-> IF KindRow(kinds[r]).jobRef THEN "running" ELSE "none"]
@@ -235,10 +277,21 @@ Init ==
 (* The index writer                                                        *)
 
 \* RevisionedPersistenceWriter: the newest full snapshot reaches the disk.
+\* One write commits every revision submitted so far.
 Commit ==
-    /\ up /\ mIdx # dIdx /\ CanCommit
+    /\ up /\ CanCommit
+    /\ mIdx # dIdx \/ \E r \in Rows : fresh[r]
     /\ dIdx' = mIdx
-    /\ UNCHANGED <<files, full, jrnl, jSynced, job, userWants, up, memVars, budget>>
+    /\ fresh' = Const(Rows, FALSE)
+    /\ SpendReserve
+    /\ UNCHANGED <<files, full, jrnl, jSynced, job, userWants, up, mIdx, wk, waived,
+                   headIO, todo, delFail, saved, prep, recov, budget>>
+
+\* PROPOSED: the reserve is put back as soon as the volume has room for it.
+RefillReserve ==
+    /\ up /\ FixB30 /\ ~full /\ reserve < ReserveUnits
+    /\ reserve' = ReserveUnits
+    /\ UNCHANGED <<dIdx, files, full, jrnl, jSynced, job, userWants, up, memVars, budget>>
 
 -----------------------------------------------------------------------------
 (* Delete (DownloadManager.delete(record:), DownloadCleanupOrdering)       *)
@@ -255,7 +308,9 @@ StageDel(r, row) ==
              THEN /\ wk' = Upd(wk, r, WaitState(head))
                   /\ waived' = Upd(waived, r, head # "del" /\ ~FixC1)
                   /\ headIO' = Upd(headIO, r, FALSE)
-             ELSE UNCHANGED <<wk, waived, headIO>>
+                  \* The deletion's ticket is new, and so is its prepared revision.
+                  /\ fresh' = Upd(fresh, r, head = "del" /\ ~FixB30Reuse)
+             ELSE UNCHANGED <<wk, waived, headIO, fresh>>
 
 \* submitRemove and submitDeletionPending both refuse a row whose legacy
 \* promotion flag is set (B27).
@@ -270,23 +325,24 @@ DeleteBody(r) ==
     /\ userWants' = Upd(userWants, r, TRUE)
     /\ IF DeleteRefused(r) THEN
             \* `.stale`: "delete_owner_changed".  Nothing happens.
-            UNCHANGED <<dIdx, files, full, jrnl, jSynced, job, up, memVars>>
+            UNCHANGED <<dIdx, files, full, reserve, jrnl, jSynced, job, up, memVars>>
        ELSE IF ~FixB28 /\ row.jobRef THEN
             \* B28 off: cancel the server job now, without a journal entry
             \* and before the row's removal is proven.
             /\ job' = Upd(job, r, IF job[r] = "running" THEN "cancelled" ELSE job[r])
             /\ StageDel(r, row)
-            /\ UNCHANGED <<dIdx, files, full, jrnl, jSynced, up, todo, saved, prep, recov>>
+            /\ UNCHANGED <<dIdx, files, full, reserve, jrnl, jSynced, up, todo, delFail,
+                           saved, prep, recov>>
        ELSE IF row.jobRef \/ row.delPending THEN
             \* submitDeletionPending: reserve the row as cleanup authority.
             /\ mIdx' = Upd(mIdx, r, [row EXCEPT !.delPending = TRUE])
             /\ prep' = Upd(prep, r, "reserving")
-            /\ UNCHANGED <<dIdx, files, full, jrnl, jSynced, job, up, wk, waived,
-                           headIO, todo, saved, recov>>
+            /\ UNCHANGED <<dIdx, files, full, reserve, jrnl, jSynced, job, up, wk, waived,
+                           headIO, todo, delFail, fresh, saved, recov>>
        ELSE
             /\ StageDel(r, row)
-            /\ UNCHANGED <<dIdx, files, full, jrnl, jSynced, job, up, todo, saved,
-                           prep, recov>>
+            /\ UNCHANGED <<dIdx, files, full, reserve, jrnl, jSynced, job, up, todo,
+                           delFail, saved, prep, recov>>
 
 UserFirstDelete(r) == ~userWants[r] /\ Spend /\ DeleteBody(r)
 \* "Tap Delete to retry."  The user keeps asking until the row is gone.
@@ -296,14 +352,20 @@ UserRetap(r) == userWants[r] /\ UNCHANGED budget /\ DeleteBody(r)
 \* same operation is reused with the provenance it already has.
 PrepJournal(r) ==
     /\ up /\ prep[r] = "reserving"
-    /\ IF CanJournalDelete
-          THEN /\ jrnl' = Upd(jrnl, r, IF jrnl[r] = "none" THEN "rowDeletion" ELSE jrnl[r])
-               /\ jSynced' = Upd(jSynced, r, FixB18 \/ (jrnl[r] # "none" /\ jSynced[r]))
+    /\ IF jrnl[r] # "none"
+          THEN \* existingCommittedLocked: no new bytes, only a sync.
+               /\ jSynced' = Upd(jSynced, r, FixB18 \/ jSynced[r])
                /\ prep' = Upd(prep, r, "journaled")
+               /\ UNCHANGED <<jrnl, reserve>>
+          ELSE IF CanJournalDelete
+          THEN /\ jrnl' = Upd(jrnl, r, "rowDeletion")
+               /\ jSynced' = Upd(jSynced, r, FixB18)
+               /\ prep' = Upd(prep, r, "journaled")
+               /\ SpendReserve
           ELSE /\ prep' = Upd(prep, r, "journalFailed")
-               /\ UNCHANGED <<jrnl, jSynced>>
+               /\ UNCHANGED <<jrnl, jSynced, reserve>>
     /\ UNCHANGED <<dIdx, files, full, job, userWants, up, mIdx, wk, waived, headIO,
-                   todo, saved, recov, budget>>
+                   todo, delFail, fresh, saved, recov, budget>>
 
 \* The reservation's proof and the journal's result together.
 PrepProof(r) ==
@@ -314,14 +376,14 @@ PrepProof(r) ==
           /\ StageDel(r, mIdx[r])
        \/ \* `.deletionPending`: the capsule stays as the only authority
           /\ mIdx[r].delPending /\ Durable(r) /\ prep[r] = "journalFailed"
-          /\ UNCHANGED <<mIdx, wk, waived, headIO>>
+          /\ UNCHANGED <<mIdx, wk, waived, headIO, fresh>>
        \/ \* `.indexPersistenceFailed`
           /\ mIdx[r].delPending /\ ~Durable(r) /\ ~CanCommit
-          /\ UNCHANGED <<mIdx, wk, waived, headIO>>
+          /\ UNCHANGED <<mIdx, wk, waived, headIO, fresh>>
        \/ \* `.staleOrMissing`: the worker already removed the row
           /\ ~mIdx[r].delPending
-          /\ UNCHANGED <<mIdx, wk, waived, headIO>>
-    /\ UNCHANGED <<durVars, up, todo, saved, recov, budget>>
+          /\ UNCHANGED <<mIdx, wk, waived, headIO, fresh>>
+    /\ UNCHANGED <<durVars, up, todo, delFail, saved, recov, budget>>
 
 \* Retry of a failed row resumes its server job (convertResume).
 UserRetry(r) ==
@@ -332,7 +394,7 @@ UserRetry(r) ==
        /\ ~row.delPending /\ row.queue = <<>> /\ ~row.legacy
        /\ IsApplied(t)
        /\ mIdx' = Upd(mIdx, r, [row EXCEPT !.st = t.state])
-       /\ UNCHANGED <<durVars, up, wk, waived, headIO, todo, saved, prep, recov>>
+       /\ UNCHANGED <<durVars, up, wk, waived, headIO, todo, delFail, fresh, saved, prep, recov>>
 
 -----------------------------------------------------------------------------
 (* The artifact worker: row deletion (executeRowDeletion)                  *)
@@ -341,41 +403,78 @@ UserRetry(r) ==
 \* preparedRevision 0 passes at once, whatever the disk holds.
 DelPrepared(r) ==
     /\ up /\ wk[r] = "delWait"
-    /\ Durable(r) \/ waived[r]
+    /\ Prepared(r) \/ waived[r]
     /\ wk' = Upd(wk, r, "delUnlink")
     /\ todo' = Upd(todo, r, FileNames)
-    /\ UNCHANGED <<durVars, up, mIdx, waived, headIO, saved, prep, recov, budget>>
+    /\ delFail' = Upd(delFail, r, FALSE)
+    /\ UNCHANGED <<durVars, up, mIdx, waived, headIO, fresh, saved, prep, recov, budget>>
 
 \* failArtifactLifecycle(ticket, failure): the intent stays queued in memory.
+\* The failed revision is remembered (failedArtifactPreparedRevisions), and
+\* the automatic retry waits for a commit that covers it.
 DelPreparedFails(r) ==
     /\ up /\ wk[r] = "delWait"
-    /\ ~Durable(r) /\ ~waived[r] /\ ~CanCommit
+    /\ ~Prepared(r) /\ ~waived[r] /\ ~CanCommit
     /\ wk' = Upd(wk, r, "idle")
-    /\ UNCHANGED <<durVars, up, mIdx, waived, headIO, todo, saved, prep, recov, budget>>
+    /\ UNCHANGED <<durVars, up, mIdx, waived, headIO, todo, delFail, fresh, saved, prep,
+                   recov, budget>>
 
-\* One path of the recipe.  Unlinking a file that exists makes room.
-DelUnlinkOne(r, f) ==
-    /\ up /\ wk[r] = "delUnlink" /\ f \in todo[r]
+\* The next path of the recipe, in its sorted order.  Unlinking a file that
+\* exists makes room.
+DelUnlinkOne(r) ==
+    LET f == NextUnlink(r) IN
+    /\ up /\ wk[r] = "delUnlink" /\ todo[r] # {}
     /\ todo' = Upd(todo, r, todo[r] \ {f})
     /\ files' = Upd(files, r, files[r] \ {f})
     /\ full' = IF f \in files[r] THEN FALSE ELSE full
-    /\ UNCHANGED <<dIdx, jrnl, jSynced, job, userWants, up, mIdx, wk, waived, headIO,
-                   saved, prep, recov, budget>>
+    /\ UNCHANGED <<dIdx, reserve, jrnl, jSynced, job, userWants, up, mIdx, wk, waived,
+                   headIO, delFail, fresh, saved, prep, recov, budget>>
+
+\* removeItem throws and the file is still there: `failures += 1`, and the
+\* loop goes on to the next path.
+DelUnlinkFailsOne(r) ==
+    LET f == NextUnlink(r) IN
+    /\ UnlinkFails /\ Spend
+    /\ up /\ wk[r] = "delUnlink" /\ todo[r] # {} /\ f \in files[r]
+    /\ todo' = Upd(todo, r, todo[r] \ {f})
+    /\ delFail' = Upd(delFail, r, TRUE)
+    /\ UNCHANGED <<durVars, up, mIdx, wk, waived, headIO, fresh, saved, prep, recov>>
+
+\* failArtifactLifecycle(ticket, errorType: "rowDeletionCleanupFailed"): the
+\* intent stays queued and is marked as an I/O failure, so only a Delete
+\* tapped again or an explicit recovery restarts it.
+DelCleanupFailed(r) ==
+    /\ up /\ wk[r] = "delUnlink" /\ todo[r] = {} /\ delFail[r]
+    /\ wk' = Upd(wk, r, "idle")
+    /\ headIO' = Upd(headIO, r, TRUE)
+    /\ delFail' = Upd(delFail, r, FALSE)
+    /\ waived' = Upd(waived, r, FALSE)
+    /\ UNCHANGED <<durVars, up, mIdx, todo, fresh, saved, prep, recov, budget>>
+
+\* Every unlink went through and syncParentDirectory throws: the same failure,
+\* with the files already gone.
+DelSyncFails(r) ==
+    /\ SyncFails /\ Spend
+    /\ up /\ wk[r] = "delUnlink" /\ todo[r] = {} /\ ~delFail[r]
+    /\ wk' = Upd(wk, r, "idle")
+    /\ headIO' = Upd(headIO, r, TRUE)
+    /\ waived' = Upd(waived, r, FALSE)
+    /\ UNCHANGED <<durVars, up, mIdx, todo, delFail, fresh, saved, prep, recov>>
 
 \* rows.removeValue, then the terminal snapshot is submitted.
 DelRemoveRow(r) ==
-    /\ up /\ wk[r] = "delUnlink" /\ todo[r] = {}
+    /\ up /\ wk[r] = "delUnlink" /\ todo[r] = {} /\ ~delFail[r]
     /\ saved' = Upd(saved, r, mIdx[r])
     /\ mIdx' = Upd(mIdx, r, AbsentRow)
     /\ wk' = Upd(wk, r, "delCommit")
-    /\ UNCHANGED <<durVars, up, waived, headIO, todo, prep, recov, budget>>
+    /\ UNCHANGED <<durVars, up, waived, headIO, todo, delFail, fresh, prep, recov, budget>>
 
 DelCommitted(r) ==
     /\ up /\ wk[r] = "delCommit" /\ Durable(r)
     /\ wk' = Upd(wk, r, "idle")
     /\ waived' = Upd(waived, r, FALSE)
     /\ saved' = Upd(saved, r, AbsentRow)
-    /\ UNCHANGED <<durVars, up, mIdx, headIO, todo, prep, recov, budget>>
+    /\ UNCHANGED <<durVars, up, mIdx, headIO, todo, delFail, fresh, prep, recov, budget>>
 
 \* The terminal commit failed: the row, with its intent, goes back.
 DelCommitFails(r) ==
@@ -384,7 +483,7 @@ DelCommitFails(r) ==
     /\ saved' = Upd(saved, r, AbsentRow)
     /\ wk' = Upd(wk, r, "idle")
     /\ waived' = Upd(waived, r, FALSE)
-    /\ UNCHANGED <<durVars, up, headIO, todo, prep, recov, budget>>
+    /\ UNCHANGED <<durVars, up, headIO, todo, delFail, fresh, prep, recov, budget>>
 
 -----------------------------------------------------------------------------
 (* The artifact worker: validated promotion (executeValidatedPromotion)    *)
@@ -398,7 +497,7 @@ SubmitPromotion(r) ==
     /\ mIdx' = Upd(mIdx, r, [row EXCEPT !.queue = <<"promo">>])
     /\ wk' = Upd(wk, r, "promoWait")
     /\ waived' = Upd(waived, r, FALSE)
-    /\ UNCHANGED <<durVars, up, headIO, todo, saved, prep, recov, budget>>
+    /\ UNCHANGED <<durVars, up, headIO, todo, delFail, fresh, saved, prep, recov, budget>>
 
 \* The promotion commits its captured source before it renames, so it never
 \* runs ahead of the disk, whatever its ticket says.  With no body left it
@@ -420,8 +519,8 @@ PromoRename(r) ==
        /\ files' = Upd(files, r, IF files[r] = {} THEN {} ELSE {"stable"})
        /\ mIdx' = Upd(mIdx, r, [row EXCEPT !.st = next, !.queue = Tail(row.queue)])
        /\ wk' = Upd(wk, r, "promoCommit")
-       /\ UNCHANGED <<dIdx, full, jrnl, jSynced, job, userWants, up, waived, headIO,
-                      todo, saved, prep, recov, budget>>
+       /\ UNCHANGED <<dIdx, full, reserve, jrnl, jSynced, job, userWants, up, waived, headIO,
+                      todo, delFail, fresh, saved, prep, recov, budget>>
 
 \* After the commit the worker starts the next head.  Its ticket was made
 \* when it was staged, and that revision is now on disk.
@@ -430,7 +529,7 @@ PromoCommitted(r) ==
     /\ wk' = Upd(wk, r, IF mIdx[r].queue = <<>> THEN "idle"
                                                ELSE WaitState(Head(mIdx[r].queue)))
     /\ waived' = Upd(waived, r, FALSE)
-    /\ UNCHANGED <<durVars, up, mIdx, headIO, todo, saved, prep, recov, budget>>
+    /\ UNCHANGED <<durVars, up, mIdx, headIO, todo, delFail, fresh, saved, prep, recov, budget>>
 
 \* The terminal commit failed: the intent goes back to the head.
 PromoCommitFails(r) ==
@@ -438,14 +537,14 @@ PromoCommitFails(r) ==
     /\ mIdx' = Upd(mIdx, r, [mIdx[r] EXCEPT !.queue = <<"promo">> \o @])
     /\ wk' = Upd(wk, r, "idle")
     /\ waived' = Upd(waived, r, FALSE)
-    /\ UNCHANGED <<durVars, up, headIO, todo, saved, prep, recov, budget>>
+    /\ UNCHANGED <<durVars, up, headIO, todo, delFail, fresh, saved, prep, recov, budget>>
 
 \* failArtifactLifecycle before the rename, for a commit that cannot land.
 PromoPreparedFails(r) ==
     /\ up /\ wk[r] = "promoWait" /\ ~Durable(r) /\ ~CanCommit
     /\ wk' = Upd(wk, r, "idle")
     /\ waived' = Upd(waived, r, FALSE)
-    /\ UNCHANGED <<durVars, up, mIdx, headIO, todo, saved, prep, recov, budget>>
+    /\ UNCHANGED <<durVars, up, mIdx, headIO, todo, delFail, fresh, saved, prep, recov, budget>>
 
 \* The rename fails.  With a row deletion queued behind it the failed head is
 \* retired first (retireFailedHeadBeforeQueuedRowDeletion); otherwise it
@@ -463,13 +562,13 @@ PromoIOFails(r) ==
                /\ headIO' = Upd(headIO, r, TRUE)
                /\ UNCHANGED <<mIdx, saved>>
     /\ waived' = Upd(waived, r, FALSE)
-    /\ UNCHANGED <<durVars, up, todo, prep, recov>>
+    /\ UNCHANGED <<durVars, up, todo, delFail, fresh, prep, recov>>
 
 RetireCommitted(r) ==
     /\ up /\ wk[r] = "retireCommit" /\ Durable(r)
     /\ wk' = Upd(wk, r, "delWait")
     /\ saved' = Upd(saved, r, AbsentRow)
-    /\ UNCHANGED <<durVars, up, mIdx, waived, headIO, todo, prep, recov, budget>>
+    /\ UNCHANGED <<durVars, up, mIdx, waived, headIO, todo, delFail, fresh, prep, recov, budget>>
 
 RetireCommitFails(r) ==
     /\ up /\ wk[r] = "retireCommit" /\ ~Durable(r) /\ ~CanCommit
@@ -477,7 +576,7 @@ RetireCommitFails(r) ==
     /\ saved' = Upd(saved, r, AbsentRow)
     /\ wk' = Upd(wk, r, "idle")
     /\ headIO' = Upd(headIO, r, TRUE)
-    /\ UNCHANGED <<durVars, up, waived, todo, prep, recov, budget>>
+    /\ UNCHANGED <<durVars, up, waived, todo, delFail, fresh, prep, recov, budget>>
 
 -----------------------------------------------------------------------------
 (* Restarting a failed head (recoverPendingArtifactIntents)                *)
@@ -486,10 +585,10 @@ RetireCommitFails(r) ==
 \* revision failed and has since landed is retried (B17).
 AutoRetryHead(r) ==
     /\ up /\ wk[r] = "idle" /\ mIdx[r].present /\ mIdx[r].queue # <<>>
-    /\ ~headIO[r] /\ Durable(r)
+    /\ ~headIO[r] /\ Prepared(r)
     /\ wk' = Upd(wk, r, WaitState(Head(mIdx[r].queue)))
     /\ waived' = Upd(waived, r, FALSE)
-    /\ UNCHANGED <<durVars, up, mIdx, headIO, todo, saved, prep, recov, budget>>
+    /\ UNCHANGED <<durVars, up, mIdx, headIO, todo, delFail, fresh, saved, prep, recov, budget>>
 
 \* explicit: true.  resumeAfterPersistence and the background-completion flush
 \* call it for every row through currentArtifactLifecycleWatermark, and so
@@ -501,7 +600,8 @@ ExplicitRecover(r) ==
     /\ wk' = Upd(wk, r, WaitState(Head(mIdx[r].queue)))
     /\ waived' = Upd(waived, r, ~FixC1)
     /\ headIO' = Upd(headIO, r, FALSE)
-    /\ UNCHANGED <<durVars, up, mIdx, todo, saved, prep, recov>>
+    /\ fresh' = Upd(fresh, r, FALSE)
+    /\ UNCHANGED <<durVars, up, mIdx, todo, delFail, saved, prep, recov>>
 
 -----------------------------------------------------------------------------
 (* The legacy promotion recovery (recoverPendingValidatedPromotion)        *)
@@ -520,8 +620,8 @@ RecoverRename(r) ==
           THEN recov' = Upd(recov, r, "idle") /\ UNCHANGED files
           ELSE /\ files' = Upd(files, r, {"stable"})
                /\ recov' = Upd(recov, r, "renamed")
-    /\ UNCHANGED <<dIdx, full, jrnl, jSynced, job, userWants, up, mIdx, wk, waived,
-                   headIO, todo, saved, prep, budget>>
+    /\ UNCHANGED <<dIdx, full, reserve, jrnl, jSynced, job, userWants, up, mIdx, wk, waived,
+                   headIO, todo, delFail, fresh, saved, prep, budget>>
 
 \* Back under the lock: the row must still carry the flag.
 RecoverCommit(r) ==
@@ -532,7 +632,7 @@ RecoverCommit(r) ==
        /\ IF row.present /\ row.legacy /\ "stable" \in files[r] /\ IsApplied(t)
              THEN mIdx' = Upd(mIdx, r, [row EXCEPT !.st = t.state, !.legacy = FALSE])
              ELSE UNCHANGED mIdx
-       /\ UNCHANGED <<durVars, up, wk, waived, headIO, todo, saved, prep, budget>>
+       /\ UNCHANGED <<durVars, up, wk, waived, headIO, todo, delFail, fresh, saved, prep, budget>>
 
 -----------------------------------------------------------------------------
 (* The cleanup runner (DownloadCleanupIntentRunner, CleanupIntentEligibilityPolicy) *)
@@ -566,20 +666,20 @@ JournalTerminalRelease(r) ==
     /\ jrnl[r] = "none" /\ job[r] = "running" /\ ~full
     /\ jrnl' = Upd(jrnl, r, "terminalRelease")
     /\ jSynced' = Upd(jSynced, r, FixB18)
-    /\ UNCHANGED <<dIdx, files, full, job, userWants, up, memVars, budget>>
+    /\ UNCHANGED <<dIdx, files, full, reserve, job, userWants, up, memVars, budget>>
 
 \* The server call.
 RunnerCancel(r) ==
     /\ up /\ jrnl[r] # "none" /\ MayRun(r) /\ job[r] = "running"
     /\ job' = Upd(job, r, "cancelled")
-    /\ UNCHANGED <<dIdx, files, full, jrnl, jSynced, userWants, up, memVars, budget>>
+    /\ UNCHANGED <<dIdx, files, full, reserve, jrnl, jSynced, userWants, up, memVars, budget>>
 
 \* clearEmbyConvertMetadataIfExact on a row that is still there.
 RunnerClearRef(r) ==
     /\ up /\ jrnl[r] # "none" /\ MayRun(r) /\ job[r] # "running"
     /\ mIdx[r].present /\ mIdx[r].jobRef
     /\ mIdx' = Upd(mIdx, r, [mIdx[r] EXCEPT !.jobRef = FALSE])
-    /\ UNCHANGED <<durVars, up, wk, waived, headIO, todo, saved, prep, recov, budget>>
+    /\ UNCHANGED <<durVars, up, wk, waived, headIO, todo, delFail, fresh, saved, prep, recov, budget>>
 
 \* journal.remove, once the clear is proven.
 RunnerRetire(r) ==
@@ -588,7 +688,7 @@ RunnerRetire(r) ==
     /\ ~full
     /\ jrnl' = Upd(jrnl, r, "none")
     /\ jSynced' = Upd(jSynced, r, TRUE)
-    /\ UNCHANGED <<dIdx, files, full, job, userWants, up, memVars, budget>>
+    /\ UNCHANGED <<dIdx, files, full, reserve, job, userWants, up, memVars, budget>>
 
 -----------------------------------------------------------------------------
 (* The volume                                                              *)
@@ -596,18 +696,18 @@ RunnerRetire(r) ==
 FillDisk ==
     /\ DiskFills /\ ~full /\ Spend
     /\ full' = TRUE
-    /\ UNCHANGED <<dIdx, files, jrnl, jSynced, job, userWants, up, memVars>>
+    /\ UNCHANGED <<dIdx, files, reserve, jrnl, jSynced, job, userWants, up, memVars>>
 
 FreeDisk ==
     /\ DiskFrees /\ full /\ Spend
     /\ full' = FALSE
-    /\ UNCHANGED <<dIdx, files, jrnl, jSynced, job, userWants, up, memVars>>
+    /\ UNCHANGED <<dIdx, files, reserve, jrnl, jSynced, job, userWants, up, memVars>>
 
 \* The OS writes a visible journal entry through to the device.
 OsFlush(r) ==
     /\ ~jSynced[r]
     /\ jSynced' = Upd(jSynced, r, TRUE)
-    /\ UNCHANGED <<dIdx, files, full, jrnl, job, userWants, up, memVars, budget>>
+    /\ UNCHANGED <<dIdx, files, full, reserve, jrnl, job, userWants, up, memVars, budget>>
 
 -----------------------------------------------------------------------------
 (* Crash and recovery                                                      *)
@@ -622,6 +722,8 @@ Crash ==
     /\ waived' = Const(Rows, FALSE)
     /\ headIO' = Const(Rows, FALSE)
     /\ todo' = Const(Rows, {})
+    /\ delFail' = Const(Rows, FALSE)
+    /\ fresh' = Const(Rows, FALSE)
     /\ saved' = Const(Rows, AbsentRow)
     /\ prep' = Const(Rows, "idle")
     /\ recov' = Const(Rows, "idle")
@@ -639,10 +741,12 @@ PowerLoss ==
     /\ waived' = Const(Rows, FALSE)
     /\ headIO' = Const(Rows, FALSE)
     /\ todo' = Const(Rows, {})
+    /\ delFail' = Const(Rows, FALSE)
+    /\ fresh' = Const(Rows, FALSE)
     /\ saved' = Const(Rows, AbsentRow)
     /\ prep' = Const(Rows, "idle")
     /\ recov' = Const(Rows, "idle")
-    /\ UNCHANGED <<dIdx, files, full, job, userWants>>
+    /\ UNCHANGED <<dIdx, files, full, reserve, job, userWants>>
 
 \* Launch: every durable queue head is rescheduled (its intent is on disk),
 \* a deletion-pending capsule is re-driven from its captured intents
@@ -657,18 +761,19 @@ Relaunch ==
                                   THEN "reserving" ELSE "idle"]
     /\ recov' = [r \in Rows |-> IF dIdx[r].present /\ dIdx[r].legacy
                                    THEN "pending" ELSE "idle"]
-    /\ UNCHANGED <<durVars, mIdx, waived, headIO, todo, saved, budget>>
+    /\ UNCHANGED <<durVars, mIdx, waived, headIO, todo, delFail, fresh, saved, budget>>
 
 -----------------------------------------------------------------------------
 
 Next ==
-    \/ Commit \/ FillDisk \/ FreeDisk \/ Crash \/ PowerLoss \/ Relaunch
+    \/ Commit \/ RefillReserve \/ FillDisk \/ FreeDisk \/ Crash \/ PowerLoss \/ Relaunch
     \/ \E r \in Rows :
           \/ UserFirstDelete(r) \/ UserRetap(r) \/ UserRetry(r)
           \/ PrepJournal(r) \/ PrepProof(r)
           \/ DelPrepared(r) \/ DelPreparedFails(r) \/ DelRemoveRow(r)
           \/ DelCommitted(r) \/ DelCommitFails(r)
-          \/ \E f \in FileNames : DelUnlinkOne(r, f)
+          \/ DelUnlinkOne(r) \/ DelUnlinkFailsOne(r) \/ DelCleanupFailed(r)
+          \/ DelSyncFails(r)
           \/ SubmitPromotion(r) \/ PromoRename(r) \/ PromoCommitted(r)
           \/ PromoCommitFails(r) \/ PromoPreparedFails(r) \/ PromoIOFails(r)
           \/ RetireCommitted(r) \/ RetireCommitFails(r)
@@ -684,12 +789,12 @@ Spec == Init /\ [][Next]_vars
 \* the app is relaunched.  Environment faults (crashes, a full volume, a
 \* failing rename, explicit recovery from other work) are never forced.
 Fairness ==
-    /\ WF_vars(Commit) /\ WF_vars(Relaunch)
+    /\ WF_vars(Commit) /\ WF_vars(RefillReserve) /\ WF_vars(Relaunch)
     /\ \A r \in Rows :
           /\ WF_vars(UserRetap(r))
           /\ WF_vars(PrepJournal(r)) /\ WF_vars(PrepProof(r))
           /\ WF_vars(DelPrepared(r)) /\ WF_vars(DelPreparedFails(r))
-          /\ WF_vars(\E f \in FileNames : DelUnlinkOne(r, f))
+          /\ WF_vars(DelUnlinkOne(r)) /\ WF_vars(DelCleanupFailed(r))
           /\ WF_vars(DelRemoveRow(r)) /\ WF_vars(DelCommitted(r))
           /\ WF_vars(DelCommitFails(r))
           /\ WF_vars(SubmitPromotion(r)) /\ WF_vars(PromoRename(r))

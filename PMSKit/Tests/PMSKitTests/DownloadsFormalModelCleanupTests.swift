@@ -66,6 +66,66 @@ struct DownloadsFormalModelCleanupTests {
             for: .present(isTerminal: true, protectsResource: true)) == .terminalRelease)
     }
 
+    // MARK: - The model's unlink order and retried Delete
+
+    /// `UnlinkOrder` in the model. The deletion recipe is sorted when it is staged and unlinked
+    /// in that order. The working body is always `.attempt-stage-v1-<digest>.stage`, and every
+    /// generated stable name starts with a letter, a digit or `_`, all of which sort after `.`:
+    /// the working body goes first, so a legacy promotion recovery that runs beside the
+    /// deletion finds nothing to rename (`cleanup/Proposed-B27-GeneratedPathsNoFence.cfg`).
+    /// Only a stable name whose first character sorts below `.` (`-` is the one such character
+    /// `safeFilenameComponent` lets through) is unlinked first
+    /// (`cleanup/Mutant-B27-PreemptWithoutFence.cfg`).
+    @Test("Model UnlinkOrder: the recipe is sorted, and the staging name sorts before generated names")
+    func deletionRecipeUnlinksStagingBeforeGeneratedStableNames() throws {
+        let stage = try #require(Self.appFunctionSource(
+            declaration: "    private func stageRowDeletionLocked(", in: Self.storePath))
+        let execute = try #require(Self.appFunctionSource(
+            declaration: "    private func executeRowDeletion(", in: Self.storePath))
+        let staging = try #require(Self.appFunctionSource(
+            declaration: "    private static func attemptStagingRelativePath(", in: Self.storePath))
+        #expect(stage.contains("paths.filter(Self.isSafeOneLevelRelativePath).sorted()"))
+        #expect(execute.contains("let selected = paths.filter { !others.contains($0) }"))
+        #expect(execute.contains("for path in candidates {"))
+        #expect(staging.contains("return \".attempt-stage-v1-\\(digest).stage\""))
+
+        let working = ".attempt-stage-v1-" + String(repeating: "0", count: 64) + ".stage"
+        for stable in ["123.mp4", "0a1b2c.mkv", "Abc.mp4", "_x.mp4"] {
+            #expect([stable, working].sorted() == [working, stable])
+        }
+        #expect(["-123.mp4", working].sorted() == ["-123.mp4", working])
+    }
+
+    /// `fresh` in the model. A Delete tapped again for an intent that has no live ticket
+    /// registers one whose prepared revision is a newly submitted snapshot, so the retry needs
+    /// one more index write even when the disk already holds the intent. With the proposed
+    /// reserve each failed unlink or directory sync would use one more unit
+    /// (`cleanup/Mutant-B30-RetapNeedsFreshWrite.cfg`).
+    @Test("Model fresh: a Delete tapped again waits for a newly submitted snapshot")
+    func retappedDeleteWaitsForFreshSnapshot() throws {
+        let submit = try #require(Self.appFunctionSource(
+            declaration: "    private func submitRemove(\n", in: Self.storePath))
+        let flat = Self.collapsingWhitespace(submit)
+        #expect(flat.contains(
+            "let prepared = enqueueAttemptPersistenceLocked() "
+                + "let ticket = artifactLifecycle.register(key: key, generation: deletion.generation, "
+                + "intentID: deletion.id, preparedRevision: prepared)"))
+    }
+
+    /// `DelUnlinkFailsOne`, `DelCleanupFailed` and `DelSyncFails` in the model: a failed unlink
+    /// does not stop the loop, the directory sync runs only after every unlink went through,
+    /// and either failure ends the attempt with the row and its intent still there.
+    @Test("Model deletion failures: a failed unlink or directory sync keeps the row")
+    func failedUnlinkOrSyncKeepsRow() throws {
+        let execute = Self.collapsingWhitespace(try #require(Self.appFunctionSource(
+            declaration: "    private func executeRowDeletion(", in: Self.storePath)))
+        #expect(execute.contains("catch where artifactFilesystem.fileExists(url, fileManager) { failures += 1 }"))
+        #expect(execute.contains("if failures == 0, !candidates.isEmpty { do { try artifactFilesystem.syncParentDirectory("))
+        let failure = try #require(execute.range(of: "failArtifactLifecycle(ticket, errorType: \"rowDeletionCleanupFailed\"); return"))
+        let removal = try #require(execute.range(of: "rows.removeValue(forKey: ticket.key.ratingKey)"))
+        #expect(failure.lowerBound < removal.lowerBound)
+    }
+
     // MARK: - Findings
 
     /// Cleanup-C1. The volume is full. The user deletes a row; the row-deletion intent is queued
