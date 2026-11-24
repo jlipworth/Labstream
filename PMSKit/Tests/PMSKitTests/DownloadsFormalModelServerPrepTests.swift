@@ -59,6 +59,50 @@ struct DownloadsFormalModelServerPrepTests {
                          now: 100 + P.createVisibilityGraceSeconds - 1) == .keepInspecting)
     }
 
+    /// `DayElapses`, `MissingCreateFailsBeforeDeadline` (B37): the render deadline is a day, the
+    /// create's visibility grace is three minutes, so a create that is proven missing fails the
+    /// row long before the deadline. Before the fix the create error was swallowed and only
+    /// the deadline ended the wait. The poll adopts a finished render before it looks at the
+    /// deadline, so a row that waited for a transfer slot is not timed out.
+    @Test("Plex: a proven missing create fails after the grace, well before the render deadline")
+    func missingCreateFailsBeforeTheRenderDeadline() throws {
+        typealias P = PlexOptimizePrepPolicy
+        typealias D = PlexOptimizeDeadlinePolicy
+        #expect(P.createVisibilityGraceSeconds < D.maximumDurationSeconds)
+        let started = 1_000.0
+        let dispatched = started + 5
+        let atGrace = dispatched + P.createVisibilityGraceSeconds
+        #expect(P.action(queue: .inspectedAbsent, metadataInspected: true,
+                         dispatchedAt: dispatched, now: atGrace) == .failMissingCreate)
+        #expect(!D.isExpired(startedAtEpochSeconds: started, nowEpochSeconds: atGrace))
+        #expect(D.isExpired(startedAtEpochSeconds: started,
+                            nowEpochSeconds: started + D.maximumDurationSeconds))
+
+        let poll = try #require(Self.appSource(
+            in: "Labstream/Capabilities/Downloads/Core/DownloadManager.swift",
+            from: "\"downloads.optimize_adopt_completed\"", through: "throw DownloadError.optimizeTimedOut"))
+        #expect(poll.contains("return OptimizedPartObservation(part: newPart, session: liveSession)"))
+        #expect(poll.contains("if PlexOptimizeDeadlinePolicy.isExpired("))
+    }
+
+    /// `Handoff` waits for `slotFree`: a finished render keeps its prep slot until a static
+    /// transfer slot is free, and the wait ends only for a slot or a lost currency check. The
+    /// model's liveness rests on the static lane draining (`Mutant-SlotNeverReturns.cfg`).
+    @Test("The hand-off waits for a static slot and checks only currency while it waits")
+    func handoffWaitsForAStaticSlot() throws {
+        let wait = try #require(Self.appSource(
+            in: "Labstream/Capabilities/Downloads/Core/DownloadManager+Admission.swift",
+            from: "    func awaitStaticHandoffRoom(", through: "\n    }\n"))
+        #expect(wait.contains("guard !Task.isCancelled, isCurrent() else { return nil }"))
+        #expect(wait.contains("DownloadAdmissionPolicy.mayHandOffToStatic("))
+        #expect(wait.contains("try await Task.sleep(for: Self.staticHandoffCheckInterval)"))
+        #expect(!wait.contains("PlexOptimizeDeadlinePolicy"))
+        let emby = try #require(Self.appSource(
+            in: "Labstream/Capabilities/Downloads/Core/DownloadManager+EmbyConvert.swift",
+            from: "    func handoffEmbyConvertedSource(", through: "\n    }\n"))
+        #expect(emby.contains("if waitsForTransferSlot {"))
+    }
+
     /// `Current(r, p)`: a chain acts only while it is the attached poller. Pause and Delete run
     /// `releaseAll`; the poller a quick Resume attaches has a different ID.
     @Test("A released poller is no longer current, and its successor is a different poller")

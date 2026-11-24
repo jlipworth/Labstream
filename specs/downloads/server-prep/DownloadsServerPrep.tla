@@ -42,12 +42,20 @@
 (*    are not modelled.                                                    *)
 (*  - A render exists from the start (InitialRender) or comes from one of  *)
 (*    the row's own jobs.  Other clients do not create renders.            *)
-(*  - Time is three facts.  The Plex create-visibility grace and the Emby  *)
+(*  - Time is four facts.  The Plex create-visibility grace and the Emby   *)
 (*    adoption deadline elapse only once no create request is in flight    *)
 (*    (180 s and 24 h against a request timeout), and the cleanup runner   *)
 (*    keeps an intent whose create may still land.  The 24 h Plex render   *)
-(*    deadline is not modelled: a day counts as forever here, which is     *)
-(*    what makes B37 visible.                                              *)
+(*    deadline (`dayOut`, PlexOptimizeDeadlinePolicy) comes after the      *)
+(*    grace, and does not pass while a poll that would act is pending:     *)
+(*    the poll interval is seconds, so a current poller that has           *)
+(*    something to do does it within the day.  A poll with nothing to do   *)
+(*    lets the day run out, and then fails the row.                        *)
+(*  - The hand-off waits for a static transfer slot                        *)
+(*    (awaitStaticHandoffRoom, #414).  `slotFree` is the environment's:    *)
+(*    other downloads take and release the slot.  A start-time Emby reuse  *)
+(*    does not wait (waitsForTransferSlot: false).  The wait checks only   *)
+(*    currency, so a waiting row is unaffected by the render deadline.     *)
 (*  - Index and journal writes are atomic per action.  Journal failure,    *)
 (*    the deletion barrier and admission caps belong to other modules.     *)
 (*  - A replacement attempt starts only after the old attempt's chains     *)
@@ -90,6 +98,8 @@ CONSTANTS
                         \* PROPOSED: a Plex attempt that abandons an unfinished job (Retry
                         \* replaces it, or the hand-off adopts another render) journals
                         \* the cancel (finding S1)
+    SlotReturns,        \* a static slot another download took is released again (FALSE:
+                        \* the static lane never drains; for Mutant-SlotNeverReturns)
     BoundEnvironment,   \* cap the environment for the liveness check
     EnvBudget           \* environment steps allowed when BoundEnvironment
 
@@ -117,11 +127,14 @@ VARIABLES
     \* ---- durable: wall-clock facts measured from persisted timestamps ----
     grace,       \* [Rows -> BOOLEAN]        Plex createVisibilityGraceSeconds has passed
     expired,     \* [Rows -> BOOLEAN]        Emby recoveryExpirySeconds has passed
+    dayOut,      \* [Rows -> BOOLEAN]        Plex: 24 h since plexOptimizeStartedAtEpochSeconds
     \* ---- durable: the server and the network (outlive the app) ----
     job,         \* [Rows -> JobStates]      the job of the row's current identity
     stray,       \* [Rows -> {"none","active"}]  an unfinished job of a replaced identity
     render,      \* [Rows -> BOOLEAN]        a matching rendered version is visible
     post,        \* [Rows -> PostStates]     the create request and its response
+    \* ---- environment: the static transfer lane (other downloads) ----
+    slotFree,    \* BOOLEAN                  a static transfer slot is free
     \* ---- in memory (lost on Crash) ----
     up,          \* BOOLEAN                  the app process is alive
     poller,      \* [Rows -> Pollers \cup {NoPoller}]  ServerPrepAttemptTracker
@@ -134,11 +147,11 @@ VARIABLES
 
 rowVars == <<exists, rs, mode, disp, ident>>
 journalVars == <<intent, strayIntent>>
-clockVars == <<grace, expired>>
+clockVars == <<grace, expired, dayOut>>
 serverVars == <<job, stray, render, post>>
 memVars == <<poller, pc>>
 ghostVars == <<handoffs, posts>>
-vars == <<rowVars, journalVars, clockVars, serverVars, up, memVars, ghostVars, env>>
+vars == <<rowVars, journalVars, clockVars, serverVars, slotFree, up, memVars, ghostVars, env>>
 
 \* "cancelled" is a job the app removed; "none" is a job that never existed or
 \* that someone else removed.  Both read as absent.
@@ -148,8 +161,11 @@ JobStates == {"none", "active", "done", "failed", "cancelled"}
 \* response, whether or not the server accepted.
 PostStates == {"none", "sent", "ok", "rejected", "failed"}
 ChainStates ==
-    {"idle", "poll", "dispatch", "send", "awaitPost", "found",
+    {"idle", "poll", "dispatch", "send", "awaitPost", "found", "reuse",
      "preflight", "recover", "prepoll"}
+\* A chain that holds a render to hand off.  "found" waits for a static slot;
+\* "reuse" is the Emby start-time reuse, which does not.
+HandoffStates == {"found", "reuse"}
 
 IsPlex(r) == r \in PlexRows
 Route(r) == IF IsPlex(r) THEN "plexPrep" ELSE "embyConvert"
@@ -199,6 +215,8 @@ Init ==
     /\ strayIntent = Const(Rows, "none")
     /\ grace = Const(Rows, FALSE)
     /\ expired = Const(Rows, FALSE)
+    /\ dayOut = Const(Rows, FALSE)
+    /\ slotFree = TRUE
     /\ job = Const(Rows, "none")
     /\ stray = Const(Rows, "none")
     /\ render \in [Rows -> InitialRender]
@@ -269,9 +287,9 @@ Attach(r, p) ==
                /\ stray' = Upd(stray, r, IF job[r] = "active" THEN "active" ELSE stray[r])
                /\ expired' = Upd(expired, r, FALSE)
                /\ posts' = Upd(posts, r, 0)
-               /\ UNCHANGED <<render, post, grace, handoffs>>
+               /\ UNCHANGED <<render, post, grace, dayOut, handoffs>>
           ELSE UNCHANGED <<serverVars, clockVars, ghostVars>>
-    /\ UNCHANGED <<up, env>>
+    /\ UNCHANGED <<slotFree, up, env>>
 
 \* A chain whose poller was detached (Pause, Delete, a failure, a newer
 \* poller) ends at its next currency check.  A chain waiting for the create
@@ -280,36 +298,52 @@ StaleExit(r, p) ==
     /\ up
     /\ pc[r][p] \notin {"idle", "awaitPost"}
     /\ ~Current(r, p)
-    /\ ~(MutantHandoffUnchecked /\ pc[r][p] = "found")
+    /\ ~(MutantHandoffUnchecked /\ pc[r][p] \in HandoffStates)
     /\ SetPc(r, p, "idle")
-    /\ UNCHANGED <<rowVars, journalVars, clockVars, serverVars, up, poller, ghostVars, env>>
+    /\ UNCHANGED <<rowVars, journalVars, clockVars, serverVars, slotFree, up, poller, ghostVars, env>>
 
 -----------------------------------------------------------------------------
 (* Plex optimize: pollForOptimizedPart                                     *)
 
+\* The poll's decisions, as guards.
+PlexAdopts(r) == render[r] /\ (FixB35 \/ disp[r])
+PlexCreates(r) == (FixB35 => ~render[r]) /\ JobAbsent(r) /\ ~disp[r]
+\* PlexOptimizePrepPolicy.action = failMissingCreate
+ProvenMissing(r) == ~render[r] /\ JobAbsent(r) /\ disp[r] /\ grace[r]
+PlexSeesFailedJob(r) == ~render[r] /\ job[r] = "failed"
+\* A current poll has something to do other than wait.
+PlexPollActs(r) ==
+    PlexAdopts(r) \/ PlexCreates(r) \/ (FixB37 /\ ProvenMissing(r)) \/ PlexSeesFailedJob(r)
+PlexPollDue(r) ==
+    up /\ PlexPollActs(r) /\ \E p \in Pollers : pc[r][p] = "poll" /\ Current(r, p)
+
 PlexPoll(r, p) ==
     /\ up /\ IsPlex(r) /\ pc[r][p] = "poll" /\ Current(r, p)
-    /\ \/ \* A matching render is visible: adopt it.  B35 off: a fresh attempt
-          \* creates first and looks only afterwards.
-          /\ render[r] /\ (FixB35 \/ disp[r])
+    /\ \/ \* A matching render is visible: adopt it, even past the render
+          \* deadline.  B35 off: a fresh attempt creates first and looks only
+          \* afterwards.
+          /\ PlexAdopts(r)
           /\ SetPc(r, p, "found")
           /\ UNCHANGED <<rowVars, poller>>
        \/ \* PlexOptimizePrepPolicy.action = create: the queue item is proven
           \* absent and no create was ever dispatched.
-          /\ FixB35 => ~render[r]
-          /\ JobAbsent(r) /\ ~disp[r]
+          /\ PlexCreates(r)
           /\ SetPc(r, p, "dispatch")
           /\ UNCHANGED <<rowVars, poller>>
        \/ \* failMissingCreate: dispatched, still absent after the grace (B37).
           /\ FixB37
-          /\ ~render[r] /\ JobAbsent(r) /\ disp[r] /\ grace[r]
+          /\ ProvenMissing(r)
           /\ FailRow(r, p, "server")
           /\ UNCHANGED <<exists, mode, disp, ident>>
        \/ \* The queue item reports a failed render.
-          /\ ~render[r] /\ job[r] = "failed"
+          /\ PlexSeesFailedJob(r)
           /\ FailRow(r, p, "server")
           /\ UNCHANGED <<exists, mode, disp, ident>>
-    /\ UNCHANGED <<journalVars, clockVars, serverVars, up, ghostVars, env>>
+       \/ \* optimizeTimedOut: nothing is rendered and the 24 h deadline passed.
+          /\ ~render[r] /\ dayOut[r]
+          /\ FailRow(r, p, "server")
+          /\ UNCHANGED <<exists, mode, disp, ident>>
+    /\ UNCHANGED <<journalVars, clockVars, serverVars, slotFree, up, ghostVars, env>>
 
 -----------------------------------------------------------------------------
 (* Emby Convert: runConvertAndDownload, recoverAndResumeEmbyConvertJob,     *)
@@ -317,13 +351,14 @@ PlexPoll(r, p) ==
 
 EmbyPreflight(r, p) ==
     /\ up /\ ~IsPlex(r) /\ pc[r][p] = "preflight" /\ Current(r, p)
-    /\ \/ \* A converted version already exists: hand it off, no job.
+    /\ \/ \* A converted version already exists: hand it off, no job, and
+          \* without waiting for a static slot.
           /\ render[r]
-          /\ SetPc(r, p, "found")
+          /\ SetPc(r, p, "reuse")
        \/ \* Persist the baseline and go on to create.
           /\ ~render[r]
           /\ SetPc(r, p, "dispatch")
-    /\ UNCHANGED <<rowVars, journalVars, clockVars, serverVars, up, poller, ghostVars, env>>
+    /\ UNCHANGED <<rowVars, journalVars, clockVars, serverVars, slotFree, up, poller, ghostVars, env>>
 
 EmbyRecover(r, p) ==
     /\ up /\ ~IsPlex(r) /\ pc[r][p] = "recover" /\ Current(r, p)
@@ -338,7 +373,7 @@ EmbyRecover(r, p) ==
           /\ JobAbsent(r)
           /\ FailRow(r, p, "network")
           /\ UNCHANGED <<exists, mode, disp, ident>>
-    /\ UNCHANGED <<journalVars, clockVars, serverVars, up, ghostVars, env>>
+    /\ UNCHANGED <<journalVars, clockVars, serverVars, slotFree, up, ghostVars, env>>
 
 \* Before the status loop: a converted version may already be visible.  The
 \* attempt then abandons its own job for it, with a journaled cancel (B50).
@@ -349,7 +384,7 @@ EmbyPrepoll(r, p) ==
           /\ SetPc(r, p, "found")
        \/ /\ SetPc(r, p, "poll")
           /\ UNCHANGED intent
-    /\ UNCHANGED <<rowVars, strayIntent, clockVars, serverVars, up, poller, ghostVars, env>>
+    /\ UNCHANGED <<rowVars, strayIntent, clockVars, serverVars, slotFree, up, poller, ghostVars, env>>
 
 EmbyPoll(r, p) ==
     /\ up /\ ~IsPlex(r) /\ pc[r][p] = "poll" /\ Current(r, p)
@@ -365,7 +400,7 @@ EmbyPoll(r, p) ==
           /\ intent' = Upd(intent, r, "none")
           /\ FailRow(r, p, "server")
           /\ UNCHANGED <<exists, mode, disp>>
-    /\ UNCHANGED <<strayIntent, clockVars, serverVars, up, ghostVars, env>>
+    /\ UNCHANGED <<strayIntent, clockVars, serverVars, slotFree, up, ghostVars, env>>
 
 -----------------------------------------------------------------------------
 (* The create request                                                      *)
@@ -381,7 +416,7 @@ Dispatch(r, p) ==
     /\ \/ UNCHANGED strayIntent
        \/ /\ IsPlex(r) /\ stray[r] = "active"
           /\ strayIntent' = Upd(strayIntent, r, "pending")
-    /\ UNCHANGED <<exists, rs, mode, ident, intent, clockVars, serverVars, up, poller,
+    /\ UNCHANGED <<exists, rs, mode, ident, intent, clockVars, serverVars, slotFree, up, poller,
                    ghostVars, env>>
 
 \* Hand the request to the network.  Both runners check currency after the
@@ -393,7 +428,7 @@ Send(r, p) ==
     /\ post' = Upd(post, r, "sent")
     /\ posts' = Bump(posts, r)
     /\ SetPc(r, p, "awaitPost")
-    /\ UNCHANGED <<rowVars, journalVars, clockVars, job, stray, render, up, poller,
+    /\ UNCHANGED <<rowVars, journalVars, clockVars, job, stray, render, slotFree, up, poller,
                    handoffs, env>>
 
 \* The create response reaches the chain that sent it.
@@ -448,7 +483,7 @@ Respond(r, p) ==
                 \* leaveToCurrentOwner: a newer poller is recovering the job,
                 \* or the row already names it.
                 UNCHANGED <<rowVars, poller, job, intent>>
-    /\ UNCHANGED <<strayIntent, clockVars, stray, render, up, ghostVars, env>>
+    /\ UNCHANGED <<strayIntent, clockVars, stray, render, slotFree, up, ghostVars, env>>
 
 -----------------------------------------------------------------------------
 (* The hand-off to the static transfer                                     *)
@@ -458,7 +493,10 @@ Respond(r, p) ==
 \* the attempt and starts its transfer; Emby replaces the attempt, and the
 \* replacement names no job.
 Handoff(r, p) ==
-    /\ up /\ pc[r][p] = "found"
+    /\ up /\ pc[r][p] \in HandoffStates
+    \* awaitStaticHandoffRoom: a finished render keeps its prep slot until a
+    \* static transfer slot is free.  The hand-off's own transfer then holds it.
+    /\ pc[r][p] = "found" => slotFree
     /\ exists[r] /\ mode[r] = "prep"
     /\ MutantHandoffUnchecked \/ Current(r, p)
     /\ mode' = Upd(mode, r, "static")
@@ -481,14 +519,14 @@ Handoff(r, p) ==
                      \* dispatched, as Emby does (B50).
                      IF AbandonJournalsCancel /\ IsPlex(r) /\ disp[r] /\ job[r] # "done"
                         THEN "pending" ELSE intent[r])
-    /\ UNCHANGED <<exists, strayIntent, clockVars, serverVars, up, posts, env>>
+    /\ UNCHANGED <<exists, strayIntent, clockVars, serverVars, slotFree, up, posts, env>>
 
 \* The hand-off is refused before it commits (the storage cap).
 HandoffRefused(r, p) ==
-    /\ up /\ pc[r][p] = "found" /\ Current(r, p)
+    /\ up /\ pc[r][p] \in HandoffStates /\ Current(r, p)
     /\ EnvOK /\ EnvStep
     /\ FailRow(r, p, "storage")
-    /\ UNCHANGED <<exists, mode, disp, ident, journalVars, clockVars, serverVars, up, ghostVars>>
+    /\ UNCHANGED <<exists, mode, disp, ident, journalVars, clockVars, serverVars, slotFree, up, ghostVars>>
 
 \* The poll gives up while the job may still be running: Plex after three
 \* rejected credentials, Emby after its unreachable budget or a failed fetch.
@@ -497,7 +535,7 @@ PollFails(r, p) ==
     /\ up /\ pc[r][p] \in {"poll", "prepoll", "recover", "preflight"} /\ Current(r, p)
     /\ EnvOK /\ EnvStep
     /\ FailRow(r, p, "auth")
-    /\ UNCHANGED <<exists, mode, disp, ident, journalVars, clockVars, serverVars, up, ghostVars>>
+    /\ UNCHANGED <<exists, mode, disp, ident, journalVars, clockVars, serverVars, slotFree, up, ghostVars>>
 
 -----------------------------------------------------------------------------
 (* The server, the network and the clocks                                  *)
@@ -506,45 +544,45 @@ ServerAccepts(r) ==
     /\ post[r] = "sent"
     /\ post' = Upd(post, r, "ok")
     /\ job' = Upd(job, r, "active")
-    /\ UNCHANGED <<rowVars, journalVars, clockVars, stray, render, up, memVars, ghostVars, env>>
+    /\ UNCHANGED <<rowVars, journalVars, clockVars, stray, render, slotFree, up, memVars, ghostVars, env>>
 
 ServerRejects(r) ==
     /\ post[r] = "sent"
     /\ post' = Upd(post, r, "rejected")
-    /\ UNCHANGED <<rowVars, journalVars, clockVars, job, stray, render, up, memVars,
+    /\ UNCHANGED <<rowVars, journalVars, clockVars, job, stray, render, slotFree, up, memVars,
                    ghostVars, env>>
 
 \* The request never arrives, or its response never comes back.
 RequestLost(r) ==
     /\ post[r] = "sent"
     /\ post' = Upd(post, r, "failed")
-    /\ UNCHANGED <<rowVars, journalVars, clockVars, job, stray, render, up, memVars,
+    /\ UNCHANGED <<rowVars, journalVars, clockVars, job, stray, render, slotFree, up, memVars,
                    ghostVars, env>>
 
 ResponseLost(r) ==
     /\ post[r] = "ok"
     /\ EnvOK /\ EnvStep
     /\ post' = Upd(post, r, "failed")
-    /\ UNCHANGED <<rowVars, journalVars, clockVars, job, stray, render, up, memVars, ghostVars>>
+    /\ UNCHANGED <<rowVars, journalVars, clockVars, job, stray, render, slotFree, up, memVars, ghostVars>>
 
 \* A response nobody waits for (the chain died with the process) is dropped.
 DropResponse(r) ==
     /\ post[r] \in {"ok", "rejected", "failed"}
     /\ \A p \in Pollers : pc[r][p] # "awaitPost"
     /\ post' = Upd(post, r, "none")
-    /\ UNCHANGED <<rowVars, journalVars, clockVars, job, stray, render, up, memVars,
+    /\ UNCHANGED <<rowVars, journalVars, clockVars, job, stray, render, slotFree, up, memVars,
                    ghostVars, env>>
 
 JobFinishes(r) ==
     /\ job[r] = "active"
     /\ job' = Upd(job, r, "done")
     /\ render' = Upd(render, r, TRUE)
-    /\ UNCHANGED <<rowVars, journalVars, clockVars, stray, post, up, memVars, ghostVars, env>>
+    /\ UNCHANGED <<rowVars, journalVars, clockVars, stray, post, slotFree, up, memVars, ghostVars, env>>
 
 JobFails(r) ==
     /\ job[r] = "active"
     /\ job' = Upd(job, r, "failed")
-    /\ UNCHANGED <<rowVars, journalVars, clockVars, stray, render, post, up, memVars,
+    /\ UNCHANGED <<rowVars, journalVars, clockVars, stray, render, post, slotFree, up, memVars,
                    ghostVars, env>>
 
 \* Someone else removes the job (another client, a server restart).
@@ -552,23 +590,45 @@ JobVanishes(r) ==
     /\ job[r] \in {"active", "done", "failed"}
     /\ EnvOK /\ EnvStep
     /\ job' = Upd(job, r, "none")
-    /\ UNCHANGED <<rowVars, journalVars, clockVars, stray, render, post, up, memVars, ghostVars>>
+    /\ UNCHANGED <<rowVars, journalVars, clockVars, stray, render, post, slotFree, up, memVars, ghostVars>>
 
 StrayFinishes(r) ==
     /\ stray[r] = "active"
     /\ stray' = Upd(stray, r, "none")
     /\ render' = Upd(render, r, TRUE)
-    /\ UNCHANGED <<rowVars, journalVars, clockVars, job, post, up, memVars, ghostVars, env>>
+    /\ UNCHANGED <<rowVars, journalVars, clockVars, job, post, slotFree, up, memVars, ghostVars, env>>
 
 GraceElapses(r) ==
     /\ IsPlex(r) /\ disp[r] /\ ~grace[r] /\ post[r] # "sent"
     /\ grace' = Upd(grace, r, TRUE)
-    /\ UNCHANGED <<rowVars, journalVars, expired, serverVars, up, memVars, ghostVars, env>>
+    /\ UNCHANGED <<rowVars, journalVars, expired, dayOut, serverVars, slotFree, up, memVars, ghostVars, env>>
+
+\* The Plex render deadline: a day after the prep began.  It does not pass
+\* while a current poll has something to do.
+DayElapses(r) ==
+    /\ IsPlex(r) /\ exists[r] /\ mode[r] = "prep" /\ ~dayOut[r]
+    /\ disp[r] => grace[r]
+    /\ post[r] # "sent"
+    /\ ~PlexPollDue(r)
+    /\ dayOut' = Upd(dayOut, r, TRUE)
+    /\ UNCHANGED <<rowVars, journalVars, grace, expired, serverVars, slotFree, up, memVars,
+                   ghostVars, env>>
+
+\* Other downloads take and release the static transfer slot.
+SlotTaken ==
+    /\ slotFree /\ EnvOK /\ EnvStep
+    /\ slotFree' = FALSE
+    /\ UNCHANGED <<rowVars, journalVars, clockVars, serverVars, up, memVars, ghostVars>>
+
+SlotFrees ==
+    /\ ~slotFree /\ SlotReturns
+    /\ slotFree' = TRUE
+    /\ UNCHANGED <<rowVars, journalVars, clockVars, serverVars, up, memVars, ghostVars, env>>
 
 RecoveryExpires(r) ==
     /\ ~IsPlex(r) /\ disp[r] /\ ~ident[r] /\ ~expired[r] /\ post[r] # "sent"
     /\ expired' = Upd(expired, r, TRUE)
-    /\ UNCHANGED <<rowVars, journalVars, grace, serverVars, up, memVars, ghostVars, env>>
+    /\ UNCHANGED <<rowVars, journalVars, grace, dayOut, serverVars, slotFree, up, memVars, ghostVars, env>>
 
 -----------------------------------------------------------------------------
 (* The user                                                                *)
@@ -580,7 +640,7 @@ UserPause(r) ==
     /\ EnvOK /\ EnvStep
     /\ Apply(r, EvPause("user"))
     /\ poller' = Upd(poller, r, NoPoller)
-    /\ UNCHANGED <<exists, mode, disp, ident, journalVars, clockVars, serverVars, up, pc,
+    /\ UNCHANGED <<exists, mode, disp, ident, journalVars, clockVars, serverVars, slotFree, up, pc,
                    ghostVars>>
 
 \* A replacement attempt: a new row with no server identity.  Any unfinished
@@ -594,6 +654,7 @@ NewAttempt(r) ==
     /\ ident' = Upd(ident, r, FALSE)
     /\ grace' = Upd(grace, r, FALSE)
     /\ expired' = Upd(expired, r, FALSE)
+    /\ dayOut' = Upd(dayOut, r, FALSE)
     /\ posts' = Upd(posts, r, 0)
     /\ job' = Upd(job, r, "none")
     /\ stray' = Upd(stray, r, IF job[r] = "active" THEN "active" ELSE stray[r])
@@ -615,7 +676,7 @@ UserResume(r) ==
        ELSE
           /\ NewAttempt(r)
           /\ UNCHANGED strayIntent
-    /\ UNCHANGED <<up, memVars>>
+    /\ UNCHANGED <<slotFree, up, memVars>>
 
 \* retry() for a failed prep row.  Emby resumes the job the row still names.
 \* Plex removes the row ("retry_replace") and starts over under a new queue
@@ -633,7 +694,7 @@ UserRetry(r) ==
                                 \* PROPOSED: journal the cancel of the abandoned job.
                                 IF AbandonJournalsCancel /\ job[r] = "active"
                                    THEN "pending" ELSE strayIntent[r])
-    /\ UNCHANGED <<up, memVars>>
+    /\ UNCHANGED <<slotFree, up, memVars>>
 
 \* delete(record:): the cancel of unfinished prep is journaled before the row
 \* goes (D2).  A handed-off row owes nothing: its render is the download.
@@ -655,7 +716,7 @@ UserDelete(r) ==
           /\ \/ UNCHANGED job
              \/ /\ PrepActive(r) /\ job[r] = "active"
                 /\ job' = Upd(job, r, "cancelled")
-    /\ UNCHANGED <<rs, mode, disp, ident, strayIntent, clockVars, stray, render, post, up, pc,
+    /\ UNCHANGED <<rs, mode, disp, ident, strayIntent, clockVars, stray, render, post, slotFree, up, pc,
                    ghostVars>>
 
 -----------------------------------------------------------------------------
@@ -669,14 +730,14 @@ RunnerRuns(r) ==
     /\ ~(JobAbsent(r) /\ post[r] = "sent")
     /\ intent' = Upd(intent, r, "none")
     /\ job' = Upd(job, r, IF job[r] = "active" THEN "cancelled" ELSE job[r])
-    /\ UNCHANGED <<rowVars, strayIntent, clockVars, stray, render, post, up, memVars,
+    /\ UNCHANGED <<rowVars, strayIntent, clockVars, stray, render, post, slotFree, up, memVars,
                    ghostVars, env>>
 
 StrayRunnerRuns(r) ==
     /\ up /\ strayIntent[r] = "pending"
     /\ strayIntent' = Upd(strayIntent, r, "none")
     /\ stray' = Upd(stray, r, "none")
-    /\ UNCHANGED <<rowVars, intent, clockVars, job, render, post, up, memVars, ghostVars, env>>
+    /\ UNCHANGED <<rowVars, intent, clockVars, job, render, post, slotFree, up, memVars, ghostVars, env>>
 
 -----------------------------------------------------------------------------
 (* Process death                                                           *)
@@ -687,7 +748,7 @@ Crash ==
     /\ up' = FALSE
     /\ poller' = Const(Rows, NoPoller)
     /\ pc' = Const(Rows, Const(Pollers, "idle"))
-    /\ UNCHANGED <<rowVars, journalVars, clockVars, serverVars, ghostVars>>
+    /\ UNCHANGED <<rowVars, journalVars, clockVars, serverVars, slotFree, ghostVars>>
 
 \* Relaunch runs reconcile (relaunchObserved) for every prep row; the scanner
 \* (Attach) then reattaches.
@@ -701,8 +762,8 @@ Relaunch ==
                                            FALSE, FALSE, FALSE, TRUE))
                         IN IF IsApplied(t) THEN t.state ELSE rs[r]
                    ELSE rs[r]]
-    /\ UNCHANGED <<exists, mode, disp, ident, journalVars, clockVars, serverVars, memVars,
-                   ghostVars, env>>
+    /\ UNCHANGED <<exists, mode, disp, ident, journalVars, clockVars, serverVars, slotFree,
+                   memVars, ghostVars, env>>
 
 -----------------------------------------------------------------------------
 ChainStep(r, p) ==
@@ -714,27 +775,29 @@ CreateResolves(r) == ServerAccepts(r) \/ ServerRejects(r) \/ RequestLost(r)
 JobResolves(r) == JobFinishes(r) \/ JobFails(r)
 
 Next ==
-    \/ Crash \/ Relaunch
+    \/ Crash \/ Relaunch \/ SlotTaken \/ SlotFrees
     \/ \E r \in Rows :
           \/ \E p \in Pollers : ChainStep(r, p) \/ HandoffRefused(r, p) \/ PollFails(r, p)
           \/ CreateResolves(r) \/ ResponseLost(r) \/ DropResponse(r)
           \/ JobResolves(r) \/ JobVanishes(r) \/ StrayFinishes(r)
-          \/ GraceElapses(r) \/ RecoveryExpires(r)
+          \/ GraceElapses(r) \/ RecoveryExpires(r) \/ DayElapses(r)
           \/ UserPause(r) \/ UserResume(r) \/ UserRetry(r) \/ UserDelete(r)
           \/ RunnerRuns(r) \/ StrayRunnerRuns(r)
 
 Spec == Init /\ [][Next]_vars
 
 \* Liveness: every chain step, the cleanup runner and Relaunch are weakly
-\* fair; the server answers every create and ends every job; both clocks run
-\* out.  The user, crashes, lost responses, vanishing jobs and poll failures
+\* fair; the server answers every create and ends every job; the clocks run
+\* out; a static slot another download took is released.  The hand-off is
+\* weakly fair only in the sense that it happens once a slot stays free.  The user, crashes, lost responses, vanishing jobs and poll failures
 \* are not fair; BoundEnvironment makes them finite.
 Fairness ==
-    /\ WF_vars(Relaunch)
+    /\ WF_vars(Relaunch) /\ WF_vars(SlotFrees)
     /\ \A r \in Rows :
           /\ WF_vars(CreateResolves(r)) /\ WF_vars(JobResolves(r))
           /\ WF_vars(DropResponse(r)) /\ WF_vars(StrayFinishes(r))
           /\ WF_vars(GraceElapses(r)) /\ WF_vars(RecoveryExpires(r))
+          /\ WF_vars(DayElapses(r))
           /\ WF_vars(RunnerRuns(r)) /\ WF_vars(StrayRunnerRuns(r))
           /\ WF_vars(\E p \in Pollers : Attach(r, p))
           /\ \A p \in Pollers :
@@ -760,6 +823,7 @@ TypeOK ==
     /\ intent \in [Rows -> {"none", "pending"}]
     /\ strayIntent \in [Rows -> {"none", "pending"}]
     /\ grace \in [Rows -> BOOLEAN] /\ expired \in [Rows -> BOOLEAN]
+    /\ dayOut \in [Rows -> BOOLEAN] /\ slotFree \in BOOLEAN
     /\ job \in [Rows -> JobStates]
     /\ stray \in [Rows -> {"none", "active"}]
     /\ render \in [Rows -> BOOLEAN]
@@ -817,8 +881,29 @@ ClaimedJobNotCancelled ==
     [][\A r \in Rows :
           job'[r] = "cancelled" /\ job[r] # "cancelled" => ~Claims(r)]_vars
 
-\* B37.  Preparation does not stay pending forever: once the environment
-\* stops, every row is handed off, failed, paused or deleted.
+\* B37.  A create that is proven missing (dispatched, absent after the grace,
+\* nothing rendered) fails the row then.  The render deadline never runs out
+\* on a current poller that is watching such a row: before the fix it did,
+\* a day later.
+MissingCreateFailsBeforeDeadline ==
+    [][\A r \in Rows :
+          (dayOut'[r] /\ ~dayOut[r])
+             => ~(up /\ ProvenMissing(r) /\ post[r] = "none"
+                  /\ \E p \in Pollers : pc[r][p] = "poll" /\ Current(r, p))]_vars
+
+\* A row that holds a render and waits for a static slot is not failed by
+\* anything but the hand-off's own storage refusal: the render deadline, the
+\* missing-create check and poll failures do not reach it.
+WaitingForSlotFailsOnlyForStorage ==
+    [][\A r \in Rows :
+          (/\ up /\ up'
+           /\ \E p \in Pollers : pc[r][p] = "found" /\ Current(r, p)
+           /\ rs'[r].lifecycle = "failed")
+             => rs'[r].lastFailure = "storage"]_vars
+
+\* Preparation does not stay pending forever: once the environment stops,
+\* every row is handed off, failed, paused or deleted.  With the fix off this
+\* still holds, a day late: the render deadline fails the row.
 PrepPending(r) ==
     exists[r] /\ mode[r] = "prep" /\ Life(r) \in {"admitted", "serverPrep"}
 PrepSettles == \A r \in Rows : <>[](~PrepPending(r))

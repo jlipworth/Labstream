@@ -16,7 +16,8 @@ swift test --package-path PMSKit --no-parallel --filter DownloadsFormalModelServ
 | --- | --- |
 | Poller chain | `Attach`, `PlexPoll`, `EmbyPreflight`, `EmbyRecover`, `EmbyPrepoll`, `EmbyPoll`, `Dispatch`, `Send`, `Respond`, `Handoff`, `HandoffRefused`, `PollFails`, `StaleExit` |
 | Server and network | `ServerAccepts`, `ServerRejects`, `RequestLost`, `ResponseLost`, `DropResponse`, `JobFinishes`, `JobFails`, `JobVanishes`, `StrayFinishes` |
-| Clocks | `GraceElapses` (Plex create visibility, 180 s), `RecoveryExpires` (Emby adoption deadline, 24 h) |
+| Clocks | `GraceElapses` (Plex create visibility, 180 s), `DayElapses` (Plex render deadline, 24 h), `RecoveryExpires` (Emby adoption deadline, 24 h) |
+| Static lane | `SlotTaken`, `SlotFrees`: other downloads take and release the static transfer slot a hand-off waits for (#414) |
 | User | `UserPause`, `UserResume`, `UserRetry`, `UserDelete` |
 | Cleanup runner | `RunnerRuns`, `StrayRunnerRuns` |
 | Process | `Crash`, `Relaunch` |
@@ -68,28 +69,34 @@ configs. Counters stop at 2.
 | `ClaimedJobNotCancelled` | action | The app never cancels a job that a live prep row still names (B47). |
 | `ReplacedPrepHasCancelIntent` | invariant | An unfinished job whose attempt was replaced has a durable cancel intent (S1). |
 | `HandedOffJobHasCancelIntent` | invariant | A handed-off row leaves no unfinished job of its own, and no create that may still produce one, without a durable cancel intent (S1). |
-| `PrepSettles` | liveness | Under `FairSpec`, once the environment stops, every row is handed off, failed, paused or deleted (B37). |
+| `MissingCreateFailsBeforeDeadline` | action | The 24 h render deadline never runs out on a current poller that is watching a create that is proven missing: dispatched, absent after the grace, nothing rendered (B37). |
+| `WaitingForSlotFailsOnlyForStorage` | action | A row that holds a render and waits for a static slot is failed only by the hand-off's own storage refusal. |
+| `PrepSettles` | liveness | Under `FairSpec`, once the environment stops, every row is handed off, failed, paused or deleted. |
 
 Fairness for `PrepSettles`: every chain step, the cleanup runner and `Relaunch` are weakly fair,
-the server answers every create and ends every job, and both clocks run out. The user, crashes,
+the server answers every create and ends every job, the clocks run out, and a static slot another
+download took is released (`SlotFrees`). The hand-off is not fair by itself: it waits for a free
+slot, and `Mutant-SlotNeverReturns` shows `PrepSettles` failing when the static lane never
+drains. The user, crashes,
 lost responses, vanishing jobs and poll failures are not fair and are capped by `EnvBudget`.
 
 ## Results (tla2tools v1.7.4, `TLC_WORKERS=2 TLC_HEAP=2g`)
 
 | Config | Expectation | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
-| `Current-Plex` | pass | pass | 19,555 | 1 s |
-| `Current-Emby` | pass | pass | 26,598 | 2 s |
-| `Current-PlexThreePollers` | pass | pass | 38,126 | 2 s |
-| `Current-EmbyThreePollers` | pass | pass | 60,392 | 4 s |
-| `Liveness-Plex` | pass | pass | 6,919 | 2 s |
-| `Liveness-Emby` | pass | pass | 8,861 | 1 s |
-| `Proposed-S1-AbandonJournalsCancel` | pass | pass | 16,346 | 1 s |
+| `Current-Plex` | pass | pass | 79,614 | 3 s |
+| `Current-Emby` | pass | pass | 53,196 | 2 s |
+| `Current-PlexThreePollers` | pass | pass | 154,948 | 6 s |
+| `Current-EmbyThreePollers` | pass | pass | 120,784 | 5 s |
+| `Liveness-Plex` | pass | pass | 34,186 | 3 s |
+| `Liveness-Emby` | pass | pass | 11,783 | 2 s |
+| `Proposed-S1-AbandonJournalsCancel` | pass | pass | 66,432 | 2 s |
 | `Faithful-B28-off` | `DeletedPrepHasCancelIntent` violated | violated | stops at first error | 1 s |
 | `Faithful-B35-off` | `CreateDecisionSeesNoRender` violated | violated | stops at first error | < 1 s |
-| `Faithful-B37-off` | `PrepSettles` violated (reported as `TEMPORAL`) | violated | 487 | 1 s |
+| `Faithful-B37-off` | `MissingCreateFailsBeforeDeadline` violated | violated | stops at first error | 1 s |
 | `Faithful-B47-off` | `ClaimedJobNotCancelled` violated | violated | stops at first error | 1 s |
 | `Mutant-HandoffUnchecked` | `HandoffOnlyWhenActive` violated | violated | stops at first error | 1 s |
+| `Mutant-SlotNeverReturns` | `PrepSettles` violated (reported as `TEMPORAL`) | violated | 34,186 | 3 s |
 | `Finding-S1-RetryOrphansRender` | `ReplacedPrepHasCancelIntent` violated | violated | stops at first error | 1 s |
 | `Finding-S1-HandoffLeavesJob` | `HandedOffJobHasCancelIntent` violated | violated | stops at first error | 1 s |
 
@@ -97,7 +104,7 @@ The whole module runs in under a minute. There is no deep config.
 
 `Current-Plex` checks every safety property except the two that S1 breaks. The Emby
 configs and the proposed-fix config check all of them. The runner prints a liveness violation as
-`TEMPORAL` whatever the property is called, so `Faithful-B37-off` declares
+`TEMPORAL` whatever the property is called, so `Mutant-SlotNeverReturns` declares
 `EXPECT: violation TEMPORAL`; it lists `PrepSettles` as its only property.
 
 ## Faithfulness: the model sees the fixed bugs
@@ -107,9 +114,13 @@ configs and the proposed-fix config check all of them. The runner prints a liven
   paused case: a paused prep row is deleted and its job keeps rendering.
 - **B35 off.** A matching render exists. A fresh Plex prep attaches and decides to create a job
   before it looks for the render.
-- **B37 off.** The create request is lost. The error is swallowed and the poll continues with no
-  job on the server and nothing that will fail the row. With the fix on, the surfaced error or the
-  180 s grace fails it, and `Liveness-Plex` passes.
+- **B37 off.** A create is dispatched and never lands (the process dies before the request, or
+  the request is lost and its error swallowed). The poller keeps watching a row whose create is
+  proven missing, and the 24 h render deadline runs out on it: `DayElapses` fires with a current
+  poll that has nothing to do. With the fix on, the poll fails the row once the 180 s grace has
+  passed, so the deadline never gets there. An earlier version of this model left the deadline
+  out and reported B37 as a row that stays pending for ever; the historical code did end the
+  wait, a day late, and `PrepSettles` holds with the fix off (1,658 states).
 - **B47 off.** A Convert create is accepted; the user pauses before the response arrives; the
   stale chain cancels the job while the paused row keeps the dispatch identity that named it.
 - **Mutant, unchecked hand-off.** A chain finds the render; the user pauses; the chain hands off
@@ -175,8 +186,15 @@ is inline in app code, so the test pins the shape of the Plex retry branch.
 - A render exists from the start or comes from one of the row's own jobs. Other clients do not
   create renders, and `EmbyConvertedSourcePolicy`'s choice among sources is one fact: a matching
   render is visible or it is not.
-- The 24 h Plex render deadline (`PlexOptimizeDeadlinePolicy`) is left out on purpose. A day
-  counts as forever here, which is what makes B37 visible.
+- The 24 h Plex render deadline is a fact that turns true once: after the grace, and never while
+  a current poll has something to do (the poll interval is seconds). The start stamp it is
+  measured from survives Pause, Resume and relaunch, as `plexOptimizeStartedAtEpochSeconds` does,
+  and is reset only by a replacement attempt. A row whose day ran out while it was paused or the
+  app was closed is therefore failed at its first poll unless a render exists; the poll looks at
+  the deadline before it decides to create.
+- The static transfer slot is one boolean owned by the environment. Who holds it, the
+  first-come-first-served order among waiting rows and the reservation a hand-off takes belong
+  to `DownloadsAdmission`.
 - The poll-health budgets are one step (`PollFails`), not counters.
 - A replacement attempt starts only after the old attempt's chains have ended and no create
   request or response is outstanding. Retry while an old create is still in flight is not
@@ -184,7 +202,7 @@ is inline in app code, so the test pins the shape of the Plex retry branch.
 - The Plex duplicate-create response (HTTP 400) is treated as any other refusal.
 - Index and journal writes are atomic per action. Journal failure, the deletion barrier and its
   capsule, and the cleanup runner's backoff belong to `DownloadsCleanup`.
-- Pause All, the prep-lane cap, the wait for a static transfer slot (#414) and a session that is
-  signed out or points at another server are not modelled.
+- Pause All, the prep-lane cap and a session that is signed out or points at another server are
+  not modelled.
 - The Emby Convert coordinator that serializes recovery against cleanup (B49) is not modelled.
 - Pause of an Emby row before its seed is written is not modelled.
