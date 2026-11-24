@@ -3,13 +3,13 @@ import Testing
 @testable import PMSKit
 
 /// Orderings the TLA+ model of optional side assets found on the current design
-/// (`specs/downloads/DownloadsSideAssets.tla`, `specs/downloads/SideAssets-Finding-*.cfg`,
-/// `specs/downloads/DownloadsSideAssets.md`).
+/// (`specs/downloads/side-assets/DownloadsSideAssets.tla`, `specs/downloads/side-assets/Finding-*.cfg`,
+/// `specs/downloads/side-assets/README.md`).
 ///
 /// Each finding test states the behaviour the design wants and is wrapped in `withKnownIssue`, so
 /// the suite stays green while the finding is open. When a fix lands the expectation holds, no
 /// issue is recorded, and `withKnownIssue` fails the test: delete the wrapper then, and flip the
-/// matching `SideAssets-Finding-*.cfg` to `EXPECT: pass`.
+/// matching `side-assets/Finding-*.cfg` to `EXPECT: pass`.
 ///
 /// The side-asset coordinator, the work registry and the pause and resume entry points are app
 /// code with no PMSKit policy in front of them, so these tests pin the shape of that source, as

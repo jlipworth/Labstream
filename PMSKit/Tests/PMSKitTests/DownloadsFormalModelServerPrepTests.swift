@@ -3,7 +3,7 @@ import Testing
 @testable import PMSKit
 
 /// The pure decisions behind the TLA+ model of server preparation
-/// (`specs/downloads/DownloadsServerPrep.tla`, notes in `specs/downloads/DownloadsServerPrep.md`).
+/// (`specs/downloads/server-prep/DownloadsServerPrep.tla`, notes in `specs/downloads/server-prep/README.md`).
 ///
 /// The first tests hold today: each one ties a branch of the model to the policy that decides it,
 /// so a policy change that the model does not follow fails here as well as in the drift guard.
@@ -11,7 +11,7 @@ import Testing
 /// The last test is finding S1. It states the behaviour the design wants and is wrapped in
 /// `withKnownIssue`, so the suite stays green while the finding is open. When a fix lands the
 /// expectation holds, no issue is recorded, and `withKnownIssue` fails the test: delete the
-/// wrapper then, and flip the `ServerPrep-Finding-S1-*.cfg` configs to `EXPECT: pass`.
+/// wrapper then, and flip the `server-prep/Finding-S1-*.cfg` configs to `EXPECT: pass`.
 @Suite("Downloads formal model: server preparation")
 struct DownloadsFormalModelServerPrepTests {
     private typealias R = DownloadLifecycleReducer

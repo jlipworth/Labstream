@@ -26,9 +26,12 @@ class TlaDriftTests(unittest.TestCase):
         self.write(REDUCER, "// reducer\n")
         self.write(SESSION, "// session\n")
         self.write("Sources/Other.swift", "// other\n")
-        self.write("specs/downloads/Reducer.tla", self.module("Reducer", REDUCER))
-        self.write("specs/downloads/Core.tla", self.module("Core", REDUCER, SESSION))
-        self.write("specs/downloads/Current.cfg", "\\* SPEC: Core\n\\* EXPECT: pass\n")
+        self.write("specs/downloads/base/Reducer.tla", self.module("Reducer", REDUCER))
+        self.write("specs/downloads/core/Core.tla", self.module("Core", REDUCER, SESSION))
+        self.write("specs/downloads/base/Shared.tla", "---- MODULE Shared ----\n====\n")
+        self.write("specs/downloads/core/Current.cfg", "\\* SPEC: Core\n\\* EXPECT: pass\n")
+        self.write("specs/downloads/core/README.md", "notes\n")
+        self.write("specs/downloads/core/Projection.cfg", "\\* SPEC: Reducer\n\\* EXPECT: pass\n")
         self.commit("baseline")
         self.git("branch", "base")
 
@@ -73,14 +76,14 @@ class TlaDriftTests(unittest.TestCase):
         self.commit("change the session")
         status, output = self.run_check()
         self.assertEqual(status, 1, output)
-        self.assertIn(f"{SESSION} changed, but its spec did not: specs/downloads/Core.tla", output)
+        self.assertIn(f"{SESSION} changed, but its spec did not: specs/downloads/core/Core.tla", output)
         self.assertIn("change the session", output)
         self.assertIn("Spec-Unaffected", output)
 
     def test_spec_change_in_the_range_covers_the_file(self):
         self.append(SESSION)
         self.commit("change the session")
-        self.append("specs/downloads/Core.tla", "\\* updated\n")
+        self.append("specs/downloads/core/Core.tla", "\\* updated\n")
         self.commit("update the spec")
         status, output = self.run_check()
         self.assertEqual(status, 0, output)
@@ -88,19 +91,50 @@ class TlaDriftTests(unittest.TestCase):
 
     def test_a_config_of_the_module_counts_as_the_spec(self):
         self.append(SESSION)
-        self.append("specs/downloads/Current.cfg", "\\* bound changed\n")
+        self.append("specs/downloads/core/Current.cfg", "\\* bound changed\n")
         self.commit("change the session and its config")
+        status, output = self.run_check()
+        self.assertEqual(status, 0, output)
+
+    def test_any_file_in_the_module_folder_counts_as_the_spec(self):
+        self.append(SESSION)
+        self.append("specs/downloads/core/README.md", "more notes\n")
+        self.commit("change the session and the module notes")
+        status, output = self.run_check()
+        self.assertEqual(status, 0, output)
+        self.assertIn("spec updated", output)
+
+    def test_another_module_folder_does_not_count(self):
+        self.append(SESSION)
+        self.write("specs/downloads/other/Other.tla", "---- MODULE Other ----\n====\n")
+        self.commit("change the session and an unrelated spec")
+        status, output = self.run_check()
+        self.assertEqual(status, 1, output)
+
+    def test_a_shared_folder_neighbour_does_not_count(self):
+        self.append(REDUCER)
+        self.append("specs/downloads/core/Core.tla", "\\* updated\n")
+        self.append("specs/downloads/base/Shared.tla", "\\* updated\n")
+        self.commit("change the reducer, the core and a shared neighbour")
+        status, output = self.run_check()
+        self.assertEqual(status, 1, output)
+        self.assertIn("its spec did not: specs/downloads/base/Reducer.tla", output)
+
+    def test_a_config_elsewhere_that_runs_a_shared_module_counts(self):
+        self.append(REDUCER)
+        self.append("specs/downloads/core/Projection.cfg", "\\* bound changed\n")
+        self.commit("change the reducer and the projection config")
         status, output = self.run_check()
         self.assertEqual(status, 0, output)
 
     def test_every_owning_module_must_change(self):
         self.append(REDUCER)
-        self.append("specs/downloads/Reducer.tla", "\\* updated\n")
+        self.append("specs/downloads/base/Reducer.tla", "\\* updated\n")
         self.commit("change the reducer and one of its two specs")
         status, output = self.run_check()
         self.assertEqual(status, 1, output)
-        self.assertIn("specs/downloads/Core.tla", output)
-        self.assertNotIn("did not: specs/downloads/Core.tla, specs/downloads/Reducer.tla", output)
+        self.assertIn("specs/downloads/core/Core.tla", output)
+        self.assertNotIn("did not: specs/downloads/base/Reducer.tla, specs/downloads/core/Core.tla", output)
 
     def test_trailer_on_the_touching_commit_covers_the_file(self):
         self.append(SESSION)
@@ -169,7 +203,7 @@ class TlaDriftTests(unittest.TestCase):
     def test_list_prints_the_model_map(self):
         status, output = self.run_check("--list")
         self.assertEqual(status, 0)
-        self.assertIn(f"{REDUCER}\tspecs/downloads/Core.tla, specs/downloads/Reducer.tla", output)
+        self.assertIn(f"{REDUCER}\tspecs/downloads/base/Reducer.tla, specs/downloads/core/Core.tla", output)
         self.assertNotIn("Example.swift", output)
 
 
@@ -189,7 +223,9 @@ class RepositorySpecHeaderTests(unittest.TestCase):
         declaring = {Path(module).name
                      for modules in drift.modelled_files(REPO, REPO / "specs").values()
                      for module in modules}
-        for module in sorted((REPO / "specs" / "downloads").glob("*.tla")):
+        modules = sorted((REPO / "specs" / "downloads").rglob("*.tla"))
+        self.assertGreaterEqual(len(modules), 12)
+        for module in modules:
             if module.name not in exempt:
                 self.assertIn(module.name, declaring, f"{module.name} has no `\\* MODELS:` line")
 
@@ -197,7 +233,7 @@ class RepositorySpecHeaderTests(unittest.TestCase):
         owners = drift.modelled_files(REPO, REPO / "specs")
         self.assertEqual(
             owners["PMSKit/Sources/PMSKit/Downloads/DownloadLifecycleReducer.swift"],
-            {"specs/downloads/DownloadsReducer.tla"})
+            {"specs/downloads/base/DownloadsReducer.tla"})
 
 
 if __name__ == "__main__":

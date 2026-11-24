@@ -3,13 +3,13 @@ import Testing
 @testable import PMSKit
 
 /// What the TLA+ model of Delete and server cleanup rests on, and what it found
-/// (`specs/downloads/DownloadsCleanup.tla`, `specs/downloads/Cleanup-*.cfg`).
+/// (`specs/downloads/cleanup/DownloadsCleanup.tla`, `specs/downloads/cleanup/*.cfg`).
 ///
 /// The first tests keep the model's runner guard (`MayRun`) equal to
 /// `CleanupIntentEligibilityPolicy`. The rest are findings: each states the behaviour the design
 /// wants and is wrapped in `withKnownIssue`, so the suite stays green while the finding is open.
 /// When a fix lands the expectations hold, no issue is recorded, and `withKnownIssue` fails the
-/// test: delete the wrapper then, and flip the matching `Cleanup-Finding-*.cfg` to
+/// test: delete the wrapper then, and flip the matching `cleanup/Finding-*.cfg` to
 /// `EXPECT: pass`.
 ///
 /// The deletion barrier, the artifact worker and the index writer are app code with no PMSKit
@@ -41,7 +41,7 @@ struct DownloadsFormalModelCleanupTests {
 
     /// `MayRun`: a deletion entry waits while its row is still there (the journal can commit
     /// before the row's reservation does), and a terminal release runs only against a terminal
-    /// row that does not protect the job (B44, `Cleanup-Faithful-B44-off.cfg`).
+    /// row that does not protect the job (B44, `cleanup/Faithful-B44-off.cfg`).
     @Test("Model MayRun: a present row runs only an unprotected terminal release")
     func presentRowRunsOnlyUnprotectedTerminalRelease() {
         for isTerminal in [true, false] {

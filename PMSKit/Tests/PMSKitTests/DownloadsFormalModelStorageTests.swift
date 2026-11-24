@@ -2,11 +2,11 @@ import Foundation
 import Testing
 @testable import PMSKit
 
-/// The Swift side of `specs/downloads/DownloadsStorage.tla`.
+/// The Swift side of `specs/downloads/storage/DownloadsStorage.tla`.
 ///
 /// The first tests hold the model's policy operators equal to the Swift policies over the small
 /// integers the model uses, so that a change to either side fails here. The last one pins the
-/// finding the model reported (`Storage-Finding-S1-RequeueErasesPark.cfg`) with
+/// finding the model reported (`storage/Finding-S1-RequeueErasesPark.cfg`) with
 /// `withKnownIssue`: it states the wanted behaviour, stays green while the finding is open, and
 /// fails once a fix lands. Remove the wrapper then and flip the config to `EXPECT: pass`.
 @Suite("Downloads formal model: storage")

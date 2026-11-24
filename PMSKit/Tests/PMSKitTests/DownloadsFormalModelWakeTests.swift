@@ -1,15 +1,15 @@
 import Testing
 @testable import PMSKit
 
-/// The PMSKit facts that the TLA+ wake models rest on (`specs/downloads/DownloadsWake.tla`,
-/// `specs/downloads/DownloadsWakeLaunchGate.tla`, notes in `specs/downloads/DownloadsWake.md`).
+/// The PMSKit facts that the TLA+ wake models rest on (`specs/downloads/wake/DownloadsWake.tla`,
+/// `specs/downloads/wake/DownloadsWakeLaunchGate.tla`, notes in `specs/downloads/wake/README.md`).
 ///
 /// The models treat the completion-handler store and the launch recovery gate as given. These
 /// tests check the real types against the same statements, over every short call order, so a
 /// change to either type that breaks a model assumption fails here.
 ///
 /// The two open findings of the wake model (W1, W2) are in app code (the completion registry and
-/// the wake coordinator), which PMSKit cannot reach. They have `Wake-Finding-*.cfg` configs and
+/// the wake coordinator), which PMSKit cannot reach. They have `wake/Finding-*.cfg` configs and
 /// need `LabstreamTests` pins; none is possible in this file.
 @Suite("Downloads formal-model wake assumptions")
 struct DownloadsFormalModelWakeTests {
@@ -33,7 +33,7 @@ struct DownloadsFormalModelWakeTests {
 
     /// `CalledOnlyAfterClaim` and "exactly once": over every order of supply, claim and release,
     /// a handler runs only when a batch that claimed its token is drained, and never twice. The
-    /// model's `Wake-Mutant-DrainByIdentifier.cfg` shows what breaks when a drain takes every
+    /// model's `wake/Mutant-DrainByIdentifier.cfg` shows what breaks when a drain takes every
     /// handler for the identifier instead.
     @Test("Store: a drain calls exactly the handlers its batch claimed, once")
     func drainCallsExactlyTheClaimedHandlersOnce() {
@@ -107,7 +107,7 @@ struct DownloadsFormalModelWakeTests {
         case rerunReturns
     }
 
-    /// `WakeLaunchGate-Current-Gate.cfg`: for every order of the launch pass returning, browse
+    /// `wake/WakeLaunchGate-Current-Gate.cfg`: for every order of the launch pass returning, browse
     /// readiness changing and the rerun returning, the gate reruns at most once, never while a
     /// pass is running, never after a launch that began with browse ready, and (B77) always once
     /// the launch pass is over and browse is ready after an offline launch.

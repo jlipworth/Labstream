@@ -3,7 +3,8 @@
 #
 # Usage:
 #   scripts/check-tla-specs.sh                 # every module and every .cfg under specs/
-#   scripts/check-tla-specs.sh PATH...         # only these .cfg/.tla files or directories
+#   scripts/check-tla-specs.sh PATH...         # only these .cfg/.tla files or folders (searched
+#                                              # recursively: a module folder, an area, specs/)
 #   scripts/check-tla-specs.sh --deep          # also run the configs tagged `TIER: deep`
 #   scripts/check-tla-specs.sh --deep-only     # run only the deep configs
 #   scripts/check-tla-specs.sh --list          # print the configs that would run
@@ -15,12 +16,25 @@
 #   \* TIER: deep                            (default: default)
 # An "EXPECT: violation" config is a faithfulness or known-finding check: the run fails when TLC
 # passes, or when it reports a different property. Counterexamples are always printed.
+# TLC reports a failed liveness property only as "Temporal properties were violated", so those
+# configs say `EXPECT: violation TEMPORAL`. The summary adds the name from the config's PROPERTY
+# list: the property itself when the config checks one, the candidates when it checks several.
 # A deep config is skipped unless --deep, --deep-only or TLC_TIER asks for it, or the .cfg file
 # itself is named on the command line. Every module is parsed whatever the tier.
 #
+# Layout: specs/<area>/<module>/ holds a module, its helper modules and its configs;
+# specs/<area>/base/ holds the modules they share. SANY and TLC run inside the config's (or
+# module's) own folder with -DTLA-Library pointing at that area's base/, so `EXTENDS` and a
+# `SPEC:` header resolve from the folder first and from base/ second.
+#
+# Each config's TLC log is kept at build/tla/<area>/<module>/<cfg>/tlc.log, and each module's
+# parse log beside them as <Module>.sany.log (build/ is gitignored). TLC's state files are written
+# to <cfg>/states/ during the run and deleted when it ends.
+#
 # Environment:
 #   JAVA            java binary (default: Homebrew's keg-only openjdk; /usr/bin/java is a stub)
-#   TLA_CACHE_DIR   where the pinned tla2tools.jar is cached (default: build/tla, gitignored)
+#   TLA_CACHE_DIR   where the pinned tla2tools.jar is cached and the logs are written
+#                   (default: build/tla, gitignored)
 #   TLC_TIER        default (skip deep configs), deep (run them too) or deep-only
 #   TLC_WORKERS     TLC -workers value (default: auto)
 #   TLC_HEAP        JVM max heap (default: 4g)
@@ -88,17 +102,75 @@ cfg_header() {
   sed -n "s/^\\\\\\* *$2: *\\(.*[^ ]\\) *\$/\\1/p" "$1" | head -n 1
 }
 
+# Absolute path of an existing file or directory.
+absolute() {
+  if [[ -d "$1" ]]; then
+    (cd "$1" && pwd)
+  else
+    printf '%s/%s\n' "$(cd "$(dirname "$1")" && pwd)" "$(basename "$1")"
+  fi
+}
+
 collect() {
   local target
   for target in "$@"; do
     if [[ -d "$target" ]]; then
       find "$target" -type f \( -name '*.tla' -o -name '*.cfg' \) | sort
-    elif [[ -f "$target" ]]; then
-      printf '%s\n' "$target"
     else
-      die "no such spec, config or directory: $target"
+      printf '%s\n' "$target"
     fi
   done
+}
+
+# The shared-module folder for files in directory $1: the `base` folder beside it
+# (specs/<area>/base for specs/<area>/<module>). Empty when there is none, or $1 is that folder.
+library_dir() {
+  local base
+  base="$(dirname "$1")/base"
+  if [[ -d "$base" && "$base" != "$1" ]]; then printf '%s\n' "$base"; fi
+}
+
+# The .tla file a config checks: beside the config, else in the area's base folder.
+config_module() {
+  local dir spec lib
+  dir="$(dirname "$1")"
+  spec="$(cfg_header "$1" SPEC)"
+  spec="${spec:-$(basename "$1" .cfg)}"
+  lib="$(library_dir "$dir")"
+  if [[ ! -f "$dir/$spec.tla" && -n "$lib" && -f "$lib/$spec.tla" ]]; then
+    printf '%s\n' "$lib/$spec.tla"
+  else
+    printf '%s\n' "$dir/$spec.tla"
+  fi
+}
+
+# Where a spec or config's logs go: build/tla/<path under specs/, without the extension>.
+# Files outside specs/ use the run's temporary directory.
+output_path() {
+  local file="${1%.*}"
+  case "$file" in
+    "$SPECS_DIR"/*) printf '%s\n' "$CACHE_DIR/${file#"$SPECS_DIR"/}" ;;
+    *) printf '%s\n' "$WORK/$(printf '%s' "$file" | shasum | cut -c 1-12)-$(basename "$file")" ;;
+  esac
+}
+
+# The names a config lists under PROPERTY / PROPERTIES, space-separated.
+cfg_properties() {
+  awk '
+    BEGIN {
+      split("CONSTANT CONSTANTS INIT NEXT SPECIFICATION INVARIANT INVARIANTS PROPERTY PROPERTIES " \
+            "SYMMETRY CONSTRAINT CONSTRAINTS ACTION_CONSTRAINT ACTION_CONSTRAINTS VIEW " \
+            "CHECK_DEADLOCK POSTCONDITION ALIAS", words, " ")
+      for (w in words) keyword[words[w]] = 1
+    }
+    {
+      sub(/\\\*.*/, "")
+      first = 1
+      if ($1 in keyword) { inside = ($1 == "PROPERTY" || $1 == "PROPERTIES"); first = 2 }
+      if (inside) for (i = first; i <= NF; i++) names = names (names == "" ? "" : " ") $i
+    }
+    END { print names }
+  ' "$1"
 }
 
 LIST_ONLY=0
@@ -113,7 +185,9 @@ for arg in "$@"; do
       awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"
       exit 0 ;;
     -*) die "unknown option: $arg" ;;
-    *) TARGETS+=("$arg") ;;
+    *)
+      [[ -e "$arg" ]] || die "no such spec, config or directory: $arg"
+      TARGETS+=("$(absolute "$arg")") ;;
   esac
 done
 case "$TIER_MODE" in
@@ -147,17 +221,16 @@ while IFS= read -r file; do
     *.tla)
       MODULES+=("$file")
       # A named module also runs its configs: those that declare it, or share its basename.
-      module="$(basename "$file" .tla)"
-      for cfg in "$(dirname "$file")"/*.cfg; do
-        [[ -f "$cfg" ]] || continue
-        declared="$(cfg_header "$cfg" SPEC)"
-        if [[ "${declared:-$(basename "$cfg" .cfg)}" == "$module" ]]; then CONFIGS+=("$cfg"); fi
-      done
+      # A shared module's configs can sit in any folder of its area.
+      search="$(dirname "$file")"
+      if [[ "$(basename "$search")" == base ]]; then search="$(dirname "$search")"; fi
+      while IFS= read -r cfg; do
+        if [[ "$(config_module "$cfg")" == "$file" ]]; then CONFIGS+=("$cfg"); fi
+      done < <(find "$search" -type f -name '*.cfg' | sort)
       ;;
     *.cfg)
       CONFIGS+=("$file")
-      declared="$(cfg_header "$file" SPEC)"
-      MODULES+=("$(dirname "$file")/${declared:-$(basename "$file" .cfg)}.tla")
+      MODULES+=("$(config_module "$file")")
       ;;
   esac
 done < <(collect "${TARGETS[@]}")
@@ -199,9 +272,12 @@ trap 'rm -rf "$WORK"' EXIT
 # --- SANY: every module must parse and pass semantic analysis. ---
 while IFS= read -r module; do
   [[ -f "$module" ]] || die "module not found: $module"
-  log="$WORK/sany-$(basename "$module").log"
+  log="$(output_path "$module").sany.log"
+  mkdir -p "$(dirname "$log")"
+  lib="$(library_dir "$(dirname "$module")")"
   if (cd "$(dirname "$module")" \
-        && "$JAVA_BIN" -cp "$JAR" tla2sany.SANY "$(basename "$module")") >"$log" 2>&1 \
+        && "$JAVA_BIN" ${lib:+"-DTLA-Library=$lib"} -cp "$JAR" tla2sany.SANY \
+            "$(basename "$module")") >"$log" 2>&1 \
       && ! grep -Eq '(\*\*\* Errors|Parsing or semantic analysis failed|Fatal errors|Could not find module)' "$log"; then
     SUMMARY+=("ok    parse  ${module#"$ROOT"/}")
   else
@@ -221,20 +297,26 @@ while IFS= read -r cfg; do
   spec="${spec:-$name}"
   expect="$(cfg_header "$cfg" EXPECT)"
   expect="${expect:-pass}"
-  if grep -Fxq -- "$dir/$spec.tla" <<<"$FAILED_MODULES"; then
+  if grep -Fxq -- "$(config_module "$cfg")" <<<"$FAILED_MODULES"; then
     SUMMARY+=("FAIL  tlc    ${cfg#"$ROOT"/}  [expect: $expect; not run: $spec.tla does not parse]")
     FAILURES=$((FAILURES + 1))
     continue
   fi
-  log="$WORK/tlc-$name.log"
-  meta="$WORK/meta-$name"
+  out="$(output_path "$cfg")"
+  log="$out/tlc.log"
+  meta="$out/states"
+  rm -rf "$out"
   mkdir -p "$meta"
+  lib="$(library_dir "$dir")"
   started=$SECONDS
   set +e
-  (cd "$dir" && "$JAVA_BIN" "-Xmx$HEAP" -XX:+UseParallelGC -cp "$JAR" tlc2.TLC \
-      -workers "$WORKERS" -metadir "$meta" -config "$name.cfg" "$spec.tla") >"$log" 2>&1
+  # TLC finds $spec.tla in this folder, or through TLA-Library when it is a shared module.
+  (cd "$dir" && "$JAVA_BIN" "-Xmx$HEAP" -XX:+UseParallelGC ${lib:+"-DTLA-Library=$lib"} \
+      -cp "$JAR" tlc2.TLC -workers "$WORKERS" -metadir "$meta" -config "$name.cfg" \
+      "$spec.tla") >"$log" 2>&1
   status=$?
   set -e
+  rm -rf "$meta"
   elapsed=$((SECONDS - started))
   states="$(sed -n 's/^\([0-9][0-9]*\) states generated, \([0-9][0-9]*\) distinct states found.*/\2 distinct/p' "$log" | tail -n 1)"
   violated="$(sed -n \
@@ -242,6 +324,17 @@ while IFS= read -r cfg; do
       -e 's/^Error: Action property \([A-Za-z0-9_]*\) is violated.*/\1/p' \
       -e 's/^Error: Temporal properties were violated.*/TEMPORAL/p' \
       -e 's/^Error: Deadlock reached.*/DEADLOCK/p' "$log" | head -n 1)"
+  got="${violated:-no violation}"
+  if [[ "$violated" == TEMPORAL ]]; then
+    # TLC does not say which temporal property failed. The config's PROPERTY list does when it
+    # holds one name; with several, any of them may be the one.
+    properties="$(cfg_properties "$cfg")"
+    case "$properties" in
+      "") ;;
+      *" "*) got="TEMPORAL (one of: ${properties// /, })" ;;
+      *) got="TEMPORAL ($properties)" ;;
+    esac
+  fi
   outcome="FAIL"
   case "$expect" in
     pass)
@@ -269,7 +362,7 @@ while IFS= read -r cfg; do
   fi
   if [[ "$outcome" != "ok" ]]; then FAILURES=$((FAILURES + 1)); fi
   SUMMARY+=("$(printf '%-5s tlc    %s  [expect: %s; got: %s; %s; %ss]' "$outcome" \
-      "${cfg#"$ROOT"/}" "$expect" "${violated:-no violation}" "${states:-? states}" "$elapsed")")
+      "${cfg#"$ROOT"/}" "$expect" "$got" "${states:-? states}" "$elapsed")")
 done <<<"$CONFIG_LIST"
 
 while IFS= read -r cfg; do

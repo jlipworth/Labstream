@@ -2,8 +2,8 @@ import Foundation
 import Testing
 @testable import PMSKit
 
-/// The status and speed side of the downloads TLA+ model (`specs/downloads/DownloadsStatus.tla`,
-/// `specs/downloads/DownloadsStatus.md`).
+/// The status and speed side of the downloads TLA+ model (`specs/downloads/status/DownloadsStatus.tla`,
+/// `specs/downloads/status/README.md`).
 ///
 /// The model treats a rate estimator as the stage it has reached (settling, window, quiet) and
 /// leaves the arithmetic out. The seeded tests here cover that arithmetic: each draws event
@@ -11,7 +11,7 @@ import Testing
 ///
 /// The two findings at the end state the wanted behaviour inside `withKnownIssue`, so the suite
 /// stays green while they are open. When a fix lands, `withKnownIssue` fails the test: delete the
-/// wrapper then, and flip the matching `Status-Finding-*.cfg` to `EXPECT: pass`.
+/// wrapper then, and flip the matching `status/Finding-*.cfg` to `EXPECT: pass`.
 @Suite("Downloads formal-model status and speed")
 struct DownloadsFormalModelStatusTests {
 
@@ -390,7 +390,7 @@ struct DownloadsFormalModelStatusTests {
         #expect(answers > 2_000, "the runs must publish speeds, or the test checks nothing")
     }
 
-    /// The contract behind #224 and finding S4 (`Status-Finding-S4-LateCallbackInflatesRow.cfg`).
+    /// The contract behind #224 and finding S4 (`status/Finding-S4-LateCallbackInflatesRow.cfg`).
     /// Bytes that arrived while the app was suspended are a valid forward count, so the estimator
     /// cannot tell them from a burst: the owner has to call `rebaseline` on the first sample
     /// after the boundary. `DownloadManager` does that for static-range rows on their first
@@ -748,7 +748,7 @@ struct DownloadsFormalModelStatusTests {
 
     // MARK: - Findings
 
-    /// S1 (`Status-Finding-S1-SilentMemberHidesSpeed.cfg`). Two transfers share the batch. One
+    /// S1 (`status/Finding-S1-SilentMemberHidesSpeed.cfg`). Two transfers share the batch. One
     /// stalls silently: no bytes, so no callbacks, and nothing takes a static-range row out of
     /// `transferring` (only forward-only streams have a stall verdict). The other keeps moving.
     /// The estimator hides the whole total while any member is silent, so the top of Downloads
@@ -849,7 +849,7 @@ struct DownloadsFormalModelStatusTests {
         return outcome
     }
 
-    /// S2 (`Status-Finding-S2-StaleRowSpeed.cfg`). A row's speed is recomputed only inside
+    /// S2 (`status/Finding-S2-StaleRowSpeed.cfg`). A row's speed is recomputed only inside
     /// `refreshRecords`. After a static-range row's last callback the only refreshes left are
     /// the watchdog loop's, and that loop stops at the first refresh that finds the aggregate
     /// without an answer. The aggregate loses its answer 3.5 s after the last callback (its 4 s

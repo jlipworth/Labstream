@@ -2,11 +2,11 @@ import Foundation
 import Testing
 @testable import PMSKit
 
-/// The static-range segment train as `specs/downloads/DownloadsRangeTrain.tla` models it.
+/// The static-range segment train as `specs/downloads/range-train/DownloadsRangeTrain.tla` models it.
 ///
 /// The first tests tie the model's rules to the pure policies it copies, so a policy change that
 /// the spec does not follow fails here. The `R1` and `R2` tests are orderings TLC found on the
-/// current design (`specs/downloads/RangeTrain-Finding-*.cfg`). Each states the behaviour the
+/// current design (`specs/downloads/range-train/Finding-*.cfg`). Each states the behaviour the
 /// design wants and is wrapped in `withKnownIssue`, so the suite stays green while the finding is
 /// open. When a fix lands the expectation holds, no issue is recorded, and `withKnownIssue` fails
 /// the test: delete the wrapper then, and flip the matching config to `EXPECT: pass`.

@@ -2,14 +2,14 @@ import Foundation
 import Testing
 @testable import PMSKit
 
-/// The TLA+ model of download admission (`specs/downloads/DownloadsAdmission.tla`,
-/// `specs/downloads/DownloadsAdmission.md`).
+/// The TLA+ model of download admission (`specs/downloads/admission/DownloadsAdmission.tla`,
+/// `specs/downloads/admission/README.md`).
 ///
 /// The first tests tie the model's abstractions to the pure Swift decisions they stand for. The
 /// finding tests state the behaviour the design wants and are wrapped in `withKnownIssue`, so
 /// the suite stays green while a finding is open. When a fix lands the expectations hold, no
 /// issue is recorded, and `withKnownIssue` fails the test: delete the wrapper then, and flip the
-/// matching `Admission-Finding-*.cfg` to `EXPECT: pass`.
+/// matching `admission/Finding-*.cfg` to `EXPECT: pass`.
 @Suite("Downloads formal-model admission")
 struct DownloadsFormalModelAdmissionTests {
     private typealias R = DownloadLifecycleReducer

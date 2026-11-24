@@ -2,15 +2,15 @@ import Foundation
 import Testing
 @testable import PMSKit
 
-/// Keeps the TLA+ reducer (`specs/downloads/DownloadsReducer.tla`) equal to the Swift one.
+/// Keeps the TLA+ reducer (`specs/downloads/base/DownloadsReducer.tla`) equal to the Swift one.
 ///
 /// The test runs `DownloadLifecycleReducer.reduce` over every lifecycle, a fixed set of histories,
 /// every event shape and a fixed set of facts, and renders the results as the TLA+ module
-/// `specs/downloads/DownloadsReducerTable.tla`. That file is checked in:
+/// `specs/downloads/base/DownloadsReducerTable.tla`. That file is checked in:
 ///
 /// - this test fails when the rendered table differs from the checked-in file, so a reducer change
 ///   cannot land without regenerating it;
-/// - `specs/downloads/Reducer-Conformance.cfg` (run by `scripts/check-tla-specs.sh`) fails when
+/// - `specs/downloads/base/Reducer-Conformance.cfg` (run by `scripts/check-tla-specs.sh`) fails when
 ///   `Reduce` in `DownloadsReducer.tla` does not return exactly that table, so a regenerated table
 ///   cannot land without the matching spec change, and a spec change cannot land alone.
 ///
@@ -20,7 +20,7 @@ import Testing
 ///         --filter DownloadsFormalModelReducerTests
 ///
 /// then update `DownloadsReducer.tla` until `scripts/check-tla-specs.sh
-/// specs/downloads/Reducer-Conformance.cfg` passes.
+/// specs/downloads/base/Reducer-Conformance.cfg` passes.
 @Suite("Downloads formal model: reducer conformance")
 struct DownloadsFormalModelReducerTests {
     private typealias Table = DownloadsReducerTableGenerator
@@ -30,7 +30,7 @@ struct DownloadsFormalModelReducerTests {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("specs/downloads/DownloadsReducerTable.tla")
+            .appendingPathComponent("specs/downloads/base/DownloadsReducerTable.tla")
     }
 
     @Test("The checked-in TLA+ reducer table is what the Swift reducer produces")
@@ -44,9 +44,9 @@ struct DownloadsFormalModelReducerTests {
         #expect(
             checkedIn == rendered,
             """
-            specs/downloads/DownloadsReducerTable.tla is stale: the reducer or the table's inputs \
+            specs/downloads/base/DownloadsReducerTable.tla is stale: the reducer or the table's inputs \
             changed. Regenerate it with LABSTREAM_WRITE_REDUCER_TABLE=1 (see this file's header), \
-            then update specs/downloads/DownloadsReducer.tla to match.
+            then update specs/downloads/base/DownloadsReducer.tla to match.
             """)
     }
 

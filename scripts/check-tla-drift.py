@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Fail when a Swift file that a TLA+ spec models changed and the spec did not.
 
-Each module under specs/ names the files it models, one per line, directly in the module text:
+Each module under specs/ (specs/<area>/<module>/<Module>.tla, found recursively) names the files
+it models, one per line, directly in the module text:
 
     \\* MODELS: PMSKit/Sources/PMSKit/Downloads/DownloadLifecycleReducer.swift
 
 For a commit range (default: origin/main...HEAD) every changed modelled file must be covered:
 
-  - the spec changed too: every module that models the file, or one of that module's .cfg files
-    (a config belongs to the module its `\\* SPEC:` header names), changed in the range; or
+  - the spec changed too: for every module that models the file, something in that module's
+    folder changed in the range (the module, a helper module, a config, its notes). A module in
+    a shared `base/` folder is stricter, because that folder holds unrelated modules: only the
+    module itself or one of its .cfg files counts (a config belongs to the module its
+    `\\* SPEC:` header names, in its own folder or in the area's base/); or
   - every commit in the range that touches the file says the model is unaffected, with a trailer:
 
         Spec-Unaffected: comment-only change to the reducer
@@ -62,20 +66,45 @@ def modelled_files(repo: pathlib.Path, specs_dir: pathlib.Path) -> dict[str, set
     return owners
 
 
+SHARED_FOLDER = "base"
+
+
+def config_module(config: pathlib.Path) -> pathlib.Path:
+    """The module a config runs: beside it, else in its area's shared folder."""
+    declared = None
+    for line in config.read_text(encoding="utf-8").splitlines():
+        match = SPEC_LINE.match(line)
+        if match:
+            declared = match.group(1)
+            break
+    name = f"{declared or config.stem}.tla"
+    beside = config.with_name(name)
+    shared = config.parent.parent / SHARED_FOLDER / name
+    return shared if not beside.is_file() and shared.is_file() else beside
+
+
 def spec_artifacts(repo: pathlib.Path, specs_dir: pathlib.Path) -> dict[str, set[str]]:
-    """Module -> itself and the configs that run it."""
-    artifacts = {relative(repo, module): {relative(repo, module)} for module in specs_dir.rglob("*.tla")}
+    """Module -> the paths whose change counts as changing it.
+
+    A path ending in `/` is a folder: any file under it counts. That is the module's own folder,
+    unless the module sits in a shared folder; then only it and the configs that run it count.
+    """
+    artifacts = {}
+    for module in specs_dir.rglob("*.tla"):
+        paths = {relative(repo, module)}
+        if module.parent.name != SHARED_FOLDER:
+            paths.add(relative(repo, module.parent) + "/")
+        artifacts[relative(repo, module)] = paths
     for config in sorted(specs_dir.rglob("*.cfg")):
-        declared = None
-        for line in config.read_text(encoding="utf-8").splitlines():
-            match = SPEC_LINE.match(line)
-            if match:
-                declared = match.group(1)
-                break
-        module = relative(repo, config.with_name(f"{declared or config.stem}.tla"))
+        module = relative(repo, config_module(config))
         if module in artifacts:
             artifacts[module].add(relative(repo, config))
     return artifacts
+
+
+def touched(artifacts: set[str], changed: set[str]) -> bool:
+    folders = tuple(path for path in artifacts if path.endswith("/"))
+    return bool(artifacts & changed) or any(path.startswith(folders) for path in changed if folders)
 
 
 def resolve_range(repo: pathlib.Path, spec: str) -> tuple[str, str]:
@@ -141,7 +170,8 @@ def check(repo: pathlib.Path, specs_dir: pathlib.Path, range_spec: str) -> tuple
     commits = commits_in(repo, base, head)
     notes = []
     for path in sorted(changed & owners.keys()):
-        stale = sorted(module for module in owners[path] if not (artifacts.get(module, {module}) & changed))
+        stale = sorted(module for module in owners[path]
+                       if not touched(artifacts.get(module, {module}), changed))
         if not stale:
             notes.append(f"{path}: spec updated ({', '.join(sorted(owners[path]))})")
             continue
