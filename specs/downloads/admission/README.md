@@ -104,7 +104,7 @@ proceeds and an outage ends, and that the user, crashes and faults take a bounde
 | `Mutant-StaleCap` | `GrantRespectsObservedOccupancy` | the pump grants against the highest setting it has seen |
 | `Faithful-B66-off` | `NoOrphanQueued` | a start without work forgets its request and stays queued |
 | `Faithful-B67-off` | `OutageDefersFirstStart` | an outage fails a first start |
-| `Mutant-NoBackoffWake` | `TEMPORAL` | without the wake timer a deferred row waits forever (`WaitingRowIsServed`; the script reports any liveness violation as `TEMPORAL`) |
+| `Mutant-NoBackoffWake` | `TEMPORAL` | without the wake timer a deferred row waits forever (`WaitingRowIsServed`, the one property it checks; the script reports any liveness violation as `TEMPORAL`) |
 | `Finding-A1-RelaunchFailsUnstartedRow` | `RelaunchKeepsUnstartedRow` | finding A1 |
 | `Proposed-A1-RelaunchKeepsUnstartedRow` | pass | the proposed fix, with every safety property |
 | `Deep-ThreeRows` | pass (deep) | the three-row run with four environment steps |
