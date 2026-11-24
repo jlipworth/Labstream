@@ -39,8 +39,17 @@
 (*    path leases are not modelled.                                        *)
 (*  - Delete is one durable flag and one cleanup step; the cleanup intent  *)
 (*    journal is not modelled.                                             *)
+(*                                                                         *)
+(* Lifecycle and history change only through Reduce (DownloadsReducer.tla).*)
+(* The hand-written exceptions are the "fix off" branches, which restore   *)
+(* a historical bug, and the two PROPOSED fixes.                           *)
 (***************************************************************************)
-EXTENDS DownloadsBase, TLC
+\* MODELS: Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift
+\* MODELS: Labstream/Capabilities/Downloads/Core/DownloadStore.swift
+\* MODELS: PMSKit/Sources/PMSKit/Downloads/BackgroundTempFileCleanupPolicy.swift
+\* MODELS: PMSKit/Sources/PMSKit/Downloads/StaticRangeFinishedBodyPolicy.swift
+\* MODELS: PMSKit/Sources/PMSKit/Downloads/BackgroundFinalizationResultPolicy.swift
+EXTENDS DownloadsReducer, TLC
 
 CONSTANTS
     Rows,               \* download keys
@@ -96,6 +105,8 @@ VARIABLES
     staleEffect, \* BOOLEAN                        a stale-attempt callback changed something
     budget       \* 0..EnvBudget
 
+\* The part of the row the reducer owns.
+redVars  == <<life, cause, strikes, counted, condemned>>
 rowVars  == <<life, cause, owner, strikes, counted, condemned, intent, deleting>>
 fileVars == <<working, published, stash>>
 memVars  == <<tracked, ioq, halt, rebuild, fin, recon, liveSnap>>
@@ -111,6 +122,33 @@ Owns(r, a) == Exists(r) /\ owner[r] = a /\ ~deleting[r]
 \* What a callback handler accepts.  Before B12 callbacks were matched by row only.
 Accepts(r, a) == IF FixB12 THEN Owns(r, a) ELSE Exists(r) /\ ~deleting[r]
 Stale(r, a) == owner[r] # a
+
+-----------------------------------------------------------------------------
+(* The reducer's view of a row                                             *)
+
+\* The history fields this model tracks.  The others (lastFailure,
+\* unverifiedReason, admissionIntent, storagePark) stay at their empty values;
+\* Projection-SessionCore.cfg checks that they never influence the tracked
+\* ones for the events this model sends.  There is one source, "src".
+Row(r) ==
+    St(life[r], cause[r], "none", "none", "none", FALSE, condemned[r], strikes[r],
+       IF strikes[r] = 0 /\ counted[r] = {} THEN "none" ELSE "src", counted[r])
+
+\* Store a reducer state as row r.
+ApplyRow(r, s) ==
+    /\ life' = Upd(life, r, s.lifecycle)
+    /\ cause' = Upd(cause, r, s.pauseCause)
+    /\ strikes' = Upd(strikes, r, s.strikes)
+    /\ counted' = Upd(counted, r, s.counted)
+    /\ condemned' = Upd(condemned, r, s.bodyCondemned)
+
+\* Send an event that does not read facts.
+Send(r, event) == Reduce(Row(r), event, NoFacts)
+
+\* Send it and store the result; a rejected event leaves the row alone.
+Submit(r, event) ==
+    LET t == Send(r, event)
+    IN IF IsApplied(t) THEN ApplyRow(r, t.state) ELSE UNCHANGED redVars
 
 \* User, crash and foreground steps are the environment.  Liveness runs bound them.
 Spend == IF BoundEnvironment
@@ -177,12 +215,12 @@ TransferStarted(r) ==
     /\ task[r][owner[r]] = "none" /\ owner[r] \notin ioq[r] /\ fin[r] = 0
     /\ IF ~Forward(r) /\ working[r] = "complete"
           THEN /\ fin' = Upd(fin, r, owner[r])
-               /\ UNCHANGED <<task, tracked, life>>
+               /\ UNCHANGED <<task, tracked, redVars>>
           ELSE /\ task' = [task EXCEPT ![r][owner[r]] = "running"]
                /\ tracked' = Upd(tracked, r, tracked[r] \cup {owner[r]})
-               /\ life' = Upd(life, r, "transferring")
+               /\ Submit(r, Ev("transferStarted"))
                /\ UNCHANGED fin
-    /\ UNCHANGED <<cause, owner, strikes, counted, condemned, intent, deleting,
+    /\ UNCHANGED <<owner, intent, deleting,
                    fileVars, up, ioq, halt, rebuild, recon, liveSnap,
                    bodyDone, staleEffect, budget>>
 
@@ -190,12 +228,15 @@ TransferStarted(r) ==
 \* B09: progress must not promote a paused row.
 TransferProgress(r, a) ==
     /\ up /\ a \in tracked[r] /\ task[r][a] = "running" /\ Accepts(r, a)
-    /\ \/ life[r] = "admitted"
-       \/ ~FixB09 /\ life[r] = "paused"
-    /\ life' = Upd(life, r, "transferring")
-    /\ cause' = Upd(cause, r, "none")
+    /\ \/ /\ life[r] = "admitted"
+          /\ Submit(r, Ev("transferProgress"))
+       \/ \* Before B09 progress promoted a paused row.
+          /\ ~FixB09 /\ life[r] = "paused"
+          /\ life' = Upd(life, r, "transferring")
+          /\ cause' = Upd(cause, r, "none")
+          /\ UNCHANGED <<strikes, counted, condemned>>
     /\ staleEffect' = (staleEffect \/ Stale(r, a))
-    /\ UNCHANGED <<owner, strikes, counted, condemned, intent, deleting,
+    /\ UNCHANGED <<owner, intent, deleting,
                    fileVars, task, up, memVars, bodyDone, budget>>
 
 -----------------------------------------------------------------------------
@@ -228,18 +269,18 @@ DidFinishDownloading(r, a) ==
                    /\ (a \notin tracked[r] => life[r] \notin Terminal)
                    /\ ~(~Forward(r) /\ halt[r] = "cancel")
            mine == owner[r] = a
-           capture == /\ DurableCapture /\ keep /\ mine /\ Forward(r) /\ ~condemned[r]
-                      /\ life[r] \in {"transferring", "admitted", "paused", "failed"}
+           captured == Send(r, Ev("bodyCaptured"))
+           capture == /\ DurableCapture /\ keep /\ mine /\ Forward(r)
+                      /\ IsApplied(captured)
        IN /\ stash' = IF keep THEN Upd(stash, r, stash[r] \cup {a}) ELSE stash
           /\ ioq' = IF keep THEN Upd(ioq, r, ioq[r] \cup {a}) ELSE ioq
           \* PROPOSED: reducer event bodyCaptured, persisted with the stash.
-          /\ life' = IF capture THEN Upd(life, r, "finalizing") ELSE life
-          /\ cause' = IF capture THEN Upd(cause, r, "none") ELSE cause
+          /\ IF capture THEN ApplyRow(r, captured.state) ELSE UNCHANGED redVars
           \* A forward-only body is finished here.  A user pause is allowed to
           \* discard it (Resume restarts a forward-only stream from zero).
           /\ bodyDone' = IF keep /\ mine /\ Forward(r) /\ (capture \/ ~UserPaused(r))
                             THEN Upd(bodyDone, r, a) ELSE bodyDone
-    /\ UNCHANGED <<owner, strikes, counted, condemned, intent, deleting,
+    /\ UNCHANGED <<owner, intent, deleting,
                    working, published, up, halt, rebuild, fin, recon, liveSnap,
                    staleEffect, budget>>
 
@@ -255,12 +296,12 @@ DidCompleteWithError(r, a) ==
           /\ life[r] \in {"admitted", "transferring"}
           THEN /\ \/ /\ ~Forward(r)
                      /\ rebuild' = Upd(rebuild, r, a)
-                     /\ UNCHANGED life
-                  \/ /\ life' = Upd(life, r, "failed")
+                     /\ UNCHANGED redVars
+                  \/ /\ Submit(r, EvReason("transferFailed", "network"))
                      /\ UNCHANGED rebuild
                /\ staleEffect' = (staleEffect \/ Stale(r, a))
-          ELSE UNCHANGED <<life, rebuild, staleEffect>>
-    /\ UNCHANGED <<cause, owner, strikes, counted, condemned, intent, deleting,
+          ELSE UNCHANGED <<redVars, rebuild, staleEffect>>
+    /\ UNCHANGED <<owner, intent, deleting,
                    fileVars, up, ioq, halt, fin, recon, liveSnap, bodyDone, budget>>
 
 \* The queued hop on rangeIOQueue: applyFinishedRangeBody (static) or
@@ -277,18 +318,19 @@ RangeIO(r, a) ==
        IN
        /\ staleEffect' = (staleEffect \/ (current /\ ~fresh))
        /\ IF ~current THEN
-              UNCHANGED <<life, working, stash, task, tracked, fin, bodyDone>>
+              UNCHANGED <<redVars, working, stash, task, tracked, fin, bodyDone>>
           ELSE IF ~present THEN
               \* The stash is gone: the move fails.  A forward-only row fails;
               \* a static row re-fetches the segment from its checkpoint.
-              /\ life' = IF Forward(r) /\ life[r] \notin Playable
-                            THEN Upd(life, r, "failed") ELSE life
+              /\ IF Forward(r)
+                    THEN Submit(r, EvReason("transferFailed", "internalError"))
+                    ELSE UNCHANGED redVars
               /\ UNCHANGED <<working, stash, task, tracked, fin, bodyDone>>
           ELSE IF Forward(r) THEN
               /\ stash' = Upd(stash, r, stash[r] \ {a})
               /\ working' = Upd(working, r, "complete")
               /\ fin' = Upd(fin, r, owner[r])
-              /\ UNCHANGED <<life, task, tracked, bodyDone>>
+              /\ UNCHANGED <<redVars, task, tracked, bodyDone>>
           ELSE
               /\ stash' = Upd(stash, r, stash[r] \ {a})
               /\ CASE working[r] = "none" ->
@@ -305,8 +347,8 @@ RangeIO(r, a) ==
                         /\ bodyDone' = IF fresh THEN Upd(bodyDone, r, a) ELSE bodyDone
                         /\ UNCHANGED <<task, tracked>>
                    [] OTHER -> UNCHANGED <<working, task, tracked, fin, bodyDone>>
-              /\ UNCHANGED life
-    /\ UNCHANGED <<cause, owner, strikes, counted, condemned, intent, deleting,
+              /\ UNCHANGED redVars
+    /\ UNCHANGED <<owner, intent, deleting,
                    published, up, halt, rebuild, recon, liveSnap, budget>>
 
 \* A delayed retry / range-request rebuild fires.  B02: its currency (attempt,
@@ -325,10 +367,14 @@ RebuildFires(r) ==
        IN IF start
              THEN /\ task' = [task EXCEPT ![r][a] = "running"]
                   /\ tracked' = Upd(tracked, r, tracked[r] \cup {a})
-                  /\ life' = Upd(life, r, "transferring")
-                  /\ cause' = Upd(cause, r, "none")
-             ELSE UNCHANGED <<task, tracked, life, cause>>
-    /\ UNCHANGED <<owner, strikes, counted, condemned, intent, deleting,
+                  /\ IF life[r] = "paused"
+                        \* Only before B02: the rebuild restarted a paused row.
+                        THEN /\ life' = Upd(life, r, "transferring")
+                             /\ cause' = Upd(cause, r, "none")
+                             /\ UNCHANGED <<strikes, counted, condemned>>
+                        ELSE Submit(r, Ev("transferRebuilding"))
+             ELSE UNCHANGED <<task, tracked, redVars>>
+    /\ UNCHANGED <<owner, intent, deleting,
                    fileVars, up, ioq, halt, fin, recon, liveSnap,
                    bodyDone, staleEffect, budget>>
 
@@ -337,8 +383,8 @@ StallDetected(r) ==
     /\ up /\ life[r] = "transferring" /\ ~deleting[r]
     /\ tracked[r] = {} /\ ioq[r] = {} /\ fin[r] = 0 /\ rebuild[r] = 0
     /\ recon[r] = "idle" /\ task[r][owner[r]] = "none"
-    /\ life' = Upd(life, r, "failed")
-    /\ UNCHANGED <<cause, owner, strikes, counted, condemned, intent, deleting,
+    /\ Submit(r, Ev("stallDetected"))
+    /\ UNCHANGED <<owner, intent, deleting,
                    fileVars, task, up, memVars, bodyDone, staleEffect, budget>>
 
 -----------------------------------------------------------------------------
@@ -348,43 +394,40 @@ StallDetected(r) ==
 \* at the attempt working path; `finalizing` is persisted before validation.
 BodyAtWorking(r) ==
     /\ up /\ fin[r] # 0 /\ life[r] # "finalizing"
-    /\ IF /\ fin[r] = owner[r] /\ Exists(r) /\ ~deleting[r] /\ ~condemned[r]
-          /\ working[r] = "complete"
-          /\ life[r] \in {"transferring", "admitted", "paused", "failed"}
-          THEN /\ life' = Upd(life, r, "finalizing")
-               /\ cause' = Upd(cause, r, "none")
-               /\ UNCHANGED fin
-          ELSE /\ fin' = Upd(fin, r, 0)
-               /\ UNCHANGED <<life, cause>>
-    /\ UNCHANGED <<owner, strikes, counted, condemned, intent, deleting,
+    /\ LET t == Send(r, Ev("bodyAtWorking"))
+       IN IF /\ fin[r] = owner[r] /\ Exists(r) /\ ~deleting[r]
+             /\ working[r] = "complete"
+             \* Rejected for a condemned body and for a playable row.
+             /\ IsApplied(t)
+             THEN /\ ApplyRow(r, t.state)
+                  /\ UNCHANGED fin
+             ELSE /\ fin' = Upd(fin, r, 0)
+                  /\ UNCHANGED redVars
+    /\ UNCHANGED <<owner, intent, deleting,
                    fileVars, task, up, tracked, ioq, halt, rebuild, recon, liveSnap,
                    bodyDone, staleEffect, budget>>
 
 \* reducer: finalizeOutcome.  The outcome ID is the attempt (one body per
 \* attempt).  `complete` and repeated truncation record a publish intent in
-\* the same revision; a first truncation condemns and deletes the body.
+\* the same revision (effect: publish); a first truncation condemns the body
+\* and deletes it (effect: deleteWorkingBody).
 FinalizeOutcome(r, o) ==
     /\ up /\ fin[r] # 0 /\ fin[r] = owner[r] /\ life[r] = "finalizing"
     /\ ~deleting[r] /\ working[r] = "complete" /\ intent[r] = "none"
     /\ o \in Outcomes
-    /\ \/ /\ o = "complete"
-          /\ strikes' = Upd(strikes, r, 0)
-          /\ counted' = Upd(counted, r, {})
-          /\ intent' = Upd(intent, r, "complete")
-          /\ UNCHANGED <<life, condemned, working, fin, bodyDone>>
-       \/ /\ o = "truncated" /\ owner[r] \notin counted[r]
-          /\ strikes' = Upd(strikes, r, strikes[r] + 1)
-          /\ counted' = Upd(counted, r, counted[r] \cup {owner[r]})
-          /\ IF strikes[r] + 1 >= MaxTruncationStrikes
-                THEN /\ intent' = Upd(intent, r, "unverified")
-                     /\ UNCHANGED <<life, condemned, working, fin, bodyDone>>
-                ELSE /\ life' = Upd(life, r, "failed")
-                     /\ condemned' = Upd(condemned, r, TRUE)
-                     /\ working' = Upd(working, r, "none")
+    /\ LET t == Send(r, EvFinalize(owner[r], o, "src"))
+       IN \* A replayed outcome ID is FinalizeOutcomeReplayed.
+          /\ IsApplied(t)
+          /\ ApplyRow(r, t.state)
+          /\ intent' = IF Has(t, "publishComplete") THEN Upd(intent, r, "complete")
+                        ELSE IF Has(t, "publishUnverified")
+                            THEN Upd(intent, r, "unverified") ELSE intent
+          /\ IF Has(t, "deleteWorkingBody")
+                THEN /\ working' = Upd(working, r, "none")
                      /\ fin' = Upd(fin, r, 0)
                      /\ bodyDone' = Upd(bodyDone, r, 0)
-                     /\ UNCHANGED intent
-    /\ UNCHANGED <<cause, owner, deleting, published, stash, task, up,
+                ELSE UNCHANGED <<working, fin, bodyDone>>
+    /\ UNCHANGED <<owner, deleting, published, stash, task, up,
                    tracked, ioq, halt, rebuild, recon, liveSnap, staleEffect, budget>>
 
 \* The finalizer delivers the truncation verdict it already delivered (same
@@ -393,7 +436,8 @@ FinalizeOutcomeReplayed(r) ==
     /\ up /\ fin[r] # 0 /\ fin[r] = owner[r] /\ life[r] = "finalizing"
     /\ ~deleting[r] /\ intent[r] = "unverified" /\ owner[r] \in counted[r]
     /\ IF FixReplay
-          THEN UNCHANGED strikes
+          THEN /\ Send(r, EvFinalize(owner[r], "truncated", "src")) = Replayed
+               /\ UNCHANGED strikes
           ELSE /\ strikes[r] <= MaxTruncationStrikes
                /\ strikes' = Upd(strikes, r, strikes[r] + 1)
     /\ UNCHANGED <<life, cause, owner, counted, condemned, intent, deleting,
@@ -412,10 +456,10 @@ PublishBody(r) ==
 PromotionCommitted(r) ==
     /\ up /\ intent[r] # "none" /\ life[r] = "finalizing" /\ ~deleting[r]
     /\ published[r]
-    /\ life' = Upd(life, r, intent[r])
+    /\ Submit(r, EvPromotion("promotionCommitted", intent[r]))
     /\ intent' = Upd(intent, r, "none")
     /\ fin' = Upd(fin, r, 0)
-    /\ UNCHANGED <<cause, owner, strikes, counted, condemned, deleting,
+    /\ UNCHANGED <<owner, deleting,
                    fileVars, task, up, tracked, ioq, halt, rebuild, recon, liveSnap,
                    bodyDone, staleEffect, budget>>
 
@@ -423,10 +467,10 @@ PromotionCommitted(r) ==
 PromotionAbandoned(r) ==
     /\ up /\ intent[r] # "none" /\ life[r] = "finalizing" /\ ~deleting[r]
     /\ working[r] # "complete" /\ ~published[r]
-    /\ life' = Upd(life, r, "failed")
+    /\ Submit(r, Ev("promotionAbandoned"))
     /\ intent' = Upd(intent, r, "none")
     /\ fin' = Upd(fin, r, 0)
-    /\ UNCHANGED <<cause, owner, strikes, counted, condemned, deleting,
+    /\ UNCHANGED <<owner, deleting,
                    fileVars, task, up, tracked, ioq, halt, rebuild, recon, liveSnap,
                    bodyDone, staleEffect, budget>>
 
@@ -440,24 +484,25 @@ PromotionAbandoned(r) ==
 UserPause(r) ==
     /\ up /\ life[r] \in {"admitted", "transferring"} /\ ~deleting[r]
     /\ Spend
-    /\ life' = Upd(life, r, "paused")
-    /\ cause' = Upd(cause, r, "user")
+    /\ Submit(r, EvPause("user"))
     /\ halt' = Upd(halt, r, "pause")
     /\ tracked' = IF Forward(r) THEN Upd(tracked, r, {}) ELSE tracked
     /\ rebuild' = IF FixB02 THEN Upd(rebuild, r, 0) ELSE rebuild
     \* A user pause may discard a finished forward-only body that has not
     \* reached `finalizing` (see DidFinishDownloading).
     /\ bodyDone' = IF Forward(r) THEN Upd(bodyDone, r, 0) ELSE bodyDone
-    /\ UNCHANGED <<owner, strikes, counted, condemned, intent, deleting,
+    /\ UNCHANGED <<owner, intent, deleting,
                    fileVars, task, up, ioq, fin, recon, liveSnap, staleEffect>>
 
 \* A fresh attempt: new attempt ID, new (empty) working path.
+\* reducer: retry(.freshAttempt).  The replacement attempt does not inherit
+\* `bodyCondemned` (DownloadAttemptHistory.inherited).
 FreshAttempt(r) ==
     /\ owner[r] < MaxAttempt
     /\ owner' = Upd(owner, r, owner[r] + 1)
-    /\ life' = Upd(life, r, "admitted")
-    /\ cause' = Upd(cause, r, "none")
-    /\ condemned' = Upd(condemned, r, FALSE)
+    /\ LET t == Send(r, EvRetry("freshAttempt"))
+       IN /\ IsApplied(t)
+          /\ ApplyRow(r, [t.state EXCEPT !.bodyCondemned = FALSE])
     /\ working' = Upd(working, r, "none")
     /\ fin' = Upd(fin, r, 0)
     /\ bodyDone' = Upd(bodyDone, r, 0)
@@ -472,10 +517,9 @@ UserResume(r) ==
     /\ rebuild' = IF FixB02 THEN Upd(rebuild, r, 0) ELSE rebuild
     /\ IF Forward(r)
           THEN FreshAttempt(r)
-          ELSE /\ life' = Upd(life, r, "admitted")
-               /\ cause' = Upd(cause, r, "none")
-               /\ UNCHANGED <<owner, condemned, working, fin, bodyDone>>
-    /\ UNCHANGED <<strikes, counted, intent, deleting, published, stash, task, up,
+          ELSE /\ Submit(r, EvRetry("staticCheckpoint"))
+               /\ UNCHANGED <<owner, working, fin, bodyDone>>
+    /\ UNCHANGED <<intent, deleting, published, stash, task, up,
                    tracked, ioq, recon, liveSnap, staleEffect>>
 
 \* reducer: retry(.freshAttempt) from failed.
@@ -485,7 +529,7 @@ UserRetry(r) ==
     /\ FreshAttempt(r)
     /\ halt' = Upd(halt, r, "none")
     /\ rebuild' = Upd(rebuild, r, 0)
-    /\ UNCHANGED <<strikes, counted, intent, deleting, published, stash, task, up,
+    /\ UNCHANGED <<intent, deleting, published, stash, task, up,
                    tracked, ioq, recon, liveSnap, staleEffect>>
 
 \* Delete: a durable deletion-pending flag and a cancel halt.
@@ -560,7 +604,8 @@ ForegroundReattachBegins ==
 \*  - A running, untracked task is adopted (reducer: taskAdopted) when it
 \*    carries the row's exact attempt and the row may be active; B02: a paused
 \*    row's task is cancelled instead; a halted attempt's task is left alone.
-\*    Any other untracked task is cancelled.
+\*    Any other untracked task is cancelled.  The task is tracked either way,
+\*    but a finalizing row rejects taskAdopted and stays finalizing.
 \*  - sweepOrphanedRangeBodyStashes: a stash whose task is no longer live is
 \*    deleted.  B03: unless a queued append/publication still claims it.
 \*  - The live-key snapshot handed to reconcile is every tracked task.
@@ -577,75 +622,69 @@ Reattach(r) ==
        IN /\ task' = Upd(task, r, [a \in Attempts |->
                          IF Cancel(a) THEN "none" ELSE task[r][a]])
           /\ tracked' = Upd(tracked, r, tracked[r] \cup adopted)
-          /\ life' = IF adopted # {} THEN Upd(life, r, "transferring") ELSE life
-          /\ cause' = IF adopted # {} THEN Upd(cause, r, "none") ELSE cause
+          /\ IF adopted # {} THEN Submit(r, Ev("taskAdopted")) ELSE UNCHANGED redVars
           /\ liveSnap' = Upd(liveSnap, r, (tracked[r] \cup adopted) # {})
           /\ stash' = Upd(stash, r, {a \in stash[r] :
                          task[r][a] = "running" \/ Claimed(a)})
     /\ recon' = Upd(recon, r, "needReconcile")
-    /\ UNCHANGED <<owner, strikes, counted, condemned, intent, deleting,
+    /\ UNCHANGED <<owner, intent, deleting,
                    working, published, up, ioq, halt, rebuild, fin,
                    bodyDone, staleEffect, budget>>
 
-\* reducer: relaunchObserved (DownloadStore.reconcileOnWorker), in the
-\* reducer's order.  Facts come from the row, its files and reattach's
-\* live-task snapshot.  A deletion-pending row or one with a pending artifact
-\* intent is skipped.
+\* The facts reconcile reports for row r (DownloadStore.observeLifecycleFacts)
+\* with reattach's live-task snapshot.
+RelaunchFacts(r) ==
+    Fx(Route(r), FALSE,
+       \* A static working file is the durable checkpoint, unless condemned.
+       IF ~condemned[r] /\ ~Forward(r) /\ working[r] # "none" THEN "partial" ELSE "none",
+       \* A finished row is asked about its published file only.  A working
+       \* file counts as a whole body for a finalizing row, and for a
+       \* forward-only row (it reaches the working path only when finished).
+       IF life[r] \in Terminal THEN (IF published[r] THEN "published" ELSE "none")
+       ELSE IF working[r] # "none" /\ (life[r] = "finalizing" \/ Forward(r))
+           THEN "workingComplete"
+       \* PROPOSED: a durably captured stash is reported as Body.captured.
+       ELSE IF DurableCapture /\ owner[r] \in stash[r] THEN "captured"
+       ELSE "none",
+       intent[r] # "none", deleting[r], liveSnap[r], TRUE)
+
+\* reducer: relaunchObserved.  Effects: requestFinalization restarts the
+\* finalizer for a body at the working path (PROPOSED: requeues the
+\* publication of a captured stash); deleteWorkingBody deletes the working
+\* file.
 RelaunchObserved(r) ==
     /\ up /\ recon[r] = "needReconcile"
     /\ recon' = Upd(recon, r, "idle")
-    /\ LET live == liveSnap[r]
-           L == life[r]
-           Fail == /\ life' = Upd(life, r, "failed")
-                   /\ cause' = Upd(cause, r, "none")
-           FailDeletingWorking ==
-                   /\ Fail
-                   /\ working' = Upd(working, r, "none")
-                   /\ UNCHANGED <<fin, ioq>>
-           Keep == UNCHANGED <<life, cause, working, fin, ioq>>
+    /\ LET L == life[r]
+           facts == RelaunchFacts(r)
+           \* Before B10 nothing recorded that a forward-only body was finished.
+           preB10 == Forward(r) /\ ~FixB10
+           t == Reduce(Row(r), Ev("relaunchObserved"),
+                       IF preB10 /\ facts.body = "workingComplete"
+                          THEN [facts EXCEPT !.body = "none"] ELSE facts)
+           Keep == UNCHANGED <<redVars, working, fin, ioq>>
        IN
-       IF ~Exists(r) \/ deleting[r] \/ intent[r] # "none" THEN Keep
-       ELSE IF L = "finalizing" THEN
-           IF Forward(r) /\ ~FixB10 THEN
-               \* Before P3a nothing recorded that the body was finished.
-               IF live THEN Keep ELSE FailDeletingWorking
-           ELSE IF working[r] = "complete" THEN
-               \* effect: requestFinalization
-               /\ fin' = Upd(fin, r, owner[r])
-               /\ UNCHANGED <<life, cause, working, ioq>>
-           ELSE IF DurableCapture /\ owner[r] \in stash[r] THEN
-               \* PROPOSED: facts.body == .captured; requeue the publication.
-               /\ ioq' = Upd(ioq, r, ioq[r] \cup {owner[r]})
-               /\ UNCHANGED <<life, cause, working, fin>>
-           ELSE Fail /\ UNCHANGED <<working, fin, ioq>>
-       ELSE IF L \in Playable THEN
-           IF published[r] THEN Keep ELSE Fail /\ UNCHANGED <<working, fin, ioq>>
-       ELSE IF L \in {"admitted", "transferring", "paused"} THEN
-           IF /\ Forward(r) /\ FixB10 /\ ~live /\ working[r] = "complete"
-              /\ L # "paused" THEN
-               \* B10: a forward-only body exists only once its transfer finished.
-               /\ life' = Upd(life, r, "finalizing")
-               /\ cause' = Upd(cause, r, "none")
-               /\ fin' = Upd(fin, r, owner[r])
-               /\ UNCHANGED <<working, ioq>>
-           ELSE IF live THEN
-               \* "a paused row a live task proves active"
-               IF /\ ~Forward(r) \/ L = "paused"
-                  /\ ~(FixPauseReconcile /\ L = "paused")
-                   THEN /\ life' = Upd(life, r, "transferring")
-                        /\ cause' = Upd(cause, r, "none")
-                        /\ UNCHANGED <<working, fin, ioq>>
-                   ELSE Keep
-           ELSE IF ~Forward(r) /\ working[r] # "none" THEN
-               \* A durable static partial: park resumable.
-               /\ life' = Upd(life, r, "paused")
-               /\ cause' = Upd(cause, r, IF L = "paused" /\ cause[r] # "none"
-                                             THEN cause[r] ELSE "deferredResume")
-               /\ UNCHANGED <<working, fin, ioq>>
-           ELSE IF ~Forward(r) /\ L = "paused" THEN Keep
-           ELSE FailDeletingWorking
-       ELSE Keep
-    /\ UNCHANGED <<owner, strikes, counted, condemned, intent, deleting,
+       IF ~Exists(r) THEN Keep
+       ELSE IF /\ preB10 /\ L = "finalizing"
+               /\ ~deleting[r] /\ intent[r] = "none" THEN
+           \* Before B10 a finalizing row was a transferring one.
+           IF liveSnap[r] THEN Keep
+           ELSE /\ life' = Upd(life, r, "failed")
+                /\ cause' = Upd(cause, r, "none")
+                /\ working' = Upd(working, r, "none")
+                /\ UNCHANGED <<strikes, counted, condemned, fin, ioq>>
+       ELSE IF FixPauseReconcile /\ L = "paused" /\ t.state.lifecycle = "transferring" THEN
+           \* PROPOSED: reconcile never promotes a paused row.
+           Keep
+       ELSE
+           /\ ApplyRow(r, t.state)
+           /\ working' = IF Has(t, "deleteWorkingBody")
+                             THEN Upd(working, r, "none") ELSE working
+           /\ fin' = IF Has(t, "requestFinalization") /\ facts.body = "workingComplete"
+                         THEN Upd(fin, r, owner[r]) ELSE fin
+           /\ ioq' = IF Has(t, "requestFinalization") /\ facts.body = "captured"
+                         THEN Upd(ioq, r, ioq[r] \cup {owner[r]}) ELSE ioq
+    /\ UNCHANGED <<owner, intent, deleting,
                    published, stash, task, up, tracked, halt, rebuild, liveSnap,
                    bodyDone, staleEffect, budget>>
 
@@ -654,9 +693,8 @@ RelaunchObserved(r) ==
 AutoResume(r) ==
     /\ up /\ life[r] = "paused" /\ cause[r] = "deferredResume"
     /\ ~deleting[r] /\ halt[r] = "none" /\ ~Forward(r)
-    /\ life' = Upd(life, r, "admitted")
-    /\ cause' = Upd(cause, r, "none")
-    /\ UNCHANGED <<owner, strikes, counted, condemned, intent, deleting,
+    /\ Submit(r, EvRetry("staticCheckpoint"))
+    /\ UNCHANGED <<owner, intent, deleting,
                    fileVars, task, up, memVars, bodyDone, staleEffect, budget>>
 
 -----------------------------------------------------------------------------
