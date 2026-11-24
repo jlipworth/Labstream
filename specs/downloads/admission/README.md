@@ -23,18 +23,42 @@ swift test --package-path PMSKit --no-parallel --filter DownloadsFormalModelAdmi
 | Backend | `OutageBegins`, `OutageEnds` | a refresh or session that is unavailable |
 | Crash | `Crash`, `Relaunch`, `Recover` | process death; `reconcileOnWorker` (`relaunchObserved`), then `admission.recoveryComplete` |
 
-Durable state: the row (`st`, `started`), the Pause All gate (`queuePaused`, in UserDefaults) and
-the URLSession task (`live`). In memory: supervision (`sup`, `phase`), request backoff
+Durable state: the row (`st`, `started`), the Pause All gate and the simultaneous-downloads
+setting (`queuePaused`, `cap`, in UserDefaults), the URLSession task the app tracks (`live`) and
+a paused row's task whose cancel has not landed (`cancelling`). In memory: supervision (`sup`, `phase`), request backoff
 (`backoff`, `deferrals`), pause exemptions (`exempt`), the scheduled pass (`pumpFlag`, `lastSig`)
 and the wake timer (`timerArmed`). `Crash` resets every in-memory variable.
 
 A row waits as `planned` (first start) or as paused or failed with `retryRequested`. It occupies
 a lane while it is supervised or while an active lifecycle has a task behind it.
 
+## Ways past a cap
+
+The app does not keep occupancy within the cap at all times, and the model follows the three
+supported ways past it:
+
+- **The setting changes at runtime** (`SetCap`, `CapChoices`). `DownloadAdmissionCoordinator`
+  observes the preference and only wakes admission; running work is untouched. Lowering the
+  setting from 3 to 1 leaves up to three occupants.
+- **An Emby Convert request reuses a converted source** (`ReuseRows`). The start hands off to the
+  static lane with `waitsForTransferSlot: false`, so static occupancy can be one over its cap.
+  Until it starts, the row is in the server-preparation lane, which this model does not cap.
+- **A pause's cancel lands later** (`AsyncCancel`, `cancelling`). `session.pause` drops its
+  tracking before the `getAllTasks` completion cancels the task. The row is no longer an
+  occupant, the pump may grant the slot, and for a moment the daemon holds one task more than
+  the cap. With a cap of 1: grant, start, Pause, grant the other row, start (8 states).
+
+What the code guarantees, and what the model checks, is that a new grant respects observed
+occupancy (`GrantRespectsObservedOccupancy`): occupants are counted as they are, and nothing new
+enters the total or a lane that is at or over its cap. `LaneCapRespected` and
+`LiveTasksWithinCap` are kept for the configs that fix the setting and have no reuse row, where
+they are true; `Current-CapLowered` and `Current-EmbyReuse` violate `LaneCapRespected` in 3 and
+4 states and do not check it.
+
 ## Bounds
 
-Two lanes: `liveForward` (cap 1) and `staticFile` (cap `max(1, MaxTotal - 1)`), under the total
-`MaxTotal`. Default configs use two rows, or three rows with at most three user, crash or fault
+Two lanes: `liveForward` (cap 1) and `staticFile` (cap `max(1, cap - 1)`), under the total
+`cap`, which starts at `MaxTotal`. Default configs use two rows, or three rows with at most three user, crash or fault
 steps. `MaxDeferrals` is 1 (the code allows 6 transient failures). Rows of one lane are
 interchangeable, so safety runs use `SYMMETRY RowSymmetry`.
 
@@ -42,14 +66,18 @@ interchangeable, so safety runs use `SYMMETRY RowSymmetry`.
 
 | Property | Kind | Meaning |
 | --- | --- | --- |
-| `LaneCapRespected` | invariant | supervised starts plus running transfers never exceed a lane cap or the total (B63) |
-| `LiveTasksWithinCap` | invariant | the same for the tasks alone |
+| `GrantRespectsObservedOccupancy` | action | in every step that begins a supervised start, the total and each lane that received a grant are within the current cap afterwards, counting every observed occupant (B63, B65) |
+| `OccupancyBoundedByHistory` | invariant | occupancy never exceeds the highest setting there has been, plus reuse rows that handed off |
+| `DaemonTasksBounded` | invariant | the daemon's tasks are bounded the same way, plus one per pause whose cancel has not landed |
+| `LaneCapRespected` | invariant | occupancy is within the current cap; true only with a fixed setting and no reuse row |
+| `LiveTasksWithinCap` | invariant | the same for the tracked tasks alone |
+| `FirstStartGoesThroughWindow` | action | a row that carries the first-start intent is only ever started as a first start, by the pump (B65) |
 | `NoOrphanQueued` | invariant | after recovery, an `admitted` row always has a supervised start behind it (B66) |
 | `NothingGrantedBeforeRecovery` | invariant | no supervised start exists before startup recovery finished |
 | `QueuePauseHolds` | invariant | during Pause All only a row the user resumed by hand is being started |
 | `ExemptOnlyWhilePaused` | invariant | exemptions exist only while the queue is paused |
 | `UserPauseHolds` | invariant | a row the user paused is not waiting, not being started and has no work until the user resumes it (a pause withdraws a waiting retry) |
-| `PauseKeepsFirstStart` | action | a pause that parks a waiting first start keeps `seasonPlanned` (B65) |
+| `PauseKeepsFirstStart` | action | a pause that parks a waiting first start keeps `seasonPlanned` (injected mutation) |
 | `OutageDefersFirstStart` | action | during an outage a first start never fails its row (B67) |
 | `RelaunchKeepsUnstartedRow` | action | recovery never fails a forward-only row without start evidence (finding A1; not in the Current runs) |
 | `WaitingRowIsServed` | liveness | a waiting row outside Pause All eventually stops waiting |
@@ -65,16 +93,29 @@ proceeds and an outage ends, and that the user, crashes and faults take a bounde
 | `Current-TwoForward` | pass | two forward-only rows compete for one slot |
 | `Current-Mixed` | pass | a forward-only and a static row under a total of one |
 | `Current-ThreeRows` | pass | two forward-only rows and a static row, total two, three environment steps |
+| `Current-CapLowered` | pass | a forward-only and a static row, the setting switched between 2 and 1, cancels that land later (144,909 states, 7 s) |
+| `Current-EmbyReuse` | pass | three static rows, one a reused Emby source, total two (1,225,736 states, 78 s) |
 | `Liveness-OneForward`, `-TwoForward` | pass | both liveness properties under `FairSpec` |
-| `Faithful-B63-off` | `LaneCapRespected` | Resume All starts every parked row at once |
-| `Faithful-B65-off` | `PauseKeepsFirstStart` | a pause drops the first-start intent |
-| `Faithful-B65-off-Cap` | `LaneCapRespected` | the consequence: Resume then bypasses the window |
+| `Liveness-CapLowered` | pass | two static rows, the setting switched between 3 and 1: occupants over a lowered cap drain and every waiting row is served (114,099 states, 66 s) |
+| `Faithful-B63-off` | `GrantRespectsObservedOccupancy` | Resume All starts every parked row at once |
+| `Faithful-B65-off` | `FirstStartGoesThroughWindow` | Resume of a paused first start is the generic Retry, outside the window |
+| `Faithful-B65-off-Cap` | `GrantRespectsObservedOccupancy` | the consequence: it starts beside a running row |
+| `Mutant-PauseErasesFirstStart` | `PauseKeepsFirstStart` | a pause drops the first-start intent |
+| `Mutant-StaleCap` | `GrantRespectsObservedOccupancy` | the pump grants against the highest setting it has seen |
 | `Faithful-B66-off` | `NoOrphanQueued` | a start without work forgets its request and stays queued |
 | `Faithful-B67-off` | `OutageDefersFirstStart` | an outage fails a first start |
 | `Mutant-NoBackoffWake` | `TEMPORAL` | without the wake timer a deferred row waits forever (`WaitingRowIsServed`; the script reports any liveness violation as `TEMPORAL`) |
 | `Finding-A1-RelaunchFailsUnstartedRow` | `RelaunchKeepsUnstartedRow` | finding A1 |
 | `Proposed-A1-RelaunchKeepsUnstartedRow` | pass | the proposed fix, with every safety property |
 | `Deep-ThreeRows` | pass (deep) | the three-row run with four environment steps |
+| `Deep-CapLowered` | pass (deep) | three rows, the setting switched between 3 and 1 (5,832,083 states, 6.5 min) |
+
+B65 has one switch and one mutant. At the audit baseline a pause changed only the status, the
+pending first start was a separate durable mark that the planner cleared when it admitted the
+row, and the generic Retry could start the row without the planner. `FixB65` off restores that
+bypass and nothing else. Erasing the intent on pause was never in the code; it is
+`MutantPauseErasesIntent`. An earlier version of this model had both under `FixB65`, and let
+every parked row with no intent skip the window.
 
 ## Findings
 
@@ -102,8 +143,9 @@ and leaves a paused one paused.
 
 - The server-preparation lane, lane switches before server work (P4.5) and the render handoff
   into a static slot (#414). `DownloadsServerPrep` owns the prep runners.
-- A change of the simultaneous-downloads setting while work runs, which can leave a lane over its
-  cap until work ends.
+- The server-preparation lane's own cap (5) for a reuse row before it starts.
+- Two tasks for one row: a row resumed while its old task's cancel is still pending is one
+  element of each set here.
 - Request order (user before automatic, oldest first): the pump grants any maximal set that fits.
 - The admission persistence proof (`admissionPersistenceProofs`), write failures and the
   30-second persistence deadline. Index writes are atomic per action.

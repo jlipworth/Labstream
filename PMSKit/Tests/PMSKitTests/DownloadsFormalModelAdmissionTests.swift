@@ -68,8 +68,99 @@ struct DownloadsFormalModelAdmissionTests {
         }
     }
 
-    /// B65 as the model states it (`PauseKeepsFirstStart`, `UserPauseHolds`): a user pause keeps
-    /// a waiting first start's intent and withdraws a waiting retry.
+    /// `GrantRespectsObservedOccupancy` in the model: occupants are counted as they are observed,
+    /// over a cap or not, and nothing new enters the total or a lane that is at or over its
+    /// cap. The setting can be lowered while work runs and a reused Emby source hands off with
+    /// no slot, so "occupancy is within the cap" is not an invariant of the app; this is.
+    @Test("Model property: a grant respects observed occupancy, from over-cap states too")
+    func grantsRespectObservedOccupancyWhenOverCap() {
+        let lanes: [DownloadAdmissionLane] = [.staticFile, .liveForward]
+        for total in DownloadAdmissionLimits.supportedTotals {
+            let limits = DownloadAdmissionLimits(maximumTotal: total)
+            for staticHeld in 0...5 { for forwardHeld in 0...2 {
+                var occupants: [DownloadAdmissionOccupant] = []
+                for index in 0..<staticHeld { occupants.append(.init(id: "s\(index)", lane: .staticFile)) }
+                for index in 0..<forwardHeld { occupants.append(.init(id: "f\(index)", lane: .liveForward)) }
+                let requests = lanes.flatMap { lane in
+                    (0..<2).map { DownloadAdmissionRequest(
+                        id: "q-\(lane.rawValue)-\($0)", lane: lane, origin: .user, requestedAt: 0) }
+                }
+                let granted = Policy.grants(limits: limits, occupants: occupants,
+                                            requests: requests, now: 0, queuePaused: false)
+                let held: [DownloadAdmissionLane: Int] = [.staticFile: staticHeld,
+                                                          .liveForward: forwardHeld]
+                if !granted.isEmpty {
+                    #expect(occupants.count + granted.count <= limits.maximumTotal)
+                }
+                for lane in lanes {
+                    let added = granted.filter { $0.lane == lane }.count
+                    if added > 0 {
+                        #expect((held[lane] ?? 0) + added <= (limits.maximumByLane[lane] ?? 1))
+                    }
+                }
+            } }
+        }
+    }
+
+    /// The three ways the model lets occupancy or the daemon's task count pass a cap, each tied
+    /// to the app source: `SetCap` (the coordinator only wakes admission when the setting
+    /// changes), `ReuseRows` (a reused Emby source hands off without waiting for a slot) and
+    /// `cancelling` (a pause drops its tracking before the task enumeration that cancels).
+    @Test("Model abstraction: a lowered setting, an Emby reuse and a pending cancel keep their work")
+    func supportedWaysPastACap() throws {
+        let coordinator = try #require(Self.appFile(
+            "Labstream/Capabilities/Downloads/Core/DownloadAdmissionCoordinator.swift"))
+        #expect(coordinator.contains(
+            "// Only wake admission. Running work, generations and requests are untouched."))
+        #expect(coordinator.contains(
+            "DownloadAdmissionLimits(maximumTotal: PlaybackPreferences.simultaneousDownloads(defaults: defaults))"))
+
+        let emby = try #require(Self.appFile(
+            "Labstream/Capabilities/Downloads/Core/DownloadManager+EmbyConvert.swift"))
+        #expect(emby.components(separatedBy: "waitsForTransferSlot: false)").count == 3)
+        #expect(emby.contains("if waitsForTransferSlot {"))
+
+        let session = try #require(Self.appFile(
+            "Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift"))
+        let pause = try #require(session.range(of: "    func pause(ratingKey: String) {"))
+        let body = session[pause.lowerBound...]
+        let untrack = try #require(body.range(of: "stopHealthResults(for: attemptKey, outcome: \"paused\")"))
+        let enumerate = try #require(body.range(of: "urlSession.getAllTasks { tasks in"))
+        #expect(untrack.lowerBound < enumerate.lowerBound)
+    }
+
+    private static func appFile(_ relativePath: String) -> String? {
+        // PMSKit/Tests/PMSKitTests/<this file> -> repository root.
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        return try? String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+    }
+
+    /// `FirstStartGoesThroughWindow` in the model (B65): Resume of a row that still carries the
+    /// first-start intent asks the window again instead of starting it as a generic retry.
+    @Test("Model property: Resume of a paused first start asks the window again")
+    func resumeOfPausedFirstStartAsksTheWindow() throws {
+        let admission = try #require(Self.appFile(
+            "Labstream/Capabilities/Downloads/Core/DownloadManager+Admission.swift"))
+        let action = try #require(admission.range(of: "    func admitRowAction(_ record: DownloadRecord) {"))
+        let body = admission[action.lowerBound...]
+        let firstStart = try #require(body.range(
+            of: "if record.admissionIntent == .seasonPlanned || record.lifecycle == .planned {"))
+        let direct = try #require(body.range(of: "launchAdmittedStart(record, lane: lane, origin: .user)"))
+        #expect(firstStart.lowerBound < direct.lowerBound)
+
+        let facts = DownloadRowFacts(route: .forwardOnly)
+        let paused = try #require(R.reduce(Self.waitingFirstStart(), .pause(.user), facts: facts).state)
+        let asked = R.reduce(paused, .admissionRequested(.seasonPlanned), facts: facts).state
+        #expect(asked?.lifecycle == .planned)
+        #expect(asked?.history.admissionIntent == .seasonPlanned)
+    }
+
+    /// `PauseKeepsFirstStart` and `UserPauseHolds` in the model: a user pause keeps a waiting
+    /// first start's intent and withdraws a waiting retry. (B65 itself was the Resume that
+    /// bypassed the window; the pause never erased the mark. `Mutant-PauseErasesFirstStart.cfg`
+    /// is the erasure.)
     @Test("Model property: a user pause keeps a first-start intent and withdraws a retry")
     func userPauseKeepsFirstStartAndWithdrawsRetry() {
         let facts = DownloadRowFacts(route: .forwardOnly)
