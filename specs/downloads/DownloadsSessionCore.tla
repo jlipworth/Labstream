@@ -42,7 +42,7 @@
 (*                                                                         *)
 (* Lifecycle and history change only through Reduce (DownloadsReducer.tla).*)
 (* The hand-written exceptions are the "fix off" branches, which restore   *)
-(* a historical bug, and the two PROPOSED fixes.                           *)
+(* a historical bug, and the PROPOSED fixes.                               *)
 (***************************************************************************)
 \* MODELS: Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift
 \* MODELS: Labstream/Capabilities/Downloads/Core/DownloadStore.swift
@@ -64,6 +64,7 @@ CONSTANTS
     FixReplay,          \* a replayed finalize outcome ID is rejected
     FixPauseReconcile,  \* PROPOSED (not in the code): reconcile never promotes a paused row
     DurableCapture,     \* PROPOSED (not in the code): bodyCaptured is persisted with the stash
+    FixPauseKeepsBody,  \* PROPOSED (not in the code): a pause never drops a finished body (F3)
     ForegroundReattach, \* allow reattach + reconcile while the process stays alive
     BoundEnvironment,   \* TRUE: at most EnvBudget user/crash/foreground steps (liveness runs)
     EnvBudget
@@ -74,6 +75,11 @@ ASSUME /\ ForwardRows \subseteq Rows
        /\ EnvBudget \in Nat
 
 Attempts == 1..MaxAttempt
+
+\* SYMMETRY for safety configs whose rows are model values on one route (all
+\* in ForwardRows or none): nothing then tells two rows apart.  Not sound for
+\* a mixed-route config, and never used in a Liveness config.
+RowSymmetry == Permutations(Rows)
 
 VARIABLES
     \* ---- durable: the index row (survives Crash) ----
@@ -276,9 +282,12 @@ DidFinishDownloading(r, a) ==
           /\ ioq' = IF keep THEN Upd(ioq, r, ioq[r] \cup {a}) ELSE ioq
           \* PROPOSED: reducer event bodyCaptured, persisted with the stash.
           /\ IF capture THEN ApplyRow(r, captured.state) ELSE UNCHANGED redVars
-          \* A forward-only body is finished here.  A user pause is allowed to
-          \* discard it (Resume restarts a forward-only stream from zero).
-          /\ bodyDone' = IF keep /\ mine /\ Forward(r) /\ (capture \/ ~UserPaused(r))
+          \* A forward-only body is finished here.  The code drops it when the
+          \* row is user-paused (F3).  This ghost leaves that case out, so that
+          \* FinishedBodyNotLost stays the crash property (F1);
+          \* FinishedBodySurvivesPause is the pause property.
+          /\ bodyDone' = IF /\ keep /\ mine /\ Forward(r)
+                            /\ (capture \/ FixPauseKeepsBody \/ ~UserPaused(r))
                             THEN Upd(bodyDone, r, a) ELSE bodyDone
     /\ UNCHANGED <<owner, intent, deleting,
                    working, published, up, halt, rebuild, fin, recon, liveSnap,
@@ -311,8 +320,11 @@ RangeIO(r, a) ==
     /\ up /\ a \in ioq[r]
     /\ ioq' = Upd(ioq, r, ioq[r] \ {a})
     /\ LET current == /\ Accepts(r, a) /\ halt[r] # "cancel"
-                      \* finishOpaqueBody: checkpointIsCurrent(currency, halt: nil)
-                      /\ (Forward(r) /\ ~DurableCapture => halt[r] = "none")
+                      \* finishOpaqueBody: checkpointIsCurrent(currency, halt: nil).
+                      \* A pause halt fails it, so a paused row's finished body is
+                      \* dropped here (F3).  The static lane keeps it (writeThenPause).
+                      /\ (Forward(r) /\ ~DurableCapture /\ ~FixPauseKeepsBody
+                            => halt[r] = "none")
            present == a \in stash[r]
            fresh   == owner[r] = a
        IN
@@ -488,9 +500,10 @@ UserPause(r) ==
     /\ halt' = Upd(halt, r, "pause")
     /\ tracked' = IF Forward(r) THEN Upd(tracked, r, {}) ELSE tracked
     /\ rebuild' = IF FixB02 THEN Upd(rebuild, r, 0) ELSE rebuild
-    \* A user pause may discard a finished forward-only body that has not
-    \* reached `finalizing` (see DidFinishDownloading).
-    /\ bodyDone' = IF Forward(r) THEN Upd(bodyDone, r, 0) ELSE bodyDone
+    \* The code drops a finished forward-only body that has not reached
+    \* `finalizing` when the user pauses (F3; see DidFinishDownloading).
+    /\ bodyDone' = IF Forward(r) /\ ~FixPauseKeepsBody
+                      THEN Upd(bodyDone, r, 0) ELSE bodyDone
     /\ UNCHANGED <<owner, intent, deleting,
                    fileVars, task, up, ioq, fin, recon, liveSnap, staleEffect>>
 
@@ -676,6 +689,15 @@ RelaunchObserved(r) ==
        ELSE IF FixPauseReconcile /\ L = "paused" /\ t.state.lifecycle = "transferring" THEN
            \* PROPOSED: reconcile never promotes a paused row.
            Keep
+       ELSE IF /\ FixPauseKeepsBody /\ Forward(r) /\ L = "paused"
+               /\ facts.body = "workingComplete" /\ ~liveSnap[r]
+               /\ ~deleting[r] /\ intent[r] = "none"
+               /\ IsApplied(Send(r, Ev("bodyAtWorking"))) THEN
+           \* PROPOSED: a paused forward-only row whose whole body is at the
+           \* working path finalizes (B10 for a paused row) instead of failing.
+           /\ Submit(r, Ev("bodyAtWorking"))
+           /\ fin' = Upd(fin, r, owner[r])
+           /\ UNCHANGED <<working, ioq>>
        ELSE
            /\ ApplyRow(r, t.state)
            /\ working' = IF Has(t, "deleteWorkingBody")
@@ -768,7 +790,7 @@ StaleCallbackInert == ~staleEffect
 \* B10: a finished body survives a crash at any step.  Once the app holds the
 \* whole body of the row's current attempt, it exists in the stash, at the
 \* working path or published, until a verdict condemns it, the user deletes
-\* the row, or (forward-only, before finalizing) the user pauses it.
+\* the row, or (forward-only, before finalizing; F3) the user pauses it.
 FinishedBodyNotLost ==
     \A r \in Rows :
         /\ bodyDone[r] # 0 /\ bodyDone[r] = owner[r]
@@ -786,14 +808,35 @@ NoStartWhileUserPaused ==
 
 \* B10: a complete body at the working path is only ever published, condemned
 \* by a verdict, deleted with its row, or replaced by a fresh attempt the user
-\* asked for.  Relaunch recovery never deletes it.  (A user-paused forward-only
-\* row is exempt, as in FinishedBodyNotLost.)
+\* asked for.  Relaunch recovery never deletes it.  (The code deletes it for
+\* a user-paused forward-only row.  That case is F3 and is left out here.)
 WorkingBodyKept ==
     [][\A r \in Rows :
           /\ working[r] = "complete" /\ working'[r] # "complete"
-          /\ ~(Forward(r) /\ UserPaused(r))
+          /\ ~(Forward(r) /\ UserPaused(r) /\ ~FixPauseKeepsBody)
           => \/ published'[r] \/ condemned'[r] \/ life'[r] = "absent"
              \/ owner'[r] # owner[r]]_vars
+
+\* F3: a finished body survives a user pause, on either lane.  The app holds
+\* the whole body of the row's current attempt where it can still use it: at
+\* the working path or, forward-only, in a stash that a queued publication
+\* claims or a durable capture references.
+HoldsWholeBody(r) ==
+    /\ Exists(r) /\ ~deleting[r]
+    /\ \/ working[r] = "complete"
+       \/ /\ Forward(r) /\ owner[r] \in stash[r]
+          /\ \/ owner[r] \in ioq[r]
+             \/ DurableCapture /\ life[r] = "finalizing"
+
+\* While the row is paused by the user (the durable pause, or the in-memory
+\* halt that precedes it), no step of a live process gives that body up,
+\* unless it is published, condemned by a verdict, deleted with its row, or
+\* replaced by a fresh attempt the user asked for.  A crash is F1's subject.
+FinishedBodySurvivesPause ==
+    [][\A r \in Rows :
+          HoldsWholeBody(r) /\ (UserPaused(r) \/ halt[r] = "pause") /\ up'
+          => \/ HoldsWholeBody(r)' \/ published'[r] \/ condemned'[r]
+             \/ deleting'[r] \/ life'[r] = "absent" \/ owner'[r] # owner[r]]_vars
 
 \* R2-5: a replayed finalize outcome is a no-op.
 ReplayedOutcomeIsNoOp ==

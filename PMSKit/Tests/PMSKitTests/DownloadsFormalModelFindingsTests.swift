@@ -11,7 +11,8 @@ import Testing
 /// matching `Finding-*.cfg` to `EXPECT: pass`.
 ///
 /// These pin the pure decisions only. The session glue that feeds them (the stash claim, the
-/// live-key snapshot) is app code and needs a `LabstreamTests` pin with the fix.
+/// live-key snapshot) is app code and needs a `LabstreamTests` pin with the fix. F3 has no pure
+/// decision for its main ordering, so it also pins the shape of the app source it found.
 @Suite("Downloads formal-model findings")
 struct DownloadsFormalModelFindingsTests {
     private typealias R = DownloadLifecycleReducer
@@ -55,5 +56,59 @@ struct DownloadsFormalModelFindingsTests {
                 #expect(next.state?.history.pauseCause == .user)
             }
         }
+    }
+
+    /// F3. A finished body must survive a user pause on either lane. The static lane keeps it
+    /// (`StaticRangeFinishedBodyPolicy`: `.pause` is `writeThenPause`). The forward-only lane
+    /// drops it, in two orderings:
+    ///
+    /// 1. The transfer finishes while a pause is landing. The delegate stashes the body and
+    ///    queues `finishOpaqueBody`, which requires that the attempt has no halt at all, so the
+    ///    pause halt makes it release the claim and return. The row stays paused, the stash is
+    ///    orphaned, and Resume restarts the stream from zero.
+    /// 2. The body is already at the working path when the user pauses, and the process dies
+    ///    before `bodyAtWorking` is persisted. On relaunch the reducer fails the paused row and
+    ///    deletes the body.
+    @Test("F3: a finished forward-only body survives a user pause")
+    func finishedForwardOnlyBodySurvivesUserPause() throws {
+        // Ordering 1 is decided inline in app code, with no PMSKit policy to call. Until the fix
+        // extracts one, pin the guard itself.
+        let finishOpaqueBody = try #require(Self.appFunctionSource(
+            named: "finishOpaqueBody",
+            in: "Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift"))
+
+        // The decision the static lane already makes, and the reducer already allows.
+        #expect(StaticRangeFinishedBodyPolicy.disposition(haltKind: .pause) == .writeThenPause)
+        let paused = DownloadLifecycleState(
+            lifecycle: .paused, history: DownloadAttemptHistory(pauseCause: .user))
+        #expect(R.reduce(paused, .bodyAtWorking, facts: DownloadRowFacts(route: .forwardOnly))
+            .state?.lifecycle == .finalizing)
+
+        withKnownIssue("TLA+ finding F3: a user pause discards a finished forward-only body") {
+            // 1. `halt: nil` means "current only while nothing halted the attempt", which a
+            // pause halt fails. The fixed guard accepts a pause halt and still rejects a cancel.
+            let requiresNoHalt = finishOpaqueBody.contains("checkpointIsCurrent(currency, halt: nil)")
+            #expect(!requiresNoHalt, "finishOpaqueBody drops the finished body of a paused attempt")
+
+            // 2. Relaunch with the whole body at the working path of a user-paused row.
+            let relaunch = R.reduce(paused, .relaunchObserved,
+                                    facts: DownloadRowFacts(route: .forwardOnly, body: .workingComplete))
+            #expect(!relaunch.effects.contains(.deleteWorkingBody))
+            #expect(relaunch.state?.lifecycle != .failed)
+        }
+    }
+
+    /// The text of one function in an app source file, from its declaration to the next
+    /// declaration at the same indentation. Nil when the file or the function is missing.
+    private static func appFunctionSource(named name: String, in relativePath: String) -> String? {
+        // PMSKit/Tests/PMSKitTests/<this file> -> repository root.
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        guard let source = try? String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8),
+              let start = source.range(of: "    private func \(name)(") else { return nil }
+        let rest = source[start.upperBound...]
+        let end = rest.range(of: "\n    private func ")?.lowerBound ?? rest.endIndex
+        return String(source[start.lowerBound..<end])
     }
 }
