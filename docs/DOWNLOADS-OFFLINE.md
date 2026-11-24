@@ -732,10 +732,10 @@ static row can queue two segment tasks.
 
 ## Formal model (TLA+)
 
-`specs/downloads/` holds a TLA+ model of the session, finalize and sweep core, checked with TLC.
-It explores every interleaving of the user, the URLSession daemon, delegate callbacks, the
-finalizer, the stash sweep, relaunch and foreground recovery, and process death, for one or two
-rows and two attempt IDs.
+`specs/downloads/` holds a TLA+ model of the downloads manager, checked with TLC. The first module
+covers the session, finalize and sweep core. It explores every interleaving of the user, the
+URLSession daemon, delegate callbacks, the finalizer, the stash sweep, relaunch and foreground
+recovery, and process death, for one or two rows and two attempt IDs.
 
 What it checks:
 
@@ -743,39 +743,107 @@ What it checks:
 - a stash whose append or publication is queued is never swept (B03);
 - a callback from a stale attempt changes nothing (B12);
 - a finished body survives a crash at any step (B10);
+- a finished body survives a user pause, on either lane;
 - a user-paused row is not restarted except by the user (B02, B09);
 - a replayed finalize outcome is a no-op;
 - under stated fairness, an admitted row eventually reaches a terminal lifecycle, a user pause or
   deletion.
 
-Run it with:
+### Modules
+
+| Module | Holds |
+| --- | --- |
+| `DownloadsBase.tla` | The shared vocabulary (lifecycles, pause causes, routes, body and task states) and the rules for writing a module. |
+| `DownloadsReducer.tla` | `DownloadLifecycleReducer.reduce` as pure operators: `Reduce(state, event, facts)` returns `Applied(state, effects)`, `Illegal` or `Replayed`. |
+| `DownloadsReducerTable.tla` | Generated. The Swift reducer's results over a fixed input set. |
+| `DownloadsReducerConformance.tla` | Compares `Reduce` with that table. |
+| `DownloadsSessionCore.tla` | The session, finalize and sweep model. It changes lifecycle and history only through `Reduce`. |
+
+Each module names the Swift files it models on `\* MODELS:` lines under its `MODULE` line. A new
+subsystem gets its own `Downloads<Name>.tla`; the comment block at the top of `DownloadsBase.tla`
+is the contract for naming, imports, configs and findings.
+
+### Running it
 
 ```sh
-scripts/check-tla-specs.sh                                          # every spec and config
+scripts/check-tla-specs.sh                                          # every module, default tier
 scripts/check-tla-specs.sh specs/downloads/Current-Static.cfg      # one config
+scripts/check-tla-specs.sh --deep                                  # also the deep configs
+scripts/check-tla-drift.py                                         # modelled Swift changed without its spec?
 ```
 
 The script downloads a pinned `tla2tools.jar` into the gitignored `build/tla/`, verifies its
-SHA-256, parses every module and runs TLC on every `.cfg`. Each config states what it expects in
-its header. `Current-*` and `Liveness-*` are the code as it stands and must pass. `Faithful-*`
-turns one shipped fix off and must be violated, which shows the model can see that bug.
-`Finding-*` is an open defect the model found on the current design and must be violated until it
-is fixed. `Proposed-*` turns the proposed fixes on and must pass.
+SHA-256, parses every module and runs TLC on every `.cfg`. It needs a JDK (Homebrew `openjdk`, or
+`JAVA=`); without one it exits 2 and says so. Each config states what it expects in its header:
 
-Two findings are open, each pinned by a known-issue test in
+| Config | Meaning | Must |
+| --- | --- | --- |
+| `Current-*`, `Liveness-*` | The code as it stands. | pass |
+| `Faithful-*` | One shipped fix turned off. Shows the model can see that bug. | be violated |
+| `Mutant-*` | A deliberately injected bug, for a subsystem with no historical one. | be violated |
+| `Finding-*` | An open defect the model found on the current design. | be violated until fixed |
+| `Proposed-*` | Proposed fixes turned on. | pass |
+| `Reducer-Conformance`, `Projection-*` | The reducer checks below. | pass |
+| `Deep-*` (`\* TIER: deep`) | Larger bounds. Skipped unless `--deep`, `--deep-only` or `TLC_TIER` asks. | pass |
+
+### Keeping the model equal to the code
+
+Three mechanical checks stand between the Swift and the specs:
+
+1. **Reducer table.** The PMSKit test `DownloadsFormalModelReducerTests` runs the real reducer over
+   every lifecycle, a fixed set of histories, every event shape and a fixed set of facts, and
+   compares the result with the checked-in `DownloadsReducerTable.tla`. A reducer change makes
+   that test fail until the table is regenerated:
+
+    ```sh
+    LABSTREAM_WRITE_REDUCER_TABLE=1 swift test --package-path PMSKit --no-parallel \
+      --filter DownloadsFormalModelReducerTests
+    ```
+
+2. **Reducer conformance.** `Reducer-Conformance.cfg` fails unless `Reduce` in
+   `DownloadsReducer.tla` returns exactly that table, and unless the table covers every lifecycle,
+   event, route, checkpoint and body. So a regenerated table cannot land without the matching
+   spec change, and a spec change cannot land alone. A failing run prints the disagreeing
+   `<<state, event>>` and `<<state, facts>>` indices; they are the numbered lines of the table.
+   `Projection-SessionCore.cfg` proves that the history fields the session model leaves out
+   never influence the ones it keeps.
+3. **Drift guard.** `scripts/check-tla-drift.py` (default range `origin/main...HEAD`) fails when a
+   file on a `MODELS:` line changed and its module did not. A change that does not affect the
+   model says so in the commit that makes it:
+
+    ```text
+    Spec-Unaffected: comment-only change to the session
+    ```
+
+    Every commit that touches the modelled file needs the trailer, unless the module or one of
+    its configs changes in the same range. The guard also fails when a `MODELS:` line names a
+    file that no longer exists.
+
+Only the reducer is covered mechanically. The session model is still a hand-written abstraction
+of `BackgroundDownloadSession` and `DownloadStore`; the drift guard makes a change there visible,
+and a person decides whether the model follows.
+
+CI: `.woodpecker/tla.yml` runs the default tier and the drift guard on the macOS runner (manual,
+`main` only, like `macos.yml`), and `.woodpecker/tla-drift.yml` runs the drift guard on pull
+requests. The reducer table test runs with the rest of PMSKit in `.woodpecker/pmskit.yml`.
+
+### Open findings
+
+Three findings are open, each pinned by a known-issue test in
 `PMSKit/Tests/PMSKitTests/DownloadsFormalModelFindingsTests.swift`:
 
-- a crash between the `tmp/` stash and the working path loses a finished forward-only body;
-- foreground reconcile can move a user-paused row back to transferring from a stale live-task
-  snapshot.
+- F1: a crash between the `tmp/` stash and the working path loses a finished forward-only body;
+- F2: foreground reconcile can move a user-paused row back to transferring from a stale live-task
+  snapshot;
+- F3: a user pause that lands while a forward-only transfer finishes discards the finished body.
+  The static lane keeps it.
 
-What it does not cover:
+### What it does not cover
 
-- It is a hand-written abstraction, not a proof about the Swift. A change to the reducer or the
-  session can make the model stale; update both together.
-- Not modelled: admission and lanes, Plex optimize and Emby Convert, the cleanup intent journal,
-  startup and wake budgets, side assets, storage accounting, parallel segment trains and held
-  bodies, the persistence writer and path leases.
+- Outside the reducer it is a hand-written abstraction, not a proof about the Swift.
+- Not modelled yet: admission and lanes, Plex optimize and Emby Convert, the cleanup intent
+  journal, startup and wake budgets, side assets, storage accounting, parallel segment trains and
+  held bodies, the persistence writer and path leases.
 - The bounds are small. TLC proves the properties for those bounds only.
 
 The plan `docs/plans/2026-11-24-downloads-tla-model.md` records the properties, results, findings

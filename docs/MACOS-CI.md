@@ -21,6 +21,12 @@ particular, fork code must never execute on this runner. Owner-controlled push
 events may be considered only after enrollment, host isolation, cleanup, and
 repository trust have been validated on the real machine.
 
+`.woodpecker/tla.yml` uses the same labels and the same manual, `main`-only
+trigger for the TLA+ model check (`scripts/check-tla-specs.sh` and
+`scripts/check-tla-drift.py`). It needs Homebrew `openjdk` on the runner and
+fails with a message when no JDK is found. `.woodpecker/hygiene.yml` validates
+both files with `scripts/validate-macos-pipeline.py`.
+
 ## What the job proves
 
 `scripts/ci-macos-apple-platforms.sh` performs:

@@ -1,10 +1,12 @@
 # Downloads formal model (TLA+)
 
-**Status (2026-11-24):** the pilot is done on `specs/downloads-tla`: one TLA+ model of the
-session, finalize and sweep core with process death, a pinned TLC runner, three required
-faithfulness checks (B03, B10, B12) plus three more (B02, B09, replayed outcomes), and two open
-findings on the current design, each pinned by a known-issue PMSKit test. No product code changed.
-The follow-up models below are not started.
+**Status (2026-11-24):** the pilot and the shared base (W0) are done on `specs/downloads-tla`:
+one TLA+ model of the session, finalize and sweep core with process death; the lifecycle reducer
+as shared TLA+ operators, held equal to the Swift by a generated table; a pinned TLC runner with
+a default and a deep tier; a drift guard between modelled Swift files and their specs; three
+required faithfulness checks (B03, B10, B12) plus three more (B02, B09, replayed outcomes); and
+three open findings on the current design, each pinned by a known-issue PMSKit test. No product
+code changed. The follow-up models W1 to W7 below are not started.
 
 **Scope:** model checking of the downloads manager design. Specs live in `specs/downloads/`; the
 runner is `scripts/check-tla-specs.sh`. This plan owns the modelling program and its findings. It
@@ -21,7 +23,9 @@ the reducer and policy unit tests and the `LabstreamTests` pins remain the imple
 
 ## What the pilot models
 
-`DownloadsSessionCore.tla` follows one row from `admitted` to a terminal lifecycle. Durable state
+`DownloadsSessionCore.tla` follows one row from `admitted` to a terminal lifecycle. Lifecycle and
+history change only through `Reduce` in `DownloadsReducer.tla`; the hand-written transitions that
+remain are the fix-off branches and the proposed fixes. Durable state
 (the index row, files, and the URLSession daemon's tasks) survives `Crash`; in-memory state
 (tracked tasks, queued IO hops and their stash claims, halts, queued rebuilds, the finalizer, the
 reattach snapshot) does not. Action names are the reducer's event names where one corresponds.
@@ -47,7 +51,8 @@ Properties:
 | `FinalizingHasBody` | invariant | A finalizing row has the body it is finalizing. |
 | `QueuedBodyNotSwept` | invariant | A stash whose append or publication is queued is never unlinked (B03). |
 | `StaleCallbackInert` | invariant | A callback from a stale attempt changes nothing (B12). |
-| `FinishedBodyNotLost` | invariant | Once the app holds an attempt's whole body, it exists somewhere until a verdict, Delete, or a user pause of a forward-only row discards it. |
+| `FinishedBodyNotLost` | invariant | Once the app holds an attempt's whole body, it exists somewhere until a verdict or Delete discards it. This is the crash property (F1); the pause case is the next row. |
+| `FinishedBodySurvivesPause` | action | While a row is paused by the user, no step of a live process gives up the whole body it holds, unless the body is published, condemned, deleted with its row, or replaced by a fresh attempt the user asked for (F3). |
 | `WorkingBodyKept` | action | A complete body at the working path is only published, condemned, deleted with its row, or replaced by a fresh attempt (B10). |
 | `UserPauseSticky` | action | Nothing but the user moves a user-paused row to transferring (B02, B09). |
 | `NoStartWhileUserPaused` | action | No task starts for a user-paused row (B02). |
@@ -66,22 +71,45 @@ and foreground returns are not fair and are capped at five steps in the liveness
   queue's ordering are not modelled.
 - Delete is one durable flag and one cleanup step.
 - The pause chain's last step (`markPausedAfterUserPause`) is not modelled. See F2.
-- A user pause may discard a finished forward-only body that has not reached `finalizing`. The
-  code does this (`finishOpaqueBody` rejects a halted attempt) and Resume restarts such a stream
-  from zero, so the model treats it as intended. It is worth a product decision: the static lane
-  deliberately keeps a body that finishes during a pause.
+- The session model keeps six of the reducer's ten state fields per row. `Projection-SessionCore`
+  proves that the four it drops (`lastFailure`, `unverifiedReason`, `admissionIntent`,
+  `storagePark`) never influence the others for the events it sends.
+- One task slot per attempt. A queued rebuild can start a second task for an attempt whose body
+  is still being appended, so a row can reach `finalizing` with a task running. That ordering was
+  not checked against the Swift; it only widens what the model explores.
 
-## Results (2026-11-24, tla2tools v1.7.4, `-workers auto` on 14 cores)
+### Keeping the reducer equal to the Swift
+
+`DownloadsReducer.tla` is not maintained by review. The PMSKit test
+`DownloadsFormalModelReducerTests` runs the real reducer over 225 states (9 lifecycles by 25
+histories), 126 event shapes and 163 fact combinations, and renders the results as
+`specs/downloads/DownloadsReducerTable.tla`. The test fails when the checked-in table is stale;
+`Reducer-Conformance.cfg` fails when `Reduce` does not return exactly that table or when the table
+misses part of the vocabulary. Either side changing alone fails one of the two.
+`docs/DOWNLOADS-OFFLINE.md` has the regeneration command.
+
+Moving the pilot onto the reducer changed one behaviour, a modelling artefact: the pilot moved a
+finalizing row back to transferring when reattach adopted a task for it. The code submits
+`taskAdopted`, the reducer rejects it for a finalizing row, and the row stays finalizing. With
+that one step left as the pilot wrote it, every passing config has the pilot's exact state count,
+so nothing else changed.
+
+## Results (2026-11-24, tla2tools v1.7.4, `TLC_WORKERS=2 TLC_HEAP=2g`)
 
 | Config | Expectation | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
 | `Current-Forward` | pass | pass | 6,038 | 1 s |
-| `Current-Static` | pass | pass | 146,692 | 2 s |
-| `Current-TwoRows` | pass | pass | 4,822,941 | 21 s |
+| `Current-Static` | pass | pass | 90,686 | 2 s |
+| `Current-TwoForward` (symmetry) | pass | pass | 233,692 | 7 s |
+| `Current-TwoRows` | pass | pass | 2,531,988 | 69 s |
 | `Liveness-Forward` | pass | pass | 13,454 | 2 s |
-| `Liveness-Static` | pass | pass | 75,321 | 4 s |
+| `Liveness-Static` | pass | pass | 68,653 | 14 s |
 | `Proposed-Forward` | pass | pass | 2,854 | 1 s |
-| `Proposed-Static` | pass | pass | 142,535 | 1 s |
+| `Proposed-Static` | pass | pass | 86,529 | 2 s |
+| `Proposed-F3-PauseKeepsBody` | pass | pass | 4,932 | 1 s |
+| `Reducer-Conformance` | pass | pass | one state; 65,025 reducer results compared | 1 s |
+| `Projection-SessionCore` | pass | pass | one state | 1 s |
+| `Deep-TwoStatic` (deep tier, symmetry) | pass | pass | 7,597,623 | 247 s |
 | `Faithful-B03-off` | `QueuedBodyNotSwept` violated | violated | stops at first error | < 1 s |
 | `Faithful-B10-off` | `WorkingBodyKept` violated | violated | stops at first error | < 1 s |
 | `Faithful-B12-off` | `StaleCallbackInert` violated | violated | stops at first error | < 1 s |
@@ -90,9 +118,29 @@ and foreground returns are not fair and are capped at five steps in the liveness
 | `Faithful-Replay-off` | `ReplayedOutcomeIsNoOp` violated | violated | stops at first error | < 1 s |
 | `Finding-F1-StashCrash` | `FinishedBodyNotLost` violated | violated | stops at first error | < 1 s |
 | `Finding-F2-PauseReconcile` | `UserPauseSticky` violated | violated | stops at first error | < 1 s |
+| `Finding-F3-PauseDiscardsFinishedBody` | `FinishedBodySurvivesPause` violated | violated | stops at first error | < 1 s |
 
-The `Current-*` configs are the code as it stands and check every property except the two that
-the findings break. `Current-TwoRows` uses one attempt per row and the `complete` verdict only.
+The `Current-*` configs are the code as it stands and check every property except the ones the
+findings break. `Current-Static` also checks `FinishedBodySurvivesPause`: the static lane keeps a
+body that finishes during a pause. `Current-TwoRows` uses one attempt per row and the `complete`
+verdict only.
+
+State counts against the pilot (which ran the same configs with `-workers auto`):
+
+| Config | Pilot | Now | Why |
+| --- | --- | --- | --- |
+| `Current-Forward`, `Liveness-Forward`, `Proposed-Forward` | 6,038; 13,454; 2,854 | the same | |
+| `Current-Static` | 146,692 | 90,686 | The adoption artefact above. |
+| `Current-TwoRows` | 4,822,941 | 2,531,988 | The same. 88 s before, 69 s now, both at two workers. |
+| `Liveness-Static` | 75,321 | 68,653 | The same. |
+| `Proposed-Static` | 142,535 | 86,529 | The same. |
+
+Symmetry: TLC's `SYMMETRY` is sound only over model values the spec never tells apart, and never
+for liveness. The pilot's configs have one row, or one forward-only and one static-range row, so
+none of them has interchangeable rows and none gained a symmetry set. The two configs that do
+have interchangeable rows use it: `Current-TwoForward` explores 233,692 distinct states instead
+of 466,603, and `Deep-TwoStatic` 7,597,623 (not run without it). Attempt IDs are ordered
+integers and are not symmetric.
 
 ### Faithfulness: the model sees the fixed bugs
 
@@ -117,7 +165,7 @@ property passes in the `Current-*` configs.
 
 ## Findings on the current design
 
-Both were checked against the Swift before being recorded. Neither is fixed here.
+All three were checked against the Swift before being recorded. None is fixed here.
 
 ### F1: a crash between the stash and the working path loses a finished forward-only body
 
@@ -165,23 +213,65 @@ never promotes a paused row.
 
 Pin: `DownloadsFormalModelFindingsTests.userPausedRowIsNotPromotedByLiveTaskFact`.
 
-Both pins use `withKnownIssue`: the suite stays green while a finding is open, and the test fails
-as soon as the expectations hold, which is the signal to remove the wrapper and flip the
+### F3: a user pause discards a finished forward-only body
+
+Decision (2026-11-24): a finished body must survive a user pause on either lane. The pilot
+treated the forward-only behaviour as intended; it is a defect.
+
+Trace: a forward-only transfer is running; the user pauses, which installs the pause halt and
+asks URLSession to cancel the task; the task finishes before the cancellation lands;
+`didFinishDownloadingTo` adopts the finished task, moves the body into the `tmp/` stash and
+queues `finishOpaqueBody`; that hop requires `checkpointIsCurrent(currency, halt: nil)`, the
+pause halt fails it, and it releases the stash claim and returns. The row stays paused with an
+orphaned stash. Resume starts a fresh attempt from zero, and the next sweep deletes the stash.
+The same guard drops the body when the transfer finishes first and the pause lands before the
+queued hop runs.
+
+A second ordering reaches the same loss through the reducer: the body is already at the working
+path, the user pauses, and the process dies before `bodyAtWorking` is persisted. On relaunch
+`relaunchObserved` excludes a paused row from the B10 clause, so a user-paused forward-only row
+with its whole body at the working path is failed and the body deleted.
+
+Why it is real: the static lane has an explicit decision for this case
+(`StaticRangeFinishedBodyPolicy`: a `.pause` halt is `writeThenPause`) and the reducer already
+lets a paused row enter `finalizing` from `bodyAtWorking`. The forward-only lane has neither: its
+guard treats a pause halt like a cancel. `Current-Static` passes the property; `Finding-F3` does
+not.
+
+Verdict: real. The first ordering needs only a pause near the end of a transfer, with no crash,
+and costs a full re-transcode. The second needs a crash in a short window.
+`Proposed-F3-PauseKeepsBody` shows the fix on its own: the queued publication accepts a pause
+halt (and still rejects a cancel), and relaunch finalizes a paused forward-only row whose body
+is at the working path. One window stays open under that fix: a Resume that lands between the
+stash and the working path still starts a fresh attempt. The property allows it, as a fresh
+attempt the user asked for. Persisting the capture (the F1 proposal) closes it, because the row
+is then `finalizing` before the user can act.
+
+Pin: `DownloadsFormalModelFindingsTests.finishedForwardOnlyBodySurvivesUserPause`. It pins the
+reducer's relaunch decision and, because the first ordering is decided inline in app code with
+no PMSKit policy to call, the guard in `finishOpaqueBody` as source text. The fix should move
+that decision into a policy and replace the source pin.
+
+All three pins use `withKnownIssue`: the suite stays green while a finding is open, and the test
+fails as soon as the expectations hold, which is the signal to remove the wrapper and flip the
 `Finding-*.cfg` to `EXPECT: pass`. They pin the pure decisions. The session glue (the stash claim
 and the live-key snapshot) is app code and still needs a `LabstreamTests` pin with each fix.
 
 ## Follow-up work, split for parallel worktrees
 
-**Land first: W0, the shared base.** Every later model extends `DownloadsBase.tla`. Today it holds
-the lifecycle, pause-cause, route, body and task vocabularies. W0 adds the reducer itself as pure
-operators (`Reduce(state, event, facts)`), so that each model applies the same transition table
-instead of restating it, and fixes the config header and naming convention. W1 to W7 then own
-disjoint modules and do not edit the base; a base change is its own small change that all rebase
-onto.
+**W0, the shared base, has landed.** Every later model extends `DownloadsReducer.tla`, which
+extends `DownloadsBase.tla`: the vocabulary, and the reducer as pure operators
+(`Reduce(state, event, facts)`), so that each model applies the same transition table instead of
+restating it. The comment block at the top of `DownloadsBase.tla` is the authoring contract:
+file and config names, the `MODELS:` header the drift guard reads, the Crash convention, tiers,
+and where findings are pinned (`DownloadsFormalModel<Name>Tests.swift`). W1 to W7 own disjoint
+modules and do not edit the base; a base change is its own small change that all rebase onto.
+Each module needs at least one `Faithful-<bug>-off` config for a fixed bug from the audit, or a
+`Mutant-*` config when its subsystem has none.
 
 | Item | Scope and actors | Reads | Owns | Depends on | TLC cost | Checks |
 | --- | --- | --- | --- | --- | --- | --- |
-| W0 base | Reducer as operators; row, attempt, body and task definitions; refactor the pilot onto it | `DownloadLifecycle.swift`, `DownloadLifecycleReducer.swift`, `DownloadLifecycleReducerTests.swift` | `DownloadsBase.tla`, `DownloadsReducer.tla`; edits `DownloadsSessionCore.tla` | none | seconds | reducer table against the unit tests |
+| W0 base (done) | Reducer as operators; row, attempt, body and task definitions; the pilot refactored onto it | `DownloadLifecycle.swift`, `DownloadLifecycleReducer.swift` | `DownloadsBase.tla`, `DownloadsReducer.tla`, `DownloadsReducerTable.tla` (generated), `DownloadsReducerConformance.tla`; edits `DownloadsSessionCore.tla` | none | seconds | the generated reducer table |
 | W1 admission | Admission coordinator, lanes and slots, waiting intents, Pause All, backoff. Actors: user, coordinator, start supervisor, crash | `DownloadAdmissionCoordinator.swift`, `DownloadManager+Admission.swift`, `DownloadAdmissionPolicy.swift` | `DownloadsAdmission.tla` | W0 | under 1 min (3 rows, 2 lanes) | B65, B66, B67; lane count never exceeded; no row waits forever. B24 (the storage cap at admission) is shared with W6 |
 | W2 server prep | Plex optimize and Emby Convert runners: create, poll, hand off, cancel. Actors: poller, server, user, crash | `DownloadManager+PlexOptimize.swift`, `DownloadManager+EmbyConvert.swift`, `ServerPrepAttemptTracker.swift`, `PlexOptimize*Policy.swift` | `DownloadsServerPrep.tla` | W0 | 1 to 5 min | no orphaned server job; no duplicate create after a crash; hand-off happens once |
 | W3 cleanup journal and Delete | Cleanup intent journal, runner, row-deletion barrier, volume-full writes. Actors: user Delete, runner, server, disk (ENOSPC), crash | `DownloadCleanupIntentJournal.swift`, `DownloadCleanupIntentRunner.swift`, `DownloadManager+CleanupRunner.swift`, `DownloadArtifactLifecycleCoordinator.swift` | `DownloadsCleanup.tla` | W0 | 1 to 5 min | B28, B30 (#393), B27 (#392); Delete always ends; no cleanup of a live replacement |
@@ -195,17 +285,21 @@ pilot; give it to whoever fixes F1, since both touch the stash and claim design.
 
 Other follow-ups, smaller than a work item:
 
-- Add `scripts/check-tla-specs.sh` to CI (it needs a JDK and one cached download) once W0 settles
-  the layout.
+- `.woodpecker/tla.yml` runs the model check on the macOS runner, which is not enrolled yet
+  (`docs/MACOS-CI.md`). Neither it nor `.woodpecker/tla-drift.yml` has run on Woodpecker. A
+  Linux container with a JDK could run the default tier on pull requests today; the script
+  already accepts a `java` on `PATH` off macOS.
 - Model the pause chain's last step and the reconcile generation check, to narrow F2 to the
   orderings that survive in the code.
-- File issues for F1 and F2 (not filed by the pilot; the lead decides).
+- File issues for F1, F2 and F3.
 
 ## Verification gates for this plan
 
 - `scripts/check-tla-specs.sh` passes: every module parses and every config ends as its header
   expects.
 - Each `Faithful-*` config is violated on the property its header names.
-- Hermetic PMSKit tests pass, with the two findings recorded as known issues.
+- Hermetic PMSKit tests pass, with the three findings recorded as known issues, and the reducer
+  table test passes without regeneration.
+- `scripts/check-tla-drift.py` passes for the branch.
 - A finding is closed only by a code change with its own tests, after which its `Finding-*.cfg`
   expects `pass`.
