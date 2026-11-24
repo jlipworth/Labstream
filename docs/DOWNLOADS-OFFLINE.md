@@ -729,3 +729,54 @@ use the shared waiting caption; an admitted row may show **Queued…** and a ser
 0% with a spinner, the row is active but URLSession has delivered no body bytes yet. Common reasons
 are the window before the first byte, OS scheduling, and the per-host connection limit, since each
 static row can queue two segment tasks.
+
+## Formal model (TLA+)
+
+`specs/downloads/` holds a TLA+ model of the session, finalize and sweep core, checked with TLC.
+It explores every interleaving of the user, the URLSession daemon, delegate callbacks, the
+finalizer, the stash sweep, relaunch and foreground recovery, and process death, for one or two
+rows and two attempt IDs.
+
+What it checks:
+
+- a complete row always has its published body, and a finalizing row has the body it finalizes;
+- a stash whose append or publication is queued is never swept (B03);
+- a callback from a stale attempt changes nothing (B12);
+- a finished body survives a crash at any step (B10);
+- a user-paused row is not restarted except by the user (B02, B09);
+- a replayed finalize outcome is a no-op;
+- under stated fairness, an admitted row eventually reaches a terminal lifecycle, a user pause or
+  deletion.
+
+Run it with:
+
+```sh
+scripts/check-tla-specs.sh                                          # every spec and config
+scripts/check-tla-specs.sh specs/downloads/Current-Static.cfg      # one config
+```
+
+The script downloads a pinned `tla2tools.jar` into the gitignored `build/tla/`, verifies its
+SHA-256, parses every module and runs TLC on every `.cfg`. Each config states what it expects in
+its header. `Current-*` and `Liveness-*` are the code as it stands and must pass. `Faithful-*`
+turns one shipped fix off and must be violated, which shows the model can see that bug.
+`Finding-*` is an open defect the model found on the current design and must be violated until it
+is fixed. `Proposed-*` turns the proposed fixes on and must pass.
+
+Two findings are open, each pinned by a known-issue test in
+`PMSKit/Tests/PMSKitTests/DownloadsFormalModelFindingsTests.swift`:
+
+- a crash between the `tmp/` stash and the working path loses a finished forward-only body;
+- foreground reconcile can move a user-paused row back to transferring from a stale live-task
+  snapshot.
+
+What it does not cover:
+
+- It is a hand-written abstraction, not a proof about the Swift. A change to the reducer or the
+  session can make the model stale; update both together.
+- Not modelled: admission and lanes, Plex optimize and Emby Convert, the cleanup intent journal,
+  startup and wake budgets, side assets, storage accounting, parallel segment trains and held
+  bodies, the persistence writer and path leases.
+- The bounds are small. TLC proves the properties for those bounds only.
+
+The plan `docs/plans/2026-11-24-downloads-tla-model.md` records the properties, results, findings
+and the follow-up models.
