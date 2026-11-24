@@ -71,6 +71,7 @@ configs. Counters stop at 2.
 | `HandedOffJobHasCancelIntent` | invariant | A handed-off row leaves no unfinished job of its own, and no create that may still produce one, without a durable cancel intent (S1). |
 | `MissingCreateFailsBeforeDeadline` | action | The 24 h render deadline never runs out on a current poller that is watching a create that is proven missing: dispatched, absent after the grace, nothing rendered (B37). |
 | `WaitingForSlotFailsOnlyForStorage` | action | A row that holds a render and waits for a static slot is failed only by the hand-off's own storage refusal. |
+| `NoTimeoutBeforeCreate` | action | The render deadline never fails a row whose create was never dispatched (finding S2; not in the Current runs). |
 | `PrepSettles` | liveness | Under `FairSpec`, once the environment stops, every row is handed off, failed, paused or deleted. |
 
 Fairness for `PrepSettles`: every chain step, the cleanup runner and `Relaunch` are weakly fair,
@@ -99,6 +100,9 @@ lost responses, vanishing jobs and poll failures are not fair and are capped by 
 | `Mutant-SlotNeverReturns` | `PrepSettles` violated (reported as `TEMPORAL`) | violated | 34,186 | 3 s |
 | `Finding-S1-RetryOrphansRender` | `ReplacedPrepHasCancelIntent` violated | violated | stops at first error | 1 s |
 | `Finding-S1-HandoffLeavesJob` | `HandedOffJobHasCancelIntent` violated | violated | stops at first error | 1 s |
+| `Finding-S2-TimeoutBeforeCreate` | `NoTimeoutBeforeCreate` violated | violated | stops at first error | 1 s |
+| `Proposed-S2-DeadlineAfterCreate` | pass | pass | 79,494 | 3 s |
+| `Proposed-S2-Liveness` | pass | pass | 34,086 | 3 s |
 
 The whole module runs in under a minute. There is no deep config.
 
@@ -165,6 +169,34 @@ job; that variant is not modelled.
 
 Pin: `DownloadsFormalModelServerPrepTests.retryOfFailedPlexPrepKeepsOrCancelsItsJob`. The decision
 is inline in app code, so the test pins the shape of the Plex retry branch.
+
+## Finding S2: the render deadline can fail a Plex prep row before its create is dispatched
+
+New in the second review round; no issue yet.
+
+Trace (4 states; `Finding-S2-TimeoutBeforeCreate`): a Plex prep row is seeded, a day passes with
+no poller attached to it, a poller attaches, and its first poll fails the row.
+
+1. `triggerOptimizeAndDownload` seeds the row and stamps `plexOptimizeStartedAtEpochSeconds`.
+2. Before the poll's create decision runs, the row stops being polled: the user pauses it, Pause
+   All is on, the Plex session is signed out, or the app is closed. No create is dispatched.
+3. More than 24 hours after step 1 the row is resumed. `resumePendingOptimizeDownload` reuses the
+   persisted stamp; nothing resets it except a replacement attempt.
+4. `pollForOptimizedPart` finds no render, then checks `PlexOptimizeDeadlinePolicy.isExpired`
+   before it reaches `PlexOptimizePrepPolicy.action`. The deadline has passed, so it throws
+   `optimizeTimedOut`: the row fails as "Optimize timed out on the server" and the server was
+   never asked for anything.
+
+Severity is low: Retry replaces the attempt, which stamps a new start, and the download then
+proceeds. The cost is one spurious failure per affected row, with a message that blames the
+server. The deadline's own comment says the clock must survive relaunch so that a stalled poll
+cannot be made immortal; that purpose needs a clock that starts when a create is dispatched, not
+one that runs while the app has not asked for a render.
+
+`Proposed-S2-DeadlineAfterCreate` and `Proposed-S2-Liveness` show one sufficient design
+(`FixDeadlineAfterCreate`): the deadline applies only once a create is on record. Every Plex
+safety property and `PrepSettles` still hold. Pinned by
+`DownloadsFormalModelServerPrepTests.renderDeadlineDoesNotPrecedeTheCreate` (known issue).
 
 ## Modelling artefacts fixed along the way
 

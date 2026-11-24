@@ -98,6 +98,9 @@ CONSTANTS
                         \* PROPOSED: a Plex attempt that abandons an unfinished job (Retry
                         \* replaces it, or the hand-off adopts another render) journals
                         \* the cancel (finding S1)
+    FixDeadlineAfterCreate,
+                        \* PROPOSED (finding S2): the render deadline counts only once a
+                        \* create was dispatched, so it cannot fail a row before its create
     SlotReturns,        \* a static slot another download took is released again (FALSE:
                         \* the static lane never drains; for Mutant-SlotNeverReturns)
     BoundEnvironment,   \* cap the environment for the liveness check
@@ -340,7 +343,10 @@ PlexPoll(r, p) ==
           /\ FailRow(r, p, "server")
           /\ UNCHANGED <<exists, mode, disp, ident>>
        \/ \* optimizeTimedOut: nothing is rendered and the 24 h deadline passed.
+          \* The poll looks at the deadline before it decides to create, so
+          \* this is enabled beside the create branch (finding S2).
           /\ ~render[r] /\ dayOut[r]
+          /\ FixDeadlineAfterCreate => disp[r]
           /\ FailRow(r, p, "server")
           /\ UNCHANGED <<exists, mode, disp, ident>>
     /\ UNCHANGED <<journalVars, clockVars, serverVars, slotFree, up, ghostVars, env>>
@@ -900,6 +906,16 @@ WaitingForSlotFailsOnlyForStorage ==
            /\ \E p \in Pollers : pc[r][p] = "found" /\ Current(r, p)
            /\ rs'[r].lifecycle = "failed")
              => rs'[r].lastFailure = "storage"]_vars
+
+\* Finding S2.  The render deadline never fails a row whose create was never
+\* dispatched: with nothing rendered, no job and no dispatch on record, the
+\* only "server" failure a poll can produce is the deadline's.
+NoTimeoutBeforeCreate ==
+    [][\A r \in Rows :
+          (/\ up /\ up' /\ IsPlex(r) /\ PrepActive(r)
+           /\ ~disp[r] /\ ~render[r] /\ JobAbsent(r)
+           /\ rs'[r].lifecycle = "failed")
+             => rs'[r].lastFailure # "server"]_vars
 
 \* Preparation does not stay pending forever: once the environment stops,
 \* every row is handed off, failed, paused or deleted.  With the fix off this

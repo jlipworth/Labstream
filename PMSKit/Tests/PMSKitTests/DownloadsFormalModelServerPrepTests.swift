@@ -276,6 +276,38 @@ struct DownloadsFormalModelServerPrepTests {
         }
     }
 
+    /// S2. A Plex prep row is seeded with `plexOptimizeStartedAtEpochSeconds`, and nothing resets
+    /// that stamp on Pause, Resume or relaunch: only a replacement attempt gets a new one. The
+    /// poll looks at the 24-hour render deadline before it decides whether a create is needed.
+    /// A row that was paused (or left behind by Pause All, a sign-out or a closed app) before
+    /// its create was dispatched, and is resumed more than a day after it was first started,
+    /// therefore fails as "Optimize timed out on the server" without a job ever being asked
+    /// for (`server-prep/Finding-S2-TimeoutBeforeCreate.cfg`). Retry replaces the attempt and
+    /// works, so the cost is one spurious failure per row.
+    ///
+    /// Wanted: the deadline bounds a render the app asked for. Either the poll decides to create
+    /// before it applies the deadline, or the deadline is measured from the dispatch.
+    @Test("S2: the render deadline does not fail a Plex prep row before its create is dispatched")
+    func renderDeadlineDoesNotPrecedeTheCreate() throws {
+        let poll = try #require(Self.appSource(
+            in: "Labstream/Capabilities/Downloads/Core/DownloadManager.swift",
+            from: "    func pollForOptimizedPart(", through: "case .failMissingCreate:"))
+        let deadline = try #require(poll.range(of: "PlexOptimizeDeadlinePolicy.isExpired("))
+        let decision = try #require(poll.range(of: "switch PlexOptimizePrepPolicy.action("))
+        // The stamp the deadline is measured from is the persisted one, on resume too.
+        let resume = try #require(Self.appSource(
+            in: "Labstream/Capabilities/Downloads/Core/DownloadManager.swift",
+            from: "    private func resumePendingOptimizeDownload(", through: "let part = try await pollForOptimizedPart("))
+        #expect(resume.contains("let optimizeStartedAt = metadata.plexOptimizeStartedAtEpochSeconds"))
+
+        withKnownIssue("TLA+ finding S2: the Plex render deadline can fail a row before its create is dispatched") {
+            let deadlineUsesDispatch = poll[deadline.lowerBound...].prefix(300)
+                .contains("plexOptimizeCreateDispatchedAtEpochSeconds")
+            #expect(decision.lowerBound < deadline.lowerBound || deadlineUsesDispatch,
+                    "the poll applies the render deadline before it decides to create")
+        }
+    }
+
     /// The text of an app source file from the first `from` marker through the next `through`
     /// marker. Nil when the file or either marker is missing.
     private static func appSource(in relativePath: String, from: String, through: String) -> String? {
