@@ -10,6 +10,10 @@
 (* DownloadsFormalModelReducerTests from the real reducer, and             *)
 (* Reducer-Conformance.cfg checks that Reduce returns exactly that table.  *)
 (* A change on either side without the other fails one of the two.         *)
+(* The table holds every event shape against every lifecycle with every    *)
+(* single and every pair of history-field values, and relaunchObserved     *)
+(* against the whole fact space (1,280 records).  The conformance module   *)
+(* (DownloadsReducerConformance.tla) says why that is the whole reducer.   *)
 (*                                                                         *)
 (* Abstractions (the generator applies the same ones):                     *)
 (*  - A state is one flat record: the lifecycle and the history fields.    *)
@@ -98,7 +102,8 @@ Fx(route, hasJob, checkpoint, body, pendingArtifactHead, deletionPending,
      snapshotEligible |-> snapshotEligible]
 
 \* DownloadRowFacts(route:) with every default.  Only relaunchObserved reads
-\* facts, so every other event may pass NoFacts.
+\* facts (Reducer-Conformance.cfg: EventsIgnoreFacts), so every other event
+\* may pass NoFacts.
 FactsFor(route) == Fx(route, FALSE, "none", "none", FALSE, FALSE, FALSE, TRUE)
 NoFacts == FactsFor("staticRange")
 

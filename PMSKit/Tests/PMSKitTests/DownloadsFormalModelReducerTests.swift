@@ -4,9 +4,21 @@ import Testing
 
 /// Keeps the TLA+ reducer (`specs/downloads/base/DownloadsReducer.tla`) equal to the Swift one.
 ///
-/// The test runs `DownloadLifecycleReducer.reduce` over every lifecycle, a fixed set of histories,
-/// every event shape and a fixed set of facts, and renders the results as the TLA+ module
-/// `specs/downloads/base/DownloadsReducerTable.tla`. That file is checked in:
+/// The test runs `DownloadLifecycleReducer.reduce` over a systematic input set and renders the
+/// results as the TLA+ module `specs/downloads/base/DownloadsReducerTable.tla`:
+///
+/// - states: every lifecycle with the empty history, every value of every history field alone,
+///   and every pair of values of two different fields (`otherHistories`);
+/// - events: every event case with every payload the reducer distinguishes;
+/// - facts: the whole finite space of `DownloadRowFacts` under the table's abstraction, 1,280
+///   records (`facts`), for `relaunchObserved`.
+///
+/// The relaunch grid holds the `relaunchStateCount` states whose histories differ from the empty
+/// one only in `pauseCause`, against all 1,280 facts. `relaunchIsLocal` (here) and `RelaunchLocal`
+/// (in `DownloadsReducerConformance.tla`) prove that relaunch reads nothing else of a history and
+/// writes only `pauseCause` and `lastFailure`, which extends that grid to every other state.
+///
+/// The file is checked in:
 ///
 /// - this test fails when the rendered table differs from the checked-in file, so a reducer change
 ///   cannot land without regenerating it;
@@ -50,25 +62,74 @@ struct DownloadsFormalModelReducerTests {
             """)
     }
 
-    @Test("The table's inputs cover every lifecycle and every event case")
+    @Test("The table's inputs cover every lifecycle, every event case and the whole fact space")
     func inputsCoverTheVocabulary() {
         #expect(Set(Table.states.map(\.lifecycle)) == Set(DownloadLifecycle.allCases))
         let types = Set(Table.events.map(Table.typeName)).union([Table.typeName(.relaunchObserved)])
         #expect(types.count == Table.eventTypeCount)
         #expect(Table.facts.first == DownloadRowFacts(route: .staticRange))
+        // 5 routes (embyConvert twice) x 4 checkpoints x 4 bodies x 2^4 flags, all distinct.
+        #expect(Table.facts.count == 5 * 4 * 4 * 16)
+        #expect(Set(Table.facts.map { Table.encode($0) }).count == Table.facts.count)
+        #expect(Set(Table.states.map { Table.encode($0) }).count == Table.states.count)
+        // The relaunch grid's states come first: every lifecycle with every pauseCause or none.
+        let relaunchStates = Table.states.prefix(Table.relaunchStateCount)
+        #expect(relaunchStates.allSatisfy { Table.relaunchCore($0) == $0 })
+        #expect(Set(relaunchStates.map { Table.encode($0) }).count
+            == DownloadLifecycle.allCases.count * (Table.pauseCauses.count + 1))
+        #expect(Table.states.allSatisfy { relaunchStates.contains(Table.relaunchCore($0)) })
     }
 
     @Test("Only relaunchObserved reads facts")
     func onlyRelaunchReadsFacts() {
         // The table stores one result per state and event for every event but relaunchObserved,
-        // so that result must not depend on the facts.
-        let probes = [Table.facts[0], Table.facts[Table.facts.count / 2], Table.facts[Table.facts.count - 1]]
-        for state in Table.states {
-            for event in Table.events {
-                let results = Set(probes.map { Table.encode(result: Table.reduce(state, event, $0)) })
-                #expect(results.count == 1, "\(Table.encode(event)) reads facts")
+        // so that result must not depend on the facts. Every state with at most one history
+        // field set is tried against the whole fact space; every other state against a spread
+        // of it in which every value of every fact field occurs.
+        let spread = stride(from: 0, to: Table.facts.count, by: 37).map { Table.facts[$0] }
+            + [Table.facts[Table.facts.count - 1]]
+        var failures: [String] = []
+        func check(_ states: [DownloadLifecycleState], against probes: [DownloadRowFacts]) {
+            for state in states {
+                for event in Table.events {
+                    let expected = Table.reduce(state, event, Table.facts[0])
+                    for facts in probes where !Table.same(Table.reduce(state, event, facts), expected) {
+                        failures.append("\(Table.encode(event)) reads \(Table.encode(facts))")
+                        break
+                    }
+                }
             }
         }
+        check(Table.singleFieldStates, against: Table.facts)
+        check(Table.states, against: spread)
+        #expect(failures.isEmpty, "\(failures.prefix(5))")
+    }
+
+    @Test("relaunchObserved reads lifecycle and pauseCause, and writes those and lastFailure")
+    func relaunchIsLocal() {
+        // The relaunch grid holds only the states whose history is empty but for pauseCause.
+        // For every other state the result is that grid's result with the other fields carried
+        // over; lastFailure is the one relaunch set, or else the state's own.
+        var failures: [String] = []
+        for state in Table.states {
+            let core = Table.relaunchCore(state)
+            for facts in Table.facts {
+                let whole = Table.reduce(state, .relaunchObserved, facts)
+                guard case .applied(let coreNext, let effects) =
+                        Table.reduce(core, .relaunchObserved, facts) else {
+                    failures.append("rejected: \(Table.encode(core)) \(Table.encode(facts))")
+                    continue
+                }
+                var carried = state
+                carried.lifecycle = coreNext.lifecycle
+                carried.history.pauseCause = coreNext.history.pauseCause
+                carried.history.lastFailure = coreNext.history.lastFailure ?? state.history.lastFailure
+                if !Table.same(whole, .applied(carried, effects)) {
+                    failures.append("\(Table.encode(state)) \(Table.encode(facts))")
+                }
+            }
+        }
+        #expect(failures.isEmpty, "\(failures.prefix(5))")
     }
 }
 
@@ -164,36 +225,89 @@ enum DownloadsReducerTableGenerator {
 
     // MARK: Inputs
 
-    /// Every lifecycle with each history below: the empty one, each field set alone, and the
-    /// combinations the reducer treats specially.
-    static let states: [DownloadLifecycleState] = {
-        typealias History = DownloadAttemptHistory
+    /// One history field set to one value, as an edit of a history.
+    private struct FieldValue: Sendable {
+        let field: Int
+        /// Whether the value is also combined with every value of every other field.
+        var paired = true
+        let apply: @Sendable (inout DownloadAttemptHistory) -> Void
+    }
+
+    /// Every value of every history field. Field 0 is `pauseCause`, the one history field
+    /// relaunch reads. `lastFailure` has eleven values that the reducer never tells apart, so
+    /// only three of them are paired with the other fields; all eleven appear alone.
+    private static let fieldValues: [FieldValue] = {
         let park = DownloadStoragePark(requiredBytes: nil, measuredAtEpochSeconds: 0)
         func truncation(_ strikes: Int, _ source: Int, _ ids: [String]) -> DownloadTruncationHistory {
             DownloadTruncationHistory(strikes: strikes, sourceKey: sources[source], countedOutcomeIDs: ids)
         }
-        var histories: [History] = [.empty]
-        histories += pauseCauses.map { History(pauseCause: $0) }
-        histories += [.network, .truncated, .storage].map { History(lastFailure: $0) }
-        histories += unverifiedReasons.map { History(unverifiedReason: $0) }
-        histories += admissionIntents.map { History(admissionIntent: $0) }
-        histories.append(History(storagePark: park))
-        histories.append(History(bodyCondemned: true))
-        histories.append(History(truncation: truncation(1, 0, ["o1"])))
-        histories.append(History(truncation: truncation(1, 1, ["o2"])))
-        histories.append(History(truncation: truncation(2, 0, ["o1", "o2"])))
-        histories.append(History(pauseCause: .user, admissionIntent: .retryRequested))
-        histories.append(History(storagePark: park, pauseCause: .storage))
-        histories.append(History(truncation: truncation(1, 0, ["o1"]), lastFailure: .truncated,
-                                 bodyCondemned: true))
-        histories.append(History(
-            truncation: truncation(1, 0, ["o1"]), unverifiedReason: .truncatedRepeated,
-            lastFailure: .network, storagePark: park, pauseCause: .user,
-            admissionIntent: .retryRequested, bodyCondemned: true))
+        let pairedFailures: Set<DownloadFailureReason> = [.network, .truncated, .storage]
+        var list: [FieldValue] = []
+        list += pauseCauses.map { value in FieldValue(field: 0) { $0.pauseCause = value } }
+        list += failureReasons.map { value in
+            FieldValue(field: 1, paired: pairedFailures.contains(value)) { $0.lastFailure = value }
+        }
+        list += unverifiedReasons.map { value in FieldValue(field: 2) { $0.unverifiedReason = value } }
+        list += admissionIntents.map { value in FieldValue(field: 3) { $0.admissionIntent = value } }
+        list.append(FieldValue(field: 4) { $0.storagePark = park })
+        list.append(FieldValue(field: 5) { $0.bodyCondemned = true })
+        list += [truncation(1, 0, ["o1"]), truncation(1, 1, ["o2"]), truncation(2, 0, ["o1", "o2"])]
+            .map { value in FieldValue(field: 6) { $0.truncation = value } }
+        return list
+    }()
+
+    private static func history(_ values: [FieldValue]) -> DownloadAttemptHistory {
+        var history = DownloadAttemptHistory.empty
+        for value in values { value.apply(&history) }
+        return history
+    }
+
+    /// The histories relaunch can tell apart: no `pauseCause` (the empty history, first) and
+    /// each `pauseCause`, everything else empty.
+    private static let relaunchHistories: [DownloadAttemptHistory] =
+        [.empty] + fieldValues.filter { $0.field == 0 }.map { history([$0]) }
+
+    /// Every other history with one or two fields set: each value of the remaining fields alone,
+    /// each pair of (paired) values of two different fields, and one history with every field set.
+    private static let otherHistories: [DownloadAttemptHistory] = {
+        var list: [DownloadAttemptHistory] = []
+        for value in fieldValues where value.field > 0 { list.append(history([value])) }
+        for (offset, first) in fieldValues.enumerated() where first.paired {
+            for second in fieldValues[(offset + 1)...]
+            where second.paired && second.field != first.field {
+                list.append(history([first, second]))
+            }
+        }
+        list.append(history((0...6).map { field in fieldValues.first { $0.field == field && $0.paired }! }))
+        return list
+    }()
+
+    /// The states of the relaunch grid: the first `relaunchStateCount` entries of `states`.
+    static let relaunchStateCount = DownloadLifecycle.allCases.count * relaunchHistories.count
+
+    /// Every lifecycle with every history above, the relaunch grid's states first.
+    static let states: [DownloadLifecycleState] = {
+        [relaunchHistories, otherHistories].flatMap { histories in
+            DownloadLifecycle.allCases.flatMap { lifecycle in
+                histories.map { DownloadLifecycleState(lifecycle: lifecycle, history: $0) }
+            }
+        }
+    }()
+
+    /// The states with at most one history field set: the ones every fact record is tried on
+    /// for the events that must not read facts.
+    static let singleFieldStates: [DownloadLifecycleState] = {
+        let histories = [.empty] + fieldValues.map { history([$0]) }
         return DownloadLifecycle.allCases.flatMap { lifecycle in
             histories.map { DownloadLifecycleState(lifecycle: lifecycle, history: $0) }
         }
     }()
+
+    /// `state` with every history field relaunch does not read reset to empty.
+    static func relaunchCore(_ state: DownloadLifecycleState) -> DownloadLifecycleState {
+        DownloadLifecycleState(lifecycle: state.lifecycle,
+                               history: DownloadAttemptHistory(pauseCause: state.history.pauseCause))
+    }
 
     /// Every event case with every payload the reducer distinguishes, except `relaunchObserved`,
     /// which has its own grid over `facts`.
@@ -229,8 +343,9 @@ enum DownloadsReducerTableGenerator {
         return list
     }()
 
-    /// Facts for `relaunchObserved`: every route, checkpoint, body and live-task combination, then
-    /// each of the three guards that make relaunch a no-op. The first entry is the default facts.
+    /// Facts for `relaunchObserved`: the whole space. Every route, checkpoint, body and live-task
+    /// combination, crossed with the three guards that make relaunch a no-op. The first entry is
+    /// the default facts. Byte counts are abstracted to zero or more.
     static let facts: [DownloadRowFacts] = {
         let routes: [DownloadRowFacts.Route] = [
             .staticRange, .plexPrep, .embyConvert(hasJobOrIdentity: false),
@@ -240,26 +355,45 @@ enum DownloadsReducerTableGenerator {
             .none, .durablePartial(bytes: 0), .durablePartial(bytes: 1), .resumeBlob,
         ]
         let bodies: [DownloadRowFacts.Body] = [.none, .captured, .workingComplete, .published]
+        let flags = [false, true]
         var list: [DownloadRowFacts] = []
         for route in routes {
             for checkpoint in checkpoints {
                 for body in bodies {
-                    for liveTask in [false, true] {
-                        list.append(DownloadRowFacts(route: route, checkpoint: checkpoint, body: body,
-                                                     liveTask: liveTask))
+                    for pendingArtifactHead in flags {
+                        for deletionPending in flags {
+                            for liveTask in flags {
+                                for snapshotEligible in [true, false] {
+                                    list.append(DownloadRowFacts(
+                                        route: route, checkpoint: checkpoint, body: body,
+                                        pendingArtifactHead: pendingArtifactHead,
+                                        deletionPending: deletionPending, liveTask: liveTask,
+                                        snapshotEligible: snapshotEligible))
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
-        list.append(DownloadRowFacts(route: .staticRange, pendingArtifactHead: true))
-        list.append(DownloadRowFacts(route: .staticRange, deletionPending: true))
-        list.append(DownloadRowFacts(route: .staticRange, snapshotEligible: false))
         return list
     }()
 
     static func reduce(_ state: DownloadLifecycleState, _ event: DownloadLifecycleEvent,
                        _ facts: DownloadRowFacts) -> DownloadLifecycleTransition {
         DownloadLifecycleReducer.reduce(state, event, facts: facts)
+    }
+
+    /// Two results are the same under the table's abstraction. A storage park carries the time
+    /// it was measured, which the table reduces to "present".
+    static func same(_ first: DownloadLifecycleTransition, _ second: DownloadLifecycleTransition) -> Bool {
+        if first == second { return true }
+        guard case .applied(var a, let aEffects) = first, case .applied(var b, let bEffects) = second,
+              aEffects == bEffects, (a.history.storagePark == nil) == (b.history.storagePark == nil)
+        else { return false }
+        a.history.storagePark = nil
+        b.history.storagePark = nil
+        return a == b
     }
 
     // MARK: Encoding
@@ -433,7 +567,7 @@ enum DownloadsReducerTableGenerator {
         let eventGrid = states.map { state in
             events.map { intern(reduce(state, $0, defaultFacts)) }
         }
-        let relaunchGrid = states.map { state in
+        let relaunchGrid = states.prefix(relaunchStateCount).map { state in
             facts.map { intern(reduce(state, .relaunchObserved, $0)) }
         }
 
@@ -465,12 +599,15 @@ enum DownloadsReducerTableGenerator {
             (* TableStates[1..TableInputCount] are the input states; the rest appear   *)
             (* only in results.  TableEventGrid[s][e] is the index in TableResults of  *)
             (* reduce(TableStates[s], TableEvents[e], facts: TableFacts[1]).           *)
-            (* TableRelaunchGrid[s][f] is the same for relaunchObserved with           *)
-            (* TableFacts[f].  The trailing comment on a line is its index.            *)
+            (* TableRelaunchGrid[s][f], for s in 1..TableRelaunchInputCount, is the    *)
+            (* same for relaunchObserved with TableFacts[f]: those states differ from  *)
+            (* an empty history only in pauseCause, and TableFacts is the whole fact   *)
+            (* space.  The trailing comment on a line is its index.                    *)
             (***************************************************************************)
             EXTENDS DownloadsReducer
 
             TableInputCount == \(states.count)
+            TableRelaunchInputCount == \(relaunchStateCount)
 
 
             """
