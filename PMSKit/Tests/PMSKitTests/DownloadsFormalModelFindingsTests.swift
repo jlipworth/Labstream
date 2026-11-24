@@ -11,8 +11,12 @@ import Testing
 /// matching `Finding-*.cfg` to `EXPECT: pass`.
 ///
 /// These pin the pure decisions only. The session glue that feeds them (the stash claim, the
-/// live-key snapshot) is app code and needs a `LabstreamTests` pin with the fix. F3 has no pure
-/// decision for its main ordering, so it also pins the shape of the app source it found.
+/// live-key snapshot) is app code and needs a `LabstreamTests` pin with the fix. F3 and F4 have
+/// no pure decision for their main ordering, so they also pin the shape of the app source.
+/// F3's static-lane ordering is pinned as R3 in `DownloadsFormalModelRangeTrainTests`.
+///
+/// The `Model rule` tests are not findings: they tie two things the model assumes (Faithful-B12-off,
+/// Faithful-Replay-off) to the code, and fail if the code stops doing them.
 @Suite("Downloads formal-model findings")
 struct DownloadsFormalModelFindingsTests {
     private typealias R = DownloadLifecycleReducer
@@ -95,6 +99,79 @@ struct DownloadsFormalModelFindingsTests {
                                     facts: DownloadRowFacts(route: .forwardOnly, body: .workingComplete))
             #expect(!relaunch.effects.contains(.deleteWorkingBody))
             #expect(relaunch.state?.lifecycle != .failed)
+        }
+    }
+
+    /// F4. A failing truncation verdict goes through the reducer, which condemns the body, counts
+    /// the strike and fails the row in one revision. The finalizer applies it in memory, renames
+    /// the body off the working path at once, and only then waits for the revision to commit. A
+    /// crash in between leaves the durable row `finalizing` with no body, no strike and no
+    /// `bodyCondemned`. On relaunch the reducer fails it as an internal error: the truncation
+    /// strike is lost, so the source needs one more whole download before two strikes accept it
+    /// as unverified, and the user is shown the wrong failure.
+    @Test("F4: a truncation verdict is durable before its body leaves the working path")
+    func truncationVerdictIsDurableBeforeTheBodyMoves() throws {
+        // What a relaunch makes of the residue: a finalizing row with no body.
+        let residue = R.reduce(DownloadLifecycleState(lifecycle: .finalizing), .relaunchObserved,
+                               facts: DownloadRowFacts(route: .forwardOnly))
+        #expect(residue.state?.lifecycle == .failed)
+        #expect(residue.state?.history.lastFailure == .internalError)
+        #expect(residue.state?.history.truncation == nil)
+        // What the verdict would have recorded.
+        let source = DownloadSourceKey(server: nil, account: nil, backend: nil, item: "item",
+                                       source: nil, profile: nil)
+        let verdict = R.reduce(DownloadLifecycleState(lifecycle: .finalizing),
+                               .finalizeOutcome(id: "o1", outcome: .truncated, source: source),
+                               facts: DownloadRowFacts(route: .forwardOnly))
+        #expect(verdict.state?.history.lastFailure == .truncated)
+        #expect(verdict.state?.history.truncation?.strikes == 1)
+        #expect(verdict.state?.history.isBodyCondemned == true)
+
+        let finalize = try #require(Self.appFunctionSource(
+            named: "finalizeTransferredFile",
+            in: "Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift"))
+        let rename = try #require(finalize.range(of: "condemnBody(afterCommitOf: ticket)\n"))
+        let commit = try #require(finalize.range(
+            of: "verdict, key: attemptKey, phase: \"finalize_truncated_verdict\") else { return }"))
+        withKnownIssue("TLA+ finding F4: a crash between the condemn rename and the verdict's commit") {
+            #expect(commit.lowerBound < rename.lowerBound,
+                    "the body is renamed away before the verdict that explains it is durable")
+        }
+    }
+
+    /// Faithful-Replay-off. The model's `FixReplay = FALSE` is the counter before R2-5: one
+    /// strike per truncated finalizer run, with nothing that names the body. Today two layers
+    /// reject a replayed outcome ID, the reducer and `recordingTruncation`.
+    @Test("Model rule: a replayed truncation outcome is ignored by the reducer and by the history")
+    func replayedTruncationIsIgnoredTwice() {
+        let source = DownloadSourceKey(server: nil, account: nil, backend: nil, item: "item",
+                                       source: nil, profile: nil)
+        let counted = DownloadAttemptHistory(
+            truncation: DownloadTruncationHistory(strikes: 1, sourceKey: source, countedOutcomeIDs: ["o1"]))
+        #expect(R.reduce(DownloadLifecycleState(lifecycle: .finalizing, history: counted),
+                         .finalizeOutcome(id: "o1", outcome: .truncated, source: source),
+                         facts: DownloadRowFacts(route: .forwardOnly)) == .rejected(.replayed))
+        let again = counted.recordingTruncation(outcomeID: "o1", source: source)
+        #expect(!again.recorded)
+        #expect(again.history.truncation?.strikes == 1)
+        #expect(counted.recordingTruncation(outcomeID: "o2", source: source).history.truncation?.strikes == 2)
+    }
+
+    /// Faithful-B12-off. B12 is the manager's side of a transfer-error handoff: the session
+    /// hands an attempt's error to the main actor, and by the time it lands the user may have
+    /// replaced that attempt. The handoff must be dropped unless its attempt still owns the row.
+    @Test("Model rule: the manager's error handoffs act only for the attempt that raised them (B12)")
+    func errorHandoffsAreFencedOnTheAttempt() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let manager = try String(
+            contentsOf: root.appendingPathComponent(
+                "Labstream/Capabilities/Downloads/Core/DownloadManager.swift"), encoding: .utf8)
+        for handoff in ["self.session.onRangeRequestNeeded = ", "self.session.onRangeAuthHTTPFailure = "] {
+            let start = try #require(manager.range(of: handoff))
+            let body = manager[start.upperBound...].prefix(2_000)
+            #expect(body.contains("self.store.ownsAttempt(attemptKey)"), "\(handoff) is not fenced")
         }
     }
 

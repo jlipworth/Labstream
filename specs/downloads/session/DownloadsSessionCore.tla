@@ -12,13 +12,15 @@
 (*   Session    delegate callbacks carrying the attempt that started the   *)
 (*              task: TransferStarted, TransferProgress,                   *)
 (*              DidFinishDownloading, DidCompleteWithError, RangeIO,       *)
-(*              RebuildFires, StallDetected                                *)
+(*              RebuildFires, StallDetected, PauseSweep                    *)
 (*   Finalizer  BodyAtWorking, FinalizeOutcome, FinalizeOutcomeReplayed,   *)
 (*              PublishBody, PromotionCommitted, PromotionAbandoned        *)
 (*   Sweeper    the stash sweep inside Reattach; CleanupRuns for Delete    *)
 (*   Recovery   Reattach and RelaunchObserved (reconcile), after a         *)
 (*              relaunch or a return to the foreground; AutoResume         *)
-(*   Crash      Crash drops every in-memory variable; Relaunch restarts    *)
+(*   Crash      Crash drops every in-memory variable; Relaunch restarts;   *)
+(*              FinalizeTruncatedCrash is a crash inside one finalizer     *)
+(*              step                                                       *)
 (*                                                                         *)
 (* Action names are the reducer's event names where one corresponds        *)
 (* (DownloadLifecycleEvent in DownloadLifecycleReducer.swift).             *)
@@ -36,7 +38,11 @@
 (*    (`ioq`): the claim is taken when the hop is queued and released      *)
 (*    when it ends.                                                        *)
 (*  - Index persistence is atomic per action; the persistence writer and   *)
-(*    path leases are not modelled.                                        *)
+(*    path leases are not modelled.  The one place where the code moves a  *)
+(*    file before the row that explains it is durable (a failing           *)
+(*    truncation verdict renames the body away, then waits for its         *)
+(*    commit) is the action FinalizeTruncatedCrash: the rename, then a     *)
+(*    crash, with the row as it was (F4).                                  *)
 (*  - Delete is one durable flag and one cleanup step; the cleanup intent  *)
 (*    journal is not modelled.                                             *)
 (*                                                                         *)
@@ -49,7 +55,7 @@
 \* MODELS: PMSKit/Sources/PMSKit/Downloads/BackgroundTempFileCleanupPolicy.swift
 \* MODELS: PMSKit/Sources/PMSKit/Downloads/StaticRangeFinishedBodyPolicy.swift
 \* MODELS: PMSKit/Sources/PMSKit/Downloads/BackgroundFinalizationResultPolicy.swift
-EXTENDS DownloadsReducer, TLC
+EXTENDS DownloadsSessionRowMap, TLC
 
 CONSTANTS
     Rows,               \* download keys
@@ -60,11 +66,16 @@ CONSTANTS
     FixB03,             \* the stash sweep rechecks the claim of a queued append/publication
     FixB09,             \* transferProgress never promotes a paused row
     FixB10,             \* relaunch re-finalizes a finished forward-only body
-    FixB12,             \* callbacks act only for the exact attempt that owns the row
-    FixReplay,          \* a replayed finalize outcome ID is rejected
+    FixB12,             \* the manager's side of a transfer-error handoff acts only for the
+                        \* exact attempt that raised it
+    FixReplay,          \* truncation strikes are counted per outcome ID (R2-5); FALSE is the
+                        \* counter before it: one strike per finalizer run, no IDs anywhere
     FixPauseReconcile,  \* PROPOSED (not in the code): reconcile never promotes a paused row
     DurableCapture,     \* PROPOSED (not in the code): bodyCaptured is persisted with the stash
-    FixPauseKeepsBody,  \* PROPOSED (not in the code): a pause never drops a finished body (F3)
+    FixPauseKeepsBody,  \* PROPOSED (not in the code): a pause never drops a finished body (F3),
+                        \* on either lane
+    FixVerdictBeforeRename, \* PROPOSED (not in the code): a failing truncation verdict is
+                        \* durable before its body leaves the working path (F4)
     ForegroundReattach, \* allow reattach + reconcile while the process stays alive
     BoundEnvironment,   \* TRUE: at most EnvBudget user/crash/foreground steps (liveness runs)
     EnvBudget
@@ -106,6 +117,7 @@ VARIABLES
     fin,         \* [Rows -> 0..MaxAttempt]        finalizer work in flight, by attempt
     recon,       \* [Rows -> {"idle","needReattach","needReconcile"}]
     liveSnap,    \* [Rows -> BOOLEAN]              reattach's live-task snapshot for reconcile
+    superseded,  \* [Rows -> SUBSET Attempts]      tasks whose callbacks the session ignores
     \* ---- ghosts (observe only; never read by an action's guard) ----
     bodyDone,    \* [Rows -> 0..MaxAttempt]        attempt whose finished body the app holds
     staleEffect, \* BOOLEAN                        a stale-attempt callback changed something
@@ -115,7 +127,7 @@ VARIABLES
 redVars  == <<life, cause, strikes, counted, condemned>>
 rowVars  == <<life, cause, owner, strikes, counted, condemned, intent, deleting>>
 fileVars == <<working, published, stash>>
-memVars  == <<tracked, ioq, halt, rebuild, fin, recon, liveSnap>>
+memVars  == <<tracked, ioq, halt, rebuild, fin, recon, liveSnap, superseded>>
 vars     == <<rowVars, fileVars, task, up, memVars, bodyDone, staleEffect, budget>>
 
 Route(r) == IF r \in ForwardRows THEN "forwardOnly" ELSE "staticRange"
@@ -125,28 +137,34 @@ UserPaused(r) == life[r] = "paused" /\ cause[r] = "user"
 
 \* DownloadStore.attemptAdmitsWork / BackgroundDownloadSession.stillOwnsAttempt
 Owns(r, a) == Exists(r) /\ owner[r] = a /\ ~deleting[r]
-\* What a callback handler accepts.  Before B12 callbacks were matched by row only.
-Accepts(r, a) == IF FixB12 THEN Owns(r, a) ELSE Exists(r) /\ ~deleting[r]
+\* What a session callback accepts: its exact attempt.  B12 is about the hop
+\* after it: the manager's side of an error handoff (RebuildFires) was matched
+\* by row only.
+Accepts(r, a) == Owns(r, a)
 Stale(r, a) == owner[r] # a
 
 -----------------------------------------------------------------------------
 (* The reducer's view of a row                                             *)
 
-\* The history fields this model tracks.  The others (lastFailure,
-\* unverifiedReason, admissionIntent, storagePark) stay at their empty values;
-\* Projection-SessionCore.cfg checks that they never influence the tracked
-\* ones for the events this model sends.  There is one source, "src".
+\* The row is stored as five fields and rebuilt for every Reduce.  Both
+\* directions are DownloadsSessionRowMap's (SessionRow, SessionStored), and
+\* SessionRowMapCheck-Current-RowMap.cfg checks that they commute with the
+\* reducer for the events this model sends.  Projection-SessionCore.cfg
+\* checks the weaker statement that the dropped fields (lastFailure,
+\* unverifiedReason, admissionIntent, storagePark) never influence the kept
+\* ones.  There is one source, "src".
 Row(r) ==
-    St(life[r], cause[r], "none", "none", "none", FALSE, condemned[r], strikes[r],
-       IF strikes[r] = 0 /\ counted[r] = {} THEN "none" ELSE "src", counted[r])
+    SessionRow([life |-> life[r], cause |-> cause[r], condemned |-> condemned[r],
+                strikes |-> strikes[r], counted |-> counted[r]])
 
 \* Store a reducer state as row r.
 ApplyRow(r, s) ==
-    /\ life' = Upd(life, r, s.lifecycle)
-    /\ cause' = Upd(cause, r, s.pauseCause)
-    /\ strikes' = Upd(strikes, r, s.strikes)
-    /\ counted' = Upd(counted, r, s.counted)
-    /\ condemned' = Upd(condemned, r, s.bodyCondemned)
+    LET x == SessionStored(s)
+    IN /\ life' = Upd(life, r, x.life)
+       /\ cause' = Upd(cause, r, x.cause)
+       /\ strikes' = Upd(strikes, r, x.strikes)
+       /\ counted' = Upd(counted, r, x.counted)
+       /\ condemned' = Upd(condemned, r, x.condemned)
 
 \* Send an event that does not read facts.
 Send(r, event) == Reduce(Row(r), event, NoFacts)
@@ -182,6 +200,7 @@ TypeOK ==
     /\ fin \in [Rows -> 0..MaxAttempt]
     /\ recon \in [Rows -> {"idle", "needReattach", "needReconcile"}]
     /\ liveSnap \in [Rows -> BOOLEAN]
+    /\ superseded \in [Rows -> SUBSET Attempts]
     /\ bodyDone \in [Rows -> 0..MaxAttempt]
     /\ staleEffect \in BOOLEAN
     /\ budget \in 0..EnvBudget
@@ -207,6 +226,7 @@ Init ==
     /\ fin = [r \in Rows |-> 0]
     /\ recon = [r \in Rows |-> "idle"]
     /\ liveSnap = [r \in Rows |-> FALSE]
+    /\ superseded = [r \in Rows |-> {}]
     /\ bodyDone = [r \in Rows |-> 0]
     /\ staleEffect = FALSE
     /\ budget = IF BoundEnvironment THEN EnvBudget ELSE 0
@@ -227,7 +247,7 @@ TransferStarted(r) ==
                /\ Submit(r, Ev("transferStarted"))
                /\ UNCHANGED fin
     /\ UNCHANGED <<owner, intent, deleting,
-                   fileVars, up, ioq, halt, rebuild, recon, liveSnap,
+                   fileVars, up, superseded, ioq, halt, rebuild, recon, liveSnap,
                    bodyDone, staleEffect, budget>>
 
 \* reducer: transferProgress.  Only steps that change the row are modelled.
@@ -243,7 +263,7 @@ TransferProgress(r, a) ==
           /\ UNCHANGED <<strikes, counted, condemned>>
     /\ staleEffect' = (staleEffect \/ Stale(r, a))
     /\ UNCHANGED <<owner, intent, deleting,
-                   fileVars, task, up, memVars, bodyDone, budget>>
+                   fileVars, task, up, superseded, memVars, bodyDone, budget>>
 
 -----------------------------------------------------------------------------
 (* Daemon: runs whether or not the app is alive                            *)
@@ -251,13 +271,13 @@ TransferProgress(r, a) ==
 DaemonFinishes(r, a) ==
     /\ task[r][a] = "running"
     /\ task' = [task EXCEPT ![r][a] = "finished"]
-    /\ UNCHANGED <<rowVars, fileVars, up, memVars, bodyDone, staleEffect, budget>>
+    /\ UNCHANGED <<rowVars, fileVars, up, superseded, memVars, bodyDone, staleEffect, budget>>
 
 \* A transport error or a cancellation.
 DaemonFails(r, a) ==
     /\ task[r][a] = "running"
     /\ task' = [task EXCEPT ![r][a] = "failed"]
-    /\ UNCHANGED <<rowVars, fileVars, up, memVars, bodyDone, staleEffect, budget>>
+    /\ UNCHANGED <<rowVars, fileVars, up, superseded, memVars, bodyDone, staleEffect, budget>>
 
 -----------------------------------------------------------------------------
 (* Session: completion callbacks                                           *)
@@ -267,11 +287,14 @@ DaemonFails(r, a) ==
 \* publication to the working path (forward-only) is queued on the IO queue.
 \* An untracked task is a redelivery after relaunch and is adopted only for a
 \* non-terminal row.  A cancel halt discards a static body; a pause halt keeps it.
+\* A superseded task's finish is ignored and its body is gone with the OS temp.
 DidFinishDownloading(r, a) ==
     /\ up /\ task[r][a] = "finished"
     /\ task' = [task EXCEPT ![r][a] = "none"]
     /\ tracked' = Upd(tracked, r, tracked[r] \ {a})
-    /\ LET keep == /\ Accepts(r, a)
+    /\ superseded' = Upd(superseded, r, superseded[r] \ {a})
+    /\ LET keep == /\ a \notin superseded[r]
+                   /\ Accepts(r, a)
                    /\ (a \notin tracked[r] => life[r] \notin Terminal)
                    /\ ~(~Forward(r) /\ halt[r] = "cancel")
            mine == owner[r] = a
@@ -294,8 +317,11 @@ DidFinishDownloading(r, a) ==
                    staleEffect, budget>>
 
 \* urlSession(_:task:didCompleteWithError:) with an error.  A halted row
-\* expects its cancellation.  Otherwise a static transfer either schedules a
-\* delayed retry (rebuild) or fails; a forward-only transfer fails.
+\* expects its cancellation.  Otherwise the session hands the error to the
+\* manager on the main actor: a static transfer schedules a delayed retry
+\* (onRangeRequestNeeded) or fails; a forward-only transfer's failure is
+\* decided there too (onRangeAuthHTTPFailure and its like).  `rebuild` is that
+\* queued handoff, by the attempt that raised it; RebuildFires is its arrival.
 \* reducer: transferFailed.
 DidCompleteWithError(r, a) ==
     /\ up /\ task[r][a] = "failed"
@@ -303,15 +329,15 @@ DidCompleteWithError(r, a) ==
     /\ tracked' = Upd(tracked, r, tracked[r] \ {a})
     /\ IF /\ a \in tracked[r] /\ Accepts(r, a) /\ halt[r] = "none"
           /\ life[r] \in {"admitted", "transferring"}
-          THEN /\ \/ /\ ~Forward(r)
-                     /\ rebuild' = Upd(rebuild, r, a)
-                     /\ UNCHANGED redVars
-                  \/ /\ Submit(r, EvReason("transferFailed", "network"))
-                     /\ UNCHANGED rebuild
-               /\ staleEffect' = (staleEffect \/ Stale(r, a))
-          ELSE UNCHANGED <<redVars, rebuild, staleEffect>>
+          THEN \/ /\ rebuild' = Upd(rebuild, r, a)
+                  /\ UNCHANGED redVars
+               \/ /\ ~Forward(r)
+                  /\ Submit(r, EvReason("transferFailed", "network"))
+                  /\ UNCHANGED rebuild
+          ELSE UNCHANGED <<redVars, rebuild>>
     /\ UNCHANGED <<owner, intent, deleting,
-                   fileVars, up, ioq, halt, fin, recon, liveSnap, bodyDone, budget>>
+                   fileVars, up, superseded, ioq, halt, fin, recon, liveSnap, bodyDone,
+                   staleEffect, budget>>
 
 \* The queued hop on rangeIOQueue: applyFinishedRangeBody (static) or
 \* finishOpaqueBody (forward-only).  It rechecks that its attempt is current,
@@ -345,7 +371,10 @@ RangeIO(r, a) ==
               /\ UNCHANGED <<redVars, task, tracked, bodyDone>>
           ELSE
               /\ stash' = Upd(stash, r, stash[r] \ {a})
-              /\ CASE working[r] = "none" ->
+              \* A finalizing row's file is whole, or (F4's residue) gone: either
+              \* way a late segment body is not appended (the append needs the
+              \* partial it was planned for).
+              /\ CASE working[r] = "none" /\ life[r] # "finalizing" ->
                         /\ working' = Upd(working, r, "partial")
                         \* continueRangeAfterBody: fetch the next segment unless halted.
                         /\ IF halt[r] = "none" /\ life[r] \in {"admitted", "transferring"}
@@ -361,10 +390,16 @@ RangeIO(r, a) ==
                    [] OTHER -> UNCHANGED <<working, task, tracked, fin, bodyDone>>
               /\ UNCHANGED redVars
     /\ UNCHANGED <<owner, intent, deleting,
-                   published, up, halt, rebuild, recon, liveSnap, budget>>
+                   published, up, superseded, halt, rebuild, recon, liveSnap, budget>>
 
-\* A delayed retry / range-request rebuild fires.  B02: its currency (attempt,
-\* halt, generation) must still be current, so a Pause in between stops it.
+\* The manager's side of an error handoff runs, a main-actor hop after the
+\* callback that queued it.
+\*  - Static: a delayed retry / range-request rebuild.  B02: its currency
+\*    (attempt, halt, generation) must still be current, so a Pause in between
+\*    stops it.
+\*  - Forward-only: the failure is written.  B12: only while the attempt that
+\*    raised it still owns the row.  Before B12 the manager looked the row up
+\*    by key, so a handoff from a replaced attempt failed its replacement.
 RebuildFires(r) ==
     /\ up /\ rebuild[r] # 0
     /\ rebuild' = Upd(rebuild, r, 0)
@@ -376,28 +411,45 @@ RebuildFires(r) ==
                        ELSE /\ Exists(r) /\ ~deleting[r] /\ owner[r] = a
                             /\ task[r][a] = "none"
                             /\ life[r] \in {"admitted", "transferring", "paused"}
-       IN IF start
-             THEN /\ task' = [task EXCEPT ![r][a] = "running"]
-                  /\ tracked' = Upd(tracked, r, tracked[r] \cup {a})
-                  /\ IF life[r] = "paused"
-                        \* Only before B02: the rebuild restarted a paused row.
-                        THEN /\ life' = Upd(life, r, "transferring")
-                             /\ cause' = Upd(cause, r, "none")
-                             /\ UNCHANGED <<strikes, counted, condemned>>
-                        ELSE Submit(r, Ev("transferRebuilding"))
-             ELSE UNCHANGED <<task, tracked, redVars>>
+           fails == /\ IF FixB12 THEN Owns(r, a) ELSE Exists(r) /\ ~deleting[r]
+                    /\ halt[r] = "none" /\ life[r] \in {"admitted", "transferring"}
+       IN IF Forward(r) THEN
+              /\ IF fails THEN Submit(r, EvReason("transferFailed", "network"))
+                           ELSE UNCHANGED redVars
+              /\ staleEffect' = (staleEffect \/ (fails /\ Stale(r, a)))
+              /\ UNCHANGED <<task, tracked>>
+          ELSE
+              /\ UNCHANGED staleEffect
+              /\ IF start
+                    THEN /\ task' = [task EXCEPT ![r][a] = "running"]
+                         /\ tracked' = Upd(tracked, r, tracked[r] \cup {a})
+                         /\ IF life[r] = "paused"
+                               \* Only before B02: the rebuild restarted a paused row.
+                               THEN /\ life' = Upd(life, r, "transferring")
+                                    /\ cause' = Upd(cause, r, "none")
+                                    /\ UNCHANGED <<strikes, counted, condemned>>
+                               ELSE Submit(r, Ev("transferRebuilding"))
+                    ELSE UNCHANGED <<task, tracked, redVars>>
     /\ UNCHANGED <<owner, intent, deleting,
-                   fileVars, up, ioq, halt, fin, recon, liveSnap,
-                   bodyDone, staleEffect, budget>>
+                   fileVars, up, superseded, ioq, halt, fin, recon, liveSnap,
+                   bodyDone, budget>>
 
 \* reducer: stallDetected.  A transferring row with no task and no queued work.
+\* In the code only the forward-only lane has this watchdog
+\* (DownloadManager.detectForwardOnlyStreamStalls).  On the static lane it
+\* stands in for the manager's stale-row recovery, which this model does not
+\* have: without it a static row that a stale reconcile left `transferring`
+\* would have no next step here, because the model has no pending-start
+\* state (TransferStarted needs `admitted`).  Static liveness is
+\* DownloadsRangeTrain's subject; Liveness-Static only shows that nothing
+\* else in this model traps a static row.
 StallDetected(r) ==
     /\ up /\ life[r] = "transferring" /\ ~deleting[r]
     /\ tracked[r] = {} /\ ioq[r] = {} /\ fin[r] = 0 /\ rebuild[r] = 0
     /\ recon[r] = "idle" /\ task[r][owner[r]] = "none"
     /\ Submit(r, Ev("stallDetected"))
     /\ UNCHANGED <<owner, intent, deleting,
-                   fileVars, task, up, memVars, bodyDone, staleEffect, budget>>
+                   fileVars, task, up, superseded, memVars, bodyDone, staleEffect, budget>>
 
 -----------------------------------------------------------------------------
 (* Finalizer: capture -> validate -> publish                               *)
@@ -416,7 +468,7 @@ BodyAtWorking(r) ==
              ELSE /\ fin' = Upd(fin, r, 0)
                   /\ UNCHANGED redVars
     /\ UNCHANGED <<owner, intent, deleting,
-                   fileVars, task, up, tracked, ioq, halt, rebuild, recon, liveSnap,
+                   fileVars, task, up, superseded, tracked, ioq, halt, rebuild, recon, liveSnap,
                    bodyDone, staleEffect, budget>>
 
 \* reducer: finalizeOutcome.  The outcome ID is the attempt (one body per
@@ -439,11 +491,15 @@ FinalizeOutcome(r, o) ==
                      /\ fin' = Upd(fin, r, 0)
                      /\ bodyDone' = Upd(bodyDone, r, 0)
                 ELSE UNCHANGED <<working, fin, bodyDone>>
-    /\ UNCHANGED <<owner, deleting, published, stash, task, up,
+    /\ UNCHANGED <<owner, deleting, published, stash, task, up, superseded,
                    tracked, ioq, halt, rebuild, recon, liveSnap, staleEffect, budget>>
 
 \* The finalizer delivers the truncation verdict it already delivered (same
-\* outcome ID) while the row still waits to publish.  R2-5: rejected(.replayed).
+\* outcome ID) while the row still waits to publish.  R2-5: rejected(.replayed)
+\* by the reducer, and DownloadAttemptHistory.recordingTruncation ignores a
+\* counted ID by itself.  Before R2-5 neither existed: the session kept one
+\* counter per row and added to it on every truncated finalizer run
+\* (truncationFailureCounts), which is the FixReplay = FALSE branch.
 FinalizeOutcomeReplayed(r) ==
     /\ up /\ fin[r] # 0 /\ fin[r] = owner[r] /\ life[r] = "finalizing"
     /\ ~deleting[r] /\ intent[r] = "unverified" /\ owner[r] \in counted[r]
@@ -453,7 +509,7 @@ FinalizeOutcomeReplayed(r) ==
           ELSE /\ strikes[r] <= MaxTruncationStrikes
                /\ strikes' = Upd(strikes, r, strikes[r] + 1)
     /\ UNCHANGED <<life, cause, owner, counted, condemned, intent, deleting,
-                   fileVars, task, up, memVars, bodyDone, staleEffect, budget>>
+                   fileVars, task, up, superseded, memVars, bodyDone, staleEffect, budget>>
 
 \* The validated-promotion recipe.  It is driven by the durable intent, so it
 \* replays after a relaunch without the in-memory finalizer.
@@ -462,7 +518,7 @@ PublishBody(r) ==
     /\ working[r] = "complete" /\ ~published[r]
     /\ published' = Upd(published, r, TRUE)
     /\ working' = Upd(working, r, "none")
-    /\ UNCHANGED <<rowVars, stash, task, up, memVars, bodyDone, staleEffect, budget>>
+    /\ UNCHANGED <<rowVars, stash, task, up, superseded, memVars, bodyDone, staleEffect, budget>>
 
 \* reducer: promotionCommitted
 PromotionCommitted(r) ==
@@ -472,7 +528,7 @@ PromotionCommitted(r) ==
     /\ intent' = Upd(intent, r, "none")
     /\ fin' = Upd(fin, r, 0)
     /\ UNCHANGED <<owner, deleting,
-                   fileVars, task, up, tracked, ioq, halt, rebuild, recon, liveSnap,
+                   fileVars, task, up, superseded, tracked, ioq, halt, rebuild, recon, liveSnap,
                    bodyDone, staleEffect, budget>>
 
 \* reducer: promotionAbandoned.  The intent's body is gone.
@@ -483,7 +539,7 @@ PromotionAbandoned(r) ==
     /\ intent' = Upd(intent, r, "none")
     /\ fin' = Upd(fin, r, 0)
     /\ UNCHANGED <<owner, deleting,
-                   fileVars, task, up, tracked, ioq, halt, rebuild, recon, liveSnap,
+                   fileVars, task, up, superseded, tracked, ioq, halt, rebuild, recon, liveSnap,
                    bodyDone, staleEffect, budget>>
 
 -----------------------------------------------------------------------------
@@ -499,13 +555,37 @@ UserPause(r) ==
     /\ Submit(r, EvPause("user"))
     /\ halt' = Upd(halt, r, "pause")
     /\ tracked' = IF Forward(r) THEN Upd(tracked, r, {}) ELSE tracked
-    /\ rebuild' = IF FixB02 THEN Upd(rebuild, r, 0) ELSE rebuild
+    \* B02 invalidates a static row's queued rebuild.  A forward-only row's
+    \* queued error handoff is not a rebuild and stays queued.
+    /\ rebuild' = IF FixB02 /\ ~Forward(r) THEN Upd(rebuild, r, 0) ELSE rebuild
     \* The code drops a finished forward-only body that has not reached
     \* `finalizing` when the user pauses (F3; see DidFinishDownloading).
     /\ bodyDone' = IF Forward(r) /\ ~FixPauseKeepsBody
                       THEN Upd(bodyDone, r, 0) ELSE bodyDone
     /\ UNCHANGED <<owner, intent, deleting,
-                   fileVars, task, up, ioq, fin, recon, liveSnap, staleEffect>>
+                   fileVars, task, up, superseded, ioq, fin, recon, liveSnap, staleEffect>>
+
+\* The pause's getAllTasks completion on the static lane (pauseRangeTask):
+\* every listed task of the row leaves tracking, is marked superseded and is
+\* cancelled.  A task whose finish callback ran first is not tracked any
+\* more, and its body is written behind the pause (writeThenPause).  A task
+\* that finished in the daemon while its callback is still queued behind
+\* this completion is still listed: it is superseded too, and its finish is
+\* then ignored (F3 on the static lane).  PROPOSED: a finished task stays
+\* tracked.  A cancelled task's error callback is superseded and inert.
+PauseSwept(r) ==
+    {a \in tracked[r] : \/ task[r][a] = "running"
+                         \/ (~FixPauseKeepsBody /\ task[r][a] = "finished")}
+PauseSweep(r) ==
+    /\ up /\ ~Forward(r) /\ halt[r] = "pause" /\ PauseSwept(r) # {}
+    /\ tracked' = Upd(tracked, r, tracked[r] \ PauseSwept(r))
+    /\ superseded' = Upd(superseded, r, superseded[r] \cup
+                         {a \in PauseSwept(r) : task[r][a] = "finished"})
+    /\ task' = Upd(task, r, [a \in Attempts |->
+                   IF a \in PauseSwept(r) /\ task[r][a] = "running" THEN "none"
+                   ELSE task[r][a]])
+    /\ UNCHANGED <<rowVars, fileVars, up, ioq, halt, rebuild, fin, recon, liveSnap,
+                   bodyDone, staleEffect, budget>>
 
 \* A fresh attempt: new attempt ID, new (empty) working path.
 \* reducer: retry(.freshAttempt).  The replacement attempt does not inherit
@@ -527,12 +607,12 @@ UserResume(r) ==
     /\ up /\ life[r] = "paused" /\ ~deleting[r]
     /\ Spend
     /\ halt' = Upd(halt, r, "none")
-    /\ rebuild' = IF FixB02 THEN Upd(rebuild, r, 0) ELSE rebuild
+    /\ rebuild' = IF FixB02 /\ ~Forward(r) THEN Upd(rebuild, r, 0) ELSE rebuild
     /\ IF Forward(r)
           THEN FreshAttempt(r)
           ELSE /\ Submit(r, EvRetry("staticCheckpoint"))
                /\ UNCHANGED <<owner, working, fin, bodyDone>>
-    /\ UNCHANGED <<intent, deleting, published, stash, task, up,
+    /\ UNCHANGED <<intent, deleting, published, stash, task, up, superseded,
                    tracked, ioq, recon, liveSnap, staleEffect>>
 
 \* reducer: retry(.freshAttempt) from failed.
@@ -542,7 +622,7 @@ UserRetry(r) ==
     /\ FreshAttempt(r)
     /\ halt' = Upd(halt, r, "none")
     /\ rebuild' = Upd(rebuild, r, 0)
-    /\ UNCHANGED <<intent, deleting, published, stash, task, up,
+    /\ UNCHANGED <<intent, deleting, published, stash, task, up, superseded,
                    tracked, ioq, recon, liveSnap, staleEffect>>
 
 \* Delete: a durable deletion-pending flag and a cancel halt.
@@ -553,7 +633,7 @@ UserDelete(r) ==
     /\ halt' = Upd(halt, r, "cancel")
     /\ rebuild' = Upd(rebuild, r, 0)
     /\ UNCHANGED <<life, cause, owner, strikes, counted, condemned, intent,
-                   fileVars, task, up, tracked, ioq, fin, recon, liveSnap,
+                   fileVars, task, up, superseded, tracked, ioq, fin, recon, liveSnap,
                    bodyDone, staleEffect>>
 
 \* The cleanup runner executes the deletion.  It replays after a relaunch.
@@ -571,15 +651,13 @@ CleanupRuns(r) ==
     /\ tracked' = Upd(tracked, r, {})
     /\ fin' = Upd(fin, r, 0)
     /\ bodyDone' = Upd(bodyDone, r, 0)
-    /\ UNCHANGED <<owner, strikes, counted, up, ioq, halt, rebuild, recon, liveSnap,
+    /\ UNCHANGED <<owner, strikes, counted, up, superseded, ioq, halt, rebuild, recon, liveSnap,
                    staleEffect, budget>>
 
 -----------------------------------------------------------------------------
 (* Crash and recovery                                                      *)
 
-Crash ==
-    /\ up
-    /\ Spend
+CrashEffects ==
     /\ up' = FALSE
     /\ tracked' = [r \in Rows |-> {}]
     /\ ioq' = [r \in Rows |-> {}]
@@ -588,14 +666,42 @@ Crash ==
     /\ fin' = [r \in Rows |-> 0]
     /\ recon' = [r \in Rows |-> "idle"]
     /\ liveSnap' = [r \in Rows |-> FALSE]
+    /\ superseded' = [r \in Rows |-> {}]
+
+Crash ==
+    /\ up
+    /\ Spend
+    /\ CrashEffects
     /\ UNCHANGED <<rowVars, fileVars, task, bodyDone, staleEffect>>
+
+\* F4.  A failing truncation verdict (FinalizeOutcome's branch with
+\* deleteWorkingBody) is three steps in the code: the verdict is applied to
+\* the row in memory and gets a persistence ticket; the condemned body is
+\* renamed off the working path at once (condemnBody); the finalizer then
+\* waits for the ticket.  FinalizeOutcome is all three.  This action is the
+\* first two and a crash: the body is gone from the working path and the
+\* durable row is the old `finalizing` one, with no strike and no
+\* `bodyCondemned`.  Reconcile then fails that row (internalError).
+\* PROPOSED: the verdict is durable before the rename, so the window is gone.
+FinalizeTruncatedCrash(r) ==
+    /\ ~FixVerdictBeforeRename
+    /\ up /\ fin[r] # 0 /\ fin[r] = owner[r] /\ life[r] = "finalizing"
+    /\ ~deleting[r] /\ working[r] = "complete" /\ intent[r] = "none"
+    /\ "truncated" \in Outcomes
+    /\ Has(Send(r, EvFinalize(owner[r], "truncated", "src")), "deleteWorkingBody")
+    /\ Spend
+    /\ working' = Upd(working, r, "none")
+    \* The verdict condemned the body: it is not a finished body any more.
+    /\ bodyDone' = Upd(bodyDone, r, 0)
+    /\ CrashEffects
+    /\ UNCHANGED <<rowVars, published, stash, task, staleEffect>>
 
 Relaunch ==
     /\ ~up
     /\ up' = TRUE
     /\ recon' = [r \in Rows |-> "needReattach"]
     /\ UNCHANGED <<rowVars, fileVars, task, tracked, ioq, halt, rebuild, fin, liveSnap,
-                   bodyDone, staleEffect, budget>>
+                   superseded, bodyDone, staleEffect, budget>>
 
 \* Returning to the foreground runs the same reattach + reconcile in-process
 \* (recoverStaticRangeTransfersAfterForeground).  This step is the getAllTasks
@@ -606,10 +712,20 @@ ForegroundReattachBegins ==
     /\ Spend
     /\ recon' = [r \in Rows |-> "needReattach"]
     \* getAllTasks completions run in request order.  A Pause that came first has
-    \* its own completion ahead of this one, and that drops the row's range
-    \* tracking (pauseRangeTask) before Reattach takes its live snapshot.
-    /\ tracked' = [r \in Rows |-> IF halt[r] = "pause" THEN {} ELSE tracked[r]]
-    /\ UNCHANGED <<rowVars, fileVars, task, up, ioq, halt, rebuild, fin, liveSnap,
+    \* its own completion (PauseSweep) ahead of this one, and that drops the
+    \* row's range tracking before Reattach takes its live snapshot.
+    /\ tracked' = [r \in Rows |-> IF halt[r] = "pause" /\ ~Forward(r)
+                                     THEN tracked[r] \ PauseSwept(r) ELSE
+                                  IF halt[r] = "pause" THEN {} ELSE tracked[r]]
+    /\ superseded' = [r \in Rows |-> IF halt[r] = "pause" /\ ~Forward(r)
+                                        THEN superseded[r] \cup
+                                             {a \in PauseSwept(r) : task[r][a] = "finished"}
+                                        ELSE superseded[r]]
+    /\ task' = [r \in Rows |-> [a \in Attempts |->
+                   IF /\ halt[r] = "pause" /\ ~Forward(r)
+                      /\ a \in PauseSwept(r) /\ task[r][a] = "running"
+                      THEN "none" ELSE task[r][a]]]
+    /\ UNCHANGED <<rowVars, fileVars, up, ioq, halt, rebuild, fin, liveSnap,
                    bodyDone, staleEffect>>
 
 \* reattachToResumedTasks, one row's share of the getAllTasks completion: it
@@ -641,7 +757,7 @@ Reattach(r) ==
                          task[r][a] = "running" \/ Claimed(a)})
     /\ recon' = Upd(recon, r, "needReconcile")
     /\ UNCHANGED <<owner, intent, deleting,
-                   working, published, up, ioq, halt, rebuild, fin,
+                   working, published, up, superseded, ioq, halt, rebuild, fin,
                    bodyDone, staleEffect, budget>>
 
 \* The facts reconcile reports for row r (DownloadStore.observeLifecycleFacts)
@@ -707,7 +823,7 @@ RelaunchObserved(r) ==
            /\ ioq' = IF Has(t, "requestFinalization") /\ facts.body = "captured"
                          THEN Upd(ioq, r, ioq[r] \cup {owner[r]}) ELSE ioq
     /\ UNCHANGED <<owner, intent, deleting,
-                   published, stash, task, up, tracked, halt, rebuild, liveSnap,
+                   published, stash, task, up, superseded, tracked, halt, rebuild, liveSnap,
                    bodyDone, staleEffect, budget>>
 
 \* A row parked `deferredResume` restarts by itself from its checkpoint.
@@ -717,7 +833,7 @@ AutoResume(r) ==
     /\ ~deleting[r] /\ halt[r] = "none" /\ ~Forward(r)
     /\ Submit(r, EvRetry("staticCheckpoint"))
     /\ UNCHANGED <<owner, intent, deleting,
-                   fileVars, task, up, memVars, bodyDone, staleEffect, budget>>
+                   fileVars, task, up, superseded, memVars, bodyDone, staleEffect, budget>>
 
 -----------------------------------------------------------------------------
 
@@ -726,6 +842,7 @@ AppStep(r) ==
     \/ BodyAtWorking(r) \/ FinalizeOutcomeReplayed(r)
     \/ PublishBody(r) \/ PromotionCommitted(r) \/ PromotionAbandoned(r)
     \/ CleanupRuns(r) \/ Reattach(r) \/ RelaunchObserved(r) \/ AutoResume(r)
+    \/ PauseSweep(r)
     \/ \E o \in Outcomes : FinalizeOutcome(r, o)
     \/ \E a \in Attempts :
           \/ TransferProgress(r, a) \/ DidFinishDownloading(r, a)
@@ -737,13 +854,27 @@ Next ==
     \/ \E r \in Rows : AppStep(r) \/ UserStep(r)
     \/ \E r \in Rows, a \in Attempts : DaemonFinishes(r, a) \/ DaemonFails(r, a)
     \/ Crash \/ Relaunch \/ ForegroundReattachBegins
+    \/ \E r \in Rows : FinalizeTruncatedCrash(r)
 
 Spec == Init /\ [][Next]_vars
 
-\* Liveness: every app step is weakly fair, the daemon resolves every task, and
-\* a task that keeps being retried eventually finishes (strong fairness).  The
-\* environment (user, crashes, foreground) is not fair; BoundEnvironment makes
-\* it finite.
+\* Liveness assumptions, each one a thing the code cannot promise by itself:
+\*  - Every step of the session, its queues and the finalizer is weakly fair,
+\*    and the daemon resolves every task.  True while the process runs or
+\*    the daemon can wake it.
+\*  - Network: a task that keeps being retried eventually finishes (the
+\*    strong fairness on DaemonFinishes).  The code has retry budgets
+\*    instead, and spending one fails the row, which is a stable end; the
+\*    model does not count them, so without this assumption a static segment
+\*    could fail and be rebuilt for ever.
+\*  - Foreground: RebuildFires, StallDetected and AutoResume are the
+\*    manager's steps on the main actor (the error handoff, the stall
+\*    watchdog, the deferred-resume pass).  They are weakly fair here.  A
+\*    suspended background app runs none of them until it is next in the
+\*    foreground; specs/downloads/range-train/Mutant-NoForegroundRefresh.cfg
+\*    shows a train that then never moves.
+\* The environment (user, crashes, foreground reattach) is not fair;
+\* BoundEnvironment makes it finite.
 Fairness ==
     /\ WF_vars(Relaunch)
     /\ \A r \in Rows :
@@ -752,7 +883,7 @@ Fairness ==
           /\ WF_vars(PublishBody(r)) /\ WF_vars(PromotionCommitted(r))
           /\ WF_vars(PromotionAbandoned(r)) /\ WF_vars(CleanupRuns(r))
           /\ WF_vars(Reattach(r)) /\ WF_vars(RelaunchObserved(r))
-          /\ WF_vars(AutoResume(r))
+          /\ WF_vars(AutoResume(r)) /\ WF_vars(PauseSweep(r))
           /\ WF_vars(\E o \in Outcomes : FinalizeOutcome(r, o))
           /\ \A a \in Attempts :
                 /\ WF_vars(TransferProgress(r, a))
@@ -772,8 +903,24 @@ FairSpec == Spec /\ Fairness
 CompleteHasPublishedBody ==
     \A r \in Rows : life[r] \in Playable /\ ~deleting[r] => published[r]
 
-\* A finalizing row always has the body it is finalizing.
+\* A finalizing row has the body it is finalizing.  The one exception is the
+\* residue of F4: a crash after a failing truncation verdict renamed the body
+\* away and before the verdict was durable leaves a `finalizing` row with no
+\* body and no finalizer.  It lasts until reconcile, which fails the row.
+\* With the proposed fix there is no exception.
+VerdictCrashResidue(r) ==
+    /\ ~FixVerdictBeforeRename
+    /\ intent[r] = "none" /\ fin[r] = 0
+    /\ (~up \/ recon[r] # "idle")
 FinalizingHasBody ==
+    \A r \in Rows :
+        life[r] = "finalizing" /\ ~deleting[r] =>
+            \/ working[r] = "complete" \/ published[r]
+            \/ DurableCapture /\ owner[r] \in stash[r]
+            \/ VerdictCrashResidue(r)
+
+\* The same with no exception.  It fails today (F4) and holds with the fix.
+FinalizingAlwaysHasBody ==
     \A r \in Rows :
         life[r] = "finalizing" /\ ~deleting[r] =>
             \/ working[r] = "complete" \/ published[r]
@@ -784,7 +931,8 @@ QueuedBodyNotSwept ==
     \A r \in Rows : \A a \in ioq[r] :
         Owns(r, a) /\ halt[r] # "cancel" => a \in stash[r]
 
-\* B12: a callback from a stale attempt never changes the row or its files.
+\* B12: nothing a stale attempt raised changes the row or its files, neither
+\* its callbacks nor the manager's side of its error handoff.
 StaleCallbackInert == ~staleEffect
 
 \* B10: a finished body survives a crash at any step.  Once the app holds the
@@ -809,24 +957,41 @@ NoStartWhileUserPaused ==
 \* B10: a complete body at the working path is only ever published, condemned
 \* by a verdict, deleted with its row, or replaced by a fresh attempt the user
 \* asked for.  Relaunch recovery never deletes it.  (The code deletes it for
-\* a user-paused forward-only row.  That case is F3 and is left out here.)
+\* a user-paused forward-only row.  That case is F3 and is left out here.
+\* A crash inside a failing truncation verdict removes it without recording
+\* the verdict.  That case is F4: VerdictSurvivesCrash.)
 WorkingBodyKept ==
     [][\A r \in Rows :
           /\ working[r] = "complete" /\ working'[r] # "complete"
           /\ ~(Forward(r) /\ UserPaused(r) /\ ~FixPauseKeepsBody)
+          /\ up'
           => \/ published'[r] \/ condemned'[r] \/ life'[r] = "absent"
              \/ owner'[r] # owner[r]]_vars
 
+\* F4: a truncation verdict that took a body off the working path is on the
+\* row.  No crash leaves the body gone and the row without `bodyCondemned`.
+VerdictSurvivesCrash ==
+    [][\A r \in Rows :
+          working[r] = "complete" /\ working'[r] # "complete" /\ ~up'
+          => condemned'[r]]_vars
+
 \* F3: a finished body survives a user pause, on either lane.  The app holds
-\* the whole body of the row's current attempt where it can still use it: at
-\* the working path or, forward-only, in a stash that a queued publication
-\* claims or a durable capture references.
+\* the whole body of the row's current attempt where it can still use it:
+\*  - at the working path;
+\*  - forward-only: in a stash that a queued publication claims or a durable
+\*    capture references;
+\*  - static: the first segment is durable and the last one is finished,
+\*    either still with the daemon for a task the session tracks, or stashed
+\*    under a queued append.
 HoldsWholeBody(r) ==
     /\ Exists(r) /\ ~deleting[r]
     /\ \/ working[r] = "complete"
        \/ /\ Forward(r) /\ owner[r] \in stash[r]
           /\ \/ owner[r] \in ioq[r]
              \/ DurableCapture /\ life[r] = "finalizing"
+       \/ /\ ~Forward(r) /\ working[r] = "partial"
+          /\ \/ (task[r][owner[r]] = "finished" /\ owner[r] \in tracked[r])
+             \/ (owner[r] \in stash[r] /\ owner[r] \in ioq[r])
 
 \* While the row is paused by the user (the durable pause, or the in-memory
 \* halt that precedes it), no step of a live process gives that body up,
