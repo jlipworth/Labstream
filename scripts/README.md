@@ -41,6 +41,15 @@ Commands and limitations: [workflow status and review evidence](../docs/DEVELOPM
   newline-separated `CI_EXTRA_FORBIDDEN`. `publication-audit.py` also reads `ci-hygiene.local`.
   A source guard also fails any download status or lifecycle write that bypasses the lifecycle
   reducer (submit a `DownloadLifecycleEvent` instead).
+- `check-tla-specs.sh` — parses (SANY) and model-checks (TLC) the TLA+ specs under `specs/`. With
+  no arguments it runs every module and every `.cfg`; pass `.cfg`/`.tla` files or directories to run
+  a subset, or `--list` to print the configs. It downloads the pinned `tla2tools.jar` (v1.7.4) into
+  the gitignored `build/tla/` and refuses a jar whose SHA-256 differs. Java comes from Homebrew's
+  keg-only `openjdk` unless `JAVA` is set (`/usr/bin/java` is a stub). Each config declares
+  `\* SPEC: <module>` and `\* EXPECT: pass` or `\* EXPECT: violation <Property>` in its header; the
+  script exits non-zero on a parse error or when a run ends differently, and prints the
+  counterexample. `TLC_WORKERS` (default `auto`) and `TLC_HEAP` (default `4g`) tune TLC. The
+  downloads model is described in `docs/DOWNLOADS-OFFLINE.md#formal-model-tla`.
 - `testflight-release.py` — preflight, archive, validate, upload, status, `select-build`,
   `distribute` (to an internal TestFlight group via `--group`), `ship` (on-demand archive, validate,
   upload, wait, distribute, then prune), and `prune-archives` for the coordinated App Store targets.
