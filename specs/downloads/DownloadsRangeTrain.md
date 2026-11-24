@@ -120,6 +120,8 @@ a finding on this lane. The whole-file loss on this lane is R2 below.
 
 ### R1: a drain run by a held-body removal strands the train
 
+Issue: #477.
+
 Trace (`RangeTrain-Finding-R1-StrandedDrain`), a three-segment file, depth two:
 
 1. Segments 0 and 1 are in flight. Both finish. The apply of body 1 runs first: it is ahead of the
@@ -151,6 +153,8 @@ otherwise continues the train, as the append path does.
 Pinned by `DownloadsFormalModelRangeTrainTests.removalCompletionDrainContinuesTheTrain`.
 
 ### R2: reconcile fails a row whose finished body is queued for append
+
+Issue: #476.
 
 Trace (`RangeTrain-Finding-R2-ReconcileFailsQueuedBody`), a one-segment file:
 

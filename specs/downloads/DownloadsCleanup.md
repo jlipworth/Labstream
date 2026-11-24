@@ -96,6 +96,8 @@ The `Current` and `Liveness` configs leave out the two invariants that Cleanup-C
 
 ### Cleanup-C1: a recovered row deletion unlinks before its intent is durable (new)
 
+Issue: #479.
+
 1. The volume is full. The user deletes a finished row.
 2. The row-deletion intent is queued in memory. Its index commit fails, so the worker fails the
    head and drops its ticket.

@@ -92,6 +92,8 @@ Each was checked against the Swift before it was recorded. None is fixed here.
 
 ### S1: a cancelled poster owner stays cancelled for the launch (real)
 
+Issue: #482.
+
 Trace (`SideAssets-Finding-S1-PosterOwnerStaysCancelled`): a row is released with the default
 `releaseInFlight` mode and keeps its attempt; the release cancels both of the attempt's coordinator
 owners; the row later completes under the same attempt; the repair pass offers the poster; the
@@ -111,6 +113,8 @@ Proposed in the model (`FixPosterReregisters`): a poster fetch reopens its owner
 Pin: `DownloadsFormalModelSideAssetsTests.posterFetchReopensItsCancelledOwner`.
 
 ### S2: Pause All can strand a completed row's side assets (real)
+
+Issue: #483.
 
 Trace (`SideAssets-Finding-S2-PauseAllStrandsCompletedRow`): a row completes while its subtitle
 task is still fetching; a foreground edge runs the repair pass, which queues a source-metadata
@@ -132,6 +136,8 @@ Pin: `DownloadsFormalModelSideAssetsTests.resumeAllUnparksCompletedRows`.
 
 ### S3: an outage spends the launch's retry budget (probable, a design limit)
 
+Issue: #484.
+
 Trace (`SideAssets-Finding-S3-OutageExhaustsBudget`): the server is unreachable; a poster dispatch
 fails and is charged; the server comes back; the budget for that poster is spent, so nothing
 offers it again in this launch.
@@ -144,6 +150,8 @@ restores the budget, so `NeverForgotten` holds. Whether a transient failure shou
 product decision, so this is not pinned.
 
 ### S4: a refused Resume leaves a paused row unparked (probable, low)
+
+Issue: #485.
 
 Trace (`SideAssets-Finding-S4-RefusedResumeUnparks`): the user pauses a row; the user taps Resume;
 `retryRecordAsync` unparks the side assets before its own guards; the storage cap or a missing

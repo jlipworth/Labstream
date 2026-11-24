@@ -123,6 +123,8 @@ Three mutants for protections that are not in that audit:
 
 ### S1: a silent transfer hides the batch speed for as long as it is silent (real, medium)
 
+Issue: #487.
+
 Two static-range rows are transferring. One gets no bytes: it stalled, or never received its
 first byte. No error arrives, so no callback arrives, and nothing takes a static-range row out of
 `transferring` (only forward-only streams have a stall verdict). The other row keeps moving. The
@@ -147,6 +149,8 @@ zero, and its next sample still resets the batch.
 
 ### S2: a stalled static-range row keeps showing a speed (real, medium)
 
+Issue: #488.
+
 A row's speed is recomputed only inside `refreshRecords`. After a static-range row's last
 callback, the only refreshes left come from the watchdog loop, and that loop stops at the first
 refresh that finds the aggregate without an answer. The aggregate loses its answer 3.5 s after the
@@ -170,6 +174,8 @@ runs while any row is transferring.
 
 ### S3: after a process death a static-range row shows fewer bytes than before (probable, low)
 
+Issue: #490.
+
 The optimistic total of a static-range row lives in memory (`liveRangeProgress`). The process dies
 while the background task keeps running. After relaunch the row is still downloading, with no
 reducer reset, and shows its durable checkpoint until the first callback arrives. For a single
@@ -184,6 +190,8 @@ The behaviour follows from the code. Whether it matters depends on how long the 
 takes on a device, and there is no PMSKit decision to pin.
 
 ### S4: a forward-only row's late first callback after a wake inflates its speed (probable, low)
+
+Issue: #489.
 
 On foreground every downloading row gets a 4 s grace in which each refresh replaces its estimator
 with a one-sample baseline. A static-range row is also marked so that its first callback

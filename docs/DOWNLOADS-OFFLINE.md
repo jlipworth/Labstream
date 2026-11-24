@@ -732,12 +732,13 @@ static row can queue two segment tasks.
 
 ## Formal model (TLA+)
 
-`specs/downloads/` holds a TLA+ model of the downloads manager, checked with TLC. The first module
-covers the session, finalize and sweep core. It explores every interleaving of the user, the
-URLSession daemon, delegate callbacks, the finalizer, the stash sweep, relaunch and foreground
-recovery, and process death, for one or two rows and two attempt IDs.
+`specs/downloads/` holds TLA+ models of the downloads manager, checked with TLC: one module for
+the session core and one for each subsystem around it. The session core covers transfer, finalize
+and sweep. It explores every interleaving of the user, the URLSession daemon, delegate callbacks,
+the finalizer, the stash sweep, relaunch and foreground recovery, and process death, for one or
+two rows and two attempt IDs.
 
-What it checks:
+What the session core checks:
 
 - a complete row always has its published body, and a finalizing row has the body it finalizes;
 - a stash whose append or publication is queued is never swept (B03);
@@ -758,10 +759,115 @@ What it checks:
 | `DownloadsReducerTable.tla` | Generated. The Swift reducer's results over a fixed input set. |
 | `DownloadsReducerConformance.tla` | Compares `Reduce` with that table. |
 | `DownloadsSessionCore.tla` | The session, finalize and sweep model. It changes lifecycle and history only through `Reduce`. |
+| `DownloadsAdmission.tla` | The admission window: lanes, waiting rows, the pump, Pause All. |
+| `DownloadsServerPrep.tla` | Server preparation: the Plex optimize and Emby Convert runners. |
+| `DownloadsCleanup.tla` | Delete, the server-cleanup journal and a full volume. |
+| `DownloadsWake.tla`, `DownloadsWakeLaunchGate.tla` | Background wakes, completion handlers, startup admission; the launch recovery gate. |
+| `DownloadsSideAssets.tla` | Posters, chapter images, trick-play and subtitles. |
+| `DownloadsStorage.tla` | Byte accounting, the storage cap, preflights and storage-full parking. |
+| `DownloadsRangeTrain.tla` | The static-range segment train with held bodies. |
+| `DownloadsStatus.tla` | What the Downloads screen says: speed, bytes, phase and caption. |
 
 Each module names the Swift files it models on `\* MODELS:` lines under its `MODULE` line. A new
 subsystem gets its own `Downloads<Name>.tla`; the comment block at the top of `DownloadsBase.tla`
-is the contract for naming, imports, configs and findings.
+is the contract for naming, imports, configs and findings. Each subsystem module has a notes file
+beside it (`specs/downloads/Downloads<Name>.md`) with its model-to-Swift table, bounds,
+properties, per-config results and full finding traces.
+
+### Subsystem models
+
+Every subsystem module keeps a whole reducer state per row and changes lifecycle only through
+`Reduce`, except the two wake modules, which have no rows. Finding IDs carry the module name;
+[Open findings](#open-findings) has the issue for each.
+
+#### Admission (`DownloadsAdmission.tla`)
+
+Two lanes under the simultaneous-downloads total, waiting rows (planned, or parked with a
+requested retry), the pump, supervised starts, Pause All, Resume All, backoff and process death.
+It checks that no lane or total exceeds its cap, that a queued row always has a supervised start
+behind it, that a user pause withdraws a waiting retry and keeps a first-start intent, that an
+outage defers a first start, and, under fairness, that no waiting row waits forever. Fix-off
+configs reproduce B63, B65, B66 and B67. Finding Admission-A1. Not covered: the server-preparation
+lane, lane switches, the render handoff (#414), setting changes mid-run, the admission
+persistence proof, new rows and Delete.
+
+#### Server preparation (`DownloadsServerPrep.tla`)
+
+One row on either runner: create or adopt, poll, hand-off, reattach after relaunch, Pause, Resume,
+Retry, Delete, the cleanup runner's cancel, stale poller chains, lost requests and responses. It
+checks that no job is created while a matching render exists (B35), that the hand-off happens at
+most once and only for an active row, that a swallowed create error cannot leave preparation
+pending (B37), and that Delete cancels unfinished preparation durably (B28, B47). Finding
+ServerPrep-S1 (Plex only; Emby passes the same properties). Not covered: more than one row, the
+preparation-lane cap, the Plex 24-hour render deadline, signed-out sessions.
+
+#### Cleanup and Delete (`DownloadsCleanup.tla`)
+
+Delete from the tap to the last reclaimed byte: the deletion-pending capsule, the row-deletion
+barrier and artifact queue, the artifact worker, legacy promotion recovery, the cleanup journal
+and runner, and a volume that can be completely full. Process death and power loss are separate
+steps; power loss also drops unsynced journal bytes. It checks that no file is left without a
+row, that a server job is always accounted for by a row or a journal entry (B18), and that a job
+is kept while a row needs it (B28, B44). It confirms the open B27 and B30 and found Cleanup-C1.
+The model also shows that a B27 fix must make Delete and the launch promotion recovery exclude
+each other, and that C1 and B30 should be fixed together. Not covered: retry by replacement,
+paths shared across rows, abandonment intents.
+
+#### Wake (`DownloadsWake.tla`, `DownloadsWakeLaunchGate.tla`)
+
+The completion registry, the wake coordinator with its budget timers, and startup admission, with
+OS handler delivery, finish-events, a clock and process death. It checks that every stored
+completion handler is claimed by its deadline and eventually called, that the gate holds for a
+delayed retry's successor (B04), and that a startup block releases a handler without dropping
+live holds (B05, B06, B11, B13). The second module models the launch recovery gate (B77).
+Findings Wake-W1 and Wake-W2, both probable and both in app-target code, so neither has a PMSKit
+pin. Not covered: timer arming (timers are derived from state), rebuild grace, per-task callback
+admission (B07).
+
+#### Side assets (`DownloadsSideAssets.tla`)
+
+Poster, chapter images, trick-play index and external text subtitles across the work registry,
+the fetch coordinator's park, unpark and cancel commands, the per-launch retry budget, the
+completed-row repair pass, Delete, replacement attempts and process death. It checks that no
+asset of a playable row is forgotten, that repair stays inside the coordinator's cap and budget
+(B25), that commands apply in request order (B32), that a user-paused row's parked payloads stay
+off the network, and that Delete leaves no side-asset file. The code keeps no durable record of a
+failed side asset, so "not forgotten" counts an exhausted per-launch budget as the record.
+Findings SideAssets-S1 to S4; the model also reproduces the deferred st-39 and #394. Not covered:
+request pacing, coalesced waiters, a source-identity change inside one attempt.
+
+#### Storage (`DownloadsStorage.tla`)
+
+What each row holds on disk, the storage cap with reservations, the free-space preflights,
+storage-full failure, the automatic-redrive gate and the storage audit, with bytes as small
+integers. It checks that a preflight refusal is justified (B01), that a retry is counted once and
+the cap honoured (B24), that a full disk is classified as storage (B26), that a storage-parked
+row is not redriven without measuring (B31), that the audit counts hidden staging (B19), and that
+startup leaves no orphan (B86). The #401 limits are stated as passing properties: a paused row
+keeps its bytes, and orphans are reclaimed only at startup. Finding Storage-S1.
+
+#### Range train (`DownloadsRangeTrain.tla`)
+
+Parallel segment tasks up to the shipping depth of two, out-of-order bodies held through their
+three stages (stash, durable held file, manifest), the one-append-per-pass drain, purge, pause
+and resume, Retry, one changed-resource restart, restore after relaunch, both orphan sweeps,
+reconcile and the stale-row self-heal. It checks that a held body is never swept between its
+rename and its manifest (B22), that recovery never discards the attempt's working checkpoint
+(B00), that a queued body is not swept (B03), that every segment body is appended at its own
+offset, and that a stale train's body changes nothing. Findings RangeTrain-R1 and R2. Not
+covered: validators, the HTTP 200 and 416 paths, retry budgets, blob resume, path leases.
+
+#### Status and speed (`DownloadsStatus.tla`)
+
+The aggregate speed, each row's speed, bytes, phase and caption, across sleep and wake, pause and
+resume, silent stalls and process death. Time is abstract: an estimator is the stage it has
+reached. It checks that a published batch speed leaves out no transfer that might be moving
+(#379), that no speed divides bytes that piled up during a sleep by a short interval (#224), that
+a segment boundary never resets the batch (#416), that phase, sidebar and health snapshot say
+active work only when work exists, that a row waiting for admission reads as waiting (pu-33), and
+that shown bytes never go down while a row stays downloading in a live process. Findings
+Status-S1 to S4. `DownloadsFormalModelStatusTests` adds seeded property tests of the Swift
+estimators over the same cases.
 
 ### Running it
 
@@ -774,7 +880,9 @@ scripts/check-tla-drift.py                                         # modelled Sw
 
 The script downloads a pinned `tla2tools.jar` into the gitignored `build/tla/`, verifies its
 SHA-256, parses every module and runs TLC on every `.cfg`. It needs a JDK (Homebrew `openjdk`, or
-`JAVA=`); without one it exits 2 and says so. Each config states what it expects in its header:
+`JAVA=`); without one it exits 2 and says so. On a 14-core Mac the default tier (147 configs)
+takes about six minutes and the six deep configs about five more. Each config states what it
+expects in its header:
 
 | Config | Meaning | Must |
 | --- | --- | --- |
@@ -785,6 +893,11 @@ SHA-256, parses every module and runs TLC on every `.cfg`. It needs a JDK (Homeb
 | `Proposed-*` | Proposed fixes turned on. | pass |
 | `Reducer-Conformance`, `Projection-*` | The reducer checks below. | pass |
 | `Deep-*` (`\* TIER: deep`) | Larger bounds. Skipped unless `--deep`, `--deep-only` or `TLC_TIER` asks. | pass |
+
+A subsystem module's configs carry its name first: `Admission-Current-Mixed.cfg`,
+`Cleanup-Faithful-B18-off.cfg`. The session core's configs predate the prefix. TLC does not name
+a violated liveness property, so such a config declares `EXPECT: violation TEMPORAL`, checks one
+property and names it in its comment line.
 
 ### Keeping the model equal to the code
 
@@ -829,21 +942,50 @@ requests. The reducer table test runs with the rest of PMSKit in `.woodpecker/pm
 
 ### Open findings
 
-Three findings are open, each pinned by a known-issue test in
-`PMSKit/Tests/PMSKitTests/DownloadsFormalModelFindingsTests.swift`:
+Each finding was checked against the Swift before it was recorded. A real finding with a pure
+decision to test is pinned by a `withKnownIssue` test in
+`PMSKit/Tests/PMSKitTests/DownloadsFormalModel<Name>Tests.swift` (the session core's are in
+`DownloadsFormalModelFindingsTests.swift`), so the suite stays green and the test fails as soon
+as the defect is fixed.
 
-- F1: a crash between the `tmp/` stash and the working path loses a finished forward-only body;
-- F2: foreground reconcile can move a user-paused row back to transferring from a stale live-task
-  snapshot;
-- F3: a user pause that lands while a forward-only transfer finishes discards the finished body.
-  The static lane keeps it.
+| Finding | What goes wrong | Verdict | Issue |
+| --- | --- | --- | --- |
+| F1 | A crash between the `tmp/` stash and the working path loses a finished forward-only body. | real | #472 |
+| F2 | Foreground reconcile moves a user-paused row back to transferring from a stale live-task snapshot. | real | #473 |
+| F3 | A user pause that lands while a forward-only transfer finishes discards the finished body. The static lane keeps it. | real | #474 |
+| Admission-A1 | Startup recovery fails a forward-only row that never started: a granted start cut by a crash, or a first start the user paused. | real | #475 |
+| ServerPrep-S1 | Retry of a failed Plex preparation row abandons its running optimize job with no durable cancel and creates a second one. | real | #478 |
+| Cleanup-C1 | After a failed intent commit, an explicit artifact recovery re-registers the row deletion and files are unlinked before the intent is durable. | real | #479 |
+| B27 | A legacy validated promotion whose body is gone makes Delete a permanent no-op. | real, known | #392 |
+| B30 | On a completely full volume the deletion intent cannot be saved, so Delete frees nothing. | real, known | #393 |
+| Wake-W1 | A completion handler that arrives while a claimed batch waits for its release inherits that batch's deadline. | probable | #480 |
+| Wake-W2 | An operation begun while an expired operation lingers does not hold the next wake. | probable | #481 |
+| SideAssets-S1 | A cancel that keeps the attempt leaves the poster's coordinator owner cancelled for the launch. | real | #482 |
+| SideAssets-S2 | Pause All can park a completed row's side assets with nothing left to unpark them. | real | #483 |
+| SideAssets-S3 | A server outage spends the per-launch retry budget for an asset the server has. | probable | #484 |
+| SideAssets-S4 | A refused Resume leaves a user-paused row's side assets unparked. | probable | #485 |
+| st-39 | A side-asset file renamed but not yet recorded is left on disk by Delete. | real, known | #401 |
+| #394 | Fetched chapter payloads wait in memory behind one-at-a-time preparation. | real, known | #394 |
+| Storage-S1 | An automatic requeue erases a storage-full park, so the row is redriven once without measuring free space. | real | #486 |
+| RangeTrain-R1 | A drain pass run by a held-body removal completion discards its result and strands the train until the self-heal. | real | #477 |
+| RangeTrain-R2 | Reconcile fails a static row whose finished body is stashed and queued for append. | real | #476 |
+| Status-S1 | A silently stalled transfer hides the batch speed for as long as it is silent. | real | #487 |
+| Status-S2 | A stalled static-range row keeps showing a stale speed and ETA. | real | #488 |
+| Status-S3 | After a process death a static-range row shows fewer bytes than before. | probable | #490 |
+| Status-S4 | A forward-only row's first callback after the foreground grace inflates its speed. | probable | #489 |
+
+Wake-W1, Wake-W2, SideAssets-S3, SideAssets-S4, Status-S3, Status-S4, st-39 and #394 have a
+`Finding-*` config and no Swift pin: the decision is app-target code or a product choice, with no
+pure PMSKit decision to call.
 
 ### What it does not cover
 
 - Outside the reducer it is a hand-written abstraction, not a proof about the Swift.
-- Not modelled yet: admission and lanes, Plex optimize and Emby Convert, the cleanup intent
-  journal, startup and wake budgets, side assets, storage accounting, parallel segment trains and
-  held bodies, the persistence writer and path leases.
+- Each module models its subsystem alone. Interactions between subsystems (admission with server
+  preparation, a reconcile-promoted pause with side-asset parking, cleanup with replacement
+  attempts) are not composed.
+- Not modelled: the persistence writer, path leases, validators, retry budgets, and the items
+  each subsection lists.
 - The bounds are small. TLC proves the properties for those bounds only.
 
 The plan `docs/plans/2026-11-24-downloads-tla-model.md` records the properties, results, findings

@@ -78,6 +78,8 @@ proceeds and an outage ends, and that the user, crashes and faults take a bounde
 
 ## Findings
 
+Finding A1 is issue #475.
+
 **A1: startup recovery fails a forward-only row that never started.** Two orderings:
 
 1. The pump grants a waiting first start (`admissionGranted`: `planned` to `admitted`, intent

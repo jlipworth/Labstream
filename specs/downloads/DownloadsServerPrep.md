@@ -118,6 +118,8 @@ configs and the proposed-fix config check all of them. The runner prints a liven
 
 ## Finding S1: Retry of a failed Plex prep row orphans its running optimize job
 
+Issue: #478.
+
 Trace (`ServerPrep-Finding-S1-RetryOrphansRender`): the poller creates the optimize job and the
 server starts rendering. The row then fails while the job runs on, here because the credential is
 rejected three polls in a row (`failAuthDead`); a create whose response was lost has the same

@@ -110,6 +110,8 @@ that comes and goes (disk 8, cap 5) did not finish in 10 minutes at these settin
 
 ## Finding S1: an automatic requeue erases a storage-full park
 
+Issue: #486.
+
 Trace: a static-range transfer is running when the process dies; the disk fills; on relaunch the
 row is a `launch_interrupted` candidate, and the body that finished is appended but the next
 segment's preflight is refused, so the row is `failed(storage)` and the manager records

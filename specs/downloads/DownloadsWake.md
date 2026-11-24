@@ -89,6 +89,8 @@ the test sketches below, which were not compiled.
 
 ### W1: a handler that arrives during a release hop inherits the claimed batch's deadline
 
+Issue: #480.
+
 1. Handler A is stored. Its receipt's deadline is 25 s away.
 2. No finish-events arrive. At the deadline the coordinator claims A as timed out and queues the
    MainActor hop that will call it.
@@ -128,6 +130,8 @@ withKnownIssue("TLA+ finding W1") {
 ```
 
 ### W2: an operation begun while an expired operation lingers does not hold the next wake
+
+Issue: #481.
 
 1. A wake is open and operation X (say an append) is in flight. X outlives its budget, the wake
    is claimed as timed out, and X is marked expired. X is still running.
@@ -190,17 +194,3 @@ counterexample that was not by design is W2.
 - More than one session identifier.
 - How long the MainActor hop takes. Calling a claimed handler is bounded by fairness, not by time.
 - The MainActor hop between `failStartupAdmission` and `blockDownloadStartup`: one step here.
-
-## Text for the shared docs
-
-For the module table in `docs/DOWNLOADS-OFFLINE.md` ("Formal model (TLA+)") and the plan:
-
-> `DownloadsWake.tla` models background wakes: the completion registry, the wake coordinator with
-> its budget timers, and startup admission. It checks that every stored completion handler is
-> claimed by its deadline and eventually called, that the gate holds for a delayed retry's
-> successor, and that a startup block releases a handler without dropping live holds. Fixes B04,
-> B05, B06, B11 and B13 each have a fix-off config. `DownloadsWakeLaunchGate.tla` models the
-> launch recovery gate (B77). Open findings: W1 (a handler arriving during a release hop inherits
-> the claimed batch's deadline) and W2 (an operation begun while an expired operation lingers does
-> not hold the next wake). Both are in app code and need `LabstreamTests` pins. Notes:
-> `specs/downloads/DownloadsWake.md`.
