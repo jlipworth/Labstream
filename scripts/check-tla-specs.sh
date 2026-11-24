@@ -4,20 +4,29 @@
 # Usage:
 #   scripts/check-tla-specs.sh                 # every module and every .cfg under specs/
 #   scripts/check-tla-specs.sh PATH...         # only these .cfg/.tla files or directories
+#   scripts/check-tla-specs.sh --deep          # also run the configs tagged `TIER: deep`
+#   scripts/check-tla-specs.sh --deep-only     # run only the deep configs
 #   scripts/check-tla-specs.sh --list          # print the configs that would run
 #
 # Each TLC run is a `<Name>.cfg` file. Its first lines declare the run:
 #   \* SPEC: DownloadsSessionCore            (module to check; default: the .cfg basename)
 #   \* EXPECT: pass                          (default)
 #   \* EXPECT: violation FinishedBodyNotLost (TLC must report exactly this property violated)
+#   \* TIER: deep                            (default: default)
 # An "EXPECT: violation" config is a faithfulness or known-finding check: the run fails when TLC
 # passes, or when it reports a different property. Counterexamples are always printed.
+# A deep config is skipped unless --deep, --deep-only or TLC_TIER asks for it, or the .cfg file
+# itself is named on the command line. Every module is parsed whatever the tier.
 #
 # Environment:
 #   JAVA            java binary (default: Homebrew's keg-only openjdk; /usr/bin/java is a stub)
 #   TLA_CACHE_DIR   where the pinned tla2tools.jar is cached (default: build/tla, gitignored)
+#   TLC_TIER        default (skip deep configs), deep (run them too) or deep-only
 #   TLC_WORKERS     TLC -workers value (default: auto)
 #   TLC_HEAP        JVM max heap (default: 4g)
+#
+# Exit status: 0 all checks passed; 1 a check failed; 2 the checks could not run (no Java, no
+# tla2tools.jar, a bad argument or header).
 set -euo pipefail
 
 TLA_VERSION="v1.7.4"
@@ -33,17 +42,25 @@ HEAP="${TLC_HEAP:-4g}"
 
 die() { printf 'check-tla-specs: %s\n' "$*" >&2; exit 2; }
 
+# TLC needs a JDK. A missing one is an error (exit 2), never a skipped check.
+NO_JAVA_HELP="TLC needs a JDK and none was found, so no spec was checked. Install Homebrew openjdk (brew install openjdk) or set JAVA=/path/to/bin/java."
+
 find_java() {
+  local candidate="" prefix
   if [[ -n "${JAVA:-}" ]]; then
-    [[ -x "$JAVA" ]] || die "JAVA=$JAVA is not executable"
-    printf '%s\n' "$JAVA"
-    return
+    [[ -x "$JAVA" ]] || die "JAVA=$JAVA is not executable. $NO_JAVA_HELP"
+    candidate="$JAVA"
+  elif prefix="$(brew --prefix openjdk 2>/dev/null)" && [[ -x "$prefix/bin/java" ]]; then
+    candidate="$prefix/bin/java"
+  elif [[ "$(uname -s)" != Darwin ]] && command -v java >/dev/null 2>&1; then
+    # Off macOS there is no /usr/bin/java stub to avoid, so a java on PATH is a real JDK.
+    candidate="$(command -v java)"
+  else
+    die "$NO_JAVA_HELP"
   fi
-  local prefix
-  prefix="$(brew --prefix openjdk 2>/dev/null)" \
-    || die "no JAVA override and Homebrew openjdk not found (brew install openjdk)"
-  [[ -x "$prefix/bin/java" ]] || die "$prefix/bin/java is missing (brew install openjdk)"
-  printf '%s\n' "$prefix/bin/java"
+  "$candidate" -version >/dev/null 2>&1 \
+    || die "$candidate does not run (\`$candidate -version\` failed). $NO_JAVA_HELP"
+  printf '%s\n' "$candidate"
 }
 
 sha256_of() { shasum -a 256 "$1" | awk '{print $1}'; }
@@ -85,22 +102,46 @@ collect() {
 }
 
 LIST_ONLY=0
+TIER_MODE="${TLC_TIER:-default}"
 TARGETS=()
 for arg in "$@"; do
   case "$arg" in
     --list) LIST_ONLY=1 ;;
-    -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --deep) TIER_MODE=deep ;;
+    --deep-only) TIER_MODE=deep-only ;;
+    -h|--help)
+      awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"
+      exit 0 ;;
     -*) die "unknown option: $arg" ;;
     *) TARGETS+=("$arg") ;;
   esac
 done
+case "$TIER_MODE" in
+  default|deep|deep-only) ;;
+  *) die "unknown tier: $TIER_MODE (use default, deep or deep-only)" ;;
+esac
 if [[ ${#TARGETS[@]} -eq 0 ]]; then
   [[ -d "$SPECS_DIR" ]] || die "no specs/ directory at $SPECS_DIR"
   TARGETS=("$SPECS_DIR")
 fi
 
+# The tier a config declares: default or deep.
+cfg_tier() {
+  local tier
+  tier="$(cfg_header "$1" TIER)"
+  case "${tier:-default}" in
+    default|deep) printf '%s\n' "${tier:-default}" ;;
+    *) die "$1: unrecognized TIER header: $tier (use default or deep)" ;;
+  esac
+}
+
 MODULES=()
 CONFIGS=()
+# .cfg files named on the command line run whatever their tier.
+NAMED_CONFIGS=""
+for target in "${TARGETS[@]}"; do
+  if [[ -f "$target" && "$target" == *.cfg ]]; then NAMED_CONFIGS+="$target"$'\n'; fi
+done
 while IFS= read -r file; do
   case "$file" in
     *.tla)
@@ -123,11 +164,26 @@ done < <(collect "${TARGETS[@]}")
 
 dedupe() { awk 'NF && !seen[$0]++'; }
 MODULE_LIST="$(printf '%s\n' "${MODULES[@]:-}" | dedupe)"
-CONFIG_LIST="$(printf '%s\n' "${CONFIGS[@]:-}" | dedupe)"
+ALL_CONFIG_LIST="$(printf '%s\n' "${CONFIGS[@]:-}" | dedupe)"
 [[ -n "$MODULE_LIST" ]] || die "no .tla modules found"
 
+CONFIG_LIST=""
+SKIPPED_LIST=""
+while IFS= read -r cfg; do
+  [[ -n "$cfg" ]] || continue
+  tier="$(cfg_tier "$cfg")"
+  selected=0
+  case "$TIER_MODE" in
+    default) [[ "$tier" == default ]] && selected=1 ;;
+    deep) selected=1 ;;
+    deep-only) [[ "$tier" == deep ]] && selected=1 ;;
+  esac
+  if [[ $selected -eq 0 ]] && grep -Fxq -- "$cfg" <<<"$NAMED_CONFIGS"; then selected=1; fi
+  if [[ $selected -eq 1 ]]; then CONFIG_LIST+="$cfg"$'\n'; else SKIPPED_LIST+="$cfg"$'\n'; fi
+done <<<"$ALL_CONFIG_LIST"
+
 if [[ "$LIST_ONLY" -eq 1 ]]; then
-  printf '%s\n' "$CONFIG_LIST"
+  printf '%s' "$CONFIG_LIST"
   exit 0
 fi
 
@@ -135,6 +191,7 @@ JAVA_BIN="$(find_java)"
 ensure_jar
 
 FAILURES=0
+FAILED_MODULES=""
 SUMMARY=()
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/check-tla-specs.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -150,6 +207,7 @@ while IFS= read -r module; do
   else
     cat "$log"
     SUMMARY+=("FAIL  parse  ${module#"$ROOT"/}")
+    FAILED_MODULES+="$module"$'\n'
     FAILURES=$((FAILURES + 1))
   fi
 done <<<"$MODULE_LIST"
@@ -163,6 +221,11 @@ while IFS= read -r cfg; do
   spec="${spec:-$name}"
   expect="$(cfg_header "$cfg" EXPECT)"
   expect="${expect:-pass}"
+  if grep -Fxq -- "$dir/$spec.tla" <<<"$FAILED_MODULES"; then
+    SUMMARY+=("FAIL  tlc    ${cfg#"$ROOT"/}  [expect: $expect; not run: $spec.tla does not parse]")
+    FAILURES=$((FAILURES + 1))
+    continue
+  fi
   log="$WORK/tlc-$name.log"
   meta="$WORK/meta-$name"
   mkdir -p "$meta"
@@ -209,7 +272,12 @@ while IFS= read -r cfg; do
       "${cfg#"$ROOT"/}" "$expect" "${violated:-no violation}" "${states:-? states}" "$elapsed")")
 done <<<"$CONFIG_LIST"
 
-printf '\n===== check-tla-specs summary (tla2tools %s) =====\n' "$TLA_VERSION"
+while IFS= read -r cfg; do
+  [[ -n "$cfg" ]] || continue
+  SUMMARY+=("skip  tlc    ${cfg#"$ROOT"/}  [tier: $(cfg_tier "$cfg"); not in this run]")
+done <<<"$SKIPPED_LIST"
+
+printf '\n===== check-tla-specs summary (tla2tools %s; tier: %s) =====\n' "$TLA_VERSION" "$TIER_MODE"
 printf '%s\n' "${SUMMARY[@]}"
 if [[ $FAILURES -gt 0 ]]; then
   printf '%d check(s) failed\n' "$FAILURES"
