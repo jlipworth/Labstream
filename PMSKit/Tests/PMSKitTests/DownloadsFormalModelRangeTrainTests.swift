@@ -5,20 +5,22 @@ import Testing
 /// The static-range segment train as `specs/downloads/range-train/DownloadsRangeTrain.tla` models it.
 ///
 /// The first tests tie the model's rules to the pure policies it copies, so a policy change that
-/// the spec does not follow fails here. The `R1` and `R2` tests are orderings TLC found on the
+/// the spec does not follow fails here. The `R1` to `R4` tests are orderings TLC found on the
 /// current design (`specs/downloads/range-train/Finding-*.cfg`). Each states the behaviour the
 /// design wants and is wrapped in `withKnownIssue`, so the suite stays green while the finding is
 /// open. When a fix lands the expectation holds, no issue is recorded, and `withKnownIssue` fails
 /// the test: delete the wrapper then, and flip the matching config to `EXPECT: pass`.
 ///
-/// Both findings are decided inline in app code, with no PMSKit policy to call, so they pin the
+/// R1, R2 and R3 are decided inline in app code, with no PMSKit policy to call, so they pin the
 /// shape of the app source and the pure decisions on either side of it. The fix needs a
-/// `LabstreamTests` pin of the session behaviour itself.
+/// `LabstreamTests` pin of the session behaviour itself. R4 is a pure policy decision.
 @Suite("Downloads formal-model range train")
 struct DownloadsFormalModelRangeTrainTests {
     private typealias R = DownloadLifecycleReducer
     private static let sessionSource =
         "Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift"
+    private static let storeSource =
+        "Labstream/Capabilities/Downloads/Core/DownloadStore.swift"
 
     // MARK: The rules the model copies
 
@@ -49,6 +51,57 @@ struct DownloadsFormalModelRangeTrainTests {
         #expect(plan(durable: 1, covered: [1]) == [2])
         #expect(plan(durable: 1, covered: [1, 2]).isEmpty)
         #expect(plan(durable: 3, covered: []).isEmpty)
+    }
+
+    /// `PlanFrom` with `SegBytes > 1` (Current-MidAppend, Mutant-OffsetEqualityPlan): coverage is
+    /// by interval. After a crash in the middle of an append the checkpoint is inside the grid
+    /// the live segments were planned on, and the planner fills only the gap up to the next one.
+    @Test("Model rule: the planner fills gaps by interval when the checkpoint is off the grid")
+    func plannerFillsGapsByInterval() {
+        func plan(durable: Int, total: Int, live: [(Int, Int)]) -> [StaticRangeSegmentPlan] {
+            StaticRangeSegmentQueuePolicy.segmentsToEnqueue(
+                durableBytes: durable, expectedBytes: total,
+                liveSegments: live.map { StaticRangeSegmentPlan(offset: $0.0, length: $0.1) },
+                segmentBytes: 2, maxQueuedSegments: 2)
+        }
+        // Checkpoint 1 inside [0, 2); the adopted segment [2, 4) is still live.
+        #expect(plan(durable: 1, total: 6, live: [(2, 2)])
+            == [StaticRangeSegmentPlan(offset: 1, length: 1)])
+        // Nothing live: full-size segments from the checkpoint, off the old grid.
+        #expect(plan(durable: 1, total: 6, live: [])
+            == [StaticRangeSegmentPlan(offset: 1, length: 2), StaticRangeSegmentPlan(offset: 3, length: 2)])
+        // A live segment that covers the checkpoint is jumped over; the tail is clamped.
+        #expect(plan(durable: 3, total: 6, live: [(2, 2)])
+            == [StaticRangeSegmentPlan(offset: 4, length: 2)])
+        #expect(plan(durable: 3, total: 4, live: []) == [StaticRangeSegmentPlan(offset: 3, length: 1)])
+    }
+
+    /// `Reattach` and `DrainPass` with `SegBytes > 1`: a segment ahead of the checkpoint is
+    /// adopted on any grid, one that starts behind it is not, and a held body that overlaps the
+    /// checkpoint without starting on it is discarded, never appended.
+    @Test("Model rule: recovery from a partial append adopts ahead, rejects behind, discards overlap")
+    func partialAppendRecoveryRules() throws {
+        let attempt = try #require(DownloadAttemptID(rawValue: "attempt-A"))
+        func disposition(offset: Int, durable: Int) -> StaticRangeReattachDisposition {
+            StaticRangeReattachPolicy.plan(
+                taskIdentifier: 7, downloadID: "plex-item", durableBytes: durable,
+                requestedOffset: offset, rangeRequestShape: .closed, bodyBytesWritten: 0,
+                existingTasks: [],
+                taskMarker: StaticRangeSegmentMarker.taskDescription(
+                    ratingKey: "plex-item", offset: offset, attemptID: attempt),
+                rowAttemptID: attempt).disposition
+        }
+        // Checkpoint 3 after a partial append of [2, 4): the old grid is 0, 2, 4, ...
+        #expect(disposition(offset: 4, durable: 3) == .adopt)
+        #expect(disposition(offset: 3, durable: 3) == .adopt)
+        #expect(disposition(offset: 2, durable: 3)
+            == .rejectOffsetMismatch(requestedOffset: 2, durableBytes: 3))
+
+        let run = StaticRangeSegmentAssemblyPolicy.appendableRun(
+            durableBytes: 3, stashedSegments: [(offset: 2, length: 2), (offset: 4, length: 2)])
+        #expect(run.append.isEmpty)
+        #expect(run.discard.map(\.offset) == [2])
+        #expect(run.hold.map(\.offset) == [4])
     }
 
     /// `Apply` and `Usable`: a pause halt keeps a finished body, a cancel halt discards it, and a
@@ -91,8 +144,12 @@ struct DownloadsFormalModelRangeTrainTests {
             fileName: stash, liveTaskIdentifiers: [7]))
     }
 
-    /// Faithful-B00-off: the checkpoint is the attempt working partial, and the stale-row
-    /// self-heal leaves a row alone while the session owns work for it (`StaleRowHeal`).
+    /// Faithful-B00-off and Faithful-B00-off-NoSelfHeal (852e9f7f): the manager's retry policy
+    /// and its stale-row detector measure the attempt working partial. Measured at the published
+    /// path (the old behaviour, `partial: nil` here) Resume sees no checkpoint and replaces the
+    /// attempt (`UserResume`), and the self-heal never fires (`StaleRowHeal`). The detector also
+    /// leaves a row alone while the session owns work for it. Store reconcile was never part of
+    /// B00: it has always measured the working file.
     @Test("Model rule: recovery measures the working partial and respects session work (B00)")
     func recoveryMeasuresTheWorkingPartial() {
         let working = URL(fileURLWithPath: "/tmp/.attempt-stage-working.stage")
@@ -110,6 +167,16 @@ struct DownloadsFormalModelRangeTrainTests {
         #expect(stale(active: false, partial: working))
         #expect(!stale(active: true, partial: working))
         #expect(!stale(active: false, partial: nil))
+
+        var paused = record
+        paused.status = .paused
+        func keepsCheckpoint(partial: URL?) -> Bool {
+            DownloadRetryPolicy.shouldPromotePausedStaticPartial(
+                paused, durablePartialURL: partial,
+                fileExists: { $0 == working }, fileSize: { $0 == working ? 10 : nil })
+        }
+        #expect(keepsCheckpoint(partial: working))
+        #expect(!keepsCheckpoint(partial: nil))
 
         // The reducer keeps a row with a durable partial and fails one without.
         let transferring = DownloadLifecycleState(lifecycle: .transferring)
@@ -163,7 +230,8 @@ struct DownloadsFormalModelRangeTrainTests {
     /// none, and no durable bytes yet, so `relaunchObserved` fails it and deletes its working
     /// file; the queued append then has nothing to open and the body is discarded. For a file of
     /// one segment that is the whole download. The stale-row self-heal already counts this work
-    /// (`ownsInProgressStaticRangeWork`, B00); reconcile does not.
+    /// (`ownsInProgressStaticRangeWork`, B00); reconcile does not. The live keys are a snapshot:
+    /// reattach takes it, and reconcile uses it later on another queue.
     @Test("R2: reconcile does not fail a row whose finished body is queued for append")
     func reconcileCountsQueuedBodiesAsLiveWork() throws {
         // The reducer does what the facts say: with no live task and no checkpoint the row is
@@ -178,17 +246,77 @@ struct DownloadsFormalModelRangeTrainTests {
         #expect(live.state?.lifecycle == .transferring)
         #expect(live.effects.isEmpty)
 
+        // Where the evidence is taken. Reattach builds the live keys on the delegate queue and
+        // hands them over; reconcile runs later on a store worker and reads only that set.
         let reattach = try #require(Self.appFunctionSource(
             named: "reattachToResumedTasks", in: Self.sessionSource))
         #expect(reattach.contains("liveKeys.insert("))
+        #expect(reattach.contains("onReattached?(liveKeys)"))
+        let reconcile = try #require(Self.appFunctionSource(
+            named: "reconcileOnWorker", in: Self.storeSource))
         withKnownIssue("TLA+ finding R2 (#476): reconcile fails a row whose finished body is queued") {
-            // The live keys reconcile receives must include a row with a queued append, a delayed
-            // retry or a claimed finalizer, as the stale-row self-heal's check does.
-            let countsSessionWork = reattach.contains("pendingStaticRangeWorkCounts")
-                || reattach.contains("ownsLiveOrPendingStaticRangeWork")
-                || reattach.contains("ownsInProgressStaticRangeWork")
-            #expect(countsSessionWork,
-                    "reattach reports only tracked tasks as live, not session-owned work")
+            // Adding session-owned work to the keys reattach builds is not enough
+            // (Finding-R2-SnapshotFixLeavesWindow): a finished task the daemon redelivers between
+            // reattach and reconcile queues its body after the snapshot. Reconcile has to ask
+            // the session for owned work when it decides, as the stale-row self-heal does, so
+            // its live-task fact cannot be the snapshot alone.
+            let snapshotOnly = reconcile.contains("let hasLiveTask = liveRatingKeys.contains(ratingKey)")
+            #expect(!snapshotOnly,
+                    "reconcile decides from the reattach snapshot, not from session-owned work now")
+        }
+    }
+
+    /// R3. A segment finishes in the daemon while a user pause is landing. The pause snapshots the
+    /// row's task IDs and installs the halt; its `getAllTasks` completion then runs
+    /// `pauseRangeTask` for every listed task, which removes the task's tracking and marks its
+    /// identifier superseded. A task that has finished but whose finish callback is queued behind
+    /// that completion is still listed. Its callback then sees `superseded` and returns, so the
+    /// body, which `writeThenPause` exists to keep, is dropped with the OS temp file. On a train
+    /// that is one segment to fetch again; on the open-ended fallback it is the whole remainder.
+    @Test("R3: a pause keeps a segment that has already finished")
+    func pauseKeepsAFinishedSegment() throws {
+        // The decision the design states: a finished body under a pause halt is written.
+        #expect(StaticRangeFinishedBodyPolicy.disposition(haltKind: .pause) == .writeThenPause)
+        #expect(!StaticRangeFinishedBodyPolicy.shouldDiscardBeforeStash(haltKind: .pause))
+
+        let pauseTask = try #require(Self.appFunctionSource(
+            named: "pauseRangeTask", in: Self.sessionSource))
+        #expect(pauseTask.contains("rangeInflight.removeValue(forKey: task.taskIdentifier)"))
+        withKnownIssue("TLA+ finding R3 (broadens #474): a pause supersedes a finished segment") {
+            // The sweep supersedes every listed task without asking whether it has finished.
+            // The fixed sweep leaves a finished task tracked (or routes its body through the
+            // finished-body path), so `writeThenPause` gets to run.
+            let supersedesUnconditionally = pauseTask.contains(
+                "supersededRangeTaskIdentifiers.insert(task.taskIdentifier)")
+                && !pauseTask.contains(".completed")
+                && !pauseTask.contains("countOfBytesExpectedToReceive")
+            #expect(!supersedesUnconditionally,
+                    "pauseRangeTask supersedes a task whose finish callback is already queued")
+        }
+    }
+
+    /// R4. Two-byte segments, depth two. The process dies in the middle of an append, so the
+    /// checkpoint (1) is inside the old grid, and the daemon finishes segment [2, 4) while the app
+    /// is dead. On relaunch the planner knows nothing of that finished task and starts [1, 3) and
+    /// [3, 5). The finished task is then redelivered and its body is held, as is [3, 5) when it
+    /// finishes. The head task [1, 3) fails once. The planner now counts the two held bodies
+    /// against its depth of two and plans nothing, although neither covers the checkpoint, so the
+    /// gap they wait for is never fetched: a restart of the row plans nothing again, and a
+    /// relaunch restores both manifests.
+    @Test("R4: held bodies never keep the planner from fetching the gap at the checkpoint")
+    func plannerAlwaysFetchesTheHeadGap() {
+        let held = [StaticRangeSegmentPlan(offset: 2, length: 2), StaticRangeSegmentPlan(offset: 3, length: 2)]
+        // The assembly side: neither held body is appendable at checkpoint 1.
+        let run = StaticRangeSegmentAssemblyPolicy.appendableRun(
+            durableBytes: 1, stashedSegments: held.map { (offset: $0.offset, length: $0.length ?? 0) })
+        #expect(run.append.isEmpty)
+        #expect(run.hold.map(\.offset) == [2, 3])
+        withKnownIssue("TLA+ finding R4: held bodies fill the depth and starve the head gap") {
+            let plans = StaticRangeSegmentQueuePolicy.segmentsToEnqueue(
+                durableBytes: 1, expectedBytes: 6, liveSegments: held,
+                segmentBytes: 2, maxQueuedSegments: 2)
+            #expect(plans.first == StaticRangeSegmentPlan(offset: 1, length: 1),
+                    "nothing is planned for [1, 2), so the two held bodies wait for ever")
         }
     }
 
@@ -200,9 +328,11 @@ struct DownloadsFormalModelRangeTrainTests {
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
         guard let source = try? String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8),
-              let start = source.range(of: "    private func \(name)(") else { return nil }
+              let start = source.range(of: "    private func \(name)(")
+                ?? source.range(of: "    func \(name)(") else { return nil }
         let rest = source[start.upperBound...]
-        let end = rest.range(of: "\n    private func ")?.lowerBound ?? rest.endIndex
+        let end = ["\n    private func ", "\n    func "]
+            .compactMap { rest.range(of: $0)?.lowerBound }.min() ?? rest.endIndex
         return String(source[start.lowerBound..<end])
     }
 }
