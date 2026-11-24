@@ -128,5 +128,26 @@ class RepositorySpecConventionTests(unittest.TestCase):
         self.assertLessEqual(modules, passing)
 
 
+class TlaPipelineTests(unittest.TestCase):
+    def test_macos_pipeline_keeps_the_local_backend_trust_boundary(self):
+        result = subprocess.run(
+            ["python3", str(REPO / "scripts" / "validate-macos-pipeline.py"),
+             str(REPO / ".woodpecker" / "tla.yml"), "--default-branch", "main"],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        pipeline = (REPO / ".woodpecker" / "tla.yml").read_text(encoding="utf-8")
+        self.assertNotIn("pull_request", pipeline.split("when:", 1)[1])
+        self.assertIn("./scripts/check-tla-specs.sh", pipeline)
+        self.assertIn("scripts/check-tla-drift.py", pipeline)
+        hygiene = (REPO / ".woodpecker" / "hygiene.yml").read_text(encoding="utf-8")
+        self.assertIn("validate-macos-pipeline.py .woodpecker/tla.yml", hygiene)
+
+    def test_pull_requests_run_the_drift_guard_without_the_local_backend(self):
+        pipeline = (REPO / ".woodpecker" / "tla-drift.yml").read_text(encoding="utf-8")
+        self.assertIn("event: pull_request", pipeline)
+        self.assertNotIn("backend: local", pipeline)
+        self.assertIn("scripts/check-tla-drift.py origin/main...HEAD", pipeline)
+
+
 if __name__ == "__main__":
     unittest.main()

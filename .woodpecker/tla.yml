@@ -1,0 +1,31 @@
+# TLA+ model checking (specs/) on the physical macOS local backend.
+#
+# Same trust boundary as macos.yml: local-backend steps run repo code directly on
+# the host, so this stays manual-only and main-only and never gains PR events.
+# scripts/validate-macos-pipeline.py enforces that from the hygiene pipeline.
+#
+# The runner needs a JDK: Homebrew openjdk (keg-only; the script finds it). Without
+# one check-tla-specs.sh exits 2 with a message. It never reports a pass it did not run.
+#
+# On main the drift range is empty, so check-tla-drift.py only proves that every
+# `MODELS:` line names a file that exists. Pull requests get the real drift check
+# from tla-drift.yml.
+when:
+  event: [manual]
+  branch: main
+
+labels:
+  platform: darwin/arm64
+  backend: local
+  purpose: mac-ci
+
+steps:
+  - name: tla-specs
+    image: bash
+    environment:
+      TLC_WORKERS: "4"
+      TLC_HEAP: 4g
+    commands:
+      - ./scripts/check-tla-specs.sh
+      - git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+      - python3 scripts/check-tla-drift.py origin/main...HEAD

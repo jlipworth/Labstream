@@ -1,0 +1,17 @@
+# .woodpecker/tla-drift.yml
+# Drift guard for the TLA+ specs: a pull request that changes a Swift file a spec models
+# (the `\* MODELS:` lines under specs/) must change that spec, or carry a
+# `Spec-Unaffected: <reason>` commit trailer. Git and Python only: no Java, no macOS runner.
+# The model checker itself runs from tla.yml.
+when:
+  - event: pull_request
+
+steps:
+  - name: tla-drift
+    image: python:3.12-slim
+    commands:
+      - apt-get update && apt-get install -y --no-install-recommends git
+      - rm -rf /var/lib/apt/lists/*
+      # The clone may hold only the pull request's commits; the range needs the base branch.
+      - git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+      - python scripts/check-tla-drift.py origin/main...HEAD
