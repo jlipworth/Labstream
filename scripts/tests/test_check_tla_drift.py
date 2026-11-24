@@ -189,6 +189,160 @@ class TlaDriftTests(unittest.TestCase):
         self.assertEqual(status, 1, output)
         self.assertIn(f"MODELS names a file that does not exist: {SESSION}", output)
 
+    # --- Reviewer scenarios (round 1, R3 item 7) ---
+
+    def merge_with_resolution(self, resolution_message):
+        """A covered formatting commit, then a second edit made only while resolving a merge."""
+        self.append(SESSION, "// formatted\n")
+        self.commit("format the session\n\nSpec-Unaffected: formatting")
+        self.git("checkout", "-q", "-b", "side", "base")
+        self.append(SESSION, "// side change\n")
+        self.commit("side: change the session\n\nSpec-Unaffected: comment only")
+        self.git("checkout", "-q", "main")
+        merge = subprocess.run(["git", "merge", "--no-ff", "--no-commit", "side"], cwd=self.root,
+                               capture_output=True, text=True)
+        self.assertNotEqual(merge.returncode, 0, "the two edits must conflict")
+        self.write(SESSION, "// session\n// formatted\n// side change\nfunc behaviourAddedInTheMerge() {}\n")
+        self.commit(resolution_message)
+
+    def test_a_merge_resolution_edit_needs_its_own_coverage(self):
+        self.merge_with_resolution("Merge branch 'side'")
+        status, output = self.run_check()
+        self.assertEqual(status, 1, output)
+        self.assertIn("Merge branch 'side' (merge: its own edit needs a trailer)", output)
+        self.assertNotIn("format the session", output)
+
+    def test_a_merge_resolution_with_a_trailer_is_covered(self):
+        self.merge_with_resolution("Merge branch 'side'\n\nSpec-Unaffected: kept both comments")
+        status, output = self.run_check()
+        self.assertEqual(status, 0, output)
+        self.assertIn("kept both comments", output)
+
+    def test_a_clean_merge_needs_no_trailer(self):
+        self.append(SESSION, "// formatted\n")
+        self.commit("format the session\n\nSpec-Unaffected: formatting")
+        self.git("checkout", "-q", "-b", "side", "base")
+        self.write(SESSION, "// side change\n// session\n")
+        self.write("Sources/Other.swift", "// other, changed on the side\n")
+        self.commit("side: change the session\n\nSpec-Unaffected: comment only")
+        self.git("checkout", "-q", "main")
+        self.git("merge", "-q", "--no-ff", "-m", "Merge branch 'side'", "side")
+        status, output = self.run_check()
+        self.assertEqual(status, 0, output)
+        self.assertIn("declared unaffected (comment only; formatting)", output)
+
+    def test_an_edit_smuggled_into_a_clean_merge_needs_coverage(self):
+        self.git("checkout", "-q", "-b", "side", "base")
+        self.append("Sources/Other.swift")
+        self.commit("side: change something else")
+        self.git("checkout", "-q", "main")
+        self.git("merge", "-q", "--no-ff", "--no-commit", "side")
+        self.append(SESSION, "func addedInTheMerge() {}\n")
+        self.commit("Merge branch 'side'")
+        status, output = self.run_check()
+        self.assertEqual(status, 1, output)
+        self.assertIn("(merge: its own edit needs a trailer)", output)
+
+    def test_merging_the_base_branch_brings_no_drift(self):
+        self.git("checkout", "-q", "-b", "feature", "base")
+        self.append("Sources/Other.swift")
+        self.commit("feature work")
+        self.git("checkout", "-q", "base")
+        self.append(SESSION)
+        self.commit("base branch changes the session")
+        self.git("checkout", "-q", "feature")
+        self.git("merge", "-q", "--no-ff", "-m", "Merge base into feature", "base")
+        status, output = self.run_check()
+        self.assertEqual(status, 0, output)
+
+    def test_uncommitted_removal_of_a_declaration_does_not_hide_drift(self):
+        self.append(SESSION)
+        self.commit("change the session")
+        self.assertEqual(self.run_check()[0], 1)
+        self.write("specs/downloads/core/Core.tla", self.module("Core", REDUCER))
+        status, output = self.run_check()
+        self.assertEqual(status, 1, output)
+        self.assertIn(f"{SESSION} changed, but its spec did not", output)
+
+    def test_uncommitted_spec_edits_and_deletions_do_not_change_the_answer(self):
+        self.append(SESSION)
+        self.commit("change the session")
+        self.append("specs/downloads/core/Current.cfg", "\\* uncommitted\n")
+        (self.root / SESSION).unlink()
+        (self.root / "specs/downloads/core/Projection.cfg").unlink()
+        status, output = self.run_check()
+        self.assertEqual(status, 1, output)
+        self.assertNotIn("does not exist", output)
+        self.assertEqual(self.run_check("--list")[0], 0)
+
+    def test_committed_removal_of_a_declaration_is_a_spec_change(self):
+        self.append(SESSION)
+        self.write("specs/downloads/core/Core.tla", self.module("Core", REDUCER))
+        self.commit("change the session and stop modelling it")
+        status, output = self.run_check()
+        self.assertEqual(status, 0, output)
+
+    def test_deleting_a_shared_modules_config_counts_as_changing_it(self):
+        self.append(REDUCER)
+        self.git("rm", "-q", "specs/downloads/core/Projection.cfg")
+        self.append("specs/downloads/core/Core.tla", "\\* updated\n")
+        self.commit("change the reducer, drop the projection config")
+        status, output = self.run_check()
+        self.assertEqual(status, 0, output)
+        self.assertIn(f"{REDUCER}: spec updated", output)
+
+    def test_deleting_another_modules_config_does_not_count(self):
+        self.write("specs/downloads/base/Shared-Check.cfg", "\\* SPEC: Shared\n\\* EXPECT: pass\n")
+        self.commit("a config of the shared neighbour")
+        self.git("branch", "-f", "base")
+        self.append(REDUCER)
+        self.git("rm", "-q", "specs/downloads/base/Shared-Check.cfg")
+        self.append("specs/downloads/core/Core.tla", "\\* updated\n")
+        self.commit("change the reducer, drop a neighbour's config")
+        status, output = self.run_check()
+        self.assertEqual(status, 1, output)
+        self.assertIn("its spec did not: specs/downloads/base/Reducer.tla", output)
+
+    def test_renaming_a_shared_modules_config_counts(self):
+        self.append(REDUCER)
+        self.git("mv", "specs/downloads/core/Projection.cfg", "specs/downloads/base/Reducer-Check.cfg")
+        self.append("specs/downloads/core/Core.tla", "\\* updated\n")
+        self.commit("change the reducer, move its config")
+        status, output = self.run_check()
+        self.assertEqual(status, 0, output)
+
+    def test_repointing_a_config_counts_for_the_module_it_ran(self):
+        self.append(REDUCER)
+        self.write("specs/downloads/core/Projection.cfg", "\\* SPEC: Core\n\\* EXPECT: pass\n")
+        self.commit("change the reducer, re-point its projection at the core")
+        status, output = self.run_check()
+        self.assertEqual(status, 0, output)
+
+    def test_renaming_a_module_with_its_modelled_file_is_covered(self):
+        self.append(SESSION)
+        self.git("mv", "specs/downloads/core", "specs/downloads/session")
+        self.commit("change the session, rename its module folder")
+        status, output = self.run_check()
+        self.assertEqual(status, 0, output)
+
+    def test_deleting_a_module_with_its_modelled_file_change_is_covered(self):
+        self.append(SESSION)
+        self.git("rm", "-q", "-r", "specs/downloads/core")
+        self.commit("change the session, delete its only model")
+        status, output = self.run_check()
+        self.assertEqual(status, 0, output)
+
+    def test_renaming_a_modelled_file_needs_the_declaration_to_follow(self):
+        self.git("mv", SESSION, "Sources/Session2.swift")
+        self.commit("rename the session\n\nSpec-Unaffected: rename only")
+        status, output = self.run_check()
+        self.assertEqual(status, 1, output)
+        self.assertIn(f"MODELS names a file that does not exist: {SESSION}", output)
+        self.write("specs/downloads/core/Core.tla", self.module("Core", REDUCER, "Sources/Session2.swift"))
+        self.commit("follow the rename")
+        status, output = self.run_check()
+        self.assertEqual(status, 0, output)
+
     def test_unresolvable_base_is_an_error_not_a_pass(self):
         status, output = self.run_check()
         self.assertEqual(status, 0, output)
@@ -211,7 +365,7 @@ class RepositorySpecHeaderTests(unittest.TestCase):
     """The real specs: every MODELS path exists and every hand-written module declares one."""
 
     def test_modelled_files_exist(self):
-        owners = drift.modelled_files(REPO, REPO / "specs")
+        owners = drift.modelled_files(drift.WorkTree(REPO, "specs"))
         self.assertTrue(owners)
         for path in owners:
             self.assertTrue((REPO / path).is_file(), f"MODELS names a missing file: {path}")
@@ -221,7 +375,7 @@ class RepositorySpecHeaderTests(unittest.TestCase):
         # other compares that table with DownloadsReducer.tla.
         exempt = {"DownloadsReducerTable.tla", "DownloadsReducerConformance.tla"}
         declaring = {Path(module).name
-                     for modules in drift.modelled_files(REPO, REPO / "specs").values()
+                     for modules in drift.modelled_files(drift.WorkTree(REPO, "specs")).values()
                      for module in modules}
         modules = sorted((REPO / "specs" / "downloads").rglob("*.tla"))
         self.assertGreaterEqual(len(modules), 12)
@@ -230,7 +384,7 @@ class RepositorySpecHeaderTests(unittest.TestCase):
                 self.assertIn(module.name, declaring, f"{module.name} has no `\\* MODELS:` line")
 
     def test_reducer_and_table_are_owned(self):
-        owners = drift.modelled_files(REPO, REPO / "specs")
+        owners = drift.modelled_files(drift.WorkTree(REPO, "specs"))
         self.assertEqual(
             owners["PMSKit/Sources/PMSKit/Downloads/DownloadLifecycleReducer.swift"],
             {"specs/downloads/base/DownloadsReducer.tla"})
