@@ -109,6 +109,73 @@ struct DownloadsFormalModelStorageTests {
         #expect(relaunch.effects.isEmpty)
     }
 
+    // MARK: - The model's audit enumeration and two-step launch
+
+    private static let storePath = "Labstream/Capabilities/Downloads/Core/DownloadStore.swift"
+    private static let managerPath = "Labstream/Capabilities/Downloads/Core/DownloadManager.swift"
+    private static let sessionPath = "Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift"
+
+    /// `AuditEnumeratedKinds` in the spec. The audit's referenced set is
+    /// `artifactPathsReferenced(by:)` over every row. The model lists the kinds of path that
+    /// function inserts apart from what a row owns on disk, so `AuditCountsHiddenStaging`
+    /// compares two things; this test holds the list equal to the function. Dropping the held
+    /// bodies is `storage/Mutant-AuditSkipsHeld.cfg`.
+    @Test("AuditEnumeratedKinds equals what artifactPathsReferenced inserts")
+    func auditEnumerationMatchesTheStore() throws {
+        let audit = try #require(Self.appSource(
+            from: "    func storageAudit(", in: Self.storePath))
+        #expect(audit.contains("rows.values.flatMap { artifactPathsReferenced(by: $0) }"))
+        let referenced = try #require(Self.appSource(
+            from: "    private func artifactPathsReferenced(by row: Row)", in: Self.storePath))
+        // stable
+        #expect(referenced.contains("var result: Set<String> = [row.relativePath]"))
+        // working
+        #expect(referenced.contains(
+            "if let working = row.attemptWorkingRelativePath { result.insert(working) }"))
+        // side
+        #expect(referenced.contains("result.formUnion(sideAssetRelativePaths(for: row.metadata))"))
+        // held
+        #expect(referenced.contains(
+            "result.formUnion((row.metadata?.heldRangeSegments ?? []).map(\\.relativePath))"))
+        #expect(referenced.contains("result.formUnion(row.heldRangeBodyDeletionIntents)"))
+    }
+
+    /// `Relaunch` and `Reattach` in the spec. The launch candidates are captured before the
+    /// asynchronous task enumeration; the redrive that follows reconcile skips a key the
+    /// enumeration found live and takes only a paused or failed row.
+    @Test("Launch captures candidates before the enumeration and redrives only keys that are not live")
+    func launchCapturesCandidatesBeforeTheEnumeration() throws {
+        let startup = try #require(Self.appSource(
+            from: "    private func performInitialStartupReattachIfNeeded()", in: Self.managerPath))
+        let capture = try #require(startup.range(
+            of: "let interruptedStaticKeys = store.interruptedStaticByteRangeKeys()"))
+        let enumerate = try #require(startup.range(of: "session.reattach {"))
+        #expect(capture.lowerBound < enumerate.lowerBound)
+        let redrive = try #require(Self.appSource(
+            from: "    private func resumeInterruptedStaticByteRangeDownloads(", in: Self.managerPath))
+        #expect(redrive.contains("for ratingKey in candidateKeys.sorted() where !liveKeys.contains(ratingKey)"))
+        #expect(redrive.contains("record.status == .paused || record.status == .failed"))
+        // The enumeration restores held bodies; none is appended before it.
+        let reattach = try #require(Self.appSource(
+            from: "    private func reattachToResumedTasks(", in: Self.sessionPath))
+        #expect(reattach.contains("self.restoreHeldRangeSegments(recordsByKey: recordsByKey)"))
+    }
+
+    /// `mine` in the spec. A body that finishes for a task this process did not start is adopted
+    /// with no request, and a continuation with no request asks the manager to rebuild it
+    /// instead of preflighting a successor. An earlier S1 trace had the session refuse the
+    /// successor's preflight right after relaunch; this is why that step cannot happen.
+    @Test("A body adopted after relaunch has no request, so its continuation is a rebuild")
+    func adoptedBodyContinuesThroughARequestRebuild() throws {
+        let session = try #require(Self.appFile(Self.sessionPath))
+        let adopted = try #require(session.range(of: "\"downloads.range_dead_finish_adopted\""))
+        let tail = session[adopted.lowerBound...]
+        let build = try #require(tail.range(of: "return RangeTransfer("))
+        #expect(tail[build.lowerBound...].prefix(200).contains("request: nil,"))
+        #expect(StaticRangeContinuationPolicy.afterFinishedBody(isHalted: false, hasRequest: false)
+                == .requestNeeded(.requestRebuildNeeded))
+    }
+
     // MARK: - Finding S1
 
     /// S1. A static-range row fails because the disk is full: the row is `failed(storage)` and
@@ -122,8 +189,28 @@ struct DownloadsFormalModelStorageTests {
     ///
     /// Wanted: either the storage reason survives the automatic requeue durably, or the gate
     /// runs before the row is deferred for a missing backend.
+    ///
+    /// The order that reaches it (`storage/Finding-S1-RequeueErasesPark.cfg`): the daemon
+    /// finishes a body while the app is dead; launch captures the row as a candidate; the body
+    /// is redelivered before the task enumeration and its own append fails with ENOSPC, so the
+    /// row is `failed(storage)` and is not live when the enumeration runs; the launch redrive
+    /// then takes it with the backend session still away. The first expectations below pin the
+    /// two steps that distinguish this order: the append's own storage failure, and the
+    /// deferral that follows it.
     @Test("S1: an automatic requeue never erases a storage-full park")
     func automaticRequeueKeepsTheStoragePark() throws {
+        // The redelivered body's append fails for storage: durable reason and lastError both.
+        let failMove = Self.collapsingWhitespace(try #require(Self.appSource(
+            from: "    private func failRangeMove(entry: RangeTransfer", in: Self.sessionPath)))
+        #expect(failMove.contains(
+            "setFailedPurgingHeldSegments(for: entry.attemptKey, reason: .storage) "
+                + "onError?(entry.attemptKey, .storageFull)"))
+        // The deferral overwrites lastError and keeps the pending-resume intent.
+        let deferral = Self.collapsingWhitespace(try #require(Self.appSource(
+            from: "    private func deferStaticRangeResume(record: DownloadRecord", in: Self.managerPath)))
+        #expect(deferral.contains(".requeued, for: key, context: \"defer_resume\") else { return } "
+            + "lastError[ratingKey] = checkpointBytes > 0 ? .interruptedResumable"))
+
         let resume = try #require(Self.appFunctionSource(
             named: "resumeStaticRangeWhenReady",
             in: "Labstream/Capabilities/Downloads/Core/DownloadManager.swift"))
@@ -146,6 +233,29 @@ struct DownloadsFormalModelStorageTests {
             #expect(reasonSurvives || gateRunsFirst,
                     "a storage-parked row is requeued and later redriven without re-measuring")
         }
+    }
+
+    private static func appFile(_ relativePath: String) -> String? {
+        // PMSKit/Tests/PMSKitTests/<this file> -> repository root.
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        return try? String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+    }
+
+    /// The text of one member of an app source file, from `declaration` to the closing brace at
+    /// the declaration's indentation. Nil when the file or the member is missing.
+    private static func appSource(from declaration: String, in relativePath: String) -> String? {
+        guard let source = appFile(relativePath),
+              let start = source.range(of: declaration) else { return nil }
+        let indentation = declaration.prefix { $0 == " " }
+        let rest = source[start.lowerBound...]
+        guard let end = rest.range(of: "\n\(indentation)}\n") else { return nil }
+        return String(rest[..<end.upperBound])
+    }
+
+    private static func collapsingWhitespace(_ text: String) -> String {
+        text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
     /// The text of one function in an app source file, from its declaration to the next member

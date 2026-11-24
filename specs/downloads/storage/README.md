@@ -24,13 +24,28 @@ through `Reduce`; each row keeps a whole reducer state, so there is no projectio
 | Start | `CloneBegin`, `CloneCommit` (checkpoint handoff to a new attempt), `Start` (free-space preflight) |
 | URLSession daemon | `DaemonWrites`, `DaemonOutOfSpace`, `DaemonFinishes` (run while the app is dead) |
 | Session | `DidFinish`, `AppendHeld`, `HandleOutOfSpace`, `Finalize`, `SideAsset` |
-| Recovery | `AutoRedrive` (`resumeStaticRangeWhenReady`), `Relaunch` (candidates, startup sweep, reconcile) |
+| Recovery | `AutoRedrive` (`resumeStaticRangeWhenReady`), `Relaunch` (candidates, startup sweep), `Reattach` (task enumeration, held-body restore, reconcile, which candidates are redriven) |
 | Environment | `ForeignGrows`, `ForeignShrinks` (other apps' bytes), `BackendFlips`, `Crash` |
 
 Durable: the row, the working, held, side-asset, published and checkpoint-copy bytes, the
 daemon's task and temporary body, other apps' bytes, and the backend session (environment).
 In memory: `up`, the `lastError == .storageFull` latch, the pending-resume marker, the launch
-candidates, and a start in flight. Five ghost variables record what a property needs and are
+candidates, whether the launch's enumeration has run (`reatt`), whether this process holds the
+request for a row's task chain (`mine`) and knows its held body (`hot`), and a start in flight.
+
+Launch is two steps, as in `performInitialStartupReattachIfNeeded`. `Relaunch` captures the
+`launch_interrupted` candidates from the rows as the dead process left them. `Reattach` is the
+`getAllTasks` completion: it adopts live tasks, cancels a task whose row is gone, terminal or
+paused, restores held bodies, runs reconcile, and keeps a candidate only when its key is not
+live and reconcile left it paused or failed. Between the two, a body the daemon finished can be
+redelivered. It is adopted with no request (`range_dead_finish_adopted`), so after its append
+the continuation asks the manager to rebuild the request (`transferRebuilding`, then
+`resumeStaticRangeWhenReady`) and does not preflight a successor itself.
+
+The audit's enumeration is written apart from ownership. `AuditEnumeratedKinds` lists the kinds
+of path `artifactPathsReferenced(by:)` inserts (stable, side, working, held), and
+`AuditReferenced` sums the bytes of those kinds; `RowOwned` is what is on disk for the row.
+`auditEnumerationMatchesTheStore` holds the list equal to the Swift function. Five ghost variables record what a property needs and are
 never read by a guard.
 
 The policy operators are the Swift ones: `RequiredAdditional` is
@@ -55,6 +70,7 @@ foreign bytes, a cap of 3 (or Unlimited), headroom 1 (or 0).
 | `AuditBalances` | invariant | Referenced plus unreferenced bytes are the directory, and the orphan candidates are exactly the checkpoint copies no running handoff owns. |
 | `NoOrphanAfterStartup` | invariant | While the app runs, a checkpoint copy belongs to a handoff in progress (B86). |
 | `ParkIsDurable` | invariant | A storage-parked row is durably `failed` with reason `storage` until something re-measures (B31). |
+| `ParkedFailureSaysStorage` | invariant | A row a storage-full failure parked, and that is still failed, carries the storage reason on disk (B31). |
 | `NoBlindRedrive` | invariant | No automatic redrive of a storage-parked row against a disk that still cannot hold it, unless the gate measured first (B31, sd-06). |
 | `StorageFullClassified` | action | An ENOSPC completion fails the row with the storage reason (B26). |
 | `StorageFailureKeepsCheckpoint` | action | A storage-full failure keeps a static row's durable checkpoint. |
@@ -67,25 +83,27 @@ foreign bytes, a cap of 3 (or Unlimited), headroom 1 (or 0).
 
 | Config | Expectation | Distinct states | Time |
 | --- | --- | --- | --- |
-| `Current-TwoStatic` (symmetry) | pass | 256,342 | 12 s |
-| `Current-ParkHolds` (symmetry) | pass | 22,171 | 2 s |
-| `Current-Mixed` | pass | 14,456 | 2 s |
-| `Current-Unknown` | pass | 88,087 | 4 s |
-| `Current-Unlimited` (symmetry) | pass | 43,234 | 3 s |
-| `Current-ThreeStatic` (symmetry) | pass | 120,254 | 10 s |
-| `Proposed-S1-DurableParkGate` (symmetry) | pass | 60,204 | 4 s |
+| `Current-TwoStatic` (symmetry) | pass | 686,260 | 46 s |
+| `Current-ParkHolds` (symmetry) | pass | 91,162 | 6 s |
+| `Current-Mixed` | pass | 56,651 | 3 s |
+| `Current-Unknown` | pass | 347,166 | 20 s |
+| `Current-Unlimited` (symmetry) | pass | 173,146 | 10 s |
+| `Current-ThreeStatic` (symmetry) | pass | 833,784 | 83 s |
+| `Proposed-S1-DurableParkGate` (symmetry) | pass | 207,806 | 13 s |
 | `Faithful-B01-off` | `PreflightRefusalJustified` violated | first error | < 1 s |
 | `Faithful-B24-off` | `RetryCountedOnce` violated | first error | < 1 s |
 | `Faithful-B24R-off` | `CapHonoured` violated | first error | 1 s |
 | `Faithful-B26-off` | `StorageFullClassified` violated | first error | < 1 s |
-| `Faithful-B31-off` | `NoBlindRedrive` violated | first error | < 1 s |
+| `Faithful-B31-off` | `ParkedFailureSaysStorage` violated | first error | < 1 s |
 | `Faithful-B19-off` | `AuditCountsHiddenStaging` violated | first error | < 1 s |
 | `Faithful-B86-off` | `NoOrphanAfterStartup` violated | first error | < 1 s |
+| `Mutant-AuditSkipsHeld` | `AuditCountsHiddenStaging` violated | first error | < 1 s |
 | `Finding-S1-RequeueErasesPark` | `NoBlindRedrive` violated | first error | < 1 s |
 
 `Current-TwoStatic` lets the backend session come and go and checks every property
-except the two finding S1 breaks (`ParkIsDurable`, `NoBlindRedrive`). The other `Current-*`
-configs keep the backend session and check those two as well.
+except the three finding S1 breaks (`ParkIsDurable`, `ParkedFailureSaysStorage`,
+`NoBlindRedrive`). The other `Current-*` configs keep the backend session and check
+`ParkedFailureSaysStorage`; `Current-ParkHolds` checks the other two as well.
 
 `Current-ThreeStatic` has three rows, no side assets, at most 2 foreign bytes and a cap of 4.
 There is no deep config: three rows at the two-row bounds with side assets and a backend session
@@ -101,10 +119,16 @@ that comes and goes (disk 8, cap 5) did not finish in 10 minutes at these settin
   active and has reserved nothing; both finish and their media is larger than the cap.
 - **B26 off.** A forward-only transfer hits ENOSPC and the row fails with a generic transfer
   reason.
-- **B31 off.** A start is refused for free space, the refusal is remembered only in memory, the
-  process dies, and the relaunch redrives the row against the same disk without measuring. The
-  pre-fix code is approximated: the fix-off branch leaves the durable row untouched.
-- **B19 off.** The audit does not reference a paused row's held body.
+- **B31 off.** A start is refused for free space. The row fails durably, with a generic reason:
+  before the fix the handler called `setFailedPurgingHeldSegments(for:)`, which wrote `.failed`
+  with no reason, and only `lastError` said storage. `ParkedFailureSaysStorage` is the property
+  that sees it. An earlier fix-off branch left the whole durable row untouched, which kept the
+  row active and made it a relaunch candidate; the blind redrive that run reported was produced
+  by that branch, not by the historical code. With the durable failure in place
+  `NoBlindRedrive` holds under B31 off (2,476 states): a durably failed row is not a launch
+  candidate.
+- **B19 off.** The audit does not reference a paused row's held body. `Mutant-AuditSkipsHeld`
+  keeps the fix and removes only held bodies from the enumeration.
 - **B86 off.** A hard kill during the checkpoint copy leaves a temporary that the startup sweep
   does not reclaim.
 
@@ -112,16 +136,31 @@ that comes and goes (disk 8, cap 5) did not finish in 10 minutes at these settin
 
 Issue: #486.
 
-Trace: a static-range transfer is running when the process dies; the disk fills; on relaunch the
-row is a `launch_interrupted` candidate, and the body that finished is appended but the next
-segment's preflight is refused, so the row is `failed(storage)` and the manager records
-`lastError = .storageFull`. The automatic redrive for the candidate then runs while the backend
-session is not ready. `resumeStaticRangeWhenReady` checks the backend before the storage gate,
-so it calls `deferStaticRangeResume(preserveActiveIntent: true)`: the row is `requeued` to
-`admitted`, which clears the durable storage reason, `lastError` is overwritten with an
-"interrupted" message, and the pending-resume marker is set. When the session returns, the
-drain calls the same function, the gate reads `lastError`, finds no storage failure, and
-retries against the same full disk without measuring.
+Trace (19 states):
+
+1. A static-range segment is in flight. The daemon finishes its body. The disk fills, the backend
+   session goes away and the process dies.
+2. Launch captures the row as a `launch_interrupted` candidate: it is still `transferring` on
+   disk. The task enumeration is queued behind the pending-promotion recovery.
+3. Before the enumeration runs, the daemon redelivers the finished body. The session adopts it
+   with no request and stashes it. Its append fails with ENOSPC (`failRangeMove`), so the row is
+   `failed(storage)` and the manager records `lastError = .storageFull`.
+4. The enumeration runs. The row has no live task and is failed, so it stays a candidate.
+5. The launch redrive calls `resumeStaticRangeWhenReady`. The backend session is not ready, and
+   the function checks the backend before the storage gate, so it calls
+   `deferStaticRangeResume(preserveActiveIntent: true)`: the row is `requeued` to `admitted`,
+   which clears the durable storage reason, `lastError` is overwritten with an "interrupted"
+   message, and the pending-resume marker is set.
+6. The session returns. The drain calls the same function, the gate reads `lastError`, finds no
+   storage failure, and retries against the same full disk without measuring.
+
+An earlier version of this model reached the park another way: reconcile ran inside `Relaunch`,
+and the body's append then refused the successor's preflight. Swift does neither. A key the
+enumeration finds live is not redriven, and a body adopted after relaunch carries no request, so
+its continuation is a request rebuild that goes through the gate with nothing parked. The
+storage failure has to be the append's own, and it has to land before the enumeration.
+`launchCapturesCandidatesBeforeTheEnumeration` and `adoptedBodyContinuesThroughARequestRebuild`
+pin those two facts.
 
 Why it is real: the gate's only memory is the in-memory `lastError`, written and overwritten in
 the same function; the reducer's durable record for this (`storagePark`, set by
@@ -139,8 +178,10 @@ Verdict: real, low severity. `Proposed-S1-DurableParkGate` shows one sufficient 
 the gate reads the durable storage failure and runs before the backend check.
 
 Pin: `DownloadsFormalModelStorageTests.automaticRequeueKeepsTheStoragePark` (known issue). It
-accepts either fix: the storage reason survives `requeued`, or the gate precedes the deferral in
-the app source.
+first checks the two steps this order needs (the append's storage failure writes the durable
+reason and `lastError`; the deferral requeues and overwrites `lastError`), then accepts either
+fix: the storage reason survives `requeued`, or the gate precedes the deferral in the app
+source.
 
 ## Modelling artefacts fixed in the model
 
@@ -165,6 +206,7 @@ the app source.
   between.
 - A cap refusal at start fails the row as `aborted`, not `storage`; its message lives only in
   `lastError`. Not treated as a finding.
-- The drift header does not list `DownloadManager.swift` or `DownloadStore.swift`, although the
-  redrive gate and `storageAudit`/`storageCapRows` live there: listing them would tie every
-  change to those files to this spec.
+- A held body that was stashed but not yet recorded in the row's manifest when the process died.
+  The model's held bytes are always recorded, so the audit never sees such a body as an orphan.
+- A request rebuild of a row that is still `transferring` is modelled as a requeue followed by
+  the ordinary start gates.

@@ -15,6 +15,15 @@
 (* Lifecycle and history change only through Reduce.  The hand-written     *)
 (* transitions are the fix-off branches, each marked with its bug ID.      *)
 (*                                                                         *)
+(* Launch is two steps, as in performInitialStartupReattachIfNeeded: the    *)
+(* launch_interrupted candidates are captured at once (Relaunch), and the  *)
+(* task enumeration, reconcile and the candidates' redrive run later       *)
+(* (Reattach).  A body the daemon finished can be redelivered in between;  *)
+(* it is adopted with no request (range_dead_finish_adopted), so its       *)
+(* continuation asks the manager to rebuild the request instead of         *)
+(* preflighting a successor.  A key that the enumeration finds live is     *)
+(* not redriven.                                                           *)
+(*                                                                         *)
 (* Not modelled: several segments in flight (DownloadsRangeTrain), resume  *)
 (* blobs, server preparation, admission lanes (DownloadsAdmission), an     *)
 (* unavailable free-space measurement (the code fails open), estimates     *)
@@ -27,6 +36,9 @@
 \* MODELS: PMSKit/Sources/PMSKit/Downloads/DownloadStorageSnapshot.swift
 \* MODELS: PMSKit/Sources/PMSKit/Downloads/StaticRangeRecoveryPolicy.swift
 \* MODELS: Labstream/Capabilities/Downloads/Core/DownloadVolumeFreeSpace.swift
+\* MODELS: Labstream/Capabilities/Downloads/Core/DownloadManager.swift
+\* MODELS: Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift
+\* MODELS: Labstream/Capabilities/Downloads/Core/DownloadStore.swift
 EXTENDS DownloadsReducer, TLC
 
 CONSTANTS
@@ -45,6 +57,7 @@ CONSTANTS
     FixB26,         \* a forward-only ENOSPC is classified storage-full (B26)
     FixB31,         \* a storage-full failure is written to the durable row (B31)
     FixB19,         \* the audit references hidden working and held files (B19)
+    MutantAuditSkips,   \* injected: file kinds artifactPathsReferenced leaves out
     FixB86,         \* the startup sweep reclaims hard-killed checkpoint-copy temps (B86)
     FixParkGate,    \* PROPOSED (not in the code): the redrive gate reads the durable
                     \* storage failure, before the backend check (finding S1)
@@ -54,6 +67,7 @@ CONSTANTS
 ASSUME /\ ForwardRows \subseteq Rows /\ UnknownRows \subseteq Rows
        /\ Size \in Nat \ {0} /\ SideMax \in Nat /\ Disk \in Nat
        /\ MaxForeign \in Nat /\ Limit \in Nat /\ Headroom \in Nat
+       /\ MutantAuditSkips \subseteq {"stable", "side", "working", "held"}
 
 \* SYMMETRY for configs whose rows are all on one route and all known or all
 \* unknown: nothing then tells two rows apart.
@@ -78,6 +92,10 @@ VARIABLES
     latch,      \* lastError[row] is .storageFull
     pending,    \* the pending-resume marker
     cands,      \* launch_interrupted candidates captured at launch
+    reatt,      \* the launch's task enumeration and reconcile have run
+    mine,       \* this process holds the request for the row's task chain
+    hot,        \* this process knows the row's held body: it stashed it, or the
+                \*   enumeration restored it (restoreHeldRangeSegments)
     phase,      \* a start in flight: "idle", "clone" (checkpoint handoff), "start"
     \* Ghosts: never read by a guard.
     parked,     \* a storage-full failure parked the row and nothing re-measured since
@@ -87,7 +105,7 @@ VARIABLES
     diskUnjust  \* a free-space preflight refused a start that fits
 
 durable == <<exists, row, ckpt, held, side, pubB, temp, task, osTemp, foreign, backend>>
-memory == <<up, latch, pending, cands, phase>>
+memory == <<up, latch, pending, cands, reatt, mine, hot, phase>>
 ghosts == <<parked, late, blind, capUnjust, diskUnjust>>
 vars == <<durable, memory, ghosts>>
 
@@ -182,11 +200,28 @@ CapRefusalIsWrong(r) == CapRejects(r) /\ TrueProjection(r) <= Limit
 (* OfflineDownloadFileInventory.audit, as DownloadStore.storageAudit feeds *)
 (* it                                                                      *)
 
+\* What the row owns on disk, by kind of file.
+FileKinds == {"stable", "side", "working", "held"}
+KindBytes(r, k) ==
+    CASE k = "stable" -> pubB[r]
+      [] k = "side" -> side[r]
+      [] k = "working" -> ckpt[r]
+      [] k = "held" -> held[r]
 RowOwned(r) == ckpt[r] + held[r] + side[r] + pubB[r]
+
+\* DownloadStore.artifactPathsReferenced(by:), which storageAudit unions over
+\* every row: the kinds of path it inserts.  This is the enumeration, written
+\* apart from ownership, so the audit property compares two things.
+\*   stable   row.relativePath
+\*   side     sideAssetRelativePaths(for: row.metadata) and the publication owners
+\*   working  row.attemptWorkingRelativePath
+\*   held     row.metadata.heldRangeSegments and row.heldRangeBodyDeletionIntents
+AuditEnumeratedKinds ==
+    (IF FixB19 THEN {"stable", "side", "working", "held"}
+     \* B19 (fix off): only the stable path and the side assets are referenced.
+     ELSE {"stable", "side"}) \ MutantAuditSkips
 AuditReferenced(r) ==
-    IF FixB19 THEN RowOwned(r)
-    \* B19 (fix off): only the stable path and the side assets are referenced.
-    ELSE side[r] + pubB[r]
+    SumOver(AuditEnumeratedKinds, [k \in FileKinds |-> KindBytes(r, k)])
 \* A checkpoint copy in progress is protected by its path lease.
 InFlight(r) == IF phase[r] = "clone" THEN temp[r] ELSE 0
 AuditDirectoryBytes == SumOver(Rows, [r \in Rows |-> AppBytes(r)])
@@ -206,6 +241,7 @@ Init ==
     /\ up = TRUE
     /\ latch = Const(Rows, FALSE) /\ pending = Const(Rows, FALSE)
     /\ cands = Const(Rows, FALSE) /\ phase = Const(Rows, "idle")
+    /\ reatt = TRUE /\ mine = Const(Rows, FALSE) /\ hot = Const(Rows, FALSE)
     /\ parked = Const(Rows, FALSE) /\ late = Const(Rows, 0)
     /\ blind = FALSE /\ capUnjust = FALSE /\ diskUnjust = FALSE
 
@@ -221,6 +257,7 @@ TypeOK ==
     /\ foreign \in 0..MaxForeign /\ backend \in BOOLEAN /\ up \in BOOLEAN
     /\ latch \in [Rows -> BOOLEAN] /\ pending \in [Rows -> BOOLEAN]
     /\ cands \in [Rows -> BOOLEAN] /\ phase \in [Rows -> Phases]
+    /\ reatt \in BOOLEAN /\ mine \in [Rows -> BOOLEAN] /\ hot \in [Rows -> BOOLEAN]
     /\ parked \in [Rows -> BOOLEAN] /\ late \in [Rows -> 0..Size]
     /\ blind \in BOOLEAN /\ capUnjust \in BOOLEAN /\ diskUnjust \in BOOLEAN
     \* The volume never holds more than its capacity.
@@ -233,8 +270,10 @@ TypeOK ==
 \* lastError = .storageFull.  The durable checkpoint is kept.
 FailedForStorage(s) ==
     IF FixB31 THEN Step(s, EvReason("transferFailed", "storage"))
-    \* B31 (fix off): the park exists only in memory; the durable row is not told.
-    ELSE s
+    \* B31 (fix off): the row fails durably, as it did before the fix
+    \* (setFailedPurgingHeldSegments(for:) with no reason), but only the
+    \* in-memory lastError says the cause was storage.
+    ELSE Step(s, EvReason("transferFailed", "network"))
 
 \* The row-independent part of a storage-full failure of row r.
 StorageFull(r) ==
@@ -257,7 +296,7 @@ Enqueue(r) ==
                /\ row' = Upd(row, r, InitialState("admitted"))
                /\ phase' = Upd(phase, r, "start")
     /\ UNCHANGED <<ckpt, held, side, pubB, temp, task, osTemp, foreign, backend,
-                   up, latch, pending, cands, parked, late, blind, diskUnjust>>
+                   up, latch, pending, cands, reatt, mine, hot, parked, late, blind, diskUnjust>>
 
 \* The cap gate of a retry of an existing row, shared by the user's Retry and
 \* the automatic redrive.  `s` is the row after the retry event.  A refusal
@@ -288,7 +327,7 @@ UserRetry(r) ==
     /\ cands' = Upd(cands, r, FALSE)
     /\ parked' = Upd(parked, r, FALSE)
     /\ UNCHANGED <<exists, held, side, pubB, temp, task, osTemp, foreign, backend,
-                   up, blind, diskUnjust>>
+                   up, reatt, mine, hot, blind, diskUnjust>>
 
 \* Pause cancels the task.  A static body that already finished is kept
 \* (StaticRangeFinishedBodyPolicy: writeThenPause), as one step here.
@@ -304,7 +343,9 @@ UserPause(r) ==
     /\ phase' = Upd(phase, r, "idle")
     /\ pending' = Upd(pending, r, FALSE)
     /\ cands' = Upd(cands, r, FALSE)
-    /\ UNCHANGED <<exists, ckpt, side, pubB, foreign, backend, up, latch, ghosts>>
+    /\ hot' = Upd(hot, r, hot[r] \/ (Static(r) /\ task[r] = "finished"))
+    /\ UNCHANGED <<exists, ckpt, side, pubB, foreign, backend, up, latch, reatt, mine,
+                   ghosts>>
 
 \* Delete removes the row and every file it owns.
 UserDelete(r) ==
@@ -317,7 +358,8 @@ UserDelete(r) ==
     /\ latch' = Upd(latch, r, FALSE) /\ pending' = Upd(pending, r, FALSE)
     /\ cands' = Upd(cands, r, FALSE) /\ phase' = Upd(phase, r, "idle")
     /\ parked' = Upd(parked, r, FALSE) /\ late' = Upd(late, r, 0)
-    /\ UNCHANGED <<foreign, backend, up, blind, capUnjust, diskUnjust>>
+    /\ mine' = Upd(mine, r, FALSE) /\ hot' = Upd(hot, r, FALSE)
+    /\ UNCHANGED <<foreign, backend, up, reatt, blind, capUnjust, diskUnjust>>
 
 -----------------------------------------------------------------------------
 (* Starting a transfer                                                     *)
@@ -334,7 +376,7 @@ CloneBegin(r) ==
                /\ phase' = Upd(phase, r, "idle")
                /\ UNCHANGED temp
     /\ UNCHANGED <<exists, ckpt, held, side, pubB, task, osTemp, foreign, backend,
-                   up, cands, late, blind, capUnjust, diskUnjust>>
+                   up, cands, reatt, mine, hot, late, blind, capUnjust, diskUnjust>>
 
 \* The new attempt owns the copy and the old working file is removed.
 CloneCommit(r) ==
@@ -342,7 +384,7 @@ CloneCommit(r) ==
     /\ temp' = Upd(temp, r, 0)
     /\ phase' = Upd(phase, r, "start")
     /\ UNCHANGED <<exists, row, ckpt, held, side, pubB, task, osTemp, foreign, backend,
-                   up, latch, pending, cands, ghosts>>
+                   up, latch, pending, cands, reatt, mine, hot, ghosts>>
 
 \* session.start: the free-space preflight, then the task.  A row whose
 \* working file is already whole goes to finalization instead.
@@ -350,6 +392,8 @@ Start(r) ==
     /\ up /\ exists[r] /\ phase[r] = "start" /\ L(r) = "admitted"
     /\ task[r] = "none" /\ backend
     /\ phase' = Upd(phase, r, "idle")
+    \* The request this start built is held in memory for the continuations.
+    /\ mine' = Upd(mine, r, TRUE)
     /\ IF Static(r) /\ ckpt[r] = Size
           THEN /\ row' = Upd(row, r, Step(row[r], Ev("bodyAtWorking")))
                /\ pending' = Upd(pending, r, FALSE)
@@ -368,7 +412,7 @@ Start(r) ==
                /\ diskUnjust' = (diskUnjust \/ Free >= TrueNeed(r, ckpt[r], held[r]))
                /\ UNCHANGED task
     /\ UNCHANGED <<exists, ckpt, held, side, pubB, temp, osTemp, foreign, backend,
-                   up, cands, late, blind, capUnjust>>
+                   up, cands, reatt, hot, late, blind, capUnjust>>
 
 -----------------------------------------------------------------------------
 (* The URLSession daemon: runs whether or not the app is alive             *)
@@ -405,21 +449,24 @@ DidFinish(r) ==
     /\ osTemp' = Upd(osTemp, r, 0)
     /\ IF exists[r] /\ L(r) = "transferring" /\ Static(r) /\ held[r] = 0
           THEN /\ held' = Upd(held, r, osTemp[r])
+               /\ hot' = Upd(hot, r, TRUE)
                /\ UNCHANGED <<row, ckpt>>
        ELSE IF exists[r] /\ L(r) = "transferring" /\ ~Static(r)
           THEN /\ ckpt' = Upd(ckpt, r, osTemp[r])
                /\ row' = Upd(row, r, Step(row[r], Ev("bodyAtWorking")))
-               /\ UNCHANGED held
-          ELSE UNCHANGED <<row, ckpt, held>>
-    /\ UNCHANGED <<exists, side, pubB, temp, foreign, backend, memory, ghosts>>
+               /\ UNCHANGED <<held, hot>>
+          ELSE UNCHANGED <<row, ckpt, held, hot>>
+    /\ UNCHANGED <<exists, side, pubB, temp, foreign, backend, up, latch, pending, cands,
+                   reatt, mine, phase, ghosts>>
 
 \* Append a held body to the working file: one more copy of it must fit.
 \* Then the continuation preflight plans the next segment.  A paused row
 \* keeps the bytes of a body that finished (issue 401) and starts nothing.
 AppendHeld(r) ==
-    /\ up /\ exists[r] /\ Static(r) /\ held[r] > 0
+    /\ up /\ exists[r] /\ Static(r) /\ held[r] > 0 /\ hot[r]
     /\ L(r) \in {"transferring", "paused"} /\ task[r] = "none"
     /\ held' = Upd(held, r, 0)
+    /\ hot' = Upd(hot, r, FALSE)
     /\ IF Free < held[r]
           \* ENOSPC on the append: held bodies are purged, the checkpoint stays.
           THEN /\ StorageFull(r)
@@ -433,6 +480,13 @@ AppendHeld(r) ==
                ELSE IF c = Size
                   THEN /\ row' = Upd(row, r, Step(row[r], Ev("bodyAtWorking")))
                        /\ UNCHANGED <<task, latch, pending, parked, late>>
+               ELSE IF ~mine[r]
+                  \* continueRangeAfterBody with no request (a body adopted after
+                  \* relaunch): transferRebuilding, and the manager is asked to
+                  \* rebuild the request (resumeStaticRangeWhenReady).
+                  THEN /\ row' = Upd(row, r, Step(row[r], Ev("transferRebuilding")))
+                       /\ pending' = Upd(pending, r, TRUE)
+                       /\ UNCHANGED <<task, latch, parked, late>>
                ELSE IF Free >= RequiredOf(r, c, 0)
                   THEN /\ task' = Upd(task, r, "running")
                        /\ UNCHANGED <<row, latch, pending, parked, late>>
@@ -440,13 +494,14 @@ AppendHeld(r) ==
                   ELSE /\ StorageFull(r)
                        /\ UNCHANGED <<task, late>>
     /\ UNCHANGED <<exists, side, pubB, temp, osTemp, foreign, backend,
-                   up, cands, phase, blind, capUnjust, diskUnjust>>
+                   up, cands, reatt, mine, phase, blind, capUnjust, diskUnjust>>
 
 \* didCompleteWithError for an ENOSPC task.
 HandleOutOfSpace(r) ==
     /\ up /\ task[r] = "failed"
     /\ task' = Upd(task, r, "none")
     /\ held' = Upd(held, r, IF exists[r] THEN 0 ELSE held[r])
+    /\ hot' = Upd(hot, r, FALSE)
     /\ IF ~exists[r] THEN UNCHANGED <<row, latch, pending, parked>>
        ELSE IF Static(r) \/ FixB26 THEN StorageFull(r)
        \* B26 (fix off): the forward-only lane reports a generic transfer failure.
@@ -454,7 +509,7 @@ HandleOutOfSpace(r) ==
             /\ parked' = Upd(parked, r, TRUE)
             /\ UNCHANGED <<latch, pending>>
     /\ UNCHANGED <<exists, ckpt, side, pubB, temp, osTemp, foreign, backend,
-                   up, cands, phase, late, blind, capUnjust, diskUnjust>>
+                   up, cands, reatt, mine, phase, late, blind, capUnjust, diskUnjust>>
 
 \* Validation, the publish intent and the promotion commit, as one step.
 \* Publication renames the working file: it needs no extra space.
@@ -487,8 +542,12 @@ DurableStorageFailure(r) == L(r) = "failed" /\ row[r].lastFailure = "storage"
 \* storage gate on the in-memory lastError, then retry.
 AutoRedrive(r) ==
     /\ up /\ exists[r] /\ Static(r) /\ task[r] = "none" /\ phase[r] = "idle"
-    /\ pending[r] \/ cands[r]
-    /\ L(r) \in {"failed", "admitted"} \/ (L(r) = "paused" /\ row[r].pauseCause # "user")
+    \* A launch candidate is redriven only after the enumeration and reconcile.
+    /\ pending[r] \/ (cands[r] /\ reatt)
+    /\ \/ L(r) \in {"failed", "admitted"}
+       \/ L(r) = "paused" /\ row[r].pauseCause # "user"
+       \* A request rebuild for a row whose adopted body was just appended.
+       \/ L(r) = "transferring" /\ pending[r]
     /\ cands' = Upd(cands, r, FALSE)
     /\ LET short == Free < Required(r)
            \* What the storage gate knows.
@@ -510,13 +569,14 @@ AutoRedrive(r) ==
                /\ parked' = Upd(parked, r, IF FixParkGate /\ known THEN FALSE ELSE parked[r])
                /\ UNCHANGED <<phase, late, blind, capUnjust>>
        ELSE /\ GateRetry(r, IF L(r) = "admitted" THEN row[r]
+                            ELSE IF L(r) = "transferring" THEN Step(row[r], Ev("requeued"))
                             ELSE Step(row[r], EvRetry("staticCheckpoint")))
             /\ latch' = Upd(latch, r, FALSE)
             /\ pending' = Upd(pending, r, ~CapRejects(r))
             /\ blind' = (blind \/ (parked[r] /\ ~known /\ short))
             /\ parked' = Upd(parked, r, IF short THEN parked[r] ELSE FALSE)
     /\ UNCHANGED <<exists, ckpt, held, side, pubB, temp, task, osTemp, foreign, backend,
-                   up, diskUnjust>>
+                   up, reatt, mine, hot, diskUnjust>>
 
 -----------------------------------------------------------------------------
 (* Disk, backend, crash                                                    *)
@@ -543,29 +603,55 @@ Crash ==
     /\ CrashEnabled /\ up /\ up' = FALSE
     /\ latch' = Const(Rows, FALSE) /\ pending' = Const(Rows, FALSE)
     /\ cands' = Const(Rows, FALSE) /\ phase' = Const(Rows, "idle")
+    /\ reatt' = TRUE /\ mine' = Const(Rows, FALSE) /\ hot' = Const(Rows, FALSE)
     /\ UNCHANGED <<durable, ghosts>>
+
+\* Launch, first half (performInitialStartupReattachIfNeeded up to
+\* session.reattach): the candidates are captured from the rows as the dead
+\* process left them (interruptedStaticByteRangeKeys), and the startup sweep
+\* reclaims checkpoint-copy temps no process owns.  The enumeration is queued.
+Relaunch ==
+    /\ ~up /\ up' = TRUE
+    /\ cands' = [r \in Rows |-> exists[r] /\ Static(r) /\ L(r) \in {"admitted", "transferring"}]
+    /\ reatt' = FALSE
+    \* B86 (fix off): the sweep does not recognise a hard-killed copy.
+    /\ temp' = IF FixB86 THEN Const(Rows, 0) ELSE temp
+    /\ UNCHANGED <<exists, row, ckpt, held, side, pubB, task, osTemp, foreign, backend,
+                   latch, pending, mine, hot, phase, ghosts>>
+
+\* reattachToResumedTasks: a task is adopted, and its key is live, unless its
+\* row is gone, terminal or paused; those tasks are cancelled.
+LiveAtReattach(r) ==
+    exists[r] /\ task[r] # "none" /\ L(r) \notin Terminal /\ L(r) # "paused"
 
 RelaunchFacts(r) ==
     Fx(IF Static(r) THEN "staticRange" ELSE "forwardOnly", FALSE,
        IF ~Static(r) THEN "none" ELSE IF ckpt[r] > 0 THEN "partial" ELSE "partialEmpty",
        IF pubB[r] > 0 THEN "published" ELSE IF ckpt[r] = Size THEN "workingComplete" ELSE "none",
-       FALSE, FALSE, task[r] # "none", TRUE)
+       FALSE, FALSE, LiveAtReattach(r), TRUE)
 
-\* Launch: the candidates are captured before reconcile, the startup sweep
-\* reclaims checkpoint-copy temps no process owns, and reconcile runs
-\* relaunchObserved for every row.
-Relaunch ==
-    /\ ~up /\ up' = TRUE
-    /\ cands' = [r \in Rows |-> exists[r] /\ Static(r) /\ L(r) \in {"admitted", "transferring"}]
-    \* B86 (fix off): the sweep does not recognise a hard-killed copy.
-    /\ temp' = IF FixB86 THEN Const(Rows, 0) ELSE temp
+\* Launch, second half: the getAllTasks completion.  Reconcile runs
+\* relaunchObserved for every row with the live keys, and
+\* resumeInterruptedStaticByteRangeDownloads keeps a candidate only when its
+\* key is not live and reconcile left it paused or failed.
+Reattach ==
+    /\ up /\ ~reatt /\ reatt' = TRUE
     /\ LET t(r) == Reduce(row[r], Ev("relaunchObserved"), RelaunchFacts(r))
+           after(r) == IF exists[r] /\ IsApplied(t(r)) THEN t(r).state ELSE row[r]
            drops(r) == exists[r] /\ Has(t(r), "deleteWorkingBody")
-       IN /\ row' = [r \in Rows |-> IF exists[r] /\ IsApplied(t(r)) THEN t(r).state ELSE row[r]]
+           cancelled(r) == task[r] \in {"running", "finished"} /\ ~LiveAtReattach(r)
+       IN /\ row' = [r \in Rows |-> after(r)]
           /\ ckpt' = [r \in Rows |-> IF drops(r) THEN 0 ELSE ckpt[r]]
           /\ held' = [r \in Rows |-> IF drops(r) THEN 0 ELSE held[r]]
-    /\ UNCHANGED <<exists, side, pubB, task, osTemp, foreign, backend,
-                   latch, pending, phase, ghosts>>
+          /\ task' = [r \in Rows |-> IF cancelled(r) THEN "none" ELSE task[r]]
+          /\ osTemp' = [r \in Rows |-> IF cancelled(r) THEN 0 ELSE osTemp[r]]
+          /\ mine' = [r \in Rows |-> mine[r] \/ LiveAtReattach(r)]
+          \* restoreHeldRangeSegments
+          /\ hot' = [r \in Rows |-> ~drops(r) /\ held[r] > 0]
+          /\ cands' = [r \in Rows |-> /\ cands[r] /\ ~LiveAtReattach(r)
+                                       /\ after(r).lifecycle \in {"paused", "failed"}]
+    /\ UNCHANGED <<exists, side, pubB, temp, foreign, backend, up, latch, pending, phase,
+                   ghosts>>
 
 Next ==
     \/ \E r \in Rows :
@@ -575,7 +661,7 @@ Next ==
           \/ DidFinish(r) \/ AppendHeld(r) \/ HandleOutOfSpace(r)
           \/ Finalize(r) \/ SideAsset(r) \/ AutoRedrive(r)
     \/ ForeignGrows \/ ForeignShrinks \/ BackendFlips
-    \/ Crash \/ Relaunch
+    \/ Crash \/ Relaunch \/ Reattach
 
 Spec == Init /\ [][Next]_vars
 
@@ -618,7 +704,8 @@ UnknownStaysUnknown ==
         /\ exists[r] => Contribution(r) = Retained(r) + side[r]
         /\ Required(r) = Peak(r, ckpt[r], held[r]) + (SideMax - side[r]) + Headroom
 
-\* The audit references every byte a row owns, hidden staging included (B19).
+\* The audit references every byte a row owns, hidden staging included (B19):
+\* what the enumeration reaches is what is on disk for the row.
 AuditCountsHiddenStaging == \A r \in Rows : AuditReferenced(r) = RowOwned(r)
 
 \* The audit accounts for the whole directory, and its orphan candidates
@@ -634,6 +721,12 @@ NoOrphanAfterStartup == up => \A r \in Rows : temp[r] > 0 => phase[r] = "clone"
 
 \* A storage-parked row says so durably until something re-measures (B31).
 ParkIsDurable == \A r \in Rows : parked[r] => DurableStorageFailure(r)
+
+\* B31: a row that a storage-full failure parked, and that is still failed,
+\* carries the storage reason on disk.  Before the fix the durable row was a
+\* failure with no reason and only lastError knew why.
+ParkedFailureSaysStorage ==
+    \A r \in Rows : (parked[r] /\ L(r) = "failed") => row[r].lastFailure = "storage"
 
 \* No automatic redrive of a storage-parked row against a disk that still
 \* cannot hold it, unless the gate measured first (B31, sd-06).
