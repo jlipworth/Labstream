@@ -29,19 +29,37 @@ Actors: the OS (handler delivery, finish-events, task events), app startup, the 
 timers, transfer work (operations, a delayed retry, persistence flushes), the foreground edge, and
 process death.
 
+## The clock and the timers
+
+The clock keeps running while a timer callback waits on its queue, as `DispatchTime` does. A
+callback runs at most `TimerSlack` ticks after the later of its deadline and the moment it was
+armed: `Tick` is disabled only once a timer that exists is that late. Between a deadline and its
+callback everything else can happen: finish-events, a flush result, an operation ending, a new
+handler. An earlier version stopped the clock whenever any timer was due, and its budget
+invariant accepted an overdue handler whenever any timer was due, so it passed with the
+operation watchdog removed.
+
+The four timers are switched separately. `FixB13` is the operation deadline alone, which is what
+B13 fixed (a leaked operation had no time bound). `MutantNoAbsoluteDeadline` and
+`MutantNoRegistryTimer` remove the other two claiming timers. The reserve timer has no switch.
+
+When a session registers, a handler passes from the registry's timer to the wake's
+absolute-deadline timer, which is armed at that moment. `hat` records when the covering timer
+was armed, so a handler registered inside the slack window is given the slack again.
+
 ## Bounds
 
-Two handlers, two operations, clock 0 to 4 with whole wake 2, operation budget 1 and reserve 1
-(the app's 25 s, 20 s and 5 s, in order), one crash, one task event, two operation starts, one
-startup failure and one retry. `Handlers` and `Ops` are symmetry sets in the safety configs.
+Two handlers, two operations, clock 0 to 4 with whole wake 2, operation budget 1, reserve 1 and
+timer slack 1 (the app's 25 s, 20 s and 5 s, in order), one crash, one task event, two operation
+starts, one startup failure and one retry. `Handlers` and `Ops` are symmetry sets in the safety configs.
 
 | Config | Result | Distinct states | Time at 2 workers, 2 GB (the higher figure is with other agents running) |
 | --- | --- | --- | --- |
-| `Current-Wake` | pass | 3,412,505 | 45 to 70 s |
-| `Proposed-W1-FreshDeadline` | pass | 2,904,340 | 40 to 95 s |
-| `Liveness-HandlerCalled` | pass | 310,367 | 25 to 60 s |
+| `Current-Wake` | pass | 9,290,572 | 135 s |
+| `Proposed-W1-FreshDeadline` | pass | 8,015,945 | 134 s |
+| `Liveness-HandlerCalled` | pass | 977,937 | 112 s |
 | `WakeLaunchGate-Current-Gate` | pass | 112 | 1 s |
-| every `Faithful`, `Mutant` and `Finding` config | expected violation | under 31,000 | 1 s |
+| every `Faithful`, `Mutant` and `Finding` config | expected violation | under 34,000 | 1 s |
 
 No deep config.
 
@@ -50,7 +68,8 @@ No deep config.
 | Property | Says | Bug |
 | --- | --- | --- |
 | `NoOrphanHandler` | a stored handler is held by the coordinator, queued for the MainActor, or covered by the registry timer | B06, B11 |
-| `HandlerClaimedWithinBudget` | no handler is unclaimed after its deadline | B13 |
+| `HandlerClaimedWithinBudget` | no handler is unclaimed more than the slack after its deadline (or after its covering timer was armed, when that was later) | mutants |
+| `OperationHoldBounded` | an operation the wake waits for holds it for at most the operation budget plus the slack | B13 |
 | `AwaitingHandlerIsOwedFinishEvents` | a handler waiting for finish-events is one the OS still owes them for | B11 |
 | `BlockedStartupHoldsNoHandler` | a startup blocked before the transport exists holds no wake | B06 |
 | `GateHoldsForSuccessor` | no drained release while a delayed retry's successor is unregistered | B04 |
@@ -78,9 +97,16 @@ operations, flushes and startup may never happen.
 | `Faithful-B05-off` | a block after the transport exists aborts holds | `LiveHoldsSurviveStartupBlock` |
 | `Faithful-B06-off` | the session forgets the startup block | `BlockedStartupHoldsNoHandler` |
 | `Faithful-B11-off` | the handler reaches the registry through a Task hop | `AwaitingHandlerIsOwedFinishEvents` |
-| `Faithful-B13-off` | no timers | `HandlerClaimedWithinBudget` |
+| `Faithful-B13-off` | no operation deadline; the other timers stay | `OperationHoldBounded` |
+| `Mutant-NoAbsoluteDeadline` | no absolute-deadline timer | `HandlerClaimedWithinBudget` |
+| `Mutant-NoRegistryTimer` | no registry deadline timer | `HandlerClaimedWithinBudget` |
 | `Mutant-DrainByIdentifier` | a release drains every handler for the identifier | `CalledOnlyAfterClaim` |
 | `WakeLaunchGate-Faithful-B77-off` | a reconnect never reruns the pass | `LaunchPassSawServers` |
+
+`Faithful-B13-off` passes when no operation ever starts (`MaxOps = 0`), which is the isolation
+check: the mutation is the operation deadline and nothing else. With the absolute deadline still
+armed, a leaked operation costs the wake `WholeWake` instead of `OpBudget`, and
+`HandlerClaimedWithinBudget` still holds.
 
 ## Findings
 

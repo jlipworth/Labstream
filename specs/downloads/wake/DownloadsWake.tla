@@ -26,14 +26,22 @@
 (* is the abstract operations in `Ops` and one delayed retry.              *)
 (*                                                                         *)
 (* Abstractions:                                                           *)
-(*  - Time is a small integer clock.  A due timer fires before the clock   *)
-(*    moves again (Tick is disabled while ClaimDue), so "claimed by the    *)
-(*    deadline" is an invariant.  The MainActor hop that calls a claimed   *)
-(*    handler is not bounded by time, only by fairness.                    *)
+(*  - Time is a small integer clock that keeps running while a timer      *)
+(*    callback waits on its queue, as DispatchTime does.  A timer's        *)
+(*    callback runs at most TimerSlack ticks after the later of its        *)
+(*    deadline and the moment it was armed: Tick is disabled only once a   *)
+(*    timer that exists is that late.  "Claimed within the budget" is      *)
+(*    then an invariant with the slack in it, and it fails when the        *)
+(*    timer that should claim is missing, whatever other timer is due.     *)
+(*    Everything else (finish-events, flushes, operations, a new handler)  *)
+(*    can happen between a deadline and its callback.  The MainActor hop   *)
+(*    that calls a claimed handler is not bounded by time, only by         *)
+(*    fairness.                                                            *)
 (*  - Timers are derived from state instead of stored: a timer is due      *)
 (*    when its wake still exists and its deadline has passed.  The code    *)
 (*    checks the wake generation for the same purpose.  The model          *)
-(*    therefore cannot find an arming mistake.                             *)
+(*    therefore cannot find an arming mistake.  The four timers are        *)
+(*    switched separately: FixB13 is the operation deadline alone.         *)
 (*  - The persistence epoch is two booleans: whether the running flush     *)
 (*    and the stored proof still cover the current epoch.                  *)
 (*  - The registry's own startup memory (noteStartupWakeState on the       *)
@@ -60,12 +68,16 @@ CONSTANTS
     FixB05,         \* a block after the transport exists keeps running holds (no abort)
     FixB06,         \* the session remembers a startup block and releases a late handler
     FixB11,         \* the app delegate stores the handler synchronously
-    FixB13,         \* reserve, operation and absolute-deadline timers exist
+    FixB13,         \* the operation deadline exists: a leaked operation holds a wake
+                    \*   for at most OpBudget
+    TimerSlack,     \* how many ticks late a timer callback may run
+    MutantNoAbsoluteDeadline,  \* injected: the wake's absolute-deadline timer is missing
+    MutantNoRegistryTimer,     \* injected: the registry's own deadline timer is missing
     FixStaleDeadline,       \* PROPOSED (finding W1): a claimed token's receipt is not inherited
     MutantDrainByIdentifier \* injected: a release drains every handler for the identifier
 
 ASSUME /\ WholeWake \in Nat /\ OpBudget \in Nat /\ Reserve \in Nat /\ MaxTime \in Nat
-       /\ Reserve <= WholeWake
+       /\ Reserve <= WholeWake /\ TimerSlack \in Nat
 
 VARIABLES
     \* Durable or outside the process.
@@ -90,13 +102,14 @@ VARIABLES
     retryOp,        \* the operation that retry holds, or "none"
     releaseQ,       \* claimed tokens whose MainActor hop has not run
     \* Ghosts.
+    hat,            \* handler -> when the timer that now covers it was armed
     texp,           \* operations a timed-out wake really was waiting for
     flags           \* what went wrong, by name
 
 durable == <<now, evQ, env>>
 memory == <<up, hs, hdl, finishOwed, mgr, adm, live, failedAfter, sws, c, op, opStart, retry,
             retryOp, releaseQ>>
-ghosts == <<texp, flags>>
+ghosts == <<hat, texp, flags>>
 vars == <<durable, memory, ghosts>>
 
 Sym == Permutations(Handlers) \cup Permutations(Ops)
@@ -106,6 +119,7 @@ Sym == Permutations(Handlers) \cup Permutations(Ops)
 
 MinOf(S) == CHOOSE x \in S : \A y \in S : x <= y
 Min2(a, b) == IF a <= b THEN a ELSE b
+Max2(a, b) == IF a >= b THEN a ELSE b
 
 Stored == {h \in Handlers : hs[h] = "stored"}
 Running == {o \in Ops : op[o] # "idle"}
@@ -114,14 +128,15 @@ Running == {o \in Ops : op[o] # "idle"}
 (* The wake coordinator (BackgroundDownloadWakeCoordinator)                *)
 
 \* on..winding are the `wake`; reg is `operations`; expOps is `expiredOperations`;
-\* authExp is `backgroundAuthorizationExpired`.
+\* authExp is `backgroundAuthorizationExpired`.  `at` is when the wake's timers were
+\* armed (Wake.receivedAt for a new wake).
 CoordInit ==
-    [on |-> FALSE, dl |-> 0, aw |-> {}, fin |-> {}, req |-> {}, flushing |-> FALSE,
+    [on |-> FALSE, dl |-> 0, at |-> 0, aw |-> {}, fin |-> {}, req |-> {}, flushing |-> FALSE,
      flushOK |-> FALSE, proofOK |-> FALSE, winding |-> FALSE,
      reg |-> {}, expOps |-> {}, authExp |-> FALSE]
 
 NoWake(cc) ==
-    [cc EXCEPT !.on = FALSE, !.dl = 0, !.aw = {}, !.fin = {}, !.req = {},
+    [cc EXCEPT !.on = FALSE, !.dl = 0, !.at = 0, !.aw = {}, !.fin = {}, !.req = {},
                !.flushing = FALSE, !.flushOK = FALSE, !.proofOK = FALSE,
                !.winding = FALSE]
 
@@ -152,7 +167,7 @@ Progress(cc, proactive) ==
 \* storeHandler, for every token in H (register replays several at once).
 StoreH(cc, H, dl) ==
     LET base == IF cc.on THEN cc
-                ELSE [cc EXCEPT !.on = TRUE, !.dl = dl, !.authExp = FALSE,
+                ELSE [cc EXCEPT !.on = TRUE, !.dl = dl, !.at = now, !.authExp = FALSE,
                                 !.req = cc.reg \ cc.expOps]
     IN Bump([base EXCEPT !.dl = Min2(base.dl, dl), !.aw = @ \cup H])
 
@@ -228,6 +243,7 @@ RegStore(h) ==
         r == IF mgr # "none" THEN SessionStore(c, {h}, dl) ELSE Kept(c)
     IN /\ hs' = [hs EXCEPT ![h] = "stored"]
        /\ hdl' = [hdl EXCEPT ![h] = dl]
+       /\ hat' = [hat EXCEPT ![h] = now]
        \* onBackgroundWakeAuthorized -> resumeStartupRecoveryAfterAuthorization
        /\ mgr' = IF mgr = "waiting" THEN "preparing" ELSE mgr
        /\ Commit(r, op, retry,
@@ -243,7 +259,7 @@ OSDeliver(h) ==
     /\ IF FixB11
        THEN RegStore(h)
        ELSE /\ hs' = [hs EXCEPT ![h] = "hop"]
-            /\ UNCHANGED <<hdl, mgr, c, releaseQ, texp, flags>>
+            /\ UNCHANGED <<hdl, mgr, c, releaseQ, hat, texp, flags>>
     /\ UNCHANGED <<durable, up, adm, live, failedAfter, sws, op, opStart, retry, retryOp>>
 
 HopStore(h) ==
@@ -261,10 +277,11 @@ MainFire ==
           /\ flags' = flags \cup (IF fired \ releaseQ # {} THEN {"earlyCall"} ELSE {})
     /\ releaseQ' = {}
     /\ UNCHANGED <<durable, up, finishOwed, mgr, adm, live, failedAfter, sws, c, op, opStart,
-                   retry, retryOp, texp>>
+                   retry, retryOp, hat, texp>>
 
 \* The registry's own deadline timer: only while no session has registered.
-RegistryTimerDue == up /\ FixB13 /\ mgr = "none" /\ \E h \in Stored : now >= hdl[h]
+RegistryTimerDue ==
+    up /\ ~MutantNoRegistryTimer /\ mgr = "none" /\ \E h \in Stored : now >= hdl[h]
 RegistryTimer ==
     /\ RegistryTimerDue
     /\ LET fired == {h \in Stored : now >= hdl[h]}
@@ -284,6 +301,8 @@ ManagerInit ==
     /\ LET r == IF Stored = {} THEN Kept(c)
                 ELSE SessionStore(c, Stored, MinOf({hdl[h] : h \in Stored}))
        IN Commit(r, op, retry, {})
+    \* The registry's timer stops covering these handlers; the wake's timers are armed now.
+    /\ hat' = [h \in Handlers |-> IF h \in Stored THEN now ELSE hat[h]]
     /\ UNCHANGED <<durable, up, hs, hdl, finishOwed, adm, live, failedAfter, sws, op, opStart,
                    retry, retryOp>>
 
@@ -310,7 +329,8 @@ PurgeFail ==
     /\ adm' = "dormant" /\ failedAfter' = TRUE /\ mgr' = "blocked"
     /\ sws' = SwsAfterBlock(TRUE)
     /\ Commit(StartupRelease(c, TRUE), op, retry, {})
-    /\ UNCHANGED <<now, evQ, up, hs, hdl, finishOwed, live, op, opStart, retry, retryOp>>
+    /\ UNCHANGED <<now, evQ, up, hs, hdl, finishOwed, live, op, opStart, retry, retryOp,
+                   hat>>
 
 \* blockDownloadStartup from store admission (unreadable or inconsistent index).
 BlockBefore ==
@@ -320,7 +340,8 @@ BlockBefore ==
     /\ sws' = SwsAfterBlock(failedAfter)
     /\ Commit(StartupRelease(c, failedAfter), op, retry, {})
     /\ UNCHANGED <<now, evQ, up, hs, hdl, finishOwed, adm, live, failedAfter, op, opStart,
-                   retry, retryOp>>
+                   retry, retryOp,
+                   hat>>
 
 \* Retry Recovery, or the transient startup retry.
 ManagerRetry ==
@@ -376,6 +397,7 @@ RetryRun ==
        ELSE /\ op' = [op EXCEPT ![retryOp] = "idle"]
             /\ opStart' = [opStart EXCEPT ![retryOp] = 0]
             /\ Commit(EndOp(c, retryOp), op', "none", {})
+            /\ UNCHANGED hat
     /\ UNCHANGED <<durable, up, hs, hdl, finishOwed, mgr, adm, live, failedAfter, sws>>
 
 OpBegin(o, stuck) ==
@@ -394,7 +416,8 @@ OpEnd(o) ==
     /\ opStart' = [opStart EXCEPT ![o] = 0]
     /\ Commit(EndOp(c, o), op', retry, {})
     /\ UNCHANGED <<durable, up, hs, hdl, finishOwed, mgr, adm, live, failedAfter, sws, retry,
-                   retryOp>>
+                   retryOp,
+                   hat>>
 
 \* urlSessionDidFinishEvents: every queued event has been delivered.
 DidFinishEvents ==
@@ -402,7 +425,8 @@ DidFinishEvents ==
     /\ finishOwed' = FALSE
     /\ Commit(FinishEv(c), op, retry, {})
     /\ UNCHANGED <<durable, up, hs, hdl, mgr, adm, live, failedAfter, sws, op, opStart, retry,
-                   retryOp>>
+                   retryOp,
+                   hat>>
 
 \* persistenceFinished(_:committed:)
 FlushDone(committed) ==
@@ -414,34 +438,46 @@ FlushDone(committed) ==
                 ELSE Progress(c1, FALSE)
        IN Commit(r, op, retry, {})
     /\ UNCHANGED <<durable, up, hs, hdl, finishOwed, mgr, adm, live, failedAfter, sws, op,
-                   opStart, retry, retryOp>>
+                   opStart, retry, retryOp,
+                   hat>>
 
 -----------------------------------------------------------------------------
 (* Timers (B13)                                                            *)
 
-AbsDue == up /\ FixB13 /\ c.on /\ now >= c.dl
+AbsDue == up /\ ~MutantNoAbsoluteDeadline /\ c.on /\ now >= c.dl
+\* arm(_:): min(startedAt + operation, wake.deadline); the absolute deadline is the other
+\* half of that minimum.  storeHandler re-arms the operations a new wake inherits.
 WatchdogDue(o) ==
     up /\ FixB13 /\ c.on /\ o \in c.req /\ o \in c.reg /\ now >= opStart[o] + OpBudget
-ReserveDue == up /\ FixB13 /\ c.on /\ ~c.winding /\ now + Reserve >= c.dl
+ReserveDue == up /\ c.on /\ ~c.winding /\ now + Reserve >= c.dl
+
+\* A timer's callback has waited TimerSlack ticks since the later of its deadline and
+\* the moment it was armed.
+AbsLate == AbsDue /\ now >= Max2(c.dl, c.at) + TimerSlack
+WatchdogLate(o) == WatchdogDue(o) /\ now >= Max2(opStart[o] + OpBudget, c.at) + TimerSlack
+ReserveLate == ReserveDue /\ now + Reserve >= Max2(c.dl, c.at + Reserve) + TimerSlack
+RegistryTimerLate ==
+    RegistryTimerDue /\ \E h \in Stored : now >= Max2(hdl[h], hat[h]) + TimerSlack
+TimerLate == AbsLate \/ ReserveLate \/ RegistryTimerLate \/ \E o \in Ops : WatchdogLate(o)
 
 TimedOut ==
     /\ AbsDue \/ \E o \in Ops : WatchdogDue(o)
     /\ Commit(Claim(c, "timedOut"), op, retry, {})
     /\ UNCHANGED <<durable, up, hs, hdl, finishOwed, mgr, adm, live, failedAfter, sws, op,
-                   opStart, retry, retryOp>>
+                   opStart, retry, retryOp,
+                   hat>>
 
 \* The persistence-reserve timer: wind down and flush proactively.
 ReserveFire ==
     /\ ReserveDue
     /\ Commit(Progress([c EXCEPT !.winding = TRUE], TRUE), op, retry, {})
     /\ UNCHANGED <<durable, up, hs, hdl, finishOwed, mgr, adm, live, failedAfter, sws, op,
-                   opStart, retry, retryOp>>
+                   opStart, retry, retryOp,
+                   hat>>
 
-ClaimDue ==
-    AbsDue \/ ReserveDue \/ RegistryTimerDue \/ \E o \in Ops : WatchdogDue(o)
-
+\* The clock does not wait for a due timer, only for one that is TimerSlack late.
 Tick ==
-    /\ now < MaxTime /\ ~ClaimDue
+    /\ now < MaxTime /\ ~TimerLate
     /\ now' = now + 1
     /\ UNCHANGED <<evQ, env, memory, ghosts>>
 
@@ -455,6 +491,7 @@ Crash ==
     \* The dead process's handlers are gone; tokens the OS has not supplied stay fresh.
     /\ hs' = [h \in Handlers |-> IF hs[h] = "fresh" THEN "fresh" ELSE "spent"]
     /\ hdl' = Const(Handlers, 0)
+    /\ hat' = Const(Handlers, 0)
     /\ finishOwed' = FALSE
     /\ mgr' = "none" /\ adm' = "dormant" /\ live' = FALSE /\ failedAfter' = FALSE
     /\ sws' = "deferred"
@@ -485,7 +522,7 @@ Init ==
     /\ op = Const(Ops, "idle") /\ opStart = Const(Ops, 0)
     /\ retry = "none" /\ retryOp = "none"
     /\ releaseQ = {}
-    /\ texp = {} /\ flags = {}
+    /\ hat = Const(Handlers, 0) /\ texp = {} /\ flags = {}
 
 Next ==
     \/ \E h \in Handlers : OSDeliver(h) \/ HopStore(h)
@@ -521,7 +558,8 @@ TypeOK ==
     /\ adm \in {"dormant", "purging", "active"}
     /\ live \in BOOLEAN /\ failedAfter \in BOOLEAN
     /\ sws \in {"deferred", "blockedBefore", "failedAfter"}
-    /\ c.on \in BOOLEAN /\ c.dl \in 0..MaxTime
+    /\ hat \in [Handlers -> 0..MaxTime]
+    /\ c.on \in BOOLEAN /\ c.dl \in 0..MaxTime /\ c.at \in 0..MaxTime
     /\ c.aw \subseteq Handlers /\ c.fin \subseteq Handlers
     /\ c.req \subseteq c.reg /\ c.reg \subseteq Ops /\ c.expOps \subseteq c.reg
     /\ op \in [Ops -> {"idle", "run", "stuck"}]
@@ -536,10 +574,18 @@ TypeOK ==
 NoOrphanHandler ==
     \A h \in Stored : mgr = "none" \/ h \in c.aw \cup c.fin \cup releaseQ
 
-\* B13: no handler is still unclaimed after its deadline.  At the deadline itself a claim
-\* is due and the clock cannot move.
+\* No handler is still unclaimed TimerSlack after its deadline, or after the timer that
+\* covers it was armed when that was later (a handler born expired, finding W1; a handler
+\* handed from the registry's timer to the wake's at registration).  The absolute-deadline
+\* and registry timers are what keep this; another timer being due does not excuse it.
 HandlerClaimedWithinBudget ==
-    \A h \in Stored : h \in releaseQ \/ now <= hdl[h] \/ ClaimDue
+    \A h \in Stored : h \in releaseQ \/ now <= Max2(hdl[h], hat[h]) + TimerSlack
+
+\* B13: an operation the wake is waiting for holds it for at most OpBudget from the
+\* operation's start (from the wake's start for an operation the wake inherited), plus the
+\* slack.  A leaked operation is claimed as timed out then, not at the absolute deadline.
+OperationHoldBounded ==
+    c.on => \A o \in c.req : now <= Max2(opStart[o] + OpBudget, c.at) + TimerSlack
 
 \* B11: a handler waiting for finish-events is one the OS still owes finish-events for.
 AwaitingHandlerIsOwedFinishEvents == c.aw # {} => finishOwed
