@@ -94,7 +94,7 @@ struct DownloadsFormalModelCleanupTests {
         let beforeUnlink = execute[..<unlink.lowerBound]
         #expect(beforeUnlink.contains("waitForPersistence(through: ticket.preparedRevision)"))
 
-        withKnownIssue("TLA+ finding Cleanup-C1: a re-registered row deletion skips its durability wait") {
+        withKnownIssue("TLA+ finding Cleanup-C1 (#479): a re-registered row deletion skips its durability wait") {
             let waitsForOwnRevision = beforeUnlink.contains("currentPersistenceTicket()")
                 || beforeUnlink.contains("enqueueAttemptPersistenceLocked()")
             let recoveryRegistersRevisionZero = recover.contains("preparedRevision: .init(revision: 0)")

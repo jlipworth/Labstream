@@ -778,7 +778,7 @@ struct DownloadsFormalModelStatusTests {
         let stats = OfflineDownloadAggregateStats.make(
             records: [record], activeSpeedBytesPerSecond: estimator.rate(at: Self.time(180)))
 
-        withKnownIssue("TLA+ finding S1: a silent transfer hides the batch speed for as long as it is silent") {
+        withKnownIssue("TLA+ finding S1 (#487): a silent transfer hides the batch speed for as long as it is silent") {
             #expect(!answers.isEmpty, "no speed in two minutes although one transfer moved 1 MB/s throughout")
             #expect(!stats.isUpdatingSpeed, "the screen still says \"Updating speed…\" 170 s into the stall")
         }
@@ -895,7 +895,7 @@ struct DownloadsFormalModelStatusTests {
         #expect(early.topAnswerAtLastCallback == nil && early.topAnswer == nil)
 
         let stale = steady.filter { $0.outcome.rowSpeed != nil }
-        withKnownIssue("TLA+ finding S2: the refresh loop stops before a stalled row's speed has decayed") {
+        withKnownIssue("TLA+ finding S2 (#488): the refresh loop stops before a stalled row's speed has decayed") {
             #expect(stale.isEmpty, """
                 \(stale.count) of \(steady.count) steady-state stalls leave a speed on the row; seed \
                 \(stale.first?.seed ?? 0) shows \(Int(stale.first?.outcome.rowSpeed ?? 0)) B/s after its last \

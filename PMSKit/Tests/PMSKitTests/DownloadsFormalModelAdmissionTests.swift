@@ -115,7 +115,7 @@ struct DownloadsFormalModelAdmissionTests {
     /// The static lane hides ordering 1: launch recovery re-drives an interrupted static row.
     @Test("A1: relaunch keeps a forward-only row that never started")
     func relaunchKeepsForwardOnlyRowThatNeverStarted() {
-        withKnownIssue("TLA+ finding A1: relaunch fails a forward-only row that never started") {
+        withKnownIssue("TLA+ finding A1 (#475): relaunch fails a forward-only row that never started") {
             let noWork = DownloadRowFacts(route: .forwardOnly)
 
             // Ordering 1: granted, then the process died before any work existed.

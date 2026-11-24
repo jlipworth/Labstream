@@ -46,7 +46,7 @@ struct DownloadsFormalModelSideAssetsTests {
         #expect(apply.contains("if registration { cancelledDownloadOwners.remove(owner) }"))
 
         let posterBranch = try #require(Self.slice(fetch, from: "if kind == .poster {", to: "} else {"))
-        withKnownIssue("TLA+ finding S1: a cancelled poster owner stays cancelled for the launch") {
+        withKnownIssue("TLA+ finding S1 (#482): a cancelled poster owner stays cancelled for the launch") {
             #expect(posterBranch.contains("deliverOptionalSideAssetControl"),
                     "the poster fetch never reopens the owner that a kept-attempt cancel closed")
         }
@@ -74,7 +74,7 @@ struct DownloadsFormalModelSideAssetsTests {
             in: Self.managerPath))
         #expect(resumeQueue.contains("rehydrateMissingOptionalSideAssetsForCompletedRows"))
 
-        withKnownIssue("TLA+ finding S2: Pause All strands a completed row's parked side assets") {
+        withKnownIssue("TLA+ finding S2 (#483): Pause All strands a completed row's parked side assets") {
             let entryParksAnyLifecycle = fetch.contains(
                 "|| (isQueuePaused && !admission.isExempt(key.ratingKey))")
             let resumeAllUnparks = resumeQueue.contains("setOptionalSideAssetHydrationParked(false")

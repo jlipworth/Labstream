@@ -221,7 +221,7 @@ struct DownloadsFormalModelServerPrepTests {
             from: "DownloadBackendRetryIntentPolicy.plexPersistedOptimizeTarget(for: record)",
             through: "context: \"retry_replace\""))
 
-        withKnownIssue("TLA+ finding S1: Plex Retry orphans the failed attempt's running optimize job") {
+        withKnownIssue("TLA+ finding S1 (#478): Plex Retry orphans the failed attempt's running optimize job") {
             // Either remedy satisfies the model: reattach to the job the row still names, or
             // journal its cancel before the row and its queue title are removed.
             let reattaches = branch.contains(".prepReattach")

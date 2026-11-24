@@ -23,7 +23,7 @@ struct DownloadsFormalModelFindingsTests {
     /// reducer fails the row. The whole body is lost and the stream restarts from zero.
     @Test("F1: a finished forward-only body in the stash survives relaunch")
     func finishedForwardOnlyBodyInStashSurvivesRelaunch() {
-        withKnownIssue("TLA+ finding F1: crash between stash and working path loses the body") {
+        withKnownIssue("TLA+ finding F1 (#472): crash between stash and working path loses the body") {
             // The stash of finished task 7. After the crash no task is live.
             let stash = BackgroundTempFileCleanupPolicy.rangeBodyStashPrefix + "7-o0"
             let swept = BackgroundTempFileCleanupPolicy.shouldDeleteRangeBodyStash(
@@ -46,7 +46,7 @@ struct DownloadsFormalModelFindingsTests {
     /// "live task" fact and promotes the user-paused row to transferring, with no task left.
     @Test("F2: relaunchObserved never promotes a user-paused row")
     func userPausedRowIsNotPromotedByLiveTaskFact() {
-        withKnownIssue("TLA+ finding F2: a stale live-task snapshot undoes a user pause") {
+        withKnownIssue("TLA+ finding F2 (#473): a stale live-task snapshot undoes a user pause") {
             for route in [DownloadRowFacts.Route.staticRange, .forwardOnly] {
                 let paused = DownloadLifecycleState(
                     lifecycle: .paused, history: DownloadAttemptHistory(pauseCause: .user))
@@ -84,7 +84,7 @@ struct DownloadsFormalModelFindingsTests {
         #expect(R.reduce(paused, .bodyAtWorking, facts: DownloadRowFacts(route: .forwardOnly))
             .state?.lifecycle == .finalizing)
 
-        withKnownIssue("TLA+ finding F3: a user pause discards a finished forward-only body") {
+        withKnownIssue("TLA+ finding F3 (#474): a user pause discards a finished forward-only body") {
             // 1. `halt: nil` means "current only while nothing halted the attempt", which a
             // pause halt fails. The fixed guard accepts a pause halt and still rejects a cancel.
             let requiresNoHalt = finishOpaqueBody.contains("checkpointIsCurrent(currency, halt: nil)")

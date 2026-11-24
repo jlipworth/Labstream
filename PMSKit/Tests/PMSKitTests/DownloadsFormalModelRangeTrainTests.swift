@@ -148,7 +148,7 @@ struct DownloadsFormalModelRangeTrainTests {
         let removal = try #require(Self.appFunctionSource(
             named: "removeHeldRangeSegments", in: Self.sessionSource))
         #expect(removal.contains("drainHeldRangeSegments("))
-        withKnownIssue("TLA+ finding R1: a removal-completion drain strands the train") {
+        withKnownIssue("TLA+ finding R1 (#477): a removal-completion drain strands the train") {
             // The completion drops the size the drain reached. The fixed completion uses it
             // to finalize a whole file or to continue the train, as the append path does.
             let discardsDrainResult = removal.contains("_ = self.drainHeldRangeSegments(")
@@ -181,7 +181,7 @@ struct DownloadsFormalModelRangeTrainTests {
         let reattach = try #require(Self.appFunctionSource(
             named: "reattachToResumedTasks", in: Self.sessionSource))
         #expect(reattach.contains("liveKeys.insert("))
-        withKnownIssue("TLA+ finding R2: reconcile fails a row whose finished body is queued") {
+        withKnownIssue("TLA+ finding R2 (#476): reconcile fails a row whose finished body is queued") {
             // The live keys reconcile receives must include a row with a queued append, a delayed
             // retry or a claimed finalizer, as the stale-row self-heal's check does.
             let countsSessionWork = reattach.contains("pendingStaticRangeWorkCounts")

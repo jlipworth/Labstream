@@ -138,7 +138,7 @@ struct DownloadsFormalModelStorageTests {
             lifecycle: .failed, history: DownloadAttemptHistory(lastFailure: .storage))
         let requeued = R.reduce(parked, .requeued, facts: DownloadRowFacts(route: .staticRange))
 
-        withKnownIssue("TLA+ finding S1: an automatic requeue erases the storage-full park") {
+        withKnownIssue("TLA+ finding S1 (#486): an automatic requeue erases the storage-full park") {
             let reasonSurvives = requeued.state == nil
                 || requeued.state?.history.lastFailure == .storage
                 || requeued.state?.history.storagePark != nil
