@@ -28,7 +28,7 @@
 (* the shipping behaviour, FALSE restores the bug.  PROPOSED constants are *)
 (* fixes that are not in the code.                                         *)
 (*                                                                         *)
-(* Abstractions (DownloadsCleanup.md lists what is not covered):           *)
+(* Abstractions (README.md lists what is not covered):                     *)
 (*  - A row is one attempt.  Retry-by-replacement and two rows naming the  *)
 (*    same path are not modelled, so the cross-row exclusion in            *)
 (*    executeRowDeletion is not exercised.                                 *)

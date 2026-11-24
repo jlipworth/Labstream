@@ -5,7 +5,7 @@ storage cap, the free-space preflights, storage-full failure and the automatic-r
 the storage audit. Run it with:
 
 ```sh
-TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/DownloadsStorage.tla
+TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/storage/DownloadsStorage.tla
 swift test --package-path PMSKit --no-parallel --filter DownloadsFormalModelStorageTests
 ```
 
@@ -67,27 +67,27 @@ foreign bytes, a cap of 3 (or Unlimited), headroom 1 (or 0).
 
 | Config | Expectation | Distinct states | Time |
 | --- | --- | --- | --- |
-| `Storage-Current-TwoStatic` (symmetry) | pass | 256,342 | 12 s |
-| `Storage-Current-ParkHolds` (symmetry) | pass | 22,171 | 2 s |
-| `Storage-Current-Mixed` | pass | 14,456 | 2 s |
-| `Storage-Current-Unknown` | pass | 88,087 | 4 s |
-| `Storage-Current-Unlimited` (symmetry) | pass | 43,234 | 3 s |
-| `Storage-Current-ThreeStatic` (symmetry) | pass | 120,254 | 10 s |
-| `Storage-Proposed-S1-DurableParkGate` (symmetry) | pass | 60,204 | 4 s |
-| `Storage-Faithful-B01-off` | `PreflightRefusalJustified` violated | first error | < 1 s |
-| `Storage-Faithful-B24-off` | `RetryCountedOnce` violated | first error | < 1 s |
-| `Storage-Faithful-B24R-off` | `CapHonoured` violated | first error | 1 s |
-| `Storage-Faithful-B26-off` | `StorageFullClassified` violated | first error | < 1 s |
-| `Storage-Faithful-B31-off` | `NoBlindRedrive` violated | first error | < 1 s |
-| `Storage-Faithful-B19-off` | `AuditCountsHiddenStaging` violated | first error | < 1 s |
-| `Storage-Faithful-B86-off` | `NoOrphanAfterStartup` violated | first error | < 1 s |
-| `Storage-Finding-S1-RequeueErasesPark` | `NoBlindRedrive` violated | first error | < 1 s |
+| `Current-TwoStatic` (symmetry) | pass | 256,342 | 12 s |
+| `Current-ParkHolds` (symmetry) | pass | 22,171 | 2 s |
+| `Current-Mixed` | pass | 14,456 | 2 s |
+| `Current-Unknown` | pass | 88,087 | 4 s |
+| `Current-Unlimited` (symmetry) | pass | 43,234 | 3 s |
+| `Current-ThreeStatic` (symmetry) | pass | 120,254 | 10 s |
+| `Proposed-S1-DurableParkGate` (symmetry) | pass | 60,204 | 4 s |
+| `Faithful-B01-off` | `PreflightRefusalJustified` violated | first error | < 1 s |
+| `Faithful-B24-off` | `RetryCountedOnce` violated | first error | < 1 s |
+| `Faithful-B24R-off` | `CapHonoured` violated | first error | 1 s |
+| `Faithful-B26-off` | `StorageFullClassified` violated | first error | < 1 s |
+| `Faithful-B31-off` | `NoBlindRedrive` violated | first error | < 1 s |
+| `Faithful-B19-off` | `AuditCountsHiddenStaging` violated | first error | < 1 s |
+| `Faithful-B86-off` | `NoOrphanAfterStartup` violated | first error | < 1 s |
+| `Finding-S1-RequeueErasesPark` | `NoBlindRedrive` violated | first error | < 1 s |
 
-`Storage-Current-TwoStatic` lets the backend session come and go and checks every property
+`Current-TwoStatic` lets the backend session come and go and checks every property
 except the two finding S1 breaks (`ParkIsDurable`, `NoBlindRedrive`). The other `Current-*`
 configs keep the backend session and check those two as well.
 
-`Storage-Current-ThreeStatic` has three rows, no side assets, at most 2 foreign bytes and a cap of 4.
+`Current-ThreeStatic` has three rows, no side assets, at most 2 foreign bytes and a cap of 4.
 There is no deep config: three rows at the two-row bounds with side assets and a backend session
 that comes and goes (disk 8, cap 5) did not finish in 10 minutes at these settings and was dropped.
 
@@ -135,7 +135,7 @@ is refused again by the checkpoint-copy admission or the start preflight, which 
 as queued with an "interrupted" caption instead of "Not enough free space", and as an admitted
 row it reserves its remaining estimate in the cap.
 
-Verdict: real, low severity. `Storage-Proposed-S1-DurableParkGate` shows one sufficient design:
+Verdict: real, low severity. `Proposed-S1-DurableParkGate` shows one sufficient design:
 the gate reads the durable storage failure and runs before the backend check.
 
 Pin: `DownloadsFormalModelStorageTests.automaticRequeueKeepsTheStoragePark` (known issue). It

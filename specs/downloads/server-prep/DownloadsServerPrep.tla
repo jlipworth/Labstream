@@ -34,7 +34,7 @@
 (*    title.  Retry of a failed Emby row that still names a job polls or   *)
 (*    recovers that job.                                                   *)
 (*                                                                         *)
-(* Abstractions (DownloadsServerPrep.md lists what is not covered):        *)
+(* Abstractions (README.md lists what is not covered):                     *)
 (*  - The server holds at most one job for the row's current identity      *)
 (*    (`job`) and at most one unfinished job of a replaced identity        *)
 (*    (`stray`).  A finished job makes the render visible in the same      *)

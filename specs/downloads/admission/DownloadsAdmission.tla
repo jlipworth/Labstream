@@ -21,7 +21,7 @@
 (* VARIABLES block.  Each fix under test is a BOOLEAN constant: TRUE is    *)
 (* the shipping behaviour.                                                 *)
 (*                                                                         *)
-(* Abstractions (DownloadsAdmission.md lists what is not covered):         *)
+(* Abstractions (README.md lists what is not covered):                     *)
 (*  - Two lanes, staticFile and liveForward.  The server-preparation lane, *)
 (*    lane switches (P4.5) and the render handoff (#414) are not modelled. *)
 (*  - The simultaneous-downloads setting is the constant MaxTotal.         *)

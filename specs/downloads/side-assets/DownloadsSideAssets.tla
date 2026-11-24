@@ -37,7 +37,7 @@
 (*              them                                                       *)
 (*   refresh    the source-metadata request that rediscovers bif and subs  *)
 (*                                                                         *)
-(* Abstractions (DownloadsSideAssets.md lists what is not covered):        *)
+(* Abstractions (README.md lists what is not covered):                     *)
 (*  - One server origin.  The coordinator's one-start-per-second pacing    *)
 (*    is not modelled; its concurrency cap and the retry budget are.       *)
 (*  - A fetch-entry command and the fetch that follows it are two steps:   *)

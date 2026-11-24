@@ -41,7 +41,7 @@ Each is one guard in the module, marked with its name.
 
 One or two rows, byte counters 0..2, and an interference budget (`EnvBudget`) shared by pause,
 resume, sleep, process death, a dropped task, stall and unstall. One-row configs use a budget of
-3 to 5; two-row configs use 1 in the default tier and 2 in `Status-Deep-TwoStatic`.
+3 to 5; two-row configs use 1 in the default tier and 2 in `Deep-TwoStatic`.
 
 ## Properties
 
@@ -69,32 +69,32 @@ leaving `downloading`.
 
 ## Configs
 
-Run with `TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/DownloadsStatus.tla`.
+Run with `TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/status/DownloadsStatus.tla`.
 
 | Config | Expect | Distinct states | Seconds |
 | --- | --- | ---: | ---: |
-| `Status-Current-OneStatic` | pass | 46,465 | 2 |
-| `Status-Current-OneForward` | pass | 33,922 | 1 |
-| `Status-Current-Planned` | pass | 160,198 | 6 |
-| `Status-Current-TwoStatic` (symmetry) | pass | 2,143,236 | 81 |
-| `Status-Current-Mixed` | pass | 2,803,017 | 97 |
-| `Status-Liveness-Flow` | pass | 96,197 | 20 |
-| `Status-Liveness-Settle` | pass | 16,334 | 3 |
-| `Status-Liveness-Static` | pass | 22,532 | 3 |
-| `Status-Faithful-pu33-off` | violation `WaitingReadsAsWaiting` | initial state | 1 |
-| `Status-Faithful-B09-off` | violation `PhaseNoGhostWork` | 44 | 1 |
-| `Status-Mutant-I379-PartialSum` | violation `NoPartialSum` | 2,152 | 1 |
-| `Status-Mutant-I224-NoCatchUpGuard` | violation `NoInflatedAggregate` | 543 | 1 |
-| `Status-Mutant-I416-SegmentDip` | violation `NoSpuriousReset` | 28 | 1 |
-| `Status-Finding-S1-SilentMemberHidesSpeed` | violation `UpdatingResolves` (reported as `TEMPORAL`) | 145,425 | 30 |
-| `Status-Finding-S2-StaleRowSpeed` | violation `SpeedSettlesAfterStall` (reported as `TEMPORAL`) | 4,361 | 1 |
-| `Status-Finding-S3-RelaunchDip` | violation `RelaunchKeepsBytes` | 282 | 1 |
-| `Status-Finding-S4-LateCallbackInflatesRow` | violation `NoInflatedRowRate` | 579 | 1 |
-| `Status-Proposed-OneForward` | pass | 28,396 | 1 |
-| `Status-Proposed-Mixed` | pass | 2,087,451 | 74 |
-| `Status-Proposed-LivenessFlow` | pass | 152,544 | 35 |
-| `Status-Proposed-LivenessSettle` | pass | 38,297 | 5 |
-| `Status-Deep-TwoStatic` (deep, symmetry) | pass | 8,434,679 | 334 |
+| `Current-OneStatic` | pass | 46,465 | 2 |
+| `Current-OneForward` | pass | 33,922 | 1 |
+| `Current-Planned` | pass | 160,198 | 6 |
+| `Current-TwoStatic` (symmetry) | pass | 2,143,236 | 81 |
+| `Current-Mixed` | pass | 2,803,017 | 97 |
+| `Liveness-Flow` | pass | 96,197 | 20 |
+| `Liveness-Settle` | pass | 16,334 | 3 |
+| `Liveness-Static` | pass | 22,532 | 3 |
+| `Faithful-pu33-off` | violation `WaitingReadsAsWaiting` | initial state | 1 |
+| `Faithful-B09-off` | violation `PhaseNoGhostWork` | 44 | 1 |
+| `Mutant-I379-PartialSum` | violation `NoPartialSum` | 2,152 | 1 |
+| `Mutant-I224-NoCatchUpGuard` | violation `NoInflatedAggregate` | 543 | 1 |
+| `Mutant-I416-SegmentDip` | violation `NoSpuriousReset` | 28 | 1 |
+| `Finding-S1-SilentMemberHidesSpeed` | violation `UpdatingResolves` (reported as `TEMPORAL`) | 145,425 | 30 |
+| `Finding-S2-StaleRowSpeed` | violation `SpeedSettlesAfterStall` (reported as `TEMPORAL`) | 4,361 | 1 |
+| `Finding-S3-RelaunchDip` | violation `RelaunchKeepsBytes` | 282 | 1 |
+| `Finding-S4-LateCallbackInflatesRow` | violation `NoInflatedRowRate` | 579 | 1 |
+| `Proposed-OneForward` | pass | 28,396 | 1 |
+| `Proposed-Mixed` | pass | 2,087,451 | 74 |
+| `Proposed-LivenessFlow` | pass | 152,544 | 35 |
+| `Proposed-LivenessSettle` | pass | 38,297 | 5 |
+| `Deep-TwoStatic` (deep, symmetry) | pass | 8,434,679 | 334 |
 
 The `Current` configs leave out what an open finding violates: none lets a static-range row stall
 silently (S1, S2), `RelaunchKeepsBytes` is checked only for a forward-only row (S3), and

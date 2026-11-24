@@ -733,7 +733,8 @@ static row can queue two segment tasks.
 ## Formal model (TLA+)
 
 `specs/downloads/` holds TLA+ models of the downloads manager, checked with TLC: one module for
-the session core and one for each subsystem around it. The session core covers transfer, finalize
+the session core and one for each subsystem around it, each in its own folder, with the modules
+they share in `base/`. `specs/README.md` covers the layout and config naming. The session core covers transfer, finalize
 and sweep. It explores every interleaving of the user, the URLSession daemon, delegate callbacks,
 the finalizer, the stash sweep, relaunch and foreground recovery, and process death, for one or
 two rows and two attempt IDs.
@@ -754,25 +755,25 @@ What the session core checks:
 
 | Module | Holds |
 | --- | --- |
-| `DownloadsBase.tla` | The shared vocabulary (lifecycles, pause causes, routes, body and task states) and the rules for writing a module. |
-| `DownloadsReducer.tla` | `DownloadLifecycleReducer.reduce` as pure operators: `Reduce(state, event, facts)` returns `Applied(state, effects)`, `Illegal` or `Replayed`. |
-| `DownloadsReducerTable.tla` | Generated. The Swift reducer's results over a fixed input set. |
-| `DownloadsReducerConformance.tla` | Compares `Reduce` with that table. |
-| `DownloadsSessionCore.tla` | The session, finalize and sweep model. It changes lifecycle and history only through `Reduce`. |
-| `DownloadsAdmission.tla` | The admission window: lanes, waiting rows, the pump, Pause All. |
-| `DownloadsServerPrep.tla` | Server preparation: the Plex optimize and Emby Convert runners. |
-| `DownloadsCleanup.tla` | Delete, the server-cleanup journal and a full volume. |
-| `DownloadsWake.tla`, `DownloadsWakeLaunchGate.tla` | Background wakes, completion handlers, startup admission; the launch recovery gate. |
-| `DownloadsSideAssets.tla` | Posters, chapter images, trick-play and subtitles. |
-| `DownloadsStorage.tla` | Byte accounting, the storage cap, preflights and storage-full parking. |
-| `DownloadsRangeTrain.tla` | The static-range segment train with held bodies. |
-| `DownloadsStatus.tla` | What the Downloads screen says: speed, bytes, phase and caption. |
+| `base/DownloadsBase.tla` | The shared vocabulary (lifecycles, pause causes, routes, body and task states) and the rules for writing a module. |
+| `base/DownloadsReducer.tla` | `DownloadLifecycleReducer.reduce` as pure operators: `Reduce(state, event, facts)` returns `Applied(state, effects)`, `Illegal` or `Replayed`. |
+| `base/DownloadsReducerTable.tla` | Generated. The Swift reducer's results over a fixed input set. |
+| `base/DownloadsReducerConformance.tla` | Compares `Reduce` with that table. |
+| `session/DownloadsSessionCore.tla` | The session, finalize and sweep model. It changes lifecycle and history only through `Reduce`. |
+| `admission/DownloadsAdmission.tla` | The admission window: lanes, waiting rows, the pump, Pause All. |
+| `server-prep/DownloadsServerPrep.tla` | Server preparation: the Plex optimize and Emby Convert runners. |
+| `cleanup/DownloadsCleanup.tla` | Delete, the server-cleanup journal and a full volume. |
+| `wake/DownloadsWake.tla`, `wake/DownloadsWakeLaunchGate.tla` | Background wakes, completion handlers, startup admission; the launch recovery gate. |
+| `side-assets/DownloadsSideAssets.tla` | Posters, chapter images, trick-play and subtitles. |
+| `storage/DownloadsStorage.tla` | Byte accounting, the storage cap, preflights and storage-full parking. |
+| `range-train/DownloadsRangeTrain.tla` | The static-range segment train with held bodies. |
+| `status/DownloadsStatus.tla` | What the Downloads screen says: speed, bytes, phase and caption. |
 
 Each module names the Swift files it models on `\* MODELS:` lines under its `MODULE` line. A new
-subsystem gets its own `Downloads<Name>.tla`; the comment block at the top of `DownloadsBase.tla`
-is the contract for naming, imports, configs and findings. Each subsystem module has a notes file
-beside it (`specs/downloads/Downloads<Name>.md`) with its model-to-Swift table, bounds,
-properties, per-config results and full finding traces.
+subsystem gets its own folder and `Downloads<Name>.tla`; the comment block at the top of
+`base/DownloadsBase.tla` is the contract for naming, imports, configs and findings. Each
+subsystem folder has a notes file (`specs/downloads/<folder>/README.md`) with its model-to-Swift
+table, bounds, properties, per-config results and full finding traces.
 
 ### Subsystem models
 
@@ -872,14 +873,17 @@ estimators over the same cases.
 ### Running it
 
 ```sh
-scripts/check-tla-specs.sh                                          # every module, default tier
-scripts/check-tla-specs.sh specs/downloads/Current-Static.cfg      # one config
-scripts/check-tla-specs.sh --deep                                  # also the deep configs
-scripts/check-tla-drift.py                                         # modelled Swift changed without its spec?
+scripts/check-tla-specs.sh                                             # every module, default tier
+scripts/check-tla-specs.sh specs/downloads/admission                   # one module folder
+scripts/check-tla-specs.sh specs/downloads/session/Current-Static.cfg  # one config
+scripts/check-tla-specs.sh --deep                                      # also the deep configs
+scripts/check-tla-drift.py                                             # modelled Swift changed without its spec?
 ```
 
 The script downloads a pinned `tla2tools.jar` into the gitignored `build/tla/`, verifies its
-SHA-256, parses every module and runs TLC on every `.cfg`. It needs a JDK (Homebrew `openjdk`, or
+SHA-256, parses every module and runs TLC on every `.cfg`, with `base/` on the TLA+ library path
+so a module folder can import the shared modules. Each config's log is kept at
+`build/tla/downloads/<folder>/<config>/tlc.log`. It needs a JDK (Homebrew `openjdk`, or
 `JAVA=`); without one it exits 2 and says so. On a 14-core Mac the default tier (147 configs)
 takes about six minutes and the six deep configs about five more. Each config states what it
 expects in its header:
@@ -894,10 +898,11 @@ expects in its header:
 | `Reducer-Conformance`, `Projection-*` | The reducer checks below. | pass |
 | `Deep-*` (`\* TIER: deep`) | Larger bounds. Skipped unless `--deep`, `--deep-only` or `TLC_TIER` asks. | pass |
 
-A subsystem module's configs carry its name first: `Admission-Current-Mixed.cfg`,
-`Cleanup-Faithful-B18-off.cfg`. The session core's configs predate the prefix. TLC does not name
-a violated liveness property, so such a config declares `EXPECT: violation TEMPORAL`, checks one
-property and names it in its comment line.
+A config sits in its module's folder and is named for its kind: `admission/Current-Mixed.cfg`,
+`cleanup/Faithful-B18-off.cfg`. A helper module's configs keep its name in front
+(`wake/WakeLaunchGate-Current-Gate.cfg`). TLC does not name a violated liveness property, so such
+a config declares `EXPECT: violation TEMPORAL` and names the property in its comment line. The
+run summary adds the name from the config's `PROPERTY` list.
 
 ### Keeping the model equal to the code
 
@@ -913,15 +918,16 @@ Three mechanical checks stand between the Swift and the specs:
       --filter DownloadsFormalModelReducerTests
     ```
 
-2. **Reducer conformance.** `Reducer-Conformance.cfg` fails unless `Reduce` in
+2. **Reducer conformance.** `base/Reducer-Conformance.cfg` fails unless `Reduce` in
    `DownloadsReducer.tla` returns exactly that table, and unless the table covers every lifecycle,
    event, route, checkpoint and body. So a regenerated table cannot land without the matching
    spec change, and a spec change cannot land alone. A failing run prints the disagreeing
    `<<state, event>>` and `<<state, facts>>` indices; they are the numbered lines of the table.
-   `Projection-SessionCore.cfg` proves that the history fields the session model leaves out
+   `session/Projection-SessionCore.cfg` proves that the history fields the session model leaves out
    never influence the ones it keeps.
 3. **Drift guard.** `scripts/check-tla-drift.py` (default range `origin/main...HEAD`) fails when a
-   file on a `MODELS:` line changed and its module did not. A change that does not affect the
+   file on a `MODELS:` line changed and nothing in its module's folder did (in `base/`: the
+   module or one of its configs). A change that does not affect the
    model says so in the commit that makes it:
 
     ```text

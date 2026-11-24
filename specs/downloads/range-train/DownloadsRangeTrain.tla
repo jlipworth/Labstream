@@ -28,7 +28,7 @@
 (*              RelaunchObserved, AutoResume, StaleRowHeal                 *)
 (*   Crash      Crash, Relaunch                                            *)
 (*                                                                         *)
-(* Abstractions (DownloadsRangeTrain.md lists what is not covered):        *)
+(* Abstractions (README.md lists what is not covered):                     *)
 (*  - Segments have unit length; a body is whole or absent.                *)
 (*  - A task is named by its body, so one attempt never has two tasks for  *)
 (*    one offset; the planner waits for the slot instead.                  *)

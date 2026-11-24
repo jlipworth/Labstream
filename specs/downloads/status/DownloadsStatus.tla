@@ -46,7 +46,7 @@
 (* arithmetic, side-asset bytes, background execution (a suspended app     *)
 (* runs nothing), naps shorter than callbackGap, Delete, retries of a      *)
 (* forward-only row, and parallel segment trains beyond "a segment         *)
-(* finished".  See DownloadsStatus.md.                                     *)
+(* finished".  See README.md.                                              *)
 (***************************************************************************)
 \* MODELS: PMSKit/Sources/PMSKit/Downloads/DownloadAggregateRateEstimator.swift
 \* MODELS: PMSKit/Sources/PMSKit/Downloads/DownloadRateEstimator.swift

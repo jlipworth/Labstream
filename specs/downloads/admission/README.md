@@ -8,7 +8,7 @@ starts and their classification, Pause All and Resume All, and process death. It
 Run it with:
 
 ```sh
-TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/DownloadsAdmission.tla
+TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/admission/DownloadsAdmission.tla
 swift test --package-path PMSKit --no-parallel --filter DownloadsFormalModelAdmissionTests
 ```
 
@@ -62,19 +62,19 @@ proceeds and an outage ends, and that the user, crashes and faults take a bounde
 
 | Config | Expect | Shows |
 | --- | --- | --- |
-| `Admission-Current-TwoForward` | pass | two forward-only rows compete for one slot |
-| `Admission-Current-Mixed` | pass | a forward-only and a static row under a total of one |
-| `Admission-Current-ThreeRows` | pass | two forward-only rows and a static row, total two, three environment steps |
-| `Admission-Liveness-OneForward`, `-TwoForward` | pass | both liveness properties under `FairSpec` |
-| `Admission-Faithful-B63-off` | `LaneCapRespected` | Resume All starts every parked row at once |
-| `Admission-Faithful-B65-off` | `PauseKeepsFirstStart` | a pause drops the first-start intent |
-| `Admission-Faithful-B65-off-Cap` | `LaneCapRespected` | the consequence: Resume then bypasses the window |
-| `Admission-Faithful-B66-off` | `NoOrphanQueued` | a start without work forgets its request and stays queued |
-| `Admission-Faithful-B67-off` | `OutageDefersFirstStart` | an outage fails a first start |
-| `Admission-Mutant-NoBackoffWake` | `TEMPORAL` | without the wake timer a deferred row waits forever (`WaitingRowIsServed`; the script reports any liveness violation as `TEMPORAL`) |
-| `Admission-Finding-A1-RelaunchFailsUnstartedRow` | `RelaunchKeepsUnstartedRow` | finding A1 |
-| `Admission-Proposed-A1-RelaunchKeepsUnstartedRow` | pass | the proposed fix, with every safety property |
-| `Admission-Deep-ThreeRows` | pass (deep) | the three-row run with four environment steps |
+| `Current-TwoForward` | pass | two forward-only rows compete for one slot |
+| `Current-Mixed` | pass | a forward-only and a static row under a total of one |
+| `Current-ThreeRows` | pass | two forward-only rows and a static row, total two, three environment steps |
+| `Liveness-OneForward`, `-TwoForward` | pass | both liveness properties under `FairSpec` |
+| `Faithful-B63-off` | `LaneCapRespected` | Resume All starts every parked row at once |
+| `Faithful-B65-off` | `PauseKeepsFirstStart` | a pause drops the first-start intent |
+| `Faithful-B65-off-Cap` | `LaneCapRespected` | the consequence: Resume then bypasses the window |
+| `Faithful-B66-off` | `NoOrphanQueued` | a start without work forgets its request and stays queued |
+| `Faithful-B67-off` | `OutageDefersFirstStart` | an outage fails a first start |
+| `Mutant-NoBackoffWake` | `TEMPORAL` | without the wake timer a deferred row waits forever (`WaitingRowIsServed`; the script reports any liveness violation as `TEMPORAL`) |
+| `Finding-A1-RelaunchFailsUnstartedRow` | `RelaunchKeepsUnstartedRow` | finding A1 |
+| `Proposed-A1-RelaunchKeepsUnstartedRow` | pass | the proposed fix, with every safety property |
+| `Deep-ThreeRows` | pass (deep) | the three-row run with four environment steps |
 
 ## Findings
 

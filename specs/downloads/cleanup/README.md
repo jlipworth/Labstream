@@ -7,7 +7,7 @@ intent journal and its runner, and a volume that can be completely full.
 Run it with:
 
 ```sh
-TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/DownloadsCleanup.tla
+TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/cleanup/DownloadsCleanup.tla
 swift test --package-path PMSKit --no-parallel --filter DownloadsFormalModelCleanupTests
 ```
 
@@ -64,33 +64,33 @@ All at `TLC_WORKERS=2 TLC_HEAP=2g`.
 
 | Config | Expect | Distinct states | Time |
 | --- | --- | --- | --- |
-| `Cleanup-Current-OneRow` | pass | 2,548 | 1 s |
-| `Cleanup-Current-TwoRows` (symmetry) | pass | 1,426,644 | 44 to 78 s |
-| `Cleanup-Liveness-OneRow` | pass | 1,451 | 2 s |
-| `Cleanup-Faithful-B18-off` | violation `JobAccountable` | 75 | 1 s |
-| `Cleanup-Faithful-B28-off` | violation `JobKeptWhileNeeded` | 3 | 1 s |
-| `Cleanup-Faithful-B44-off` | violation `JobKeptWhileNeeded` | 40 | 1 s |
-| `Cleanup-Mutant-B27-PreemptWithoutFence` | violation `NoOrphanFile` | 79 | 1 s |
-| `Cleanup-Finding-C1-UnlinkBeforeDurableIntent` | violation `DeletionIntentDurableBeforeUnlink` | 37 | 1 s |
-| `Cleanup-Finding-B27-LegacyPromotionWedgesDelete` | violation (liveness) | 19 | 2 s |
-| `Cleanup-Finding-B30-FullVolumeDelete` | violation (liveness) | 373 | 1 s |
-| `Cleanup-Proposed-Safety` | pass | 942 | 1 s |
-| `Cleanup-Proposed-Liveness` | pass | 2,586 | 2 s |
+| `Current-OneRow` | pass | 2,548 | 1 s |
+| `Current-TwoRows` (symmetry) | pass | 1,426,644 | 44 to 78 s |
+| `Liveness-OneRow` | pass | 1,451 | 2 s |
+| `Faithful-B18-off` | violation `JobAccountable` | 75 | 1 s |
+| `Faithful-B28-off` | violation `JobKeptWhileNeeded` | 3 | 1 s |
+| `Faithful-B44-off` | violation `JobKeptWhileNeeded` | 40 | 1 s |
+| `Mutant-B27-PreemptWithoutFence` | violation `NoOrphanFile` | 79 | 1 s |
+| `Finding-C1-UnlinkBeforeDurableIntent` | violation `DeletionIntentDurableBeforeUnlink` | 37 | 1 s |
+| `Finding-B27-LegacyPromotionWedgesDelete` | violation (liveness) | 19 | 2 s |
+| `Finding-B30-FullVolumeDelete` | violation (liveness) | 373 | 1 s |
+| `Proposed-Safety` | pass | 942 | 1 s |
+| `Proposed-Liveness` | pass | 2,586 | 2 s |
 
 The two liveness findings declare `EXPECT: violation TEMPORAL`: `check-tla-specs.sh` reports a
 violated liveness property only as `TEMPORAL`, so each of those configs checks one property.
 
 The `Current` and `Liveness` configs leave out the two invariants that Cleanup-C1 breaks.
-`Cleanup-Proposed-Safety` checks them with the proposed fix on.
+`Proposed-Safety` checks them with the proposed fix on.
 
 ## Faithfulness
 
 | Config | Fixed bug | What the run shows |
 | --- | --- | --- |
-| `Cleanup-Faithful-B18-off` | B18 | The journal reports a visible, unsynced entry as committed. The row is deleted, a power loss drops the entry, and the server job has no owner. |
-| `Cleanup-Faithful-B28-off` | B28 | Delete cancels the server job at once, before the row is durably marked for deletion. |
-| `Cleanup-Faithful-B44-off` | B44 | A terminal release runs against a failed row and cancels the Convert job it keeps for Retry. |
-| `Cleanup-Mutant-B27-PreemptWithoutFence` | injected | See B27 below. |
+| `Faithful-B18-off` | B18 | The journal reports a visible, unsynced entry as committed. The row is deleted, a power loss drops the entry, and the server job has no owner. |
+| `Faithful-B28-off` | B28 | Delete cancels the server job at once, before the row is durably marked for deletion. |
+| `Faithful-B44-off` | B44 | A terminal release runs against a failed row and cancels the Convert job it keeps for Retry. |
+| `Mutant-B27-PreemptWithoutFence` | injected | See B27 below. |
 
 ## Findings
 
@@ -126,7 +126,7 @@ volume today. Fixing C1 alone removes it, so C1 and B30 should be fixed together
    tap does nothing, and Retry is refused too.
 
 Pinned by `deleteIsNotRefusedByLegacyPromotion`. The proposed fix lets Delete proceed over the
-flag. `Cleanup-Mutant-B27-PreemptWithoutFence` shows that this alone is unsafe when a body
+flag. `Mutant-B27-PreemptWithoutFence` shows that this alone is unsafe when a body
 exists: the launch recovery renames the working body over the stable path after the worker
 unlinked that path, and the file outlives its row. The fix needs a fence: Delete waits while the
 recovery is in flight, and the recovery skips a row with a staged deletion
@@ -143,7 +143,7 @@ recovery is in flight, and the recovery skips a row with a staged deletion
 
 Pinned by `deleteOnFullVolumeReclaims`. The proposed fix (`FixB30`) is reserved capacity that
 Delete's own index and journal writes may use. With it, and with C1 and B27 fixed,
-`Cleanup-Proposed-Liveness` shows Delete always completes on a volume that is never freed from
+`Proposed-Liveness` shows Delete always completes on a volume that is never freed from
 outside.
 
 ## Modelling artefacts fixed in the model

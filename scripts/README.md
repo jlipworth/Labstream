@@ -42,14 +42,19 @@ Commands and limitations: [workflow status and review evidence](../docs/DEVELOPM
   A source guard also fails any download status or lifecycle write that bypasses the lifecycle
   reducer (submit a `DownloadLifecycleEvent` instead).
 - `check-tla-specs.sh` — parses (SANY) and model-checks (TLC) the TLA+ specs under `specs/`. With
-  no arguments it runs every module and every default-tier `.cfg`; pass `.cfg`/`.tla` files or
-  directories to run a subset, or `--list` to print the configs that would run. It downloads the
+  no arguments it runs every module and every default-tier `.cfg`, found recursively
+  (`specs/<area>/<module>/`; layout in `specs/README.md`); pass `.cfg`/`.tla` files, a module
+  folder or any directory to run a subset, or `--list` to print the configs that would run. SANY
+  and TLC run inside each folder with `-DTLA-Library` set to the area's `base/` folder, so the
+  shared modules resolve from any module folder. Each config's TLC log is kept at
+  `build/tla/<area>/<module>/<cfg>/tlc.log`. It downloads the
   pinned `tla2tools.jar` (v1.7.4) into the gitignored `build/tla/` and refuses a jar whose SHA-256
   differs. Java comes from Homebrew's keg-only `openjdk` unless `JAVA` is set (`/usr/bin/java` is a
   stub); with no usable JDK it exits 2 with a message and never reports a pass. Each config
   declares `\* SPEC: <module>` and `\* EXPECT: pass` or `\* EXPECT: violation <Property>` in its
   header; the script exits 1 on a parse error or when a run ends differently, and prints the
-  counterexample. A config with `\* TIER: deep` is skipped unless `--deep` (run everything),
+  counterexample. A violated liveness property is `TEMPORAL` (TLC does not name it); the summary
+  adds the name from the config's `PROPERTY` list. A config with `\* TIER: deep` is skipped unless `--deep` (run everything),
   `--deep-only`, `TLC_TIER=deep|deep-only`, or the `.cfg` itself is named. `TLC_WORKERS` (default
   `auto`) and `TLC_HEAP` (default `4g`) tune TLC; when several checks share a machine use
   `TLC_WORKERS=2 TLC_HEAP=2g`. The downloads model is described in
@@ -57,8 +62,9 @@ Commands and limitations: [workflow status and review evidence](../docs/DEVELOPM
 - `check-tla-drift.py` — fails when a Swift file that a spec models changed and the spec did not.
   Each module under `specs/` lists the files it models on `\* MODELS: <repo-relative path>` lines.
   For a commit range (default `origin/main...HEAD`; also `BASE..HEAD` or a bare base) a changed
-  modelled file passes when every module that models it, or one of that module's configs, changed
-  in the range, or when every commit that touches the file carries a `Spec-Unaffected: <reason>`
+  modelled file passes when, for every module that models it, some file in that module's folder
+  changed in the range (in a shared `base/` folder: the module itself or one of its configs), or
+  when every commit that touches the file carries a `Spec-Unaffected: <reason>`
   trailer. It also fails on a `MODELS:` line that names a missing file. `--list` prints the model
   map. Exit 2 means the range could not be read (for example `origin/main` is not fetched); that
   is an error, not a pass. It is not part of `ci-hygiene.sh`, which checks the tree as it is and

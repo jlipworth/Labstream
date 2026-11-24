@@ -5,7 +5,7 @@ images, the trick-play index (Plex BIF, Emby BIF, Jellyfin trickplay) and compat
 subtitles. It asks one question above the others: can an asset be forgotten, meaning it is missing,
 nothing left will fetch it, and nothing records why.
 
-Run it with `TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/DownloadsSideAssets.tla`.
+Run it with `TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/side-assets/DownloadsSideAssets.tla`.
 The Swift pins are `PMSKit/Tests/PMSKitTests/DownloadsFormalModelSideAssetsTests.swift`.
 
 ## What is modelled
@@ -81,10 +81,10 @@ is relaunched. User actions, crashes, outages and session changes are not fair a
 
 | Config | What it restores | Property violated |
 | --- | --- | --- |
-| `SideAssets-Faithful-B25-off` | The completed-row repair refetches source metadata outside the coordinator and its budget. | `RepairWithinRateLimit` |
-| `SideAssets-Faithful-B32-off` | The coordinator applies commands in arrival order: a Pause's park lands after the Resume's unpark. | `ControlsApplyInRequestOrder` |
-| `SideAssets-Faithful-B32-off-PausedFetch` | The consequence of the same bug: the paused row's chapter image goes out on the network. | `PausedRowNotFetching` |
-| `SideAssets-Mutant-DeleteSkipsPublished` | An injected bug: Delete ignores the in-memory publication owners. | `NoOrphanAfterDelete` |
+| `Faithful-B25-off` | The completed-row repair refetches source metadata outside the coordinator and its budget. | `RepairWithinRateLimit` |
+| `Faithful-B32-off` | The coordinator applies commands in arrival order: a Pause's park lands after the Resume's unpark. | `ControlsApplyInRequestOrder` |
+| `Faithful-B32-off-PausedFetch` | The consequence of the same bug: the paused row's chapter image goes out on the network. | `PausedRowNotFetching` |
+| `Mutant-DeleteSkipsPublished` | An injected bug: Delete ignores the in-memory publication owners. | `NoOrphanAfterDelete` |
 
 ## Findings
 
@@ -94,7 +94,7 @@ Each was checked against the Swift before it was recorded. None is fixed here.
 
 Issue: #482.
 
-Trace (`SideAssets-Finding-S1-PosterOwnerStaysCancelled`): a row is released with the default
+Trace (`Finding-S1-PosterOwnerStaysCancelled`): a row is released with the default
 `releaseInFlight` mode and keeps its attempt; the release cancels both of the attempt's coordinator
 owners; the row later completes under the same attempt; the repair pass offers the poster; the
 fetch throws at the coordinator's entry because the poster owner is cancelled; no budget is
@@ -108,7 +108,7 @@ poller's `plexSessionUnavailable` handler, which says it keeps the row for the p
 reattach. The row is poster-less until the next launch.
 
 Proposed in the model (`FixPosterReregisters`): a poster fetch reopens its owner.
-`SideAssets-Proposed-NeverForgotten-Poster` passes with it.
+`Proposed-NeverForgotten-Poster` passes with it.
 
 Pin: `DownloadsFormalModelSideAssetsTests.posterFetchReopensItsCancelledOwner`.
 
@@ -116,7 +116,7 @@ Pin: `DownloadsFormalModelSideAssetsTests.posterFetchReopensItsCancelledOwner`.
 
 Issue: #483.
 
-Trace (`SideAssets-Finding-S2-PauseAllStrandsCompletedRow`): a row completes while its subtitle
+Trace (`Finding-S2-PauseAllStrandsCompletedRow`): a row completes while its subtitle
 task is still fetching; a foreground edge runs the repair pass, which queues a source-metadata
 refresh; the user taps Pause All, which sends a completed row no command; the subtitle task moves
 on to its next stream, and that fetch entry parks the attempt's owner because the queue is paused;
@@ -130,7 +130,7 @@ is in `retryRecordAsync`; and every repair entry point is `startIfAbsent`. The r
 other kind that is not registered enters a fetch, or at the next launch.
 
 Proposed in the model (`FixResumeAllUnparks`): Resume All unparks every row that is not paused.
-`SideAssets-Proposed-NeverForgotten-Subs` and `-ChaptersSubs` pass with it.
+`Proposed-NeverForgotten-Subs` and `-ChaptersSubs` pass with it.
 
 Pin: `DownloadsFormalModelSideAssetsTests.resumeAllUnparksCompletedRows`.
 
@@ -138,7 +138,7 @@ Pin: `DownloadsFormalModelSideAssetsTests.resumeAllUnparksCompletedRows`.
 
 Issue: #484.
 
-Trace (`SideAssets-Finding-S3-OutageExhaustsBudget`): the server is unreachable; a poster dispatch
+Trace (`Finding-S3-OutageExhaustsBudget`): the server is unreachable; a poster dispatch
 fails and is charged; the server comes back; the budget for that poster is spent, so nothing
 offers it again in this launch.
 
@@ -153,24 +153,24 @@ product decision, so this is not pinned.
 
 Issue: #485.
 
-Trace (`SideAssets-Finding-S4-RefusedResumeUnparks`): the user pauses a row; the user taps Resume;
+Trace (`Finding-S4-RefusedResumeUnparks`): the user pauses a row; the user taps Resume;
 `retryRecordAsync` unparks the side assets before its own guards; the storage cap or a missing
 backend refuses the resume; the row stays paused and its chapter images go out on the network.
 
-`SideAssets-Proposed-S4-UnparkOnAccept` passes with the unpark moved behind the guards. Not
+`Proposed-S4-UnparkOnAccept` passes with the unpark moved behind the guards. Not
 pinned: the unpark may sit before the guards on purpose, since it is the only unpark there is.
 
 ### Known deferred items the model reproduces
 
-- **st-39, orphan reclamation.** `SideAssets-Finding-st39-CrashOrphanAfterDelete`: the process
+- **st-39, orphan reclamation.** `Finding-st39-CrashOrphanAfterDelete`: the process
   dies between a side asset's rename and its metadata record. After relaunch only the in-memory
   publication owners knew the file, so Delete leaves it behind. If the row is kept instead, the
   repair pass fetches the asset again and overwrites the file.
-  `SideAssets-Finding-st39-ReplacedAttemptOrphan` reaches the same end without process death: a
+  `Finding-st39-ReplacedAttemptOrphan` reaches the same end without process death: a
   retry replaces the attempt between the rename and the record, the replacement retires only the
   recorded paths, and the publication owner belongs to the old attempt.
-- **#394, payload queueing.** `SideAssets-Finding-394-PayloadsBehindPreparation`: three chapter
-  payloads wait behind one preparation. `SideAssets-Proposed-394-Window` passes with a window of
+- **#394, payload queueing.** `Finding-394-PayloadsBehindPreparation`: three chapter
+  payloads wait behind one preparation. `Proposed-394-Window` passes with a window of
   two from fetch through promotion.
 
 Neither has a Swift pin here: both are already tracked, and neither has a pure decision to pin.
@@ -179,22 +179,22 @@ Neither has a Swift pin here: both are already tracked, and neither has a pure d
 
 | Config | Expectation | Distinct states | Time |
 | --- | --- | --- | --- |
-| `SideAssets-Current-Poster` | pass | 237,712 | 8 s |
-| `SideAssets-Current-Chapters` | pass | 366,248 | 12 s |
-| `SideAssets-Current-Subs` | pass | 631,068 | 21 s |
-| `SideAssets-Current-Bif` | pass | 546,668 | 16 s |
-| `SideAssets-Current-ChaptersSubs` | pass | 270,251 | 7 s |
-| `SideAssets-Current-TwoRows` (symmetry) | pass | 613,726 | 22 s |
-| `SideAssets-Current-Delete` | pass | 119,928 | 4 s |
-| `SideAssets-Current-AllKinds` | pass | 2,406,345 | 62 s |
-| `SideAssets-Liveness-PosterChapters` | pass | 25,740 | 3 s |
-| `SideAssets-Liveness-Discovered` | pass | 74,751 | 9 s |
-| `SideAssets-Proposed-NeverForgotten-Poster` | pass | 23,354 | 3 s |
-| `SideAssets-Proposed-NeverForgotten-Subs` | pass | 33,993 | 5 s |
-| `SideAssets-Proposed-NeverForgotten-ChaptersSubs` | pass | 19,575 | 3 s |
-| `SideAssets-Proposed-394-Window` | pass | 24,593 | 2 s |
-| `SideAssets-Proposed-S4-UnparkOnAccept` | pass | 1,133 | under 1 s |
-| `SideAssets-Deep-AllKinds` (deep tier) | pass | 14,221,199 | 377 s |
+| `Current-Poster` | pass | 237,712 | 8 s |
+| `Current-Chapters` | pass | 366,248 | 12 s |
+| `Current-Subs` | pass | 631,068 | 21 s |
+| `Current-Bif` | pass | 546,668 | 16 s |
+| `Current-ChaptersSubs` | pass | 270,251 | 7 s |
+| `Current-TwoRows` (symmetry) | pass | 613,726 | 22 s |
+| `Current-Delete` | pass | 119,928 | 4 s |
+| `Current-AllKinds` | pass | 2,406,345 | 62 s |
+| `Liveness-PosterChapters` | pass | 25,740 | 3 s |
+| `Liveness-Discovered` | pass | 74,751 | 9 s |
+| `Proposed-NeverForgotten-Poster` | pass | 23,354 | 3 s |
+| `Proposed-NeverForgotten-Subs` | pass | 33,993 | 5 s |
+| `Proposed-NeverForgotten-ChaptersSubs` | pass | 19,575 | 3 s |
+| `Proposed-394-Window` | pass | 24,593 | 2 s |
+| `Proposed-S4-UnparkOnAccept` | pass | 1,133 | under 1 s |
+| `Deep-AllKinds` (deep tier) | pass | 14,221,199 | 377 s |
 | the four `Faithful` and `Mutant` configs | violation, as named above | stop at the first error | 1 s or less |
 | the seven `Finding` configs | violation, as named above | stop at the first error | 1 s or less |
 

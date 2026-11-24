@@ -9,8 +9,8 @@ which fetches two segments one after the other and holds nothing.
 Run it with:
 
 ```sh
-TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/DownloadsRangeTrain.tla
-TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/RangeTrain-Deep-*.cfg
+TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/range-train/DownloadsRangeTrain.tla
+TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/range-train/Deep-*.cfg
 swift test --package-path PMSKit --no-parallel --filter DownloadsFormalModelRangeTrainTests
 ```
 
@@ -85,21 +85,21 @@ a finding on this lane. The whole-file loss on this lane is R2 below.
 
 | Config | Expect | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
-| `RangeTrain-Current-Train` | pass | pass | 7,300 | 1 s |
-| `RangeTrain-Current-Retry` | pass | pass | 276,284 | 11 s |
-| `RangeTrain-Current-Restart` | pass | pass | 42,005 | 3 s |
-| `RangeTrain-Current-FourSegments` | pass | pass | 11,479 | 1 s |
-| `RangeTrain-Liveness-Train` | pass | pass | 20,461 | 5 s |
-| `RangeTrain-Proposed-Train` | pass | pass | 6,548 | 1 s |
-| `RangeTrain-Faithful-B00-off` | `CheckpointNeverDiscarded` violated | violated | stops at first error | 1 s |
-| `RangeTrain-Faithful-B03-off` | `QueuedBodyNotSwept` violated | violated | stops at first error | < 1 s |
-| `RangeTrain-Faithful-B22-off` | `HeldBodyNotSweptBeforeManifest` violated | violated | stops at first error | 1 s |
-| `RangeTrain-Mutant-NoAlignment` | `AppendsAligned` violated | violated | stops at first error | < 1 s |
-| `RangeTrain-Mutant-NoEpochCheck` | `StaleTrainBodyInert` violated | violated | stops at first error | 1 s |
-| `RangeTrain-Finding-R1-StrandedDrain` | `TrainNeverStranded` violated | violated | stops at first error | 1 s |
-| `RangeTrain-Finding-R2-ReconcileFailsQueuedBody` | `ReconcileKeepsQueuedBody` violated | violated | stops at first error | < 1 s |
-| `RangeTrain-Deep-RetryRestart` (deep) | pass | pass | 2,908,252 | 111 s |
-| `RangeTrain-Deep-TwoRows` (deep, symmetry) | pass | pass | 4,182,753 | 205 s |
+| `Current-Train` | pass | pass | 7,300 | 1 s |
+| `Current-Retry` | pass | pass | 276,284 | 11 s |
+| `Current-Restart` | pass | pass | 42,005 | 3 s |
+| `Current-FourSegments` | pass | pass | 11,479 | 1 s |
+| `Liveness-Train` | pass | pass | 20,461 | 5 s |
+| `Proposed-Train` | pass | pass | 6,548 | 1 s |
+| `Faithful-B00-off` | `CheckpointNeverDiscarded` violated | violated | stops at first error | 1 s |
+| `Faithful-B03-off` | `QueuedBodyNotSwept` violated | violated | stops at first error | < 1 s |
+| `Faithful-B22-off` | `HeldBodyNotSweptBeforeManifest` violated | violated | stops at first error | 1 s |
+| `Mutant-NoAlignment` | `AppendsAligned` violated | violated | stops at first error | < 1 s |
+| `Mutant-NoEpochCheck` | `StaleTrainBodyInert` violated | violated | stops at first error | 1 s |
+| `Finding-R1-StrandedDrain` | `TrainNeverStranded` violated | violated | stops at first error | 1 s |
+| `Finding-R2-ReconcileFailsQueuedBody` | `ReconcileKeepsQueuedBody` violated | violated | stops at first error | < 1 s |
+| `Deep-RetryRestart` (deep) | pass | pass | 2,908,252 | 111 s |
+| `Deep-TwoRows` (deep, symmetry) | pass | pass | 4,182,753 | 205 s |
 
 ### Faithfulness
 
@@ -122,7 +122,7 @@ a finding on this lane. The whole-file loss on this lane is R2 below.
 
 Issue: #477.
 
-Trace (`RangeTrain-Finding-R1-StrandedDrain`), a three-segment file, depth two:
+Trace (`Finding-R1-StrandedDrain`), a three-segment file, depth two:
 
 1. Segments 0 and 1 are in flight. Both finish. The apply of body 1 runs first: it is ahead of the
    checkpoint, so it is renamed to its held path and its manifest is submitted.
@@ -138,7 +138,7 @@ Trace (`RangeTrain-Finding-R1-StrandedDrain`), a three-segment file, depth two:
 
 The row is `transferring` with a whole working file, no task and no queued work. With four
 segments the same ordering leaves the train idle in the middle of the file. The manager's
-stale-row self-heal restarts it at its next refresh, so `RangeTrain-Liveness-Train` passes; a
+stale-row self-heal restarts it at its next refresh, so `Liveness-Train` passes; a
 background wake that ends first leaves the download idle until the app is next in the foreground.
 
 Swift evidence: `BackgroundDownloadSession.swift`, `removeHeldRangeSegments` (the completion calls
@@ -156,7 +156,7 @@ Pinned by `DownloadsFormalModelRangeTrainTests.removalCompletionDrainContinuesTh
 
 Issue: #476.
 
-Trace (`RangeTrain-Finding-R2-ReconcileFailsQueuedBody`), a one-segment file:
+Trace (`Finding-R2-ReconcileFailsQueuedBody`), a one-segment file:
 
 1. The segment task finishes. The delegate moves the body to a `tmp/` stash, drops the task from
    live tracking and queues the append.

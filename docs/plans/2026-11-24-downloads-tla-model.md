@@ -9,8 +9,9 @@ findings are open, each with an issue; thirteen are pinned by known-issue PMSKit
 models also confirm four known open items (#392, #393, #394 and st-39). No product code changed.
 What remains is in [Follow-ups](#follow-ups).
 
-**Scope:** model checking of the downloads manager design. Specs live in `specs/downloads/`; the
-runner is `scripts/check-tla-specs.sh`. This plan owns the modelling program and its findings. It
+**Scope:** model checking of the downloads manager design. Specs live in `specs/downloads/`, one
+folder per module with the shared modules in `base/` (`specs/README.md` has the layout, and
+[Path map](#path-map) the old flat names); the runner is `scripts/check-tla-specs.sh`. This plan owns the modelling program and its findings. It
 does not own fixes: each finding needs its own issue and change.
 
 **Evidence that motivated it:** the
@@ -72,7 +73,7 @@ and foreground returns are not fair and are capped at five steps in the liveness
   queue's ordering are not modelled.
 - Delete is one durable flag and one cleanup step.
 - The pause chain's last step (`markPausedAfterUserPause`) is not modelled. See F2.
-- The session model keeps six of the reducer's ten state fields per row. `Projection-SessionCore`
+- The session model keeps six of the reducer's ten state fields per row. `session/Projection-SessionCore`
   proves that the four it drops (`lastFailure`, `unverifiedReason`, `admissionIntent`,
   `storagePark`) never influence the others for the events it sends.
 - One task slot per attempt. A queued rebuild can start a second task for an attempt whose body
@@ -84,7 +85,7 @@ and foreground returns are not fair and are capped at five steps in the liveness
 `DownloadsReducer.tla` is not maintained by review. The PMSKit test
 `DownloadsFormalModelReducerTests` runs the real reducer over 225 states (9 lifecycles by 25
 histories), 126 event shapes and 163 fact combinations, and renders the results as
-`specs/downloads/DownloadsReducerTable.tla`. The test fails when the checked-in table is stale;
+`specs/downloads/base/DownloadsReducerTable.tla`. The test fails when the checked-in table is stale;
 `Reducer-Conformance.cfg` fails when `Reduce` does not return exactly that table or when the table
 misses part of the vocabulary. Either side changing alone fails one of the two.
 `docs/DOWNLOADS-OFFLINE.md` has the regeneration command.
@@ -99,48 +100,48 @@ so nothing else changed.
 
 | Config | Expectation | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
-| `Current-Forward` | pass | pass | 6,038 | 1 s |
-| `Current-Static` | pass | pass | 90,686 | 2 s |
-| `Current-TwoForward` (symmetry) | pass | pass | 233,692 | 7 s |
-| `Current-TwoRows` | pass | pass | 2,531,988 | 69 s |
-| `Liveness-Forward` | pass | pass | 13,454 | 2 s |
-| `Liveness-Static` | pass | pass | 68,653 | 14 s |
-| `Proposed-Forward` | pass | pass | 2,854 | 1 s |
-| `Proposed-Static` | pass | pass | 86,529 | 2 s |
-| `Proposed-F3-PauseKeepsBody` | pass | pass | 4,932 | 1 s |
+| `session/Current-Forward` | pass | pass | 6,038 | 1 s |
+| `session/Current-Static` | pass | pass | 90,686 | 2 s |
+| `session/Current-TwoForward` (symmetry) | pass | pass | 233,692 | 7 s |
+| `session/Current-TwoRows` | pass | pass | 2,531,988 | 69 s |
+| `session/Liveness-Forward` | pass | pass | 13,454 | 2 s |
+| `session/Liveness-Static` | pass | pass | 68,653 | 14 s |
+| `session/Proposed-Forward` | pass | pass | 2,854 | 1 s |
+| `session/Proposed-Static` | pass | pass | 86,529 | 2 s |
+| `session/Proposed-F3-PauseKeepsBody` | pass | pass | 4,932 | 1 s |
 | `Reducer-Conformance` | pass | pass | one state; 65,025 reducer results compared | 1 s |
-| `Projection-SessionCore` | pass | pass | one state | 1 s |
-| `Deep-TwoStatic` (deep tier, symmetry) | pass | pass | 7,597,623 | 247 s |
-| `Faithful-B03-off` | `QueuedBodyNotSwept` violated | violated | stops at first error | < 1 s |
-| `Faithful-B10-off` | `WorkingBodyKept` violated | violated | stops at first error | < 1 s |
-| `Faithful-B12-off` | `StaleCallbackInert` violated | violated | stops at first error | < 1 s |
-| `Faithful-B02-off` | `NoStartWhileUserPaused` violated | violated | stops at first error | < 1 s |
-| `Faithful-B09-off` | `UserPauseSticky` violated | violated | stops at first error | < 1 s |
-| `Faithful-Replay-off` | `ReplayedOutcomeIsNoOp` violated | violated | stops at first error | < 1 s |
-| `Finding-F1-StashCrash` | `FinishedBodyNotLost` violated | violated | stops at first error | < 1 s |
-| `Finding-F2-PauseReconcile` | `UserPauseSticky` violated | violated | stops at first error | < 1 s |
-| `Finding-F3-PauseDiscardsFinishedBody` | `FinishedBodySurvivesPause` violated | violated | stops at first error | < 1 s |
+| `session/Projection-SessionCore` | pass | pass | one state | 1 s |
+| `session/Deep-TwoStatic` (deep tier, symmetry) | pass | pass | 7,597,623 | 247 s |
+| `session/Faithful-B03-off` | `QueuedBodyNotSwept` violated | violated | stops at first error | < 1 s |
+| `session/Faithful-B10-off` | `WorkingBodyKept` violated | violated | stops at first error | < 1 s |
+| `session/Faithful-B12-off` | `StaleCallbackInert` violated | violated | stops at first error | < 1 s |
+| `session/Faithful-B02-off` | `NoStartWhileUserPaused` violated | violated | stops at first error | < 1 s |
+| `session/Faithful-B09-off` | `UserPauseSticky` violated | violated | stops at first error | < 1 s |
+| `session/Faithful-Replay-off` | `ReplayedOutcomeIsNoOp` violated | violated | stops at first error | < 1 s |
+| `session/Finding-F1-StashCrash` | `FinishedBodyNotLost` violated | violated | stops at first error | < 1 s |
+| `session/Finding-F2-PauseReconcile` | `UserPauseSticky` violated | violated | stops at first error | < 1 s |
+| `session/Finding-F3-PauseDiscardsFinishedBody` | `FinishedBodySurvivesPause` violated | violated | stops at first error | < 1 s |
 
 The `Current-*` configs are the code as it stands and check every property except the ones the
-findings break. `Current-Static` also checks `FinishedBodySurvivesPause`: the static lane keeps a
-body that finishes during a pause. `Current-TwoRows` uses one attempt per row and the `complete`
+findings break. `session/Current-Static` also checks `FinishedBodySurvivesPause`: the static lane keeps a
+body that finishes during a pause. `session/Current-TwoRows` uses one attempt per row and the `complete`
 verdict only.
 
 State counts against the pilot (which ran the same configs with `-workers auto`):
 
 | Config | Pilot | Now | Why |
 | --- | --- | --- | --- |
-| `Current-Forward`, `Liveness-Forward`, `Proposed-Forward` | 6,038; 13,454; 2,854 | the same | |
-| `Current-Static` | 146,692 | 90,686 | The adoption artefact above. |
-| `Current-TwoRows` | 4,822,941 | 2,531,988 | The same. 88 s before, 69 s now, both at two workers. |
-| `Liveness-Static` | 75,321 | 68,653 | The same. |
-| `Proposed-Static` | 142,535 | 86,529 | The same. |
+| `session/Current-Forward`, `session/Liveness-Forward`, `session/Proposed-Forward` | 6,038; 13,454; 2,854 | the same | |
+| `session/Current-Static` | 146,692 | 90,686 | The adoption artefact above. |
+| `session/Current-TwoRows` | 4,822,941 | 2,531,988 | The same. 88 s before, 69 s now, both at two workers. |
+| `session/Liveness-Static` | 75,321 | 68,653 | The same. |
+| `session/Proposed-Static` | 142,535 | 86,529 | The same. |
 
 Symmetry: TLC's `SYMMETRY` is sound only over model values the spec never tells apart, and never
 for liveness. The pilot's configs have one row, or one forward-only and one static-range row, so
 none of them has interchangeable rows and none gained a symmetry set. The two configs that do
-have interchangeable rows use it: `Current-TwoForward` explores 233,692 distinct states instead
-of 466,603, and `Deep-TwoStatic` 7,597,623 (not run without it). Attempt IDs are ordered
+have interchangeable rows use it: `session/Current-TwoForward` explores 233,692 distinct states instead
+of 466,603, and `session/Deep-TwoStatic` 7,597,623 (not run without it). Attempt IDs are ordered
 integers and are not symmetric.
 
 ### Faithfulness: the model sees the fixed bugs
@@ -184,7 +185,7 @@ transferring row ignores `.captured` on relaunch. The window is the IO-queue hop
 the working-path lease.
 
 Verdict: real, low likelihood, high cost when it happens (a full re-transcode).
-`Proposed-Forward` shows one sufficient design: persist `bodyCaptured` with the stash, make the
+`session/Proposed-Forward` shows one sufficient design: persist `bodyCaptured` with the stash, make the
 sweep honor that durable reference, and requeue the publication on relaunch.
 
 Pin: `DownloadsFormalModelFindingsTests.finishedForwardOnlyBodyInStashSurvivesRelaunch`.
@@ -238,12 +239,12 @@ with its whole body at the working path is failed and the body deleted.
 Why it is real: the static lane has an explicit decision for this case
 (`StaticRangeFinishedBodyPolicy`: a `.pause` halt is `writeThenPause`) and the reducer already
 lets a paused row enter `finalizing` from `bodyAtWorking`. The forward-only lane has neither: its
-guard treats a pause halt like a cancel. `Current-Static` passes the property; `Finding-F3` does
+guard treats a pause halt like a cancel. `session/Current-Static` passes the property; `Finding-F3` does
 not.
 
 Verdict: real. The first ordering needs only a pause near the end of a transfer, with no crash,
 and costs a full re-transcode. The second needs a crash in a short window.
-`Proposed-F3-PauseKeepsBody` shows the fix on its own: the queued publication accepts a pause
+`session/Proposed-F3-PauseKeepsBody` shows the fix on its own: the queued publication accepts a pause
 halt (and still rejects a cancel), and relaunch finalizes a paused forward-only row whose body
 is at the working path. One window stays open under that fix: a Resume that lands between the
 stash and the working path still starts a fresh attempt. The property allows it, as a fresh
@@ -268,8 +269,8 @@ transition table instead of restating it. The comment block at the top of `Downl
 the authoring contract: file and config names, the `MODELS:` header the drift guard reads, the
 Crash convention, tiers, and where findings are pinned (`DownloadsFormalModel<Name>Tests.swift`).
 Each module has at least one `Faithful-<bug>-off` config for a fixed bug from the audit, or a
-`Mutant-*` config where its subsystem has none. Each has a notes file beside it
-(`specs/downloads/Downloads<Name>.md`) with its model-to-Swift table, bounds, properties,
+`Mutant-*` config where its subsystem has none. Each has a notes file in its folder
+(`specs/downloads/<folder>/README.md`) with its model-to-Swift table, bounds, properties,
 per-config results, faithfulness traces, full finding traces, the artefacts fixed in the model
 and what it leaves out. `docs/DOWNLOADS-OFFLINE.md` summarises each module.
 
@@ -295,17 +296,17 @@ have the per-config rows, measured at `TLC_WORKERS=2 TLC_HEAP=2g`.
 
 | Module | Configs | Pass | Violated as expected | Deep | Largest state space (config) | Default tier | Deep tier |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `DownloadsSessionCore` | 19 | 10 | 9 | 1 | 7,597,623 (`Deep-TwoStatic`) | 37 s | 51 s |
-| `DownloadsReducerConformance` | 2 | 2 | 0 | 0 | 1 (`Projection-SessionCore`) | 3 s |  |
-| `DownloadsAdmission` | 14 | 7 | 7 | 1 | 2,727,903 (`Admission-Deep-ThreeRows`) | 34 s | 34 s |
-| `DownloadsServerPrep` | 14 | 7 | 7 | 0 | 60,392 (`ServerPrep-Current-EmbyThreePollers`) | 14 s |  |
-| `DownloadsCleanup` | 12 | 5 | 7 | 0 | 1,426,644 (`Cleanup-Current-TwoRows`) | 18 s |  |
-| `DownloadsWake` | 11 | 3 | 8 | 0 | 3,412,505 (`Wake-Current-Wake`) | 44 s |  |
-| `DownloadsWakeLaunchGate` | 2 | 1 | 1 | 0 | 112 (`WakeLaunchGate-Current-Gate`) | 1 s |  |
-| `DownloadsSideAssets` | 27 | 16 | 11 | 1 | 14,221,199 (`SideAssets-Deep-AllKinds`) | 61 s | 80 s |
-| `DownloadsStorage` | 15 | 7 | 8 | 0 | 256,342 (`Storage-Current-TwoStatic`) | 18 s |  |
-| `DownloadsRangeTrain` | 15 | 8 | 7 | 2 | 4,182,753 (`RangeTrain-Deep-TwoRows`) | 15 s | 59 s |
-| `DownloadsStatus` | 22 | 13 | 9 | 1 | 8,434,679 (`Status-Deep-TwoStatic`) | 90 s | 69 s |
+| `DownloadsSessionCore` | 19 | 10 | 9 | 1 | 7,597,623 (`session/Deep-TwoStatic`) | 37 s | 51 s |
+| `DownloadsReducerConformance` | 2 | 2 | 0 | 0 | 1 (`session/Projection-SessionCore`) | 3 s |  |
+| `DownloadsAdmission` | 14 | 7 | 7 | 1 | 2,727,903 (`admission/Deep-ThreeRows`) | 34 s | 34 s |
+| `DownloadsServerPrep` | 14 | 7 | 7 | 0 | 60,392 (`server-prep/Current-EmbyThreePollers`) | 14 s |  |
+| `DownloadsCleanup` | 12 | 5 | 7 | 0 | 1,426,644 (`cleanup/Current-TwoRows`) | 18 s |  |
+| `DownloadsWake` | 11 | 3 | 8 | 0 | 3,412,505 (`wake/Current-Wake`) | 44 s |  |
+| `DownloadsWakeLaunchGate` | 2 | 1 | 1 | 0 | 112 (`wake/WakeLaunchGate-Current-Gate`) | 1 s |  |
+| `DownloadsSideAssets` | 27 | 16 | 11 | 1 | 14,221,199 (`side-assets/Deep-AllKinds`) | 61 s | 80 s |
+| `DownloadsStorage` | 15 | 7 | 8 | 0 | 256,342 (`storage/Current-TwoStatic`) | 18 s |  |
+| `DownloadsRangeTrain` | 15 | 8 | 7 | 2 | 4,182,753 (`range-train/Deep-TwoRows`) | 15 s | 59 s |
+| `DownloadsStatus` | 22 | 13 | 9 | 1 | 8,434,679 (`status/Deep-TwoStatic`) | 90 s | 69 s |
 | Total | 153 | 79 | 74 | 6 | | 335 s | 293 s |
 
 ### Findings from the subsystem models
@@ -317,26 +318,26 @@ decision to call. Full traces and evidence are in the module notes and the issue
 
 | Finding | What goes wrong | Verdict | Config | Pin (`DownloadsFormalModel<Name>Tests`) | Issue |
 | --- | --- | --- | --- | --- | --- |
-| Admission-A1 | Startup recovery fails a forward-only row that never started (a granted start cut by a crash, or a first start the user paused). | real, medium | `Admission-Finding-A1-RelaunchFailsUnstartedRow` | `relaunchKeepsForwardOnlyRowThatNeverStarted` | #475 |
-| ServerPrep-S1 | Retry of a failed Plex preparation row abandons its running optimize job with no durable cancel and creates a second job. | real, low to medium | `ServerPrep-Finding-S1-RetryOrphansRender`, `ServerPrep-Finding-S1-HandoffLeavesJob` | `retryOfFailedPlexPrepKeepsOrCancelsItsJob` | #478 |
-| Cleanup-C1 | After a failed intent commit, an explicit artifact recovery re-registers the row deletion with prepared revision 0, and files are unlinked before the intent is durable. | real, low to medium | `Cleanup-Finding-C1-UnlinkBeforeDurableIntent` | `rowDeletionUnlinksOnlyAfterDurableIntent` | #479 |
-| B27 | A legacy validated promotion whose body is gone makes Delete a permanent no-op. A fix must make Delete and the launch promotion recovery exclude each other. | real, known | `Cleanup-Finding-B27-LegacyPromotionWedgesDelete` | `deleteIsNotRefusedByLegacyPromotion` | #392 |
-| B30 | On a completely full volume the deletion intent cannot be saved, so nothing is unlinked. Fix together with Cleanup-C1. | real, known | `Cleanup-Finding-B30-FullVolumeDelete` | `deleteOnFullVolumeReclaims` | #393 |
-| Wake-W1 | A completion handler that arrives while a claimed batch waits for its MainActor release inherits that batch's deadline. | probable, low | `Wake-Finding-W1-StaleDeadline` | none (app-target code) | #480 |
-| Wake-W2 | An operation begun while an expired operation lingers is marked expired and does not hold the next wake. | probable, low; may be intended | `Wake-Finding-W2-UnsettledWork` | none (app-target code) | #481 |
-| SideAssets-S1 | A cancel that keeps the attempt leaves the poster's coordinator owner cancelled for the launch, so the poster is never fetched. | real, medium | `SideAssets-Finding-S1-PosterOwnerStaysCancelled` | `posterFetchReopensItsCancelledOwner` | #482 |
-| SideAssets-S2 | Pause All parks a completed row's side assets, Resume All never unparks them, and repair cannot re-enter a registered kind. | real, medium | `SideAssets-Finding-S2-PauseAllStrandsCompletedRow` | `resumeAllUnparksCompletedRows` | #483 |
-| SideAssets-S3 | A server outage spends the per-launch retry budget for an asset the server has. | probable, low; product decision | `SideAssets-Finding-S3-OutageExhaustsBudget` | none | #484 |
-| SideAssets-S4 | A refused Resume leaves a user-paused row's side assets unparked. | probable, low; product decision | `SideAssets-Finding-S4-RefusedResumeUnparks` | none | #485 |
-| st-39 | A side-asset file renamed but not yet recorded is left on disk by Delete, after a crash or after a replacement attempt. | real, known, deferred | `SideAssets-Finding-st39-CrashOrphanAfterDelete`, `SideAssets-Finding-st39-ReplacedAttemptOrphan` | none | #401 |
-| #394 | Fetched chapter payloads wait in memory behind one-at-a-time preparation. | real, known | `SideAssets-Finding-394-PayloadsBehindPreparation` | none | #394 |
-| Storage-S1 | An automatic requeue erases a storage-full park, so the row is redriven once without measuring free space. | real, low | `Storage-Finding-S1-RequeueErasesPark` | `automaticRequeueKeepsTheStoragePark` | #486 |
-| RangeTrain-R1 | A drain pass run by a held-body removal completion discards its result, so nothing finalizes the file or tops the train up until the self-heal. | real, low | `RangeTrain-Finding-R1-StrandedDrain` | `removalCompletionDrainContinuesTheTrain` | #477 |
-| RangeTrain-R2 | Reconcile fails a static row whose finished body is stashed and queued for append; for a one-segment file that is the whole download. | real, medium | `RangeTrain-Finding-R2-ReconcileFailsQueuedBody` | `reconcileCountsQueuedBodiesAsLiveWork` | #476 |
-| Status-S1 | A silently stalled transfer hides the batch speed for as long as it is silent. | real, medium | `Status-Finding-S1-SilentMemberHidesSpeed` | `silentTransferDoesNotHideBatchSpeedForever` | #487 |
-| Status-S2 | A stalled static-range row keeps showing a stale speed and ETA, because the refresh loop stops first. | real, medium | `Status-Finding-S2-StaleRowSpeed` | `stalledStaticRowStopsShowingSpeed` | #488 |
-| Status-S3 | After a process death a static-range row shows fewer bytes than before, with no reducer reset. | probable, low | `Status-Finding-S3-RelaunchDip` | none | #490 |
-| Status-S4 | A forward-only row's first callback after the 4 s foreground grace inflates its speed. | probable, low | `Status-Finding-S4-LateCallbackInflatesRow` | none | #489 |
+| Admission-A1 | Startup recovery fails a forward-only row that never started (a granted start cut by a crash, or a first start the user paused). | real, medium | `admission/Finding-A1-RelaunchFailsUnstartedRow` | `relaunchKeepsForwardOnlyRowThatNeverStarted` | #475 |
+| ServerPrep-S1 | Retry of a failed Plex preparation row abandons its running optimize job with no durable cancel and creates a second job. | real, low to medium | `server-prep/Finding-S1-RetryOrphansRender`, `server-prep/Finding-S1-HandoffLeavesJob` | `retryOfFailedPlexPrepKeepsOrCancelsItsJob` | #478 |
+| Cleanup-C1 | After a failed intent commit, an explicit artifact recovery re-registers the row deletion with prepared revision 0, and files are unlinked before the intent is durable. | real, low to medium | `cleanup/Finding-C1-UnlinkBeforeDurableIntent` | `rowDeletionUnlinksOnlyAfterDurableIntent` | #479 |
+| B27 | A legacy validated promotion whose body is gone makes Delete a permanent no-op. A fix must make Delete and the launch promotion recovery exclude each other. | real, known | `cleanup/Finding-B27-LegacyPromotionWedgesDelete` | `deleteIsNotRefusedByLegacyPromotion` | #392 |
+| B30 | On a completely full volume the deletion intent cannot be saved, so nothing is unlinked. Fix together with Cleanup-C1. | real, known | `cleanup/Finding-B30-FullVolumeDelete` | `deleteOnFullVolumeReclaims` | #393 |
+| Wake-W1 | A completion handler that arrives while a claimed batch waits for its MainActor release inherits that batch's deadline. | probable, low | `wake/Finding-W1-StaleDeadline` | none (app-target code) | #480 |
+| Wake-W2 | An operation begun while an expired operation lingers is marked expired and does not hold the next wake. | probable, low; may be intended | `wake/Finding-W2-UnsettledWork` | none (app-target code) | #481 |
+| SideAssets-S1 | A cancel that keeps the attempt leaves the poster's coordinator owner cancelled for the launch, so the poster is never fetched. | real, medium | `side-assets/Finding-S1-PosterOwnerStaysCancelled` | `posterFetchReopensItsCancelledOwner` | #482 |
+| SideAssets-S2 | Pause All parks a completed row's side assets, Resume All never unparks them, and repair cannot re-enter a registered kind. | real, medium | `side-assets/Finding-S2-PauseAllStrandsCompletedRow` | `resumeAllUnparksCompletedRows` | #483 |
+| SideAssets-S3 | A server outage spends the per-launch retry budget for an asset the server has. | probable, low; product decision | `side-assets/Finding-S3-OutageExhaustsBudget` | none | #484 |
+| SideAssets-S4 | A refused Resume leaves a user-paused row's side assets unparked. | probable, low; product decision | `side-assets/Finding-S4-RefusedResumeUnparks` | none | #485 |
+| st-39 | A side-asset file renamed but not yet recorded is left on disk by Delete, after a crash or after a replacement attempt. | real, known, deferred | `side-assets/Finding-st39-CrashOrphanAfterDelete`, `side-assets/Finding-st39-ReplacedAttemptOrphan` | none | #401 |
+| #394 | Fetched chapter payloads wait in memory behind one-at-a-time preparation. | real, known | `side-assets/Finding-394-PayloadsBehindPreparation` | none | #394 |
+| Storage-S1 | An automatic requeue erases a storage-full park, so the row is redriven once without measuring free space. | real, low | `storage/Finding-S1-RequeueErasesPark` | `automaticRequeueKeepsTheStoragePark` | #486 |
+| RangeTrain-R1 | A drain pass run by a held-body removal completion discards its result, so nothing finalizes the file or tops the train up until the self-heal. | real, low | `range-train/Finding-R1-StrandedDrain` | `removalCompletionDrainContinuesTheTrain` | #477 |
+| RangeTrain-R2 | Reconcile fails a static row whose finished body is stashed and queued for append; for a one-segment file that is the whole download. | real, medium | `range-train/Finding-R2-ReconcileFailsQueuedBody` | `reconcileCountsQueuedBodiesAsLiveWork` | #476 |
+| Status-S1 | A silently stalled transfer hides the batch speed for as long as it is silent. | real, medium | `status/Finding-S1-SilentMemberHidesSpeed` | `silentTransferDoesNotHideBatchSpeedForever` | #487 |
+| Status-S2 | A stalled static-range row keeps showing a stale speed and ETA, because the refresh loop stops first. | real, medium | `status/Finding-S2-StaleRowSpeed` | `stalledStaticRowStopsShowingSpeed` | #488 |
+| Status-S3 | After a process death a static-range row shows fewer bytes than before, with no reducer reset. | probable, low | `status/Finding-S3-RelaunchDip` | none | #490 |
+| Status-S4 | A forward-only row's first callback after the 4 s foreground grace inflates its speed. | probable, low | `status/Finding-S4-LateCallbackInflatesRow` | none | #489 |
 
 Findings that touch each other:
 
@@ -357,9 +358,11 @@ Fixes are tracked by the issues above. The rest is about the models and their to
 
 Tooling:
 
-- `scripts/check-tla-specs.sh` reports a violated liveness property as `TEMPORAL`, so nine
-  configs declare `EXPECT: violation TEMPORAL` and name the property in a comment. The script
-  could read the property from a config that lists exactly one.
+- `scripts/check-tla-specs.sh` reports a violated liveness property as `TEMPORAL`, because TLC
+  does not name it, so nine configs declare `EXPECT: violation TEMPORAL` and name the property
+  in a comment. The summary now adds the name from the config's `PROPERTY` list (the candidates
+  when a config lists several). The `EXPECT` header still cannot require a named liveness
+  property.
 - `.woodpecker/tla.yml` runs the model check on the macOS runner, which is not enrolled yet
   (`docs/MACOS-CI.md`). Neither it nor `.woodpecker/tla-drift.yml` has run on Woodpecker. A
   Linux container with a JDK could run the default tier on pull requests today.
@@ -372,15 +375,15 @@ Tooling:
   `DownloadManager.swift` out for that reason although they model code in it. Decide whether to
   keep the friction, narrow the guard to functions, or move the modelled code into smaller files.
 - Default-tier cost. `DownloadsSideAssets` and `DownloadsStatus` are the slowest modules. If the
-  default run is too long for CI, `SideAssets-Current-AllKinds`, `Status-Current-Mixed` and
-  `Status-Current-TwoStatic` are the candidates for the deep tier.
+  default run is too long for CI, `side-assets/Current-AllKinds`, `status/Current-Mixed` and
+  `status/Current-TwoStatic` are the candidates for the deep tier.
 - `DownloadsReducerTable.tla` is a 312 KB generated file. Fewer histories in the relaunch grid
   would cut it to about a third, at the cost of coverage.
 
 Pins:
 
 - Wake-W1, Wake-W2, Status-S3 and Status-S4 need `LabstreamTests` pins; sketches for the two wake
-  findings are in `specs/downloads/DownloadsWake.md`. RangeTrain-R2 and Cleanup-C1 were confirmed
+  findings are in `specs/downloads/wake/README.md`. RangeTrain-R2 and Cleanup-C1 were confirmed
   by reading and want a runtime reproduction (hold the range-IO queue; full-volume fault
   injection).
 - Several pins read app source as text because the decision is inline app code: F3,
@@ -435,6 +438,34 @@ Observations from reading that are not findings:
 - "Shown bytes never go backwards" does not hold literally: leaving `downloading` drops the
   optimistic overlay on purpose. `BytesMonotone` is stated for a row that stays downloading in a
   live process.
+
+## Path map
+
+The specs were one flat folder until 2026-11-24. Issues #472 to #490 and comments on #392, #393,
+#394 and #401 cite the flat paths. The files moved without a change to what they check:
+
+| Old path under `specs/downloads/` | Now |
+| --- | --- |
+| `Admission-<rest>.cfg` | `admission/<rest>.cfg` |
+| `ServerPrep-<rest>.cfg` | `server-prep/<rest>.cfg` |
+| `Cleanup-<rest>.cfg` | `cleanup/<rest>.cfg` |
+| `Wake-<rest>.cfg` | `wake/<rest>.cfg` |
+| `WakeLaunchGate-<rest>.cfg` | `wake/WakeLaunchGate-<rest>.cfg` (name kept) |
+| `SideAssets-<rest>.cfg` | `side-assets/<rest>.cfg` |
+| `Storage-<rest>.cfg` | `storage/<rest>.cfg` |
+| `RangeTrain-<rest>.cfg` | `range-train/<rest>.cfg` |
+| `Status-<rest>.cfg` | `status/<rest>.cfg` |
+| A config with no module name in front (`Current-*`, `Liveness-*`, `Faithful-*`, `Finding-F1-*` to `Finding-F3-*`, `Proposed-*`, `Deep-TwoStatic`, `Projection-SessionCore`) | `session/`, name kept |
+| `Reducer-Conformance.cfg` | `base/Reducer-Conformance.cfg` |
+| `DownloadsBase.tla`, `DownloadsReducer.tla`, `DownloadsReducerTable.tla`, `DownloadsReducerConformance.tla` | `base/`, name kept |
+| `DownloadsSessionCore.tla` | `session/DownloadsSessionCore.tla` |
+| `Downloads<Name>.tla` | `<folder>/Downloads<Name>.tla`; `DownloadsWakeLaunchGate.tla` is in `wake/` |
+| `Downloads<Name>.md` | `<folder>/README.md` |
+
+So `specs/downloads/Finding-F1-StashCrash.cfg` is `specs/downloads/session/Finding-F1-StashCrash.cfg`,
+and `specs/downloads/SideAssets-Finding-S1-PosterOwnerStaysCancelled.cfg` is
+`specs/downloads/side-assets/Finding-S1-PosterOwnerStaysCancelled.cfg`. This document and the
+module notes name a config as `<folder>/<config>`.
 
 ## Verification gates for this plan
 

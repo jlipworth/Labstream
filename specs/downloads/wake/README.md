@@ -37,9 +37,9 @@ startup failure and one retry. `Handlers` and `Ops` are symmetry sets in the saf
 
 | Config | Result | Distinct states | Time at 2 workers, 2 GB (the higher figure is with other agents running) |
 | --- | --- | --- | --- |
-| `Wake-Current-Wake` | pass | 3,412,505 | 45 to 70 s |
-| `Wake-Proposed-W1-FreshDeadline` | pass | 2,904,340 | 40 to 95 s |
-| `Wake-Liveness-HandlerCalled` | pass | 310,367 | 25 to 60 s |
+| `Current-Wake` | pass | 3,412,505 | 45 to 70 s |
+| `Proposed-W1-FreshDeadline` | pass | 2,904,340 | 40 to 95 s |
+| `Liveness-HandlerCalled` | pass | 310,367 | 25 to 60 s |
 | `WakeLaunchGate-Current-Gate` | pass | 112 | 1 s |
 | every `Faithful`, `Mutant` and `Finding` config | expected violation | under 31,000 | 1 s |
 
@@ -74,12 +74,12 @@ operations, flushes and startup may never happen.
 
 | Config | Fix off | Violates |
 | --- | --- | --- |
-| `Wake-Faithful-B04-off` | a delayed retry holds no wake operation | `GateHoldsForSuccessor` |
-| `Wake-Faithful-B05-off` | a block after the transport exists aborts holds | `LiveHoldsSurviveStartupBlock` |
-| `Wake-Faithful-B06-off` | the session forgets the startup block | `BlockedStartupHoldsNoHandler` |
-| `Wake-Faithful-B11-off` | the handler reaches the registry through a Task hop | `AwaitingHandlerIsOwedFinishEvents` |
-| `Wake-Faithful-B13-off` | no timers | `HandlerClaimedWithinBudget` |
-| `Wake-Mutant-DrainByIdentifier` | a release drains every handler for the identifier | `CalledOnlyAfterClaim` |
+| `Faithful-B04-off` | a delayed retry holds no wake operation | `GateHoldsForSuccessor` |
+| `Faithful-B05-off` | a block after the transport exists aborts holds | `LiveHoldsSurviveStartupBlock` |
+| `Faithful-B06-off` | the session forgets the startup block | `BlockedStartupHoldsNoHandler` |
+| `Faithful-B11-off` | the handler reaches the registry through a Task hop | `AwaitingHandlerIsOwedFinishEvents` |
+| `Faithful-B13-off` | no timers | `HandlerClaimedWithinBudget` |
+| `Mutant-DrainByIdentifier` | a release drains every handler for the identifier | `CalledOnlyAfterClaim` |
 | `WakeLaunchGate-Faithful-B77-off` | a reconnect never reruns the pass | `LaunchPassSawServers` |
 
 ## Findings
@@ -112,7 +112,7 @@ Evidence: `BackgroundDownloadCompletionRegistry.swift:70-72` (deadline from held
 this breaks. The window is the MainActor queue latency between claim and call.
 
 Proposed fix in the model (`FixStaleDeadline`): inherit only from receipts whose token has not
-been claimed. `Wake-Proposed-W1-FreshDeadline.cfg` passes.
+been claimed. `Proposed-W1-FreshDeadline.cfg` passes.
 
 ```swift
 // LabstreamTests sketch. The session's release closure is withheld to stand for the pending hop.
