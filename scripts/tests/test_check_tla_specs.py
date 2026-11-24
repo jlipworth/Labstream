@@ -1,6 +1,8 @@
 import os
 import re
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +18,24 @@ def header(config: Path, key: str) -> str | None:
         if match:
             return match.group(1)
     return None
+
+
+CFG_KEYWORDS = set("""CONSTANT CONSTANTS INIT NEXT SPECIFICATION INVARIANT INVARIANTS PROPERTY PROPERTIES
+    SYMMETRY CONSTRAINT CONSTRAINTS ACTION_CONSTRAINT ACTION_CONSTRAINTS VIEW CHECK_DEADLOCK POSTCONDITION
+    ALIAS""".split())
+
+
+def cfg_properties(config: Path) -> list[str]:
+    """The names a config lists under PROPERTY / PROPERTIES."""
+    names, inside = [], False
+    for line in config.read_text(encoding="utf-8").splitlines():
+        words = line.split("\\*", 1)[0].split()
+        if words and words[0] in CFG_KEYWORDS:
+            inside = words[0] in {"PROPERTY", "PROPERTIES"}
+            words = words[1:]
+        if inside:
+            names += words
+    return names
 
 
 class TlaSpecRunnerTests(unittest.TestCase):
@@ -91,16 +111,42 @@ class TlaSpecRunnerTests(unittest.TestCase):
 class TlaSpecLayoutTests(unittest.TestCase):
     """specs/<area>/<module>/ folders with shared modules in <area>/base/. No JDK needed."""
 
-    FAKE_JAVA = """#!/bin/sh
-# Stands in for java: records each call, passes SANY, and prints a TLC liveness violation.
-printf '%s|%s\\n' "$PWD" "$*" >> "$FAKE_JAVA_LOG"
-case "$*" in
-  *tlc2.TLC*)
-    echo "Error: Temporal properties were violated."
-    echo "10 states generated, 7 distinct states found, 0 states left on queue."
-    exit 13 ;;
-esac
-exit 0
+    FAKE_JAVA = r"""#!/bin/sh
+# Stands in for java: records each call, passes SANY, and plays TLC from the config it is given.
+# Directives are comment lines in the config (the runner's config copies keep them):
+#   \* FAKE-OUT: <line>      print this line instead of the default liveness violation
+#   \* FAKE-EXIT: <status>   exit status (default 13)
+#   \* FAKE-FINISH: no       leave out the state count and the "Finished in" line
+#   \* FAKE-VIOLATES: A B    a liveness violation when the PROPERTY list names A or B, else a pass
+printf '%s|%s\n' "$PWD" "$*" >> "$FAKE_JAVA_LOG"
+case "$*" in *tlc2.TLC*) ;; *) exit 0 ;; esac
+config=""
+previous=""
+for argument in "$@"; do
+  if [ "$previous" = "-config" ]; then config="$argument"; fi
+  previous="$argument"
+done
+cp "$config" "$FAKE_JAVA_LOG.$(basename "$config")"
+directive() { sed -n "s/^\\\\\* *$1: *//p" "$config"; }
+status="$(directive FAKE-EXIT)"
+violates="$(directive FAKE-VIOLATES)"
+if [ -n "$(directive FAKE-OUT)" ]; then
+  directive FAKE-OUT
+elif [ -n "$violates" ]; then
+  status=0
+  for name in $violates; do
+    if grep -v '^\\\*' "$config" | grep -Eq "(^| )$name( |\$)"; then status=13; fi
+  done
+  if [ "$status" = 13 ]; then echo "Error: Temporal properties were violated."
+  else echo "Model checking completed. No error has been found."; fi
+else
+  echo "Error: Temporal properties were violated."
+fi
+if [ "$(directive FAKE-FINISH)" != no ]; then
+  echo "10 states generated, 7 distinct states found, 0 states left on queue."
+  echo "Finished in 00s at (2026-01-01 00:00:00)"
+fi
+exit "${status:-13}"
 """
 
     def setUp(self):
@@ -172,9 +218,10 @@ exit 0
         fake.write_text(self.FAKE_JAVA, encoding="utf-8")
         fake.chmod(0o755)
         jar = self.root / "cache" / "tla2tools-v1.7.4.jar"
-        jar.parent.mkdir()
+        jar.parent.mkdir(exist_ok=True)
         jar.write_bytes(b"")
         log = self.root / "java.log"
+        log.unlink(missing_ok=True)
         # An empty file's SHA-256 never matches the pin, so stop the download instead.
         script = self.root / "check.sh"
         script.write_text(SCRIPT.read_text(encoding="utf-8").replace(
@@ -214,18 +261,246 @@ exit 0
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("[expect: violation TEMPORAL; got: TEMPORAL (Settles); 7 distinct;", result.stdout)
 
-    def test_a_temporal_violation_lists_several_candidates(self):
-        cfg = self.write("alpha/Finding-Two.cfg",
-                         "\\* SPEC: Alpha\n\\* EXPECT: violation TEMPORAL\nSPECIFICATION FairSpec\n"
-                         "PROPERTIES\n    Settles\n    Served\nCONSTANTS\n    Rows = {r1}\n")
-        result, _ = self.fake_run(str(cfg))
+    # --- A result needs the exit status, the banner and a clean finish to agree (R3 item 4) ---
+
+    def outcome(self, name: str, text: str) -> subprocess.CompletedProcess:
+        result, _ = self.fake_run(str(self.write(f"alpha/{name}.cfg", "\\* SPEC: Alpha\n" + text)))
+        return result
+
+    def assert_failed(self, result: subprocess.CompletedProcess, why: str):
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAIL  tlc", result.stdout)
+        self.assertIn(why, result.stdout)
+        self.assertNotIn("all checks passed", result.stdout)
+
+    def test_a_crash_after_the_expected_banner_is_a_failure(self):
+        # The reviewer's scenario: the expected banner, then an out-of-memory kill.
+        result = self.outcome("Finding-Crash", "\\* EXPECT: violation TEMPORAL\nPROPERTY Settles\n"
+                              "\\* FAKE-OUT: Error: Temporal properties were violated.\n"
+                              "\\* FAKE-OUT: java.lang.OutOfMemoryError: Java heap space\n"
+                              "\\* FAKE-EXIT: 137\n\\* FAKE-FINISH: no\n")
+        self.assert_failed(result, "got: TLC crashed (exit 137): java.lang.OutOfMemoryError")
+
+    def test_a_crash_is_a_failure_even_with_a_violation_exit_status(self):
+        result = self.outcome("Finding-Crash", "\\* EXPECT: violation Safe\nINVARIANT Safe\n"
+                              "\\* FAKE-OUT: Error: Invariant Safe is violated.\n"
+                              "\\* FAKE-OUT: Exception in thread \"main\" java.lang.StackOverflowError\n"
+                              "\\* FAKE-EXIT: 12\n")
+        self.assert_failed(result, "got: TLC crashed (exit 12)")
+
+    def test_a_truncated_run_is_a_failure(self):
+        result = self.outcome("Finding-Cut", "\\* EXPECT: violation TEMPORAL\nPROPERTY Settles\n"
+                              "\\* FAKE-EXIT: 13\n\\* FAKE-FINISH: no\n")
+        self.assert_failed(result, "got: TLC did not finish (exit 13)")
+
+    def test_an_abnormal_exit_status_is_a_failure(self):
+        for status in ("255", "1", "75", "150", "0"):
+            result = self.outcome("Finding-Odd", "\\* EXPECT: violation TEMPORAL\nPROPERTY Settles\n"
+                                  f"\\* FAKE-EXIT: {status}\n")
+            self.assert_failed(result, "got: TLC ex")
+
+    def test_the_exit_status_must_match_the_kind_of_banner(self):
+        result = self.outcome("Finding-Kind", "\\* EXPECT: violation Safe\nINVARIANT Safe\n"
+                              "\\* FAKE-OUT: Error: Invariant Safe is violated.\n\\* FAKE-EXIT: 11\n")
+        self.assert_failed(result, "TLC exit 11 does not match its banner (Safe)")
+
+    def test_an_evaluation_error_beside_the_banner_is_a_failure(self):
+        result = self.outcome("Finding-Eval", "\\* EXPECT: violation Safe\nINVARIANT Safe\n"
+                              "\\* FAKE-OUT: Error: Invariant Safe is violated.\n"
+                              "\\* FAKE-OUT: Error: Evaluating invariant Safe failed.\n\\* FAKE-EXIT: 12\n")
+        self.assert_failed(result, "TLC reported an error (exit 12): Evaluating invariant Safe failed.")
+
+    def test_two_violation_banners_are_a_failure(self):
+        result = self.outcome("Finding-Two", "\\* EXPECT: violation Safe\nINVARIANT Safe\n"
+                              "\\* FAKE-OUT: Error: Invariant Safe is violated.\n"
+                              "\\* FAKE-OUT: Error: Invariant Other is violated.\n\\* FAKE-EXIT: 12\n")
+        self.assert_failed(result, "TLC exit 12 with 2 violation banners")
+
+    def test_named_safety_violations_and_deadlock(self):
+        cases = [("Invariant Safe is violated.", "12", "Safe"), ("Action property Safe is violated.", "13", "Safe"),
+                 ("Deadlock reached.", "11", "DEADLOCK")]
+        for banner, status, name in cases:
+            text = f"\\* FAKE-OUT: Error: {banner}\n\\* FAKE-EXIT: {status}\n"
+            result = self.outcome("Finding-Named", f"\\* EXPECT: violation {name}\n" + text)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn(f"got: {name};", result.stdout)
+            result = self.outcome("Finding-Named", "\\* EXPECT: violation Different\n" + text)
+            self.assert_failed(result, f"got: {name};")
+
+    def test_a_pass_needs_status_zero_the_banner_and_a_finish(self):
+        good = "\\* EXPECT: pass\n\\* FAKE-OUT: Model checking completed. No error has been found.\n"
+        result = self.outcome("Current-Good", good + "\\* FAKE-EXIT: 0\n")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("got: TEMPORAL (one of: Settles, Served);", result.stdout)
+        self.assertIn("all checks passed", result.stdout)
+        self.assert_failed(self.outcome("Current-Bad", good + "\\* FAKE-EXIT: 1\n"), "got: TLC exit 1")
+        self.assert_failed(self.outcome("Current-Bad", good + "\\* FAKE-EXIT: 0\n\\* FAKE-FINISH: no\n"),
+                           "TLC did not finish")
+        self.assert_failed(self.outcome("Current-Bad", "\\* EXPECT: pass\n\\* FAKE-OUT: Starting...\n"
+                                        "\\* FAKE-EXIT: 0\n"), "TLC exited 0 without a clean")
+        self.assert_failed(self.outcome("Current-Bad", good + "\\* FAKE-EXIT: 0\n"
+                                        "\\* FAKE-OUT: java.lang.OutOfMemoryError: Java heap space\n"),
+                           "TLC crashed (exit 0)")
+
+    # --- Several temporal properties: the expectation names one, and each side is checked ---
+
+    TWO = "SPECIFICATION FairSpec\nINVARIANT TypeOK\nPROPERTIES\n    Settles \\* liveness\n    Served\nCONSTANTS\n    Rows = {r1}\n"
+
+    def split_run(self, expect: str, violates: str):
+        cfg = self.write("alpha/Finding-Two.cfg",
+                         f"\\* SPEC: Alpha\n\\* EXPECT: {expect}\n\\* FAKE-VIOLATES: {violates}\n" + self.TWO)
+        result, calls = self.fake_run(str(cfg))
+        return result, [call for call in calls if "tlc2.TLC" in call]
+
+    def test_an_unnamed_temporal_expectation_over_several_properties_fails(self):
+        result, tlc = self.split_run("violation TEMPORAL", "Settles")
+        self.assert_failed(result, "not run: the config checks several properties (Settles, Served)")
+        self.assertIn("EXPECT: violation TEMPORAL <Property>", result.stdout)
+        self.assertEqual(tlc, [])
+
+    def test_a_named_temporal_property_is_checked_alone_and_the_others_must_hold(self):
+        result, tlc = self.split_run("violation TEMPORAL Settles", "Settles")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("[expect: violation TEMPORAL Settles; got: TEMPORAL (Settles); the others hold (Served);",
+                      result.stdout)
+        self.assertEqual(len(tlc), 2)
+        self.assertRegex(tlc[0], r"-config /\S+/only-Settles\.cfg Alpha\.tla$")
+        self.assertRegex(tlc[1], r"-config /\S+/without-Settles\.cfg Alpha\.tla$")
+        only = (self.root / "java.log.only-Settles.cfg").read_text(encoding="utf-8")
+        rest = (self.root / "java.log.without-Settles.cfg").read_text(encoding="utf-8")
+        self.assertIn("PROPERTY Settles\n", only)
+        self.assertNotIn("Served", only)
+        self.assertIn("PROPERTY Served\n", rest)
+        self.assertNotIn("    Settles", rest)
+        for text in (only, rest):
+            self.assertIn("INVARIANT TypeOK\n", text)
+            self.assertIn("CONSTANTS\n    Rows = {r1}\n", text)
+            self.assertIn("SPECIFICATION FairSpec\n", text)
+
+    def test_naming_the_property_that_holds_fails(self):
+        result, tlc = self.split_run("violation TEMPORAL Served", "Settles")
+        self.assert_failed(result, "[expect: violation TEMPORAL Served; got: no violation;")
+        self.assertEqual(len(tlc), 1)
+
+    def test_a_second_violated_property_fails(self):
+        result, _ = self.split_run("violation TEMPORAL Settles", "Settles Served")
+        self.assert_failed(result, "got: TEMPORAL (Settles); also violated among the others (Served): TEMPORAL;")
+
+    def test_a_crash_while_checking_the_other_properties_fails(self):
+        cfg = self.write("alpha/Finding-Two.cfg", "\\* SPEC: Alpha\n\\* EXPECT: violation TEMPORAL Settles\n"
+                         "\\* FAKE-FINISH: no\n\\* FAKE-VIOLATES: Settles\n" + self.TWO)
+        result, _ = self.fake_run(str(cfg))
+        self.assert_failed(result, "TLC did not finish")
+
+    def test_naming_a_property_the_config_does_not_check_is_an_error(self):
+        result, tlc = self.split_run("violation TEMPORAL Missing", "Settles")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("not in the config's PROPERTY list", result.stderr)
+        self.assertEqual(tlc, [])
+
+    def test_a_named_single_property_runs_the_config_once(self):
+        cfg = self.write("alpha/Finding-One.cfg", "\\* SPEC: Alpha\n\\* EXPECT: violation TEMPORAL Settles\n"
+                         "PROPERTY Settles\n")
+        result, calls = self.fake_run(str(cfg))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        tlc = [call for call in calls if "tlc2.TLC" in call]
+        self.assertEqual(len(tlc), 1)
+        self.assertTrue(tlc[0].endswith("-config Finding-One.cfg Alpha.tla"), tlc[0])
 
     def test_a_temporal_violation_fails_a_config_that_expects_a_pass(self):
         result, _ = self.fake_run(str(self.area / "beta" / "Current-One.cfg"))
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("FAIL  tlc", result.stdout)
+
+
+def real_java() -> str | None:
+    """A JDK the runner would use, when the pinned jar is already cached. Never downloads."""
+    if not list((REPO / "build" / "tla").glob("tla2tools-*.jar")):
+        return None
+    candidates = [os.environ.get("JAVA")]
+    brew = shutil.which("brew")
+    if brew:
+        prefix = subprocess.run([brew, "--prefix", "openjdk"], capture_output=True, text=True).stdout.strip()
+        candidates.append(f"{prefix}/bin/java" if prefix else None)
+    if sys.platform != "darwin":
+        candidates.append(shutil.which("java"))
+    for candidate in candidates:
+        if candidate and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+@unittest.skipUnless(real_java(), "needs a JDK and the cached tla2tools.jar (run check-tla-specs.sh once)")
+class RealTlcOutcomeTests(unittest.TestCase):
+    """The runner against the real TLC: its exit statuses and banners, and the property split."""
+
+    MODULE = """---- MODULE Tiny ----
+EXTENDS Naturals
+VARIABLE x
+Init == x = 0
+Next == x' = (x + 1) % 3
+Spec == Init /\\ [][Next]_x /\\ WF_x(Next)
+Small == x < 2
+Grows == [][x' > x]_x
+StaysOne == <>[](x = 1)
+StaysTwo == <>[](x = 2)
+ReachesTwo == []<>(x = 2)
+Step == x = 0 /\\ x' = 1
+Halts == Init /\\ [][Step]_x
+Broken == x + "one" = 2
+====
+"""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name).resolve()
+        (self.root / "Tiny.tla").write_text(self.MODULE, encoding="utf-8")
+
+    def check(self, expect: str, body: str) -> subprocess.CompletedProcess:
+        cfg = self.root / "Case.cfg"
+        cfg.write_text(f"\\* SPEC: Tiny\n\\* EXPECT: {expect}\n{body}", encoding="utf-8")
+        clean = {key: value for key, value in os.environ.items() if not key.startswith("TLC_")}
+        return subprocess.run(["bash", str(SCRIPT), str(cfg)], capture_output=True, text=True,
+                              env={**clean, "JAVA": real_java(), "TLC_WORKERS": "1", "TLC_HEAP": "512m"})
+
+    def assert_ok(self, expect: str, body: str, got: str):
+        result = self.check(expect, body)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"got: {got};", result.stdout)
+
+    def assert_failed(self, expect: str, body: str, got: str):
+        result = self.check(expect, body)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"got: {got}", result.stdout)
+        self.assertNotIn("all checks passed", result.stdout)
+
+    def test_each_kind_of_result_is_recognised(self):
+        self.assert_ok("pass", "SPECIFICATION Spec\nPROPERTY ReachesTwo\n", "no violation")
+        self.assert_ok("violation Small", "SPECIFICATION Spec\nINVARIANT Small\n", "Small")
+        self.assert_ok("violation Grows", "SPECIFICATION Spec\nPROPERTY Grows\n", "Grows")
+        self.assert_ok("violation DEADLOCK", "SPECIFICATION Halts\n", "DEADLOCK")
+        self.assert_ok("violation TEMPORAL", "SPECIFICATION Spec\nPROPERTY StaysOne\n", "TEMPORAL (StaysOne)")
+
+    def test_a_different_result_fails(self):
+        self.assert_failed("violation Small", "SPECIFICATION Spec\nPROPERTY ReachesTwo\n", "no violation;")
+        self.assert_failed("violation TEMPORAL", "SPECIFICATION Spec\nINVARIANT Small\n", "Small;")
+        self.assert_failed("pass", "SPECIFICATION Spec\nPROPERTY StaysOne\n", "TEMPORAL (StaysOne);")
+
+    def test_tlc_errors_are_never_the_expected_violation(self):
+        # An invariant TLC cannot evaluate, and a property the module does not define.
+        self.assert_failed("violation Broken", "SPECIFICATION Spec\nINVARIANT Broken\n", "TLC ")
+        self.assert_failed("violation TEMPORAL", "SPECIFICATION Spec\nPROPERTY Missing\n", "TLC ")
+
+    def test_several_temporal_properties_are_told_apart(self):
+        two = "SPECIFICATION Spec\nPROPERTIES\n    StaysOne\n    ReachesTwo\n"
+        self.assert_ok("violation TEMPORAL StaysOne", two, "TEMPORAL (StaysOne); the others hold (ReachesTwo)")
+        self.assert_failed("violation TEMPORAL ReachesTwo", two, "no violation;")
+        unnamed = self.check("violation TEMPORAL", two)
+        self.assertEqual(unnamed.returncode, 1, unnamed.stdout)
+        self.assertIn("not run: the config checks several properties (StaysOne, ReachesTwo)", unnamed.stdout)
+        both = "SPECIFICATION Spec\nPROPERTY StaysOne StaysTwo ReachesTwo\n"
+        self.assert_failed("violation TEMPORAL StaysOne", both,
+                           "TEMPORAL (StaysOne); also violated among the others (StaysTwo, ReachesTwo): TEMPORAL;")
 
 
 class RepositorySpecConventionTests(unittest.TestCase):
@@ -246,8 +521,25 @@ class RepositorySpecConventionTests(unittest.TestCase):
                             f"{config.relative_to(SPECS)}: no {spec}.tla")
             expect = header(config, "EXPECT")
             self.assertIsNotNone(expect, f"{config.name}: no `\\* EXPECT:` header")
-            self.assertRegex(expect, r"^(pass|violation [A-Za-z0-9_]+)$", config.name)
+            self.assertRegex(expect, r"^(pass|violation [A-Za-z0-9_]+|violation TEMPORAL [A-Za-z0-9_]+)$",
+                             config.name)
             self.assertIn(header(config, "TIER") or "default", {"default", "deep"}, config.name)
+
+    def test_a_temporal_expectation_over_several_properties_names_one(self):
+        # TLC does not name the liveness property that failed, so the config must (the runner
+        # then checks that property alone and the others without it).
+        for config in self.configs():
+            expect = header(config, "EXPECT")
+            if not expect.startswith("violation TEMPORAL"):
+                continue
+            properties = cfg_properties(config)
+            named = expect.removeprefix("violation TEMPORAL").strip()
+            where = str(config.relative_to(SPECS))
+            if named:
+                self.assertIn(named, properties, where)
+            else:
+                self.assertLessEqual(len(properties), 1, f"{where}: write `EXPECT: violation TEMPORAL "
+                                     f"<Property>`; the config checks {', '.join(properties)}")
 
     def test_layout_is_one_folder_per_module(self):
         loose = [path.name for path in (SPECS / "downloads").iterdir() if path.is_file()]
@@ -306,7 +598,72 @@ class TlaPipelineTests(unittest.TestCase):
         pipeline = (REPO / ".woodpecker" / "tla-drift.yml").read_text(encoding="utf-8")
         self.assertIn("event: pull_request", pipeline)
         self.assertNotIn("backend: local", pipeline)
-        self.assertIn("scripts/check-tla-drift.py origin/main...HEAD", pipeline)
+        # The range starts at the pull request's own target branch, read at run time.
+        self.assertIn('TARGET="$${CI_COMMIT_TARGET_BRANCH:?', pipeline)
+        self.assertIn('scripts/check-tla-drift.py "origin/$TARGET...HEAD"', pipeline)
+        self.assertIn('--unshallow origin "+refs/heads/$TARGET:refs/remotes/origin/$TARGET"', pipeline)
+        commands = [line for line in pipeline.splitlines() if line.lstrip().startswith("- ")]
+        self.assertFalse([line for line in commands if "main" in line], "no command may hard-code main")
+
+    def test_the_drift_step_compares_against_the_target_branch(self):
+        """Run the pipeline's own commands against a PR that targets a release branch."""
+        pipeline = (REPO / ".woodpecker" / "tla-drift.yml").read_text(encoding="utf-8")
+        commands = [line.strip()[2:] for line in pipeline.split("commands:", 1)[1].splitlines()
+                    if line.strip().startswith("- ")]
+        # Woodpecker's pre-processing turns `$${X}` into `${X}`; the image setup needs no test.
+        steps = [command.replace("$${", "${").replace("python scripts/", f"{sys.executable} {REPO}/scripts/")
+                 .replace("check-tla-drift.py ", "check-tla-drift.py --repo . ")
+                 for command in commands if not command.startswith(("apt-get", "rm -rf /var/lib/apt"))]
+        self.assertEqual(len(steps), 4, steps)
+        with tempfile.TemporaryDirectory() as tmp:
+            origin, clone = Path(tmp) / "origin", Path(tmp) / "clone"
+
+            def git(*args):
+                subprocess.run(["git", *args], cwd=origin, check=True, capture_output=True, text=True)
+
+            def write(relative, text):
+                path = origin / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding="utf-8")
+
+            def commit(message):
+                git("add", "-A")
+                git("-c", "user.email=test@example.invalid", "-c", "user.name=Tooling Test",
+                    "-c", "commit.gpgsign=false", "commit", "-q", "-m", message)
+
+            origin.mkdir()
+            git("init", "-q", "--initial-branch=main")
+            write("Sources/Session.swift", "// session\n")
+            write("specs/area/core/Core.tla", "---- MODULE Core ----\n\\* MODELS: Sources/Session.swift\n====\n")
+            commit("baseline")
+            # The release branch already holds a spec edit that main does not have.
+            git("checkout", "-q", "-b", "release")
+            write("specs/area/core/Core.tla",
+                  "---- MODULE Core ----\n\\* MODELS: Sources/Session.swift\n\\* updated\n====\n")
+            commit("release: update the spec")
+            git("checkout", "-q", "-b", "pr", "release")
+            write("Sources/Session.swift", "// session\n// pr\n")
+            commit("pr: change the session, no spec, no trailer")
+            subprocess.run(["git", "clone", "-q", "--depth", "1", "--branch", "pr", origin.as_uri(), str(clone)],
+                           check=True, capture_output=True)
+
+            def run(**env):
+                clean = {key: value for key, value in os.environ.items() if key != "CI_COMMIT_TARGET_BRANCH"}
+                return subprocess.run(["sh", "-ec", "\n".join(steps)], cwd=clone, capture_output=True,
+                                      text=True, env={**clean, **env})
+
+            unset = run()
+            self.assertNotEqual(unset.returncode, 0, unset.stdout)
+            self.assertIn("no target branch", unset.stderr)
+            self.assertNotEqual(run(CI_COMMIT_TARGET_BRANCH="bad..name").returncode, 0)
+            release = run(CI_COMMIT_TARGET_BRANCH="release")
+            self.assertEqual(release.returncode, 1, release.stdout + release.stderr)
+            self.assertIn("Sources/Session.swift changed, but its spec did not", release.stdout)
+            self.assertIn("in origin/release...HEAD", release.stderr)
+            # Measured from main, as the pipeline used to, the same pull request passes: the
+            # release branch's earlier spec edit lands in the range and covers the PR's change.
+            main = run(CI_COMMIT_TARGET_BRANCH="main")
+            self.assertEqual(main.returncode, 0, main.stdout + main.stderr)
 
 
 if __name__ == "__main__":
