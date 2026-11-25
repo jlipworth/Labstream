@@ -259,7 +259,8 @@ nondeterministic server actions `ServerAck(s)`, `ServerFail(s)`, `ServerDelay`,
 `serverRecreated`); controller variables `gen[c]`, `itemGen[c]`, `item[c]`
 (`"none"|"attached"|"detached"`), `task[c]` (current) and `unwinding[c]` (cancelled, still
 running), `seekHold[c]`, `budget[c]`, `paused[c]`, `proxy[c]`, `pendingStops[c]`; helper
-operators `Owned(c)`, `SentStop(c, s)`. Contract comment at the top, as in
+operators `Owned(c)`, `SentStop(c, s)`, and the shared property `OneEncoder` (at most one
+client-owned encoding session per controller, with a `jellyfinWindow` exemption flag). Contract comment at the top, as in
 `DownloadsBase.tla`, stating which state is in-memory and what each action abstracts.
 
 - [ ] Write the modules and the smoke config (`EXPECT: pass`) that exercises every server
@@ -298,7 +299,7 @@ table with `PlaybackController.swift` function names, bounds, properties, result
 ### Tasks 3 to 5: backend replacement orders (parallel after task 2)
 
 Each: `specs/playback/<backend>/Playback<Backend>.tla`, configs, `README.md`; extends task 1's
-operators; adds properties `OneEncoder` and `StopNeverKillsSuccessor`; includes a
+operators; checks task 1's `OneEncoder` and adds `StopNeverKillsSuccessor`; includes a
 `Deep-BackToBack.cfg` (`TIER: deep`, two controllers).
 
 - **Task 3, `plex/`.** MODELS `PlaybackController.swift` (`stopPreviousTranscode`,
