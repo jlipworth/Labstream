@@ -358,6 +358,10 @@ struct DownloadLifecycleReducerTests {
         // A live static task keeps transferring.
         #expect(relaunch(.transferring, DownloadRowFacts(route: .staticRange, liveTask: true)).state?
             .lifecycle == .transferring)
+        // A live task never promotes a paused row (F2, #473).
+        let pausedLive = relaunch(.paused, DownloadRowFacts(route: .staticRange, liveTask: true))
+        #expect(pausedLive.state?.lifecycle == .paused)
+        #expect(pausedLive.effects.isEmpty)
         // A static partial without a task parks at its durable checkpoint.
         let parked = relaunch(.transferring, DownloadRowFacts(
             route: .staticRange, checkpoint: .durablePartial(bytes: 10)))

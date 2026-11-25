@@ -70,7 +70,7 @@ CONSTANTS
                         \* exact attempt that raised it
     FixReplay,          \* truncation strikes are counted per outcome ID (R2-5); FALSE is the
                         \* counter before it: one strike per finalizer run, no IDs anywhere
-    FixPauseReconcile,  \* PROPOSED (not in the code): reconcile never promotes a paused row
+    FixPauseReconcile,  \* reconcile never promotes a paused row from a live-task fact (F2)
     DurableCapture,     \* PROPOSED (not in the code): bodyCaptured is persisted with the stash
     FixPauseKeepsBody,  \* PROPOSED (not in the code): a pause never drops a finished body (F3),
                         \* on either lane
@@ -802,9 +802,13 @@ RelaunchObserved(r) ==
                 /\ cause' = Upd(cause, r, "none")
                 /\ working' = Upd(working, r, "none")
                 /\ UNCHANGED <<strikes, counted, condemned, fin, ioq>>
-       ELSE IF FixPauseReconcile /\ L = "paused" /\ t.state.lifecycle = "transferring" THEN
-           \* PROPOSED: reconcile never promotes a paused row.
-           Keep
+       ELSE IF /\ ~FixPauseReconcile /\ L = "paused" /\ liveSnap[r]
+               /\ ~deleting[r] /\ intent[r] = "none" THEN
+           \* Fix off (F2): before #473 the reducer promoted a paused row that the
+           \* live-task snapshot listed ("a paused row a live task proves active").
+           /\ life' = Upd(life, r, "transferring")
+           /\ cause' = Upd(cause, r, "none")
+           /\ UNCHANGED <<strikes, counted, condemned, working, fin, ioq>>
        ELSE IF /\ FixPauseKeepsBody /\ Forward(r) /\ L = "paused"
                /\ facts.body = "workingComplete" /\ ~liveSnap[r]
                /\ ~deleting[r] /\ intent[r] = "none"

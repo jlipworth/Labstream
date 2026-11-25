@@ -2,7 +2,7 @@
 
 `DownloadsSessionCore.tla` is the pilot model: one row from `admitted` to a terminal lifecycle
 through the session, the finalizer, the stash sweep and relaunch recovery, with process death. Its
-design, properties and the F1 to F3 traces are in
+design, properties and the F1 to F3 traces (F2 is fixed: `Faithful-F2-off`) are in
 [docs/plans/2026-11-24-downloads-tla-model.md](../../../docs/plans/2026-11-24-downloads-tla-model.md).
 This page holds what the second review round changed and the current results.
 
@@ -56,16 +56,16 @@ about field names.
 
 | Config | Expect | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
-| `Current-Forward` | pass | pass | 6,501 | 1 s |
-| `Current-Static` | pass | pass | 99,262 | 2 s |
-| `Current-TwoForward` | pass | pass | 251,834 | 8 s |
-| `Current-TwoRows` | pass | pass | 2,720,900 | 80 s |
+| `Current-Forward` | pass | pass | 5,784 | 1 s |
+| `Current-Static` | pass | pass | 97,135 | 3 s |
+| `Current-TwoForward` | pass | pass | 200,463 | 7 s |
+| `Current-TwoRows` | pass | pass | 2,353,462 | 73 s |
 | `SessionRowMapCheck-Current-RowMap` | pass | pass | one evaluation | 9 s |
 | `Projection-SessionCore` | pass | pass | one evaluation | 14 s |
-| `Liveness-Forward` | pass | pass | 14,513 | 7 s |
-| `Liveness-Static` | pass | pass | 71,451 | 36 s |
-| `Proposed-F3-PauseKeepsBody` | pass | pass | 5,367 | < 1 s |
-| `Proposed-F4-VerdictBeforeRename` | pass | pass | 6,449 | < 1 s |
+| `Liveness-Forward` | pass | pass | 13,621 | 6 s |
+| `Liveness-Static` | pass | pass | 70,570 | 51 s |
+| `Proposed-F3-PauseKeepsBody` | pass | pass | 5,104 | 2 s |
+| `Proposed-F4-VerdictBeforeRename` | pass | pass | 5,732 | 2 s |
 | `Proposed-Forward` | pass | pass | 3,129 | < 1 s |
 | `Proposed-Static` | pass | pass | 70,841 | 3 s |
 | `Faithful-B02-off` | `NoStartWhileUserPaused` violated | violated | stops at first error | < 1 s |
@@ -73,11 +73,11 @@ about field names.
 | `Faithful-B09-off` | `UserPauseSticky` violated | violated | stops at first error | 1 s |
 | `Faithful-B10-off` | `WorkingBodyKept` violated | violated | stops at first error | 1 s |
 | `Faithful-B12-off` | `StaleCallbackInert` violated | violated | stops at first error | < 1 s |
+| `Faithful-F2-off` | `UserPauseSticky` violated | violated | stops at first error | 1 s |
 | `Faithful-Replay-off` | `ReplayedOutcomeIsNoOp` violated | violated | stops at first error | 1 s |
 | `SessionRowMapCheck-Mutant-RowDropsCondemned` | `RowMapSound` violated | violated | stops at first error | 3 s |
 | `SessionRowMapCheck-Mutant-RowDropsCounted` | `RowMapSound` violated | violated | stops at first error | 3 s |
 | `Finding-F1-StashCrash` | `FinishedBodyNotLost` violated | violated | stops at first error | 1 s |
-| `Finding-F2-PauseReconcile` | `UserPauseSticky` violated | violated | stops at first error | 1 s |
 | `Finding-F3-PauseDiscardsFinishedBody` | `FinishedBodySurvivesPause` violated | violated | stops at first error | < 1 s |
 | `Finding-F3-PauseSupersedesFinishedSegment` | `FinishedBodySurvivesPause` violated | violated | stops at first error | 1 s |
 | `Finding-F4-FinalizingRowWithoutBody` | `FinalizingAlwaysHasBody` violated | violated | stops at first error | 1 s |

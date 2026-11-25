@@ -486,9 +486,14 @@ public enum DownloadLifecycleReducer {
                 return set(.admitted, [.resetBytesToZero])
             }
             if facts.liveTask {
+                // A live task never promotes a paused row, whatever paused it (F2, #473). Every
+                // pause cause cancels its task, and reattach never adopts a paused row's task
+                // (B02), so a paused row in the live set is a stale snapshot of a task that is
+                // being torn down. The row stays as the pause left it.
+                if lifecycle == .paused { return .applied(next, []) }
                 if facts.route == .staticRange { return set(.transferring) }
-                // Other live tasks: unchanged, except a paused row a live task proves active.
-                return lifecycle == .paused ? set(.transferring) : .applied(next, [])
+                // Other live tasks: unchanged.
+                return .applied(next, [])
             }
             if case .embyConvert(let hasJob) = facts.route, hasJob, lifecycle == .paused {
                 return set(.paused, pauseCause: next.history.pauseCause ?? .deferredResume)

@@ -131,7 +131,10 @@ Rules that follow from this:
   - Revalidating a published body never fails or deletes it for truncation (B54).
 - **Relaunch reconciliation** applies the reducer to each row's facts: route, durable checkpoint,
   body, pending artifact intents, deletion state and live task. Any file deletion it decides runs
-  outside the store lock.
+  outside the store lock. A live task never promotes a paused row, whatever paused it: every
+  pause cancels its task and reattach never adopts a paused row's task, so a paused row in the
+  live-task snapshot is a stale entry for a task being torn down, and the row stays paused (F2,
+  #473).
 
 Finalization still rewrites HEVC `hev1` to `hvc1` before validation, and both terminal success
 states keep the local file. The opaque and static-range pipelines share the completion path.
@@ -1084,7 +1087,7 @@ as the defect is fixed.
 | Finding | What goes wrong | Verdict | Issue |
 | --- | --- | --- | --- |
 | F1 | A crash between the `tmp/` stash and the working path loses a finished forward-only body. | real | #472 |
-| F2 | Foreground reconcile moves a user-paused row back to transferring from a stale live-task snapshot. | real | #473 |
+| F2 | Foreground reconcile moves a user-paused row back to transferring from a stale live-task snapshot. | real; fixed on specs/downloads-tla, pending merge | #473 |
 | F3, RangeTrain-R3 | A user pause that lands while a transfer finishes discards the finished body. Forward-only: real. Static range (the pause's task listing supersedes a finished segment; one segment on a train, the whole remainder on the open-ended fallback): probable. | real; probable on the static lane | #474 |
 | F4 | A failing truncation verdict renames the body away before the verdict is durable; a crash in between leaves a finalizing row with no body, which reconcile fails as an internal error, and the strike is lost. | real, low | #491 |
 | Admission-A1 | Startup recovery fails a forward-only row that never started: a granted start cut by a crash, or a first start the user paused. | real | #475 |
@@ -1127,8 +1130,7 @@ path.
 
 - Outside the reducer it is a hand-written abstraction, not a proof about the Swift.
 - Each module models its subsystem alone. Interactions between subsystems (admission with server
-  preparation, a reconcile-promoted pause with side-asset parking, cleanup with replacement
-  attempts) are not composed.
+  preparation, cleanup with replacement attempts) are not composed.
 - Not modelled: the persistence writer, path leases, validators, retry budgets, and the items
   each subsection lists.
 - Liveness results hold under the fairness each config states (see "What the liveness runs

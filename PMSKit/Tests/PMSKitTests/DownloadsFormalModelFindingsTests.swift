@@ -47,19 +47,30 @@ struct DownloadsFormalModelFindingsTests {
 
     /// F2. The app returns to the foreground and reattach snapshots its live tasks; the user
     /// pauses a row in that snapshot; reconcile then runs `relaunchObserved` with the stale
-    /// "live task" fact and promotes the user-paused row to transferring, with no task left.
-    @Test("F2: relaunchObserved never promotes a user-paused row")
+    /// "live task" fact. The reducer used to promote the paused row to transferring, with no
+    /// task left. Fixed: a live-task fact never promotes a paused row, for any pause cause
+    /// (every cause cancels its task, and reattach never adopts a paused row's task, B02).
+    @Test("F2: relaunchObserved never promotes a paused row")
     func userPausedRowIsNotPromotedByLiveTaskFact() {
-        withKnownIssue("TLA+ finding F2 (#473): a stale live-task snapshot undoes a user pause") {
-            for route in [DownloadRowFacts.Route.staticRange, .forwardOnly] {
+        let causes: [DownloadPauseCause?] = [.user, .queuePaused, .systemInterrupted,
+                                             .awaitingSession, .storage, .deferredResume, nil]
+        let routes: [DownloadRowFacts.Route] = [.staticRange, .forwardOnly, .plexPrep,
+                                                .embyConvert(hasJobOrIdentity: true),
+                                                .embyConvert(hasJobOrIdentity: false)]
+        for route in routes {
+            for cause in causes {
                 let paused = DownloadLifecycleState(
-                    lifecycle: .paused, history: DownloadAttemptHistory(pauseCause: .user))
+                    lifecycle: .paused, history: DownloadAttemptHistory(pauseCause: cause))
                 let next = R.reduce(paused, .relaunchObserved,
                                     facts: DownloadRowFacts(route: route, liveTask: true))
-                #expect(next.state?.lifecycle == .paused)
-                #expect(next.state?.history.pauseCause == .user)
+                #expect(next.state == paused, "\(route) \(String(describing: cause))")
+                #expect(next.effects.isEmpty)
             }
         }
+        // A live task still keeps a transferring static row transferring.
+        let transferring = R.reduce(DownloadLifecycleState(lifecycle: .transferring), .relaunchObserved,
+                                    facts: DownloadRowFacts(route: .staticRange, liveTask: true))
+        #expect(transferring.state?.lifecycle == .transferring)
     }
 
     /// F3. A finished body must survive a user pause on either lane. The static lane keeps it

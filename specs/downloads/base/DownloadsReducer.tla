@@ -190,8 +190,8 @@ RRelaunch(s, f) ==
     ELSE IF f.route = "plexPrep" /\ ~f.liveTask /\ L # "paused" THEN
         Applied(RRelaunchSet(s, "admitted", "none", "none"), <<"resetBytesToZero">>)
     ELSE IF f.liveTask THEN
-        IF f.route = "staticRange" \/ L = "paused"
-           \* "a paused row a live task proves active"
+        \* A live task never promotes a paused row, whatever paused it (F2).
+        IF f.route = "staticRange" /\ L # "paused"
            THEN Applied(RRelaunchSet(s, "transferring", "none", "none"), <<>>)
            ELSE Unchanged
     ELSE IF f.route = "embyConvert" /\ f.hasJob /\ L = "paused" THEN

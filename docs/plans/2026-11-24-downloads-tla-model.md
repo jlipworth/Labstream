@@ -120,16 +120,16 @@ so nothing else changed.
 
 | Config | Expectation | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
-| `session/Current-Forward` | pass | pass | 6,501 | 1 s |
-| `session/Current-Static` | pass | pass | 99,262 | 2 s |
-| `session/Current-TwoForward` (symmetry) | pass | pass | 251,834 | 8 s |
-| `session/Current-TwoRows` | pass | pass | 2,720,900 | 80 s |
-| `session/Liveness-Forward` | pass | pass | 14,513 | 7 s |
-| `session/Liveness-Static` | pass | pass | 71,451 | 36 s |
+| `session/Current-Forward` | pass | pass | 5,784 | 1 s |
+| `session/Current-Static` | pass | pass | 97,135 | 3 s |
+| `session/Current-TwoForward` (symmetry) | pass | pass | 200,463 | 7 s |
+| `session/Current-TwoRows` | pass | pass | 2,353,462 | 73 s |
+| `session/Liveness-Forward` | pass | pass | 13,621 | 6 s |
+| `session/Liveness-Static` | pass | pass | 70,570 | 51 s |
 | `session/Proposed-Forward` | pass | pass | 3,129 | < 1 s |
 | `session/Proposed-Static` | pass | pass | 70,841 | 3 s |
-| `session/Proposed-F3-PauseKeepsBody` | pass | pass | 5,367 | < 1 s |
-| `session/Proposed-F4-VerdictBeforeRename` | pass | pass | 6,449 | < 1 s |
+| `session/Proposed-F3-PauseKeepsBody` | pass | pass | 5,104 | 2 s |
+| `session/Proposed-F4-VerdictBeforeRename` | pass | pass | 5,732 | 2 s |
 | `base/Reducer-Conformance` | pass | pass | one state; 298,368 reducer results compared | 24 s |
 | `session/Projection-SessionCore` | pass | pass | one state | 14 s |
 | `session/SessionRowMapCheck-Current-RowMap` | pass | pass | one state | 9 s |
@@ -139,9 +139,9 @@ so nothing else changed.
 | `session/Faithful-B12-off` | `StaleCallbackInert` violated | violated | stops at first error | < 1 s |
 | `session/Faithful-B02-off` | `NoStartWhileUserPaused` violated | violated | stops at first error | < 1 s |
 | `session/Faithful-B09-off` | `UserPauseSticky` violated | violated | stops at first error | 1 s |
+| `session/Faithful-F2-off` | `UserPauseSticky` violated | violated | stops at first error | 1 s |
 | `session/Faithful-Replay-off` | `ReplayedOutcomeIsNoOp` violated | violated | stops at first error | 1 s |
 | `session/Finding-F1-StashCrash` | `FinishedBodyNotLost` violated | violated | stops at first error | 1 s |
-| `session/Finding-F2-PauseReconcile` | `UserPauseSticky` violated | violated | stops at first error | 1 s |
 | `session/Finding-F3-PauseDiscardsFinishedBody` | `FinishedBodySurvivesPause` violated | violated | stops at first error | < 1 s |
 | `session/Finding-F3-PauseSupersedesFinishedSegment` | `FinishedBodySurvivesPause` violated | violated | stops at first error | 1 s |
 | `session/Finding-F4-VerdictRenameCrash` | `VerdictSurvivesCrash` violated | violated | stops at first error | < 1 s |
@@ -190,7 +190,9 @@ property passes in the `Current-*` configs.
 - **B02 off.** A transfer fails and a delayed retry is queued; the user pauses; the retry fires
   and starts a task for the paused row.
 - **B09 off.** The user pauses; a late progress callback moves the row back to transferring.
-  This config turns `FixPauseReconcile` on so that F2 does not mask the result.
+  `FixPauseReconcile` is on (the shipping F2 fix), so the F2 path does not mask the result.
+- **F2 off.** Reattach snapshots a live task; the user pauses the row; reconcile promotes the
+  paused row to transferring from the stale snapshot, as the reducer did before #473.
 - **Replay off.** A second truncation verdict stores an unverified publish intent; the same
   verdict arrives again and counts a third strike. This is the counter as it was before outcome
   IDs existed: one strike per truncated finalizer run.
@@ -244,8 +246,18 @@ library's reconcile loop is a candidate). The model does not include that last s
 both orders.
 
 Verdict: real race, low severity, user-visible (a paused row shows as downloading and may later
-be failed as stalled or restarted). `Proposed-*` shows the reducer-side fix: `relaunchObserved`
-never promotes a paused row.
+be failed as stalled or restarted).
+
+Fix (fixed on specs/downloads-tla, pending merge): `DownloadLifecycleReducer`'s `relaunchObserved`
+leaves a paused row unchanged when the facts report a live task, on every route and for every
+pause cause, not only `user`. Every pause cause cancels its task, and reattach cancels rather than
+adopts the task of any paused row (`BackgroundReattachTaskGatePolicy` looks at the status, not the
+cause), so no paused row has a task the app means to keep; a live-task fact for one is always the
+stale or in-flight case. Leaving the row as it is matches the model's former proposal (`Keep`) and
+avoids the no-task branches, which could fail a forward-only row whose task is still being torn
+down. The reducer table is regenerated; the session model gets the fix through `Reduce`, and
+`FixPauseReconcile = FALSE` (`session/Faithful-F2-off`) restores the old promotion. The `Current-*`
+and `Deep-TwoStatic` configs now check `UserPauseSticky`.
 
 Pin: `DownloadsFormalModelFindingsTests.userPausedRowIsNotPromotedByLiveTaskFact`.
 Issue: #473.
@@ -365,7 +377,7 @@ decision to call. Full traces and evidence are in the module notes and the issue
 | Finding | What goes wrong | Verdict | Config | Pin (`DownloadsFormalModel<Name>Tests`) | Issue |
 | --- | --- | --- | --- | --- | --- |
 | F1 | A crash between the `tmp/` stash and the working path loses a finished forward-only body. | real; reviewer confirmed | `session/Finding-F1-StashCrash` | `finishedForwardOnlyBodyInStashSurvivesRelaunch` | #472 |
-| F2 | Foreground reconcile moves a user-paused row back to transferring from a stale live-task snapshot. | real; reviewer confirmed | `session/Finding-F2-PauseReconcile` | `userPausedRowIsNotPromotedByLiveTaskFact` | #473 |
+| F2 | Foreground reconcile moves a user-paused row back to transferring from a stale live-task snapshot. | real; reviewer confirmed; fixed on specs/downloads-tla, pending merge | `session/Faithful-F2-off` (was `Finding-F2-PauseReconcile`) | `userPausedRowIsNotPromotedByLiveTaskFact` (passes) | #473 |
 | F3 | A user pause that lands while a forward-only transfer finishes discards the finished body. | real; reviewer confirmed | `session/Finding-F3-PauseDiscardsFinishedBody` | `finishedForwardOnlyBodySurvivesUserPause` | #474 |
 | RangeTrain-R3 (F3 on the static lane) | The pause's task listing supersedes a static segment that has already finished and its finish callback is ignored. One segment on a train, the whole remainder on the open-ended fallback. Raised by the reviewer. | probable; low on a train, medium on the fallback | `range-train/Finding-R3-PauseDropsFinishedSegment`, `session/Finding-F3-PauseSupersedesFinishedSegment` | `pauseKeepsAFinishedSegment` | #474 |
 | F4 | A failing truncation verdict renames the body away before the verdict is durable; a crash in between leaves a finalizing row with no body, which reconcile fails as an internal error, and the strike is lost. Raised by the reviewer. | real, low | `session/Finding-F4-VerdictRenameCrash`, `session/Finding-F4-FinalizingRowWithoutBody` | `truncationVerdictIsDurableBeforeTheBodyMoves` | #491 |
@@ -622,11 +634,9 @@ Reducer and base gaps the models met:
 Not modelled, worth a later model or a hermetic test:
 
 - Interactions across modules: admission with the server-preparation lane and the render handoff
-  (#414); a reconcile-promoted pause (F2) leaving the side-asset owner parked on a running row;
+  (#414);
   the cleanup runner's boundary between `DownloadsServerPrep` and `DownloadsCleanup`; retry by
   replacement and paths shared across rows in cleanup.
-- The pause chain's last step and the reconcile generation check, to narrow F2 to the orderings
-  that survive in the code.
 - RangeTrain-R2's general form: a pending delayed retry or request rebuild at a zero checkpoint
   is failed by reconcile in the same way. Only the queued-body case is pinned.
 - A purge that overtakes a hold in flight leaves a held-map entry with no file and no manifest;
