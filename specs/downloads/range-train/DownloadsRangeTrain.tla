@@ -72,6 +72,7 @@
 \* MODELS: PMSKit/Sources/PMSKit/Downloads/StaticRangeReattachPolicy.swift
 \* MODELS: PMSKit/Sources/PMSKit/Downloads/BackgroundTempFileCleanupPolicy.swift
 \* MODELS: PMSKit/Sources/PMSKit/DownloadRetryPolicy.swift
+\* MODELS: PMSKit/Sources/PMSKit/Downloads/DownloadReconcileLiveWorkPolicy.swift
 EXTENDS DownloadsReducer, TLC
 
 CONSTANTS
@@ -91,15 +92,16 @@ CONSTANTS
                         \* checkpoint and skips a live segment only at an equal offset
     FixDrainContinues,  \* PROPOSED (not in the code): a drain that a removal completion runs
                         \* continues the train (plan or finalize) like every other drain (R1)
-    FixReconcileOwnedWork, \* PROPOSED (not in the code): reconcile asks the session, at the
-                        \* moment it decides, whether it owns work for an active row, like
-                        \* the stale-row self-heal does (R2)
-    FixSnapshotOwnedWork, \* PROPOSED and NOT ENOUGH: reattach adds session-owned work to the
-                        \* live-key snapshot it hands to reconcile (R2 as first proposed)
+    FixReconcileOwnedWork, \* R2 (#476): reconcile asks the session, at the moment it
+                        \* decides, whether it owns work for an active row, like the
+                        \* stale-row self-heal does (DownloadReconcileLiveWorkPolicy)
+    FixSnapshotOwnedWork, \* NOT IN THE CODE and NOT ENOUGH: reattach adds session-owned work
+                        \* to the live-key snapshot it hands to reconcile (R2 as first proposed)
     FixHeadGapPlanned,  \* PROPOSED (not in the code): the planner always fetches the gap at
                         \* the checkpoint, even when held bodies already fill the depth (R4)
-    FixPauseKeepsFinished, \* PROPOSED (not in the code): the pause sweep leaves a finished
-                        \* segment task tracked, so its body is written behind the pause (R3)
+    FixPauseKeepsFinished, \* R3 (#474): the pause sweep leaves a finished segment task
+                        \* tracked, so its body is written behind the pause
+                        \* (StaticRangeFinishedBodyPolicy.pauseSweepDisposition)
     AllowFailure,       \* a transport error may be terminal instead of retried
     ForegroundReattach, \* allow reattach + reconcile while the process stays alive
     WakeWindsDown,      \* a background wake may end before a continuation refills the train
@@ -594,13 +596,14 @@ UserPause(r) ==
                    retire, fin, recon, liveSnap, restarts, ghosts>>
 
 \* The pause's getAllTasks completion (pauseRangeTask): every listed segment
-\* task of the row leaves tracking, is marked superseded and is cancelled.
-\* A task whose finish callback ran first is no longer tracked, and its body
-\* is appended behind the pause (writeThenPause).  A task that finished in
-\* the daemon but whose callback is still queued behind this completion may
-\* still be listed: it is superseded too, and its finish callback is then
-\* ignored, so the finished body is dropped (R3).  S is what the listing
-\* holds.
+\* task of the row that is still transferring leaves tracking, is marked
+\* superseded and is cancelled.  A task whose finish callback ran first is no
+\* longer tracked, and its body is appended behind the pause
+\* (writeThenPause).  A task that finished in the daemon but whose callback
+\* is still queued behind this completion may still be listed.  It stays
+\* tracked, so that callback writes its body the same way.  Before R3 it was
+\* superseded too, its finish callback was then ignored and the finished
+\* body was dropped.  S is what the sweep takes.
 PauseSweep(r) ==
     /\ up /\ halt[r] = "pause"
     /\ \E S \in {{"running"}} \cup (IF FixPauseKeepsFinished THEN {}
@@ -754,7 +757,7 @@ Reattach(r) ==
           /\ plan' = IF rebuild THEN Upd(plan, r, TRUE) ELSE plan
           /\ liveSnap' = Upd(liveSnap, r,
                 \/ (tracked[r] \cup adopted) # {} \/ rebuild
-                \* PROPOSED and NOT ENOUGH: the snapshot also holds session-owned work.
+                \* NOT IN THE CODE and NOT ENOUGH: the snapshot also holds session-owned work.
                 \/ FixSnapshotOwnedWork /\ ActiveRow(r) /\ SessionOwnsWork(r))
           /\ stash' = Upd(stash, r, {b \in stash[r] :
                          task[r][b] = "running" \/ (FixB03 /\ b \in ioq[r])})
@@ -774,8 +777,9 @@ RelaunchFacts(r) ==
        ELSE "none",
        FALSE, FALSE,
        \* The live-task fact is reattach's snapshot of tracked tasks, taken
-       \* earlier.  It does not count a queued apply, a pending continuation or
-       \* the finalizer (R2).  PROPOSED: reconcile asks the session now.
+       \* earlier, which does not count a queued apply, a pending continuation
+       \* or the finalizer, or what the session owns now (R2; only for an
+       \* active row, never a paused one).
        liveSnap[r] \/ (FixReconcileOwnedWork /\ ActiveRow(r) /\ SessionOwnsWork(r)),
        TRUE)
 
@@ -983,7 +987,7 @@ ReconcileKeepsQueuedBody ==
 
 \* The general form: reconcile never fails an active row while the session
 \* owns any work for it (a live task, a queued apply, a continuation).  It
-\* holds only with the proposed fix.
+\* holds only with the reconcile-time fix.
 ReconcileNeverFailsOwnedWork ==
     [][\A r \in Rows :
           /\ recon[r] = "needReconcile" /\ recon'[r] = "idle"

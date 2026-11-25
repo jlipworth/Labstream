@@ -216,6 +216,10 @@ RowOwned(r) == ckpt[r] + held[r] + side[r] + pubB[r]
 \*   side     sideAssetRelativePaths(for: row.metadata) and the publication owners
 \*   working  row.attemptWorkingRelativePath
 \*   held     row.metadata.heldRangeSegments and row.heldRangeBodyDeletionIntents
+\* A forward-only row that is not terminal also references its capture path
+\* (capturedBodyRelativePath, F1 #472): a finished body on its way from the
+\* URLSession temp to the working path.  It is the same bytes one rename
+\* before `working`, never both, and the model counts it as `working`.
 AuditEnumeratedKinds ==
     (IF FixB19 THEN {"stable", "side", "working", "held"}
      \* B19 (fix off): only the stable path and the side assets are referenced.

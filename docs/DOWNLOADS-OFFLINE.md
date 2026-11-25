@@ -124,6 +124,31 @@ Rules that follow from this:
   relaunch before validation re-finalizes that body instead of deleting it (B10). A forward-only
   body exists at the working path only once its whole transfer finished, so the same rule covers
   a finished forward-only body whose task was lost.
+- **A finished forward-only body is captured before anything else.** A forward-only stream
+  cannot be fetched again by range, so its finished body is the whole download.
+  - The URLSession delegate moves a media response (2xx, not an HTML, JSON or XML page) from the
+    OS temp to the attempt's capture path in the downloads directory and records
+    `bodyCaptured`, which makes the row `finalizing` at once. The row references that path while
+    it is not terminal, so the staging sweep leaves it, Delete removes it and the storage audit
+    counts it.
+  - The queued publication then renames it onto the working path and validation runs. After a
+    relaunch reconcile reports the body as captured, keeps or makes the row `finalizing`
+    (whether or not `bodyCaptured` was durable yet), and launch recovery requeues the
+    publication.
+  - A rejected response is not a download. It keeps an in-memory `tmp/` stash until the
+    publication fails the row with the server's reason.
+- **A pause never discards a finished body, on either lane.**
+  - Forward-only: the publication runs behind a pause halt (only a cancel, a Delete or a stale
+    attempt stops it) and the row finalizes; a paused row found at relaunch with its whole body
+    captured or at the working path finalizes too. Pausing a `finalizing` row does nothing.
+  - Static range: a finished segment is appended and the row then pauses. The pause's task
+    listing leaves a task that has already finished tracked, so its finish callback still
+    writes the body; it supersedes and cancels only tasks that are still transferring.
+- **Reconcile asks the session what it owns when it decides.** Its live keys are a snapshot
+  reattach took earlier. For an active row (never a paused one) reconcile also counts work the
+  session owns at that moment: a finished body queued for its append, a delayed retry, a request
+  rebuild or a finalizer. Such a row is not failed with zero durable bytes. One ordering is not
+  covered: a finished task the daemon has not redelivered at all when reconcile runs (#476).
 - **Truncation strikes persist** with the row and survive a relaunch.
   - A Retry of the same server, account, item, source and profile inherits them, and a replayed
     validation outcome is not counted twice.
@@ -777,9 +802,9 @@ What the session core checks:
   (`VerdictSurvivesCrash`; fails today, F4);
 - a stash whose append or publication is queued is never swept (B03);
 - the manager's side of a transfer-error handoff acts only for the attempt that raised it (B12);
-- a finished body survives a crash at any step (B10);
+- a finished body survives a crash at any step (B10; `FinishedBodyNotLost`, fixed as F1);
 - a finished body survives a user pause on either lane, counted from the moment the last static
-  segment has finished (`FinishedBodySurvivesPause`; fails today on both lanes, F3);
+  segment has finished (`FinishedBodySurvivesPause`; fixed as F3);
 - a user-paused row is not restarted except by the user (B02, B09);
 - a replayed finalize outcome is a no-op;
 - under stated fairness, an admitted row eventually reaches a terminal lifecycle, a user pause or
@@ -954,10 +979,11 @@ grid and the planner's interval-aware gap filling are exercised (`Current-MidApp
 `Mutant-OffsetEqualityPlan`). It checks that a held body is never swept between its rename and
 its manifest (B22), that recovery never discards the attempt's working checkpoint (B00), that a
 queued body is not swept (B03), that every segment body is appended at its own offset, and that
-a stale train's body changes nothing. `Faithful-B00-off` switches off what 852e9f7f fixed, the
+a stale train's body changes nothing, that a pause keeps a segment that has already finished
+(R3) and that reconcile never fails a row whose work the session owns (R2). `Faithful-B00-off` switches off what 852e9f7f fixed, the
 manager's retry policy and stale-row detector, in two configs: Resume deletes a resumable
 partial, and a stranded train never self-heals. Store reconcile was never part of B00. Findings
-RangeTrain-R1 to R4. Not covered: validators, the HTTP 200 and 416 paths, retry budgets, blob
+RangeTrain-R1 to R4 (R3 fixed; R2 fixed except a body the daemon has not redelivered). Not covered: validators, the HTTP 200 and 416 paths, retry budgets, blob
 resume, path leases, and `SegBytes = 2` with three segments (more than ten million states; it
 did not finish).
 
@@ -1101,13 +1127,14 @@ Each finding was checked against the Swift before it was recorded. A real findin
 decision to test is pinned by a `withKnownIssue` test in
 `PMSKit/Tests/PMSKitTests/DownloadsFormalModel<Name>Tests.swift` (the session core's are in
 `DownloadsFormalModelFindingsTests.swift`), so the suite stays green and the test fails as soon
-as the defect is fixed.
+as the defect is fixed. A fixed finding stays in the table until its fix is merged: its pin is
+then a plain regression test and its `Finding-*` config a `Faithful-*-off` one.
 
 | Finding | What goes wrong | Verdict | Issue |
 | --- | --- | --- | --- |
-| F1 | A crash between the `tmp/` stash and the working path loses a finished forward-only body. | real | #472 |
+| F1 | A crash between the `tmp/` stash and the working path loses a finished forward-only body. | fixed on `specs/downloads-tla`, pending merge (`session/Faithful-F1-off`) | #472 |
 | F2 | Foreground reconcile moves a user-paused row back to transferring from a stale live-task snapshot. | real; fixed on specs/downloads-tla, pending merge | #473 |
-| F3, RangeTrain-R3 | A user pause that lands while a transfer finishes discards the finished body. Forward-only: real. Static range (the pause's task listing supersedes a finished segment; one segment on a train, the whole remainder on the open-ended fallback): probable. | real; probable on the static lane | #474 |
+| F3, RangeTrain-R3 | A user pause that lands while a transfer finishes discards the finished body. Forward-only: real. Static range (the pause's task listing supersedes a finished segment; one segment on a train, the whole remainder on the open-ended fallback): probable. | fixed on `specs/downloads-tla`, pending merge (`session/Faithful-F3-off`, `-Static`, `range-train/Faithful-R3-off`). The static fix rests on the same unexecuted step as the finding: that `getAllTasks` lists a finished task whose callback is queued. | #474 |
 | F4 | A failing truncation verdict renames the body away before the verdict is durable; a crash in between leaves a finalizing row with no body, which reconcile fails as an internal error, and the strike is lost. | real, low | #491 |
 | Admission-A1 | Startup recovery fails a forward-only row that never started: a granted start cut by a crash, or a first start the user paused. | real; fixed on `specs/downloads-tla`, pending merge | #475 |
 | ServerPrep-S1 | Retry of a failed Plex preparation row abandons its running optimize job with no durable cancel and creates a second one. | real | #478 |
@@ -1129,7 +1156,7 @@ as the defect is fixed.
 | #394 | Fetched chapter-image and trickplay-tile payloads wait in memory behind one-at-a-time preparation. | real, known | #394 |
 | Storage-S1 | An automatic requeue erases a storage-full park, so the row is redriven once without measuring free space. The reachable order is a redelivered body whose own append fails with ENOSPC before the launch enumeration. | real | #486 |
 | RangeTrain-R1 | A drain pass run by a held-body removal completion discards its result and strands the train until the self-heal, which a suspended background app does not get. | real | #477 |
-| RangeTrain-R2 | Reconcile fails a static row whose finished body is stashed and queued for append. The fix must observe session-owned work when reconcile decides, not in the live-key snapshot reattach takes (`Finding-R2-SnapshotFixLeavesWindow`). A body still undelivered by the daemon at that moment is lost with any ownership check (`Finding-R2-UndeliveredBodyLost`). | real | #476 |
+| RangeTrain-R2 | Reconcile fails a static row whose finished body is stashed and queued for append. | fixed on `specs/downloads-tla`, pending merge, for work the session owns: reconcile asks the session when it decides (`Faithful-R2-off`; the live-key snapshot alone is not enough, `Faithful-R2-off-SnapshotOnly`). Open: a body still undelivered by the daemon at that moment is lost with any ownership check (`Finding-R2-UndeliveredBodyLost`). | #476 |
 | RangeTrain-R4 | After a crash in the middle of an append, a segment finished while the app was dead is held beside the ones the planner started; when the head segment fails once, two held bodies fill the depth of two and the planner never fetches the gap at the checkpoint. | probable, medium, rare | #492 |
 | Status-S1 | A silently stalled transfer hides the batch speed for as long as it is silent. | real; fixed on specs/downloads-tla, pending merge | #487 |
 | Status-S2 | A stalled static-range row keeps showing a stale speed and ETA. | real; fixed on specs/downloads-tla, pending merge | #488 |

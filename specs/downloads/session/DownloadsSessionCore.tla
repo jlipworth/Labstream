@@ -55,6 +55,7 @@
 \* MODELS: Labstream/Capabilities/Downloads/Core/DownloadStore.swift
 \* MODELS: PMSKit/Sources/PMSKit/Downloads/BackgroundTempFileCleanupPolicy.swift
 \* MODELS: PMSKit/Sources/PMSKit/Downloads/StaticRangeFinishedBodyPolicy.swift
+\* MODELS: PMSKit/Sources/PMSKit/Downloads/ForwardOnlyFinishedBodyPolicy.swift
 \* MODELS: PMSKit/Sources/PMSKit/Downloads/BackgroundFinalizationResultPolicy.swift
 EXTENDS DownloadsSessionRowMap, TLC
 
@@ -72,9 +73,12 @@ CONSTANTS
     FixReplay,          \* truncation strikes are counted per outcome ID (R2-5); FALSE is the
                         \* counter before it: one strike per finalizer run, no IDs anywhere
     FixPauseReconcile,  \* reconcile never promotes a paused row from a live-task fact (F2)
-    DurableCapture,     \* PROPOSED (not in the code): bodyCaptured is persisted with the stash
-    FixPauseKeepsBody,  \* PROPOSED (not in the code): a pause never drops a finished body (F3),
-                        \* on either lane
+    DurableCapture,     \* F1 (#472): a finished forward-only body is moved to the attempt's
+                        \* capture path, which the row references, and bodyCaptured is
+                        \* recorded with it; relaunch publishes it
+    FixPauseKeepsBody,  \* F3 (#474): a pause never drops a finished body, on either lane
+                        \* (ForwardOnlyFinishedBodyPolicy.publication, the reducer's relaunch
+                        \* of a paused row, StaticRangeFinishedBodyPolicy.pauseSweepDisposition)
     FixVerdictBeforeRename, \* PROPOSED (not in the code): a failing truncation verdict is
                         \* durable before its body leaves the working path (F4)
     ForegroundReattach, \* allow reattach + reconcile while the process stays alive
@@ -106,7 +110,10 @@ VARIABLES
     \* ---- durable: files (survive Crash) ----
     working,     \* [Rows -> WorkingStates]        the owner's attempt working file
     published,   \* [Rows -> BOOLEAN]              the published, playable body
-    stash,       \* [Rows -> SUBSET Attempts]      finished bodies stashed in tmp/, by task
+    stash,       \* [Rows -> SUBSET Attempts]      finished bodies not yet appended or
+                 \*                                published, by task: a tmp/ stash, or
+                 \*                                (DurableCapture, forward-only) the
+                 \*                                attempt's capture path
     \* ---- the transfer daemon (survives Crash) ----
     task,        \* [Rows -> [Attempts -> TaskStates]]
     \* ---- in memory (lost at Crash) ----
@@ -289,6 +296,10 @@ DaemonFails(r, a) ==
 \* An untracked task is a redelivery after relaunch and is adopted only for a
 \* non-terminal row.  A cancel halt discards a static body; a pause halt keeps it.
 \* A superseded task's finish is ignored and its body is gone with the OS temp.
+\* DurableCapture: a forward-only body goes to the attempt's capture path
+\* instead, and the row records it (reducer: bodyCaptured), so it is
+\* `finalizing` before the queued publication runs.  (A response that fails
+\* the HTTP checks is not captured; the model has no such response.)
 DidFinishDownloading(r, a) ==
     /\ up /\ task[r][a] = "finished"
     /\ task' = [task EXCEPT ![r][a] = "none"]
@@ -304,11 +315,11 @@ DidFinishDownloading(r, a) ==
                       /\ IsApplied(captured)
        IN /\ stash' = IF keep THEN Upd(stash, r, stash[r] \cup {a}) ELSE stash
           /\ ioq' = IF keep THEN Upd(ioq, r, ioq[r] \cup {a}) ELSE ioq
-          \* PROPOSED: reducer event bodyCaptured, persisted with the stash.
+          \* reducer event bodyCaptured, persisted with the capture.
           /\ IF capture THEN ApplyRow(r, captured.state) ELSE UNCHANGED redVars
-          \* A forward-only body is finished here.  The code drops it when the
-          \* row is user-paused (F3).  This ghost leaves that case out, so that
-          \* FinishedBodyNotLost stays the crash property (F1);
+          \* A forward-only body is finished here.  Before F3 the code dropped
+          \* it when the row was user-paused.  This ghost leaves that case out,
+          \* so that FinishedBodyNotLost stays the crash property (F1);
           \* FinishedBodySurvivesPause is the pause property.
           /\ bodyDone' = IF /\ keep /\ mine /\ Forward(r)
                             /\ (capture \/ FixPauseKeepsBody \/ ~UserPaused(r))
@@ -347,15 +358,22 @@ RangeIO(r, a) ==
     /\ up /\ a \in ioq[r]
     /\ ioq' = Upd(ioq, r, ioq[r] \ {a})
     /\ LET current == /\ Accepts(r, a) /\ halt[r] # "cancel"
-                      \* finishOpaqueBody: checkpointIsCurrent(currency, halt: nil).
-                      \* A pause halt fails it, so a paused row's finished body is
-                      \* dropped here (F3).  The static lane keeps it (writeThenPause).
+                      \* finishOpaqueBody: ForwardOnlyFinishedBodyPolicy.publication.
+                      \* A pause halt publishes; before F3 it required no halt at all
+                      \* (checkpointIsCurrent(currency, halt: nil)) and dropped a paused
+                      \* row's finished body here.  The static lane writes it
+                      \* (writeThenPause).
                       /\ (Forward(r) /\ ~DurableCapture /\ ~FixPauseKeepsBody
                             => halt[r] = "none")
            present == a \in stash[r]
            fresh   == owner[r] = a
        IN
        /\ staleEffect' = (staleEffect \/ (current /\ ~fresh))
+       \* F3: a published forward-only body finalizes, so finishOpaqueBody drops the
+       \* pause halt that raced it (the finalizer stands down for any halt).
+       /\ halt' = IF /\ current /\ present /\ Forward(r) /\ halt[r] = "pause"
+                     /\ (DurableCapture \/ FixPauseKeepsBody)
+                     THEN Upd(halt, r, "none") ELSE halt
        /\ IF ~current THEN
               UNCHANGED <<redVars, working, stash, task, tracked, fin, bodyDone>>
           ELSE IF ~present THEN
@@ -391,7 +409,7 @@ RangeIO(r, a) ==
                    [] OTHER -> UNCHANGED <<working, task, tracked, fin, bodyDone>>
               /\ UNCHANGED redVars
     /\ UNCHANGED <<owner, intent, deleting,
-                   published, up, superseded, halt, rebuild, recon, liveSnap, budget>>
+                   published, up, superseded, rebuild, recon, liveSnap, budget>>
 
 \* The manager's side of an error handoff runs, a main-actor hop after the
 \* callback that queued it.
@@ -559,8 +577,8 @@ UserPause(r) ==
     \* B02 invalidates a static row's queued rebuild.  A forward-only row's
     \* queued error handoff is not a rebuild and stays queued.
     /\ rebuild' = IF FixB02 /\ ~Forward(r) THEN Upd(rebuild, r, 0) ELSE rebuild
-    \* The code drops a finished forward-only body that has not reached
-    \* `finalizing` when the user pauses (F3; see DidFinishDownloading).
+    \* Before F3 the code dropped a finished forward-only body that had not
+    \* reached `finalizing` when the user paused (see DidFinishDownloading).
     /\ bodyDone' = IF Forward(r) /\ ~FixPauseKeepsBody
                       THEN Upd(bodyDone, r, 0) ELSE bodyDone
     /\ UNCHANGED <<owner, intent, deleting,
@@ -571,9 +589,10 @@ UserPause(r) ==
 \* cancelled.  A task whose finish callback ran first is not tracked any
 \* more, and its body is written behind the pause (writeThenPause).  A task
 \* that finished in the daemon while its callback is still queued behind
-\* this completion is still listed: it is superseded too, and its finish is
-\* then ignored (F3 on the static lane).  PROPOSED: a finished task stays
-\* tracked.  A cancelled task's error callback is superseded and inert.
+\* this completion is still listed.  Before F3 it was superseded too, and its
+\* finish then ignored.  Now a finished task stays tracked
+\* (StaticRangeFinishedBodyPolicy.pauseSweepDisposition).  A cancelled task's
+\* error callback is superseded and inert.
 PauseSwept(r) ==
     {a \in tracked[r] : \/ task[r][a] = "running"
                          \/ (~FixPauseKeepsBody /\ task[r][a] = "finished")}
@@ -738,6 +757,9 @@ ForegroundReattachBegins ==
 \*    but a finalizing row rejects taskAdopted and stays finalizing.
 \*  - sweepOrphanedRangeBodyStashes: a stash whose task is no longer live is
 \*    deleted.  B03: unless a queued append/publication still claims it.
+\*    DurableCapture: a forward-only body at its capture path is referenced by
+\*    its row while that row is not terminal (DownloadStore
+\*    .artifactPathsReferenced), so the staging sweep leaves it.
 \*  - The live-key snapshot handed to reconcile is every tracked task.
 Reattach(r) ==
     /\ up /\ recon[r] = "needReattach"
@@ -747,7 +769,7 @@ Reattach(r) ==
            Cancel(a) == Untracked(a) /\ halt[r] = "none" /\ ~Adopt(a)
            adopted == {a \in Attempts : Adopt(a)}
            Claimed(a) == \/ FixB03 /\ a \in ioq[r]
-                         \/ DurableCapture /\ Forward(r) /\ life[r] = "finalizing"
+                         \/ DurableCapture /\ Forward(r) /\ life[r] \notin Terminal
                             /\ owner[r] = a
        IN /\ task' = Upd(task, r, [a \in Attempts |->
                          IF Cancel(a) THEN "none" ELSE task[r][a]])
@@ -773,15 +795,16 @@ RelaunchFacts(r) ==
        IF life[r] \in Terminal THEN (IF published[r] THEN "published" ELSE "none")
        ELSE IF working[r] # "none" /\ (life[r] = "finalizing" \/ Forward(r))
            THEN "workingComplete"
-       \* PROPOSED: a durably captured stash is reported as Body.captured.
-       ELSE IF DurableCapture /\ owner[r] \in stash[r] THEN "captured"
+       \* A forward-only body at its capture path is Body.captured.
+       ELSE IF DurableCapture /\ Forward(r) /\ ~condemned[r] /\ owner[r] \in stash[r]
+           THEN "captured"
        ELSE "none",
        intent[r] # "none", deleting[r], liveSnap[r], TRUE)
 
 \* reducer: relaunchObserved.  Effects: requestFinalization restarts the
-\* finalizer for a body at the working path (PROPOSED: requeues the
-\* publication of a captured stash); deleteWorkingBody deletes the working
-\* file.
+\* finalizer for a body at the working path, or requeues the publication of a
+\* captured one (requeueCapturedForwardOnlyBody); deleteWorkingBody deletes
+\* the working file.
 RelaunchObserved(r) ==
     /\ up /\ recon[r] = "needReconcile"
     /\ recon' = Upd(recon, r, "idle")
@@ -789,6 +812,7 @@ RelaunchObserved(r) ==
            facts == RelaunchFacts(r)
            \* Before B10 nothing recorded that a forward-only body was finished.
            preB10 == Forward(r) /\ ~FixB10
+           preF3 == Forward(r) /\ ~FixPauseKeepsBody /\ L = "paused"
            t == Reduce(Row(r), Ev("relaunchObserved"),
                        IF preB10 /\ facts.body = "workingComplete"
                           THEN [facts EXCEPT !.body = "none"] ELSE facts)
@@ -810,16 +834,18 @@ RelaunchObserved(r) ==
            /\ life' = Upd(life, r, "transferring")
            /\ cause' = Upd(cause, r, "none")
            /\ UNCHANGED <<strikes, counted, condemned, working, fin, ioq>>
-       ELSE IF /\ FixPauseKeepsBody /\ Forward(r) /\ L = "paused"
-               /\ facts.body = "workingComplete" /\ ~liveSnap[r]
-               /\ ~deleting[r] /\ intent[r] = "none"
-               /\ IsApplied(Send(r, Ev("bodyAtWorking"))) THEN
-           \* PROPOSED: a paused forward-only row whose whole body is at the
-           \* working path finalizes (B10 for a paused row) instead of failing.
-           /\ Submit(r, Ev("bodyAtWorking"))
-           /\ fin' = Upd(fin, r, owner[r])
-           /\ UNCHANGED <<working, ioq>>
+       ELSE IF /\ preF3 /\ facts.body = "workingComplete" /\ ~liveSnap[r]
+               /\ ~deleting[r] /\ intent[r] = "none" THEN
+           \* Fix off (F3): before #474 the reducer kept a finished forward-only
+           \* body only for a row that was not paused.  A paused one was failed
+           \* and its working body deleted.
+           /\ life' = Upd(life, r, "failed")
+           /\ cause' = Upd(cause, r, "none")
+           /\ working' = Upd(working, r, "none")
+           /\ UNCHANGED <<strikes, counted, condemned, fin, ioq>>
        ELSE
+           \* F3: the reducer finalizes a paused forward-only row whose whole
+           \* body is at the working path (B10 for a paused row), like any other.
            /\ ApplyRow(r, t.state)
            /\ working' = IF Has(t, "deleteWorkingBody")
                              THEN Upd(working, r, "none") ELSE working
@@ -959,7 +985,8 @@ StaleCallbackInert == ~staleEffect
 \* B10: a finished body survives a crash at any step.  Once the app holds the
 \* whole body of the row's current attempt, it exists in the stash, at the
 \* working path or published, until a verdict condemns it, the user deletes
-\* the row, or (forward-only, before finalizing; F3) the user pauses it.
+\* the row, or (forward-only, before finalizing, before the F3 fix) the user
+\* pauses it.
 FinishedBodyNotLost ==
     \A r \in Rows :
         /\ bodyDone[r] # 0 /\ bodyDone[r] = owner[r]
@@ -977,8 +1004,8 @@ NoStartWhileUserPaused ==
 
 \* B10: a complete body at the working path is only ever published, condemned
 \* by a verdict, deleted with its row, or replaced by a fresh attempt the user
-\* asked for.  Relaunch recovery never deletes it.  (The code deletes it for
-\* a user-paused forward-only row.  That case is F3 and is left out here.
+\* asked for.  Relaunch recovery never deletes it.  (Before the F3 fix the code
+\* deleted it for a user-paused forward-only row; that case is left out here.
 \* A crash inside a failing truncation verdict removes it without recording
 \* the verdict.  That case is F4: VerdictSurvivesCrash.)
 WorkingBodyKept ==

@@ -34,9 +34,9 @@ writes can. With `SegBytes = 1` the model is segment-granular, which is what the
 | `DrainPass`, `RetireDone` | `drainHeldRangeSegments`, `StaticRangeSegmentAssemblyPolicy.appendableRun`, `removeHeldRangeSegments` |
 | `PurgeHeld`, `FinalizeWhole` | `purgeHeldRangeSegments`, `finalizeRangeWhole` |
 | `ResourceChanged` | `restartRangeFromChangedResource` |
-| `UserPause`, `PauseSweep`, `UserResume`, `UserRetry` | `pause`, `pauseRangeTask` (it supersedes every listed task, a finished one too), resume (`DownloadRetryPolicy.shouldPromotePausedStaticPartial`, B00) and Retry of a static row |
+| `UserPause`, `PauseSweep`, `UserResume`, `UserRetry` | `pause`, `pauseRangeTask` (it supersedes every listed task that is still transferring and leaves a finished one tracked, `StaticRangeFinishedBodyPolicy.pauseSweepDisposition`), resume (`DownloadRetryPolicy.shouldPromotePausedStaticPartial`, B00) and Retry of a static row |
 | `Reattach` | `reattachToResumedTasks`: `restoreHeldRangeSegments`, adoption (`StaticRangeReattachPolicy`: ahead of the checkpoint on any grid; a rejected task makes the row live and asks for a rebuild), `sweepOrphanedRangeBodyStashes`, `sweepOrphanedDurableHeldRangeSegments`, the live-key snapshot |
-| `RelaunchObserved`, `RelaunchFacts` | `DownloadStore.reconcileOnWorker`, `observeLifecycleFacts` |
+| `RelaunchObserved`, `RelaunchFacts` | `DownloadStore.reconcileOnWorker` (its live-task fact is `DownloadReconcileLiveWorkPolicy.hasLiveTask`: the reattach snapshot, or what the session owns when it decides), `observeLifecycleFacts` |
 | `StaleRowHeal`, `SessionOwnsWork` | `DownloadManager.refreshRecords`, `DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial`, `ownsInProgressStaticRangeWork` |
 
 Durable state is the row (a whole reducer state, the owner attempt, the held manifests), the files
@@ -82,11 +82,11 @@ a finding on this lane. The whole-file loss on this lane is R2 below.
 | `PlannerFillsGapsOnly` | action | A segment the planner starts begins at or ahead of the checkpoint and overlaps no live segment of the attempt, on whatever grid that one was planned. |
 | `NoStartWhileUserPaused` | action | Nothing starts a task for a user-paused row. |
 | `PauseKeepsHeldBodies` | action | While a row stays user-paused, a held body leaves the disk only by being appended. |
-| `PauseKeepsFinishedSegment` | action | A tracked segment that has finished in the daemon stays finished or reaches the stash while the pause stands (R3; fails today). |
+| `PauseKeepsFinishedSegment` | action | A tracked segment that has finished in the daemon stays finished or reaches the stash while the pause stands (R3; fixed). |
 | `TrainNeverStranded` | invariant | An active, unhalted row always has session work (R1; fails today). |
-| `ReconcileKeepsQueuedBody` | action | Reconcile never fails a row whose finished body is queued (R2; fails today). |
-| `ReconcileNeverFailsOwnedWork` | action | The general form of R2; holds only with the reconcile-time fix. |
-| `ReconcileKeepsUndeliveredBody` | action | Reconcile never fails a row while the daemon holds a finished, undelivered task of its attempt (R2; fails with either fix). |
+| `ReconcileKeepsQueuedBody` | action | Reconcile never fails a row whose finished body is queued (R2; fixed). |
+| `ReconcileNeverFailsOwnedWork` | action | The general form of R2; holds only with the reconcile-time fix, which is the shipped one. |
+| `ReconcileKeepsUndeliveredBody` | action | Reconcile never fails a row while the daemon holds a finished, undelivered task of its attempt (R2; fails with either fix, open). |
 | `AdmittedEventuallyStable` | liveness | An admitted row reaches a terminal or user-paused state. |
 
 ### What the liveness runs assume
@@ -111,15 +111,15 @@ a finding on this lane. The whole-file loss on this lane is R2 below.
 
 | Config | Expect | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
-| `Current-FourSegments` | pass | pass | 11,408 | 1 s |
-| `Current-MidAppend` | pass | pass | 431,165 | 19 s |
-| `Current-Restart` | pass | pass | 18,940 | 1 s |
-| `Current-Retry` | pass | pass | 243,453 | 10 s |
-| `Current-Train` | pass | pass | 7,192 | 1 s |
-| `Liveness-Train` | pass | pass | 20,175 | 5 s |
-| `Proposed-Liveness-MidAppend` | pass | pass | 65,352 | 78 s |
-| `Proposed-MidAppend` | pass | pass | 429,298 | 19 s |
-| `Proposed-Train` | pass | pass | 6,436 | 1 s |
+| `Current-FourSegments` | pass | pass | 9,237 | 1 s |
+| `Current-MidAppend` | pass | pass | 358,447 | 9 s |
+| `Current-Restart` | pass | pass | 14,726 | 1 s |
+| `Current-Retry` | pass | pass | 102,286 | 3 s |
+| `Current-Train` | pass | pass | 5,730 | 1 s |
+| `Liveness-Train` | pass | pass | 16,504 | 3 s |
+| `Proposed-Liveness-MidAppend` | pass | pass | 51,432 | 54 s |
+| `Proposed-MidAppend` | pass | pass | 356,330 | 10 s |
+| `Proposed-Train` | pass | pass | 5,714 | 1 s |
 | `Faithful-B00-off` | `CheckpointNeverDiscarded` violated | violated | stops at first error | 1 s |
 | `Faithful-B00-off-NoSelfHeal` | `AdmittedEventuallyStable` (liveness) violated | violated | stops at first error | 8 s |
 | `Faithful-B03-off` | `QueuedBodyNotSwept` violated | violated | stops at first error | 1 s |
@@ -129,13 +129,16 @@ a finding on this lane. The whole-file loss on this lane is R2 below.
 | `Mutant-NoForegroundRefresh` | `AdmittedEventuallyStable` (liveness) violated | violated | stops at first error | 4 s |
 | `Mutant-OffsetEqualityPlan` | `PlannerFillsGapsOnly` violated | violated | stops at first error | < 1 s |
 | `Finding-R1-StrandedDrain` | `TrainNeverStranded` violated | violated | stops at first error | 1 s |
-| `Finding-R2-ReconcileFailsQueuedBody` | `ReconcileKeepsQueuedBody` violated | violated | stops at first error | 1 s |
-| `Finding-R2-SnapshotFixLeavesWindow` | `ReconcileKeepsQueuedBody` violated | violated | stops at first error | 1 s |
-| `Finding-R2-UndeliveredBodyLost` | `ReconcileKeepsUndeliveredBody` violated | violated | stops at first error | < 1 s |
-| `Finding-R3-PauseDropsFinishedSegment` | `PauseKeepsFinishedSegment` violated | violated | stops at first error | 1 s |
+| `Faithful-R2-off` | `ReconcileKeepsQueuedBody` violated | violated | stops at first error | 1 s |
+| `Faithful-R2-off-SnapshotOnly` | `ReconcileKeepsQueuedBody` violated | violated | stops at first error | 1 s |
+| `Faithful-R3-off` | `PauseKeepsFinishedSegment` violated | violated | stops at first error | < 1 s |
+| `Finding-R2-UndeliveredBodyLost` | `ReconcileKeepsUndeliveredBody` violated | violated | stops at first error | 1 s |
 | `Finding-R4-HeldBodiesStarveHead` | `TrainNeverWedged` violated | violated | stops at first error | 2 s |
-| `Deep-RetryRestart` (deep) | pass | pass | 613,306 | 23 s |
-| `Deep-TwoRows` (deep) | pass | pass | 4,182,753 | 216 s |
+| `Deep-RetryRestart` (deep) | pass | pass | 269,055 | 11 s |
+| `Deep-TwoRows` (deep) | pass | pass | 3,135,797 | 181 s |
+
+The `Current-*`, `Deep-*` and `Proposed-MidAppend` configs also check `ReconcileKeepsQueuedBody`,
+`ReconcileNeverFailsOwnedWork` and `PauseKeepsFinishedSegment` since the R2 and R3 fixes.
 
 ### Faithfulness and mutants
 
@@ -152,6 +155,12 @@ a finding on this lane. The whole-file loss on this lane is R2 below.
 - **B22 off** (no claim on the durable held path). An out-of-order body is renamed to its held
   path; the app returns to the foreground before the manifest is committed; the held-body sweep
   finds a file no manifest names and deletes it.
+- **R2 off** (`Faithful-R2-off`: reconcile decides from the reattach snapshot alone) and
+  **R2 off, snapshot only** (`Faithful-R2-off-SnapshotOnly`: the fix first proposed for #476,
+  owned work added to the snapshot reattach takes). Both fail `ReconcileKeepsQueuedBody`; the
+  traces are under R2 below.
+- **R3 off** (`Faithful-R3-off`: the pause sweep supersedes a finished task). The trace is under
+  R3 below.
 - **Mutant-NoAlignment** and **Mutant-NoEpochCheck** are injected bugs, not historical ones. The
   train epoch and the offset checks have no entry in the B00 to B87 table.
 - **Mutant-OffsetEqualityPlan** (`IntervalAwarePlan = FALSE`, `SegBytes = 2`): the planner judges
@@ -199,9 +208,10 @@ Pinned by `DownloadsFormalModelRangeTrainTests.removalCompletionDrainContinuesTh
 
 ### R2: reconcile fails a row whose finished body is queued for append
 
-Issue: #476.
+Issue: #476. Fixed on `specs/downloads-tla`, pending merge, at depth 2 below
+(`FixReconcileOwnedWork = TRUE` in every config but `Faithful-R2-off*`). Depth 3 is open.
 
-Trace (`Finding-R2-ReconcileFailsQueuedBody`), a one-segment file:
+Trace (`Faithful-R2-off`, the code before the fix), a one-segment file:
 
 1. The segment task finishes. The delegate moves the body to a `tmp/` stash, drops the task from
    live tracking and queues the append.
@@ -228,32 +238,44 @@ Verdict: real, from reading the code; the app-target path was not executed. Medi
 The fix has three depths, and the model checks each:
 
 1. **Add session-owned work to the live keys reattach builds** (`FixSnapshotOwnedWork`, the fix
-   as first proposed). Not enough: `Finding-R2-SnapshotFixLeavesWindow`. The keys are a snapshot.
+   as first proposed). Not enough: `Faithful-R2-off-SnapshotOnly`. The keys are a snapshot.
    Reattach takes it on the delegate queue; reconcile uses it later on a store worker. After a
    relaunch the daemon redelivers a task that finished while the app was dead; when that callback
    lands between the two, its body is queued after the snapshot and reconcile still fails the row.
    A Resume in the same gap is failed the same way.
-2. **Ask the session when reconcile decides** (`FixReconcileOwnedWork`, `Proposed-Train`):
+2. **Ask the session when reconcile decides** (`FixReconcileOwnedWork`, shipped):
    reconcile's live-task fact is the snapshot or the session's owned work at that moment, read
    under the row's mutation generation so that a row change in between retries the decision. This
    closes every ordering in which the session owns the work. It must not count owned work for a
    paused row, where a live task promotes the row (F2).
+   Swift: `DownloadReconcileLiveWorkPolicy`; `reconcileOnWorker` asks through it between its row
+   snapshot and its generation check, off the store lock (the session calls the store under its
+   own lock, so the other order would deadlock); `DownloadManager` passes
+   `ownsInProgressStaticRangeWork` at launch and on foreground. A dead-finish adoption has no
+   row change of its own, so `finishRangeRemainder` and the opaque finish call
+   `noteSessionAdoptedFinishedBody` once the session holds the body: the generation advances and
+   a reconcile that asked just before retries.
 3. **A body still in the daemon.** `Finding-R2-UndeliveredBodyLost`: when the finished task's
    callback has not been redelivered at all by the time reconcile runs, the session owns nothing,
    the zero-byte row is failed, and the body is dropped when it arrives (adoption refuses a failed
    row). No ownership check closes this. It needs the row to stay resumable (park a zero-byte
    static row as `deferredResume` on relaunch, since a restart from zero loses nothing) or the
-   late body to revive it.
+   late body to revive it. **Open.** Parking changes the reducer's last relaunch branch, which
+   Admission-A1 (#475) also needs changed and which `LabstreamTests` pins (a zero-byte static row
+   with no task fails and its empty working file is deleted); it wants one decision for both.
+   Reattach adopts any listed task of an active row whatever its state, so this ordering needs
+   `getAllTasks` not to list the finished task.
 
-Pinned by `DownloadsFormalModelRangeTrainTests.reconcileCountsQueuedBodiesAsLiveWork`, which now
-fails only when reconcile stops deciding from the snapshot alone.
+`DownloadsFormalModelRangeTrainTests.reconcileCountsQueuedBodiesAsLiveWork` is now a regression
+test of the policy and of the three call sites.
 
 ### R3: a pause supersedes a segment that has already finished
 
-Broadens #474 (F3) to the static lane.
+Broadens #474 (F3) to the static lane. Fixed with it on `specs/downloads-tla`, pending merge
+(`FixPauseKeepsFinished = TRUE` in every config but `Faithful-R3-off`).
 
-Trace (`Finding-R3-PauseDropsFinishedSegment`; the session model has the same one as
-`session/Finding-F3-PauseSupersedesFinishedSegment`):
+Trace (`Faithful-R3-off`, the code before the fix; the session model has the same one as
+`session/Faithful-F3-off-Static`):
 
 1. A segment task is running. The user pauses. `pause` snapshots the row's task IDs, installs the
    pause halt and asks URLSession for its tasks.
@@ -277,9 +299,15 @@ Swift evidence: `BackgroundDownloadSession.swift`, `pause` (the comment above
 Verdict: probable. The code path is plain; that a finished task is still listed by `getAllTasks`
 while its callback is queued was not executed. Low severity on a train, medium on the open-ended
 fallback.
-Proposed fix (`FixPauseKeepsFinished`): the sweep leaves a finished task tracked, or routes its
-body through the finished-body path.
-Pinned by `DownloadsFormalModelRangeTrainTests.pauseKeepsAFinishedSegment`. Recorded on #474.
+Fix (`FixPauseKeepsFinished`): the sweep leaves a finished task tracked, so its finish callback
+takes the finished-body path. `pauseRangeTask` asks
+`StaticRangeFinishedBodyPolicy.pauseSweepDisposition`: finished means URLSession reports the task
+completed, or every byte its response declared has arrived. If that is judged early, the next
+progress callback under the halt cancels the task, as it always did. The fix rests on the same
+unexecuted step as the finding (that the listing holds a finished task), so the verdict stays
+probable until an app-target or device run.
+`DownloadsFormalModelRangeTrainTests.pauseKeepsAFinishedSegment` is now a regression test.
+Recorded on #474.
 
 ### R4: held bodies fill the depth and starve the gap at the checkpoint
 

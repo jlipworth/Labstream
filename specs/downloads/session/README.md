@@ -4,7 +4,8 @@
 through the session, the finalizer, the stash sweep and relaunch recovery, with process death. Its
 design, properties and the F1 to F3 traces (F2 is fixed: `Faithful-F2-off`) are in
 [docs/plans/2026-11-24-downloads-tla-model.md](../../../docs/plans/2026-11-24-downloads-tla-model.md).
-This page holds what the second review round changed and the current results.
+This page holds what the second review round changed, the F1 and F3 fixes and the current
+results.
 
 ```sh
 TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/session
@@ -55,24 +56,57 @@ about field names.
   `StallDetected` exists only on the forward-only lane in the code; on the static lane it stands
   in for the manager's stale-row recovery, which `DownloadsRangeTrain` models.
 
+## F1 and F3 are fixed
+
+Fixed on `specs/downloads-tla`, pending merge (#472, #474). `DurableCapture` and
+`FixPauseKeepsBody` are the shipping behaviour and are `TRUE` in every config except the three
+`Faithful-F*-off` ones.
+
+- **`DurableCapture` (F1).** `DidFinishDownloading` puts a forward-only body at the attempt's
+  capture path and records `bodyCaptured`, so the row is `finalizing` before the queued
+  publication. In the model `stash` holds that body too. Reattach keeps it while the row is not
+  terminal (the row references the path, so the staging sweep leaves it), `RelaunchFacts`
+  reports it as `captured` for a forward-only row, and the reducer's `requestFinalization`
+  requeues the publication. Swift: `DownloadStore.forwardOnlyCapturedBodyURL`,
+  `capturedBodyRelativePath`, `artifactPathsReferenced`, `observeLifecycleFacts`;
+  `BackgroundDownloadSession.requeueCapturedForwardOnlyBody`.
+  - The capture and its row change are one step here (index persistence is atomic per action).
+    In the code the rename comes first. The reducer covers the gap: an admitted, transferring
+    or paused forward-only row with a captured body and no task finalizes on relaunch, and the
+    row references the path in every non-terminal lifecycle.
+  - A response that fails the HTTP checks is not captured
+    (`ForwardOnlyFinishedBodyPolicy.custody`); the model has no such response.
+- **`FixPauseKeepsBody` (F3).** `RangeIO` publishes a forward-only body behind a pause halt
+  (`ForwardOnlyFinishedBodyPolicy.publication`) and drops that halt, because the finalizer stands
+  down for any halt. The reducer finalizes a paused forward-only row whose whole body is at the
+  working path, so `RelaunchObserved` has no hand-written branch for it any more;
+  `FixPauseKeepsBody = FALSE` hides that body from the reducer, which is what the old clause
+  did. On the static lane `PauseSweep` leaves a finished task tracked
+  (`StaticRangeFinishedBodyPolicy.pauseSweepDisposition`).
+- `Faithful-F1-off` is `DurableCapture = FALSE` alone. `Faithful-F3-off` needs both switches
+  off: with the capture on, the row is `finalizing` before a pause can land, and the body
+  survives without the F3 rule. `Faithful-F3-off-Static` is `FixPauseKeepsBody = FALSE` on a
+  static row.
+- `Proposed-F3-PauseKeepsBody` is removed. `Proposed-Forward` and `Proposed-Static` now differ
+  from `Current-*` by the F4 proposal only.
+
 ## Configs and results
 
 2026-11-24, tla2tools v1.7.4, `TLC_WORKERS=2 TLC_HEAP=2g` (the rows A1 changed: `TLC_WORKERS=4 TLC_HEAP=4g`).
 
 | Config | Expect | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
-| `Current-Forward` | pass | pass | 5,540 | 1 s |
-| `Current-Static` | pass | pass | 97,135 | 2 s |
-| `Current-TwoForward` | pass | pass | 196,666 | 4 s |
-| `Current-TwoRows` | pass | pass | 2,335,423 | 36 s |
-| `SessionRowMapCheck-Current-RowMap` | pass | pass | one evaluation | 9 s |
+| `Current-Forward` | pass | pass | 2,951 | 1 s |
+| `Current-Static` | pass | pass | 71,357 | 1 s |
+| `Current-TwoForward` | pass | pass | 76,119 | 2 s |
+| `Current-TwoRows` | pass | pass | 1,186,217 | 20 s |
+| `SessionRowMapCheck-Current-RowMap` | pass | pass | one evaluation | 11 s |
 | `Projection-SessionCore` | pass | pass | one evaluation | 14 s |
-| `Liveness-Forward` | pass | pass | 13,455 | 4 s |
-| `Liveness-Static` | pass | pass | 70,570 | 21 s |
-| `Proposed-F3-PauseKeepsBody` | pass | pass | 5,001 | 1 s |
-| `Proposed-F4-VerdictBeforeRename` | pass | pass | 5,488 | 1 s |
-| `Proposed-Forward` | pass | pass | 3,108 | 1 s |
-| `Proposed-Static` | pass | pass | 70,841 | 3 s |
+| `Liveness-Forward` | pass | pass | 8,028 | 3 s |
+| `Liveness-Static` | pass | pass | 65,527 | 19 s |
+| `Proposed-F4-VerdictBeforeRename` | pass | pass | 2,904 | 1 s |
+| `Proposed-Forward` | pass | pass | 2,904 | 1 s |
+| `Proposed-Static` | pass | pass | 70,841 | 2 s |
 | `Faithful-B02-off` | `NoStartWhileUserPaused` violated | violated | stops at first error | < 1 s |
 | `Faithful-B03-off` | `QueuedBodyNotSwept` violated | violated | stops at first error | < 1 s |
 | `Faithful-B09-off` | `UserPauseSticky` violated | violated | stops at first error | 1 s |
@@ -82,23 +116,23 @@ about field names.
 | `Faithful-Replay-off` | `ReplayedOutcomeIsNoOp` violated | violated | stops at first error | 1 s |
 | `SessionRowMapCheck-Mutant-RowDropsCondemned` | `RowMapSound` violated | violated | stops at first error | 3 s |
 | `SessionRowMapCheck-Mutant-RowDropsCounted` | `RowMapSound` violated | violated | stops at first error | 3 s |
-| `Finding-F1-StashCrash` | `FinishedBodyNotLost` violated | violated | stops at first error | 1 s |
-| `Finding-F3-PauseDiscardsFinishedBody` | `FinishedBodySurvivesPause` violated | violated | stops at first error | < 1 s |
-| `Finding-F3-PauseSupersedesFinishedSegment` | `FinishedBodySurvivesPause` violated | violated | stops at first error | 1 s |
+| `Faithful-F1-off` | `FinishedBodyNotLost` violated | violated | stops at first error | 1 s |
+| `Faithful-F3-off` | `FinishedBodySurvivesPause` violated | violated | stops at first error | 1 s |
+| `Faithful-F3-off-Static` | `FinishedBodySurvivesPause` violated | violated | stops at first error | 1 s |
 | `Finding-F4-FinalizingRowWithoutBody` | `FinalizingAlwaysHasBody` violated | violated | stops at first error | 1 s |
 | `Finding-F4-VerdictRenameCrash` | `VerdictSurvivesCrash` violated | violated | stops at first error | < 1 s |
-| `Deep-TwoStatic` (deep) | pass | pass | 7,908,854 | 176 s (4 workers) |
+| `Deep-TwoStatic` (deep) | pass | pass | 5,710,777 | 367 s |
 
 ## Findings added in the second round
 
 ### F3 on the static lane: a pause supersedes a finished segment
 
-Broadens #474. `Finding-F3-PauseSupersedesFinishedSegment`: the first segment is durable and the
+Broadens #474. Fixed with it; `Faithful-F3-off-Static` (was
+`Finding-F3-PauseSupersedesFinishedSegment`) keeps the trace: the first segment is durable and the
 last one is running; the user pauses; the task finishes in the daemon; the pause's listing still
 holds it, so the sweep drops its tracking and supersedes it; its finish callback is ignored. The
 range-train notes have the Swift evidence and the verdict (R3: probable; one segment on a train,
-the whole remainder on the open-ended fallback). `FixPauseKeepsBody` now covers both lanes
-(`Proposed-Static`).
+the whole remainder on the open-ended fallback). `FixPauseKeepsBody` covers both lanes.
 
 ### F4: a crash between the condemn rename and the verdict's commit
 

@@ -128,8 +128,7 @@ so nothing else changed.
 | `session/Liveness-Static` | pass | pass | 70,570 | 51 s |
 | `session/Proposed-Forward` | pass | pass | 3,129 | < 1 s |
 | `session/Proposed-Static` | pass | pass | 70,841 | 3 s |
-| `session/Proposed-F3-PauseKeepsBody` | pass | pass | 5,104 | 2 s |
-| `session/Proposed-F4-VerdictBeforeRename` | pass | pass | 5,732 | 2 s |
+| `session/Proposed-F4-VerdictBeforeRename` | pass | pass | 6,449 | < 1 s |
 | `base/Reducer-Conformance` | pass | pass | one state; 298,368 reducer results compared | 24 s |
 | `session/Projection-SessionCore` | pass | pass | one state | 14 s |
 | `session/SessionRowMapCheck-Current-RowMap` | pass | pass | one state | 9 s |
@@ -141,17 +140,20 @@ so nothing else changed.
 | `session/Faithful-B09-off` | `UserPauseSticky` violated | violated | stops at first error | 1 s |
 | `session/Faithful-F2-off` | `UserPauseSticky` violated | violated | stops at first error | 1 s |
 | `session/Faithful-Replay-off` | `ReplayedOutcomeIsNoOp` violated | violated | stops at first error | 1 s |
-| `session/Finding-F1-StashCrash` | `FinishedBodyNotLost` violated | violated | stops at first error | 1 s |
-| `session/Finding-F3-PauseDiscardsFinishedBody` | `FinishedBodySurvivesPause` violated | violated | stops at first error | < 1 s |
-| `session/Finding-F3-PauseSupersedesFinishedSegment` | `FinishedBodySurvivesPause` violated | violated | stops at first error | 1 s |
+| `session/Faithful-F1-off` (was `Finding-F1-StashCrash`) | `FinishedBodyNotLost` violated | violated | stops at first error | 1 s |
+| `session/Faithful-F3-off` (was `Finding-F3-PauseDiscardsFinishedBody`) | `FinishedBodySurvivesPause` violated | violated | stops at first error | < 1 s |
+| `session/Faithful-F3-off-Static` (was `Finding-F3-PauseSupersedesFinishedSegment`) | `FinishedBodySurvivesPause` violated | violated | stops at first error | 1 s |
 | `session/Finding-F4-VerdictRenameCrash` | `VerdictSurvivesCrash` violated | violated | stops at first error | < 1 s |
 | `session/Finding-F4-FinalizingRowWithoutBody` | `FinalizingAlwaysHasBody` violated | violated | stops at first error | 1 s |
 | `base/Mutant-DeletionGuardStaticOnly`, `base/Mutant-PendingHeadIgnoredWithLiveTask`, `base/Mutant-IneligibleSnapshotFailsFinalizing` | `TableMatches` violated | violated | fails at startup | 2 s each |
 | `session/SessionRowMapCheck-Mutant-RowDropsCondemned`, `-RowDropsCounted` | `RowMapSound` violated | violated | fails at startup | 3 s each |
 
 The `Current-*` configs are the code as it stands and check every property except the ones the
-findings break. `session/Current-Static` no longer lists `FinishedBodySurvivesPause`: in the
-first round the static check was vacuous, because the model counted a static body as whole only
+findings break. With F1 and F3 fixed (see [Fixes](#fixes-f1-f3-rangetrain-r2-and-r3)) every
+session `Current-*` and `Deep-*` config lists `FinishedBodyNotLost` and
+`FinishedBodySurvivesPause`, and their state counts are the ones in
+`specs/downloads/session/README.md`, not the ones above. In the first round the static pause
+check was vacuous, because the model counted a static body as whole only
 once the working file was complete. `session/Current-TwoRows` uses one attempt per row and the
 `complete` verdict only.
 
@@ -200,7 +202,9 @@ property passes in the `Current-*` configs.
 ## Findings on the current design
 
 F1 to F3 were checked against the Swift before being recorded, and an independent reviewer later
-confirmed all three by tracing the Swift. None is fixed here. Round 2 added F4 and the
+confirmed all three by tracing the Swift. F1 and F3 are fixed on `specs/downloads-tla`, pending
+merge ([Fixes](#fixes-f1-f3-rangetrain-r2-and-r3)); the sections below describe the code before
+the fix. Round 2 added F4 and the
 static-lane form of F3; their traces are in `specs/downloads/session/README.md` and
 `specs/downloads/range-train/README.md`, and they are in the findings table below.
 
@@ -307,10 +311,68 @@ reducer's relaunch decision and, because the first ordering is decided inline in
 no PMSKit policy to call, the guard in `finishOpaqueBody` as source text. The fix should move
 that decision into a policy and replace the source pin. Issue: #474.
 
-All three pins use `withKnownIssue`: the suite stays green while a finding is open, and the test
-fails as soon as the expectations hold, which is the signal to remove the wrapper and flip the
-`Finding-*.cfg` to `EXPECT: pass`. They pin the pure decisions. The session glue (the stash claim
-and the live-key snapshot) is app code and still needs a `LabstreamTests` pin with each fix.
+A pin uses `withKnownIssue` while its finding is open: the suite stays green, and the test
+fails as soon as the expectations hold, which is the signal to remove the wrapper and turn the
+`Finding-*.cfg` into a `Faithful-*-off.cfg`. They pin the pure decisions. The session glue (the
+capture and the live-key snapshot) is app code and still needs a `LabstreamTests` pin with each fix.
+
+### Fixes: F1, F3, RangeTrain-R2 and R3
+
+Fixed on `specs/downloads-tla`, pending merge (#472, #474, #476). The three sit in one window,
+between the URLSession temp and the working file, and share one rule: once the app holds a
+finished body, a durable or session-owned claim on it is what every sweep, pause and reconcile
+asks about.
+
+- **F1 (#472).** `didFinishDownloadingTo` moves a forward-only media response to the attempt's
+  capture path (`DownloadStore.forwardOnlyCapturedBodyURL`, an attempt-staging name in the
+  downloads directory) and submits `bodyCaptured`, so the row is `finalizing` at once. The row
+  references that path while it is not terminal (`artifactPathsReferenced`), which is the
+  durable reference: the staging sweep leaves it, Delete removes it, the storage audit counts
+  it. Reconcile reports it as `Body.captured`; the reducer's relaunch finalizes an admitted,
+  transferring or paused forward-only row that has one (the crash may come before `bodyCaptured`
+  is durable); `finalizeCompletedStaticRangeFile` requeues the publication
+  (`requeueCapturedForwardOnlyBody`).
+  - The design differs from `Proposed-Forward` in one place: the capture is not a `tmp/` stash
+    that the stash sweep learns to keep, because the OS may purge `tmp/` while the app is not
+    running, which is exactly when this body waits. `sweepOrphanedRangeBodyStashes` never sees it.
+  - Only a response that passes the HTTP status and MIME checks
+    (`ForwardOnlyFinishedBodyPolicy.responseRejection`) is captured. A relaunch has no response,
+    so a captured body is published without them. A rejected response keeps the old in-memory
+    stash and fails the row.
+- **F3 (#474), forward-only.** `finishOpaqueBody` asks
+  `ForwardOnlyFinishedBodyPolicy.publication`: a pause halt publishes, a cancel discards. It
+  then drops the pause halt, because the finalizer stands down for any halt, and the row
+  finalizes. The reducer's relaunch no longer excludes a paused row from the B10 clause. With
+  F1 the Resume window is closed too: the row is `finalizing` before the user can act, and the
+  manager ignores a pause of a finalizing row.
+- **RangeTrain-R3 (#474), static.** `pauseRangeTask` asks
+  `StaticRangeFinishedBodyPolicy.pauseSweepDisposition` and leaves a finished task tracked
+  (URLSession reports it completed, or every declared byte has arrived), so its finish callback
+  reaches `writeThenPause`. Still probable, not confirmed: the fix rests on the same unexecuted
+  step as the finding, that `getAllTasks` lists a finished task whose callback is queued.
+- **RangeTrain-R2 (#476).** `DownloadStore.reconcileOnWorker` takes the session's
+  `ownsInProgressStaticRangeWork` and asks it per row through
+  `DownloadReconcileLiveWorkPolicy`, inside its generation-checked retry loop, for an admitted
+  or transferring row only. A dead-finish adoption advances the row's mutation generation once
+  the session holds the body, so a reconcile that asked just before retries. The fix as first
+  proposed (owned work in the reattach snapshot) is `range-train/Faithful-R2-off-SnapshotOnly`
+  and still fails.
+  - **Still open:** `range-train/Finding-R2-UndeliveredBodyLost`. A finished task the daemon
+    has not redelivered when reconcile runs is owned by nobody; the zero-byte row is failed and
+    adoption refuses the late body. Closing it means a zero-byte static row stays resumable on
+    relaunch, which changes the reducer's last relaunch branch. That branch is also
+    Admission-A1's (#475) and is pinned by `LabstreamTests` (a zero-byte row with no task
+    fails), so it was left for one decision covering both.
+
+Configs: `session/Finding-F1-StashCrash` is `Faithful-F1-off`; `session/Finding-F3-*` are
+`Faithful-F3-off` and `Faithful-F3-off-Static`; `range-train/Finding-R2-ReconcileFailsQueuedBody`
+and `Finding-R2-SnapshotFixLeavesWindow` are `Faithful-R2-off` and `Faithful-R2-off-SnapshotOnly`;
+`range-train/Finding-R3-PauseDropsFinishedSegment` is `Faithful-R3-off`.
+`session/Proposed-F3-PauseKeepsBody` is gone (the fix is in every `Current-*`). In the session
+model `DurableCapture` and `FixPauseKeepsBody`, and in the range train `FixReconcileOwnedWork`
+and `FixPauseKeepsFinished`, are `TRUE` in every config but those. The four pins are plain
+regression tests; `DownloadLifecycleStoreTests` has two app-target cases for phase B
+(`relaunchKeepsCapturedForwardOnlyBody`, `reconcileAsksTheSessionForOwnedWork`).
 
 ## Subsystem models (W0 to W8)
 
@@ -376,10 +438,10 @@ decision to call. Full traces and evidence are in the module notes and the issue
 
 | Finding | What goes wrong | Verdict | Config | Pin (`DownloadsFormalModel<Name>Tests`) | Issue |
 | --- | --- | --- | --- | --- | --- |
-| F1 | A crash between the `tmp/` stash and the working path loses a finished forward-only body. | real; reviewer confirmed | `session/Finding-F1-StashCrash` | `finishedForwardOnlyBodyInStashSurvivesRelaunch` | #472 |
+| F1 | A crash between the `tmp/` stash and the working path loses a finished forward-only body. | fixed on `specs/downloads-tla`, pending merge (was real; reviewer confirmed) | `session/Faithful-F1-off` | `finishedForwardOnlyBodyInStashSurvivesRelaunch` (regression test) | #472 |
 | F2 | Foreground reconcile moves a user-paused row back to transferring from a stale live-task snapshot. | real; reviewer confirmed; fixed on specs/downloads-tla, pending merge | `session/Faithful-F2-off` (was `Finding-F2-PauseReconcile`) | `userPausedRowIsNotPromotedByLiveTaskFact` (passes) | #473 |
-| F3 | A user pause that lands while a forward-only transfer finishes discards the finished body. | real; reviewer confirmed | `session/Finding-F3-PauseDiscardsFinishedBody` | `finishedForwardOnlyBodySurvivesUserPause` | #474 |
-| RangeTrain-R3 (F3 on the static lane) | The pause's task listing supersedes a static segment that has already finished and its finish callback is ignored. One segment on a train, the whole remainder on the open-ended fallback. Raised by the reviewer. | probable; low on a train, medium on the fallback | `range-train/Finding-R3-PauseDropsFinishedSegment`, `session/Finding-F3-PauseSupersedesFinishedSegment` | `pauseKeepsAFinishedSegment` | #474 |
+| F3 | A user pause that lands while a forward-only transfer finishes discards the finished body. | fixed on `specs/downloads-tla`, pending merge (was real; reviewer confirmed) | `session/Faithful-F3-off` | `finishedForwardOnlyBodySurvivesUserPause` (regression test) | #474 |
+| RangeTrain-R3 (F3 on the static lane) | The pause's task listing supersedes a static segment that has already finished and its finish callback is ignored. One segment on a train, the whole remainder on the open-ended fallback. Raised by the reviewer. | fixed on `specs/downloads-tla`, pending merge (was probable; the `getAllTasks` step is still unexecuted) | `range-train/Faithful-R3-off`, `session/Faithful-F3-off-Static` | `pauseKeepsAFinishedSegment` (regression test) | #474 |
 | F4 | A failing truncation verdict renames the body away before the verdict is durable; a crash in between leaves a finalizing row with no body, which reconcile fails as an internal error, and the strike is lost. Raised by the reviewer. | real, low | `session/Finding-F4-VerdictRenameCrash`, `session/Finding-F4-FinalizingRowWithoutBody` | `truncationVerdictIsDurableBeforeTheBodyMoves` | #491 |
 | Admission-A1 | Startup recovery fails a forward-only row that never started (a granted start cut by a crash, or a first start the user paused). | real, medium; reviewer confirmed; fixed on specs/downloads-tla, pending merge (relaunch requeues a granted forward-only row with no task, body or checkpoint and keeps a paused one paused; foreground reconcile skips rows a start may own) | `admission/Faithful-A1-off` (was `Finding-A1-RelaunchFailsUnstartedRow`); `RelaunchKeepsUnstartedRow` now in the Current and Deep runs | `relaunchKeepsForwardOnlyRowThatNeverStarted` (passes) | #475 |
 | ServerPrep-S1 | Retry of a failed Plex preparation row abandons its running optimize job with no durable cancel and creates a second job. | real, low to medium; reviewer confirmed | `server-prep/Finding-S1-RetryOrphansRender`, `server-prep/Finding-S1-HandoffLeavesJob` | `retryOfFailedPlexPrepKeepsOrCancelsItsJob` | #478 |
@@ -401,7 +463,7 @@ decision to call. Full traces and evidence are in the module notes and the issue
 | #394 | Fetched chapter-image and trickplay-tile payloads wait in memory behind one-at-a-time preparation. | real, known; reviewer confirmed | `side-assets/Finding-394-PayloadsBehindPreparation`, `side-assets/Finding-394-TilePayloadsBehindPreparation` | none | #394 |
 | Storage-S1 | An automatic requeue erases a storage-full park, so the row is redriven once without measuring free space. The reachable order is the reviewer's: a redelivered body's own append fails with ENOSPC before the launch enumeration. | real, low; reviewer confirmed by a different ordering | `storage/Finding-S1-RequeueErasesPark` | `automaticRequeueKeepsTheStoragePark` | #486 |
 | RangeTrain-R1 | A drain pass run by a held-body removal completion discards its result, so nothing finalizes the file or tops the train up until the self-heal, which needs the foreground. | real, low; reviewer confirmed | `range-train/Finding-R1-StrandedDrain` | `removalCompletionDrainContinuesTheTrain` | #477 |
-| RangeTrain-R2 | Reconcile fails a static row whose finished body is stashed and queued for append; for a one-segment file that is the whole download. Observing owned work in the reattach snapshot is not enough (`Finding-R2-SnapshotFixLeavesWindow`); a body the daemon has not redelivered yet is lost with any ownership check (`Finding-R2-UndeliveredBodyLost`). | real, medium; reviewer confirmed | `range-train/Finding-R2-ReconcileFailsQueuedBody` | `reconcileCountsQueuedBodiesAsLiveWork` | #476 |
+| RangeTrain-R2 | Reconcile fails a static row whose finished body is stashed and queued for append; for a one-segment file that is the whole download. Observing owned work in the reattach snapshot is not enough (`Faithful-R2-off-SnapshotOnly`); a body the daemon has not redelivered yet is lost with any ownership check (`Finding-R2-UndeliveredBodyLost`). | fixed on `specs/downloads-tla`, pending merge, for work the session owns (was real, medium; reviewer confirmed). The undelivered body is still open. | `range-train/Faithful-R2-off`; open: `range-train/Finding-R2-UndeliveredBodyLost` | `reconcileCountsQueuedBodiesAsLiveWork` (regression test) | #476 |
 | RangeTrain-R4 | After a crash inside an append, a segment finished while the app was dead is held beside the ones the planner started; when the head segment fails once, two held bodies fill the depth of two and the planner never fetches the gap at the checkpoint. | probable, medium, rare | `range-train/Finding-R4-HeldBodiesStarveHead` | `plannerAlwaysFetchesTheHeadGap` | #492 |
 | Status-S1 | A silently stalled transfer hides the batch speed for as long as it is silent. | real, medium; reviewer confirmed; fixed on specs/downloads-tla, pending merge (a transfer silent for the callback gap counts as zero) | `status/Liveness-SilentMember` passes; fix off: `status/Faithful-S1-off` | `silentTransferDoesNotHideBatchSpeedForever` (passes) | #487 |
 | Status-S2 | A stalled static-range row keeps showing a stale speed and ETA, because the refresh loop stops first. | real, medium; reviewer confirmed; fixed on specs/downloads-tla, pending merge (the refresh loop runs while any row transfers) | `status/Liveness-StaleRowSettles` passes; fix off: `status/Faithful-S2-off` | `stalledStaticRowStopsShowingSpeed` (passes) | #488 |
@@ -702,6 +764,18 @@ Round 2 renamed or split these configs:
 | `side-assets/Proposed-NeverForgotten-Subs`, `-ChaptersSubs` | `side-assets/Proposed-S2-ResumeAllUnparks-Subs`, `-ChaptersSubs` |
 | `status/Mutant-I224-NoCatchUpGuard` | `status/Mutant-I224-NoWakeReset`, `status/Mutant-I224-NoSettling` |
 | `status/Mutant-I416-SegmentDip` | `status/Mutant-I416-SegmentNoHold` |
+
+The F1, F3, R2 and R3 fixes renamed these:
+
+| Before the fix | Now |
+| --- | --- |
+| `session/Finding-F1-StashCrash` | `session/Faithful-F1-off` |
+| `session/Finding-F3-PauseDiscardsFinishedBody` | `session/Faithful-F3-off` |
+| `session/Finding-F3-PauseSupersedesFinishedSegment` | `session/Faithful-F3-off-Static` |
+| `session/Proposed-F3-PauseKeepsBody` | removed |
+| `range-train/Finding-R2-ReconcileFailsQueuedBody` | `range-train/Faithful-R2-off` |
+| `range-train/Finding-R2-SnapshotFixLeavesWindow` | `range-train/Faithful-R2-off-SnapshotOnly` |
+| `range-train/Finding-R3-PauseDropsFinishedSegment` | `range-train/Faithful-R3-off` |
 
 The side-assets S1, S2 and S3 finding configs keep their names and now check `CachedThisLaunch`;
 the properties `AvailableEventuallyCached` and `Accounted` no longer exist.
