@@ -57,21 +57,21 @@ about field names.
 
 ## Configs and results
 
-2026-11-24, tla2tools v1.7.4, `TLC_WORKERS=2 TLC_HEAP=2g`.
+2026-11-24, tla2tools v1.7.4, `TLC_WORKERS=2 TLC_HEAP=2g` (the rows A1 changed: `TLC_WORKERS=4 TLC_HEAP=4g`).
 
 | Config | Expect | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
-| `Current-Forward` | pass | pass | 5,784 | 1 s |
-| `Current-Static` | pass | pass | 97,135 | 3 s |
-| `Current-TwoForward` | pass | pass | 200,463 | 7 s |
-| `Current-TwoRows` | pass | pass | 2,353,462 | 73 s |
+| `Current-Forward` | pass | pass | 5,540 | 1 s |
+| `Current-Static` | pass | pass | 97,135 | 2 s |
+| `Current-TwoForward` | pass | pass | 196,666 | 4 s |
+| `Current-TwoRows` | pass | pass | 2,335,423 | 36 s |
 | `SessionRowMapCheck-Current-RowMap` | pass | pass | one evaluation | 9 s |
 | `Projection-SessionCore` | pass | pass | one evaluation | 14 s |
-| `Liveness-Forward` | pass | pass | 13,621 | 6 s |
-| `Liveness-Static` | pass | pass | 70,570 | 51 s |
-| `Proposed-F3-PauseKeepsBody` | pass | pass | 5,104 | 2 s |
-| `Proposed-F4-VerdictBeforeRename` | pass | pass | 5,732 | 2 s |
-| `Proposed-Forward` | pass | pass | 3,129 | < 1 s |
+| `Liveness-Forward` | pass | pass | 13,455 | 4 s |
+| `Liveness-Static` | pass | pass | 70,570 | 21 s |
+| `Proposed-F3-PauseKeepsBody` | pass | pass | 5,001 | 1 s |
+| `Proposed-F4-VerdictBeforeRename` | pass | pass | 5,488 | 1 s |
+| `Proposed-Forward` | pass | pass | 3,108 | 1 s |
 | `Proposed-Static` | pass | pass | 70,841 | 3 s |
 | `Faithful-B02-off` | `NoStartWhileUserPaused` violated | violated | stops at first error | < 1 s |
 | `Faithful-B03-off` | `QueuedBodyNotSwept` violated | violated | stops at first error | < 1 s |
