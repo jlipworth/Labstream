@@ -9,7 +9,7 @@ import Testing
 /// leaves the arithmetic out. The seeded tests here cover that arithmetic: each draws event
 /// sequences from a fixed-seed generator, so a failure reproduces exactly.
 ///
-/// The two findings at the end state the wanted behaviour inside `withKnownIssue`, so the suite
+/// The findings at the end state the wanted behaviour inside `withKnownIssue`, so the suite
 /// stays green while they are open. When a fix lands, `withKnownIssue` fails the test: delete the
 /// wrapper then, and flip the matching `status/Finding-*.cfg` to `EXPECT: pass`.
 @Suite("Downloads formal-model status and speed")
@@ -43,8 +43,9 @@ struct DownloadsFormalModelStatusTests {
 
     /// One transfer as the daemon and the delegate see it. Bytes arrive at `rate(at:)`; a callback
     /// reports them. After a blackout (the app suspended) the first callbacks may report only part
-    /// of what piled up, and the rest within `lagEnds` (model assumption A1: within 4 s of the
-    /// first callback after the blackout).
+    /// of what piled up, and the rest by `lagEnds`. Model assumption A1 is that the rest arrives
+    /// within the 4 s settling window the first callback starts; a quarter of the lagging wakes
+    /// here break it, and those are finding S7.
     private struct SimulatedTransfer {
         /// Piecewise-constant true rate: `(start, bytesPerSecond)`, sorted by start.
         var segments: [(start: Double, rate: Double)]
@@ -87,6 +88,11 @@ struct DownloadsFormalModelStatusTests {
     private struct BatchRun {
         var nonNilAnswers = 0
         var longAwakePeriods = 0
+        /// Awake periods in which some transfer's backlog outlasted the settling window (A1 broken).
+        var lateBacklogPeriods = 0
+        /// Answers in those periods that were not the true total (steady) or exceeded the peak.
+        var lateBacklogWrongAnswers = 0
+        var worstLateBacklogRatio = 0.0
     }
 
     /// Drive a batch through awake periods and sleeps and check every answer `rate(at:)` gives.
@@ -130,6 +136,8 @@ struct DownloadsFormalModelStatusTests {
 
         var evidence: [Int: Evidence] = [:]
         var run = BatchRun()
+        // Some transfer's backlog is still being reported after its settling window (A1 broken).
+        var lateBacklog = false
         estimator.setActiveTransfers(Set(keys))
 
         func check(_ now: Double, _ context: String) {
@@ -146,14 +154,19 @@ struct DownloadsFormalModelStatusTests {
                 #expect(now >= seen.first + settle, "seed \(seed) \(context) t=\(now): transfer \(index) is settling")
                 #expect(now - seen.last < gap, "seed \(seed) \(context) t=\(now): transfer \(index) is stale")
             }
-            if steady {
+            let wrong = steady ? abs(rate - trueTotal) > tolerance : rate > trueTotal + tolerance
+            if lateBacklog {
+                // Finding S7: counted here, stated as a known issue by the tests.
+                if wrong {
+                    run.lateBacklogWrongAnswers += 1
+                    run.worstLateBacklogRatio = max(run.worstLateBacklogRatio, rate / trueTotal)
+                }
+            } else if steady {
                 // #379: never a partial sum. #224: never an inflated one.
-                #expect(abs(rate - trueTotal) <= tolerance,
-                        "seed \(seed) \(context) t=\(now): \(rate) is not the batch's \(trueTotal)")
+                #expect(!wrong, "seed \(seed) \(context) t=\(now): \(rate) is not the batch's \(trueTotal)")
             } else {
                 // #224: bytes that piled up are never divided by a short interval.
-                #expect(rate <= trueTotal + tolerance,
-                        "seed \(seed) \(context) t=\(now): \(rate) exceeds the peak total \(trueTotal)")
+                #expect(!wrong, "seed \(seed) \(context) t=\(now): \(rate) exceeds the peak total \(trueTotal)")
             }
         }
 
@@ -162,6 +175,7 @@ struct DownloadsFormalModelStatusTests {
         while now < horizon {
             let awakeFor = rng.real(1...45)
             let awakeUntil = now + awakeFor
+            lateBacklog = false
             for index in 0..<count {
                 // Callbacks after a wake are staggered: some transfers report at once, some late.
                 let delay = firstPeriod ? rng.real(0...0.5) : (rng.chance(0.3) ? rng.real(0...12) : rng.real(0...0.6))
@@ -170,10 +184,17 @@ struct DownloadsFormalModelStatusTests {
                     let first = transfers[index].nextCallback
                     let behind = max(0, transfers[index].trueBytes(at: first) - Double(transfers[index].lastReported))
                     transfers[index].lagStart = first
-                    transfers[index].lagEnds = first + rng.real(0...3)
+                    // Mostly inside the settling window (A1); a quarter of the time up to 6 s past it.
+                    transfers[index].lagEnds = first
+                        + (rng.chance(0.25) ? rng.real(settle...settle + 6) : rng.real(0...3))
                     transfers[index].lagBytes = rng.chance(0.5) ? behind * rng.real(0...0.8) : 0
+                    if transfers[index].lagBytes >= 1, transfers[index].lagEnds > first + settle,
+                       first < awakeUntil {
+                        lateBacklog = true
+                    }
                 }
             }
+            if lateBacklog { run.lateBacklogPeriods += 1 }
             firstPeriod = false
             check(now, "wake")
 
@@ -206,6 +227,7 @@ struct DownloadsFormalModelStatusTests {
 
             // "Updating speed..." gives way to a number while every transfer flows: the latest
             // first callback (12 s), settling (4 s), one more callback and the minimum window.
+            // (A late backlog keeps reporting, so it does not delay this.)
             if steady, awakeFor >= 20 {
                 run.longAwakePeriods += 1
                 #expect(estimator.rate(at: time(awakeUntil)) != nil,
@@ -229,22 +251,44 @@ struct DownloadsFormalModelStatusTests {
     func aggregateSteadyBatchIsExactOrHidden() {
         var answers = 0
         var longPeriods = 0
+        var latePeriods = 0
+        var lateWrong = 0
+        var worst = 0.0
         for seed in UInt64(1)...60 {
             let run = Self.runBatch(seed: seed, steady: true)
             answers += run.nonNilAnswers
             longPeriods += run.longAwakePeriods
+            latePeriods += run.lateBacklogPeriods
+            lateWrong += run.lateBacklogWrongAnswers
+            worst = max(worst, run.worstLateBacklogRatio)
         }
         #expect(answers > 1_000, "the runs must publish speeds, or the test checks nothing")
         #expect(longPeriods > 50)
+        #expect(latePeriods > 20, "the runs must include backlogs that outlast the settling window")
+        withKnownIssue("TLA+ finding S7: a backlog reported after the 4 s settling window is published as live speed") {
+            #expect(lateWrong == 0, """
+                \(lateWrong) answers in \(latePeriods) awake periods with a late backlog were not the \
+                batch's true total; the worst was \(worst) times it
+                """)
+        }
     }
 
     @Test("Aggregate speed: with stalls and changing rates it never exceeds the peak total (#224)")
     func aggregateNeverExceedsPeakThroughput() {
         var answers = 0
+        var latePeriods = 0
+        var lateWrong = 0
         for seed in UInt64(1_001)...1_060 {
-            answers += Self.runBatch(seed: seed, steady: false).nonNilAnswers
+            let run = Self.runBatch(seed: seed, steady: false)
+            answers += run.nonNilAnswers
+            latePeriods += run.lateBacklogPeriods
+            lateWrong += run.lateBacklogWrongAnswers
         }
         #expect(answers > 200, "the runs must publish speeds, or the test checks nothing")
+        #expect(latePeriods > 20, "the runs must include backlogs that outlast the settling window")
+        withKnownIssue("TLA+ finding S7: a backlog reported after the 4 s settling window is published as live speed") {
+            #expect(lateWrong == 0, "\(lateWrong) answers after a late backlog exceeded the batch's peak total")
+        }
     }
 
     @Test("Aggregate speed: arbitrary samples, resets and membership changes never yield an unbacked answer")
@@ -485,6 +529,61 @@ struct DownloadsFormalModelStatusTests {
         }
     }
 
+    /// The model's `Callback` during claim debt: with the hold the estimator sees no dip; without
+    /// it (mutant `segmentNoHold`) it sees a regression and resets the whole batch. This joins the
+    /// pure helper to the estimator's own regression rule; the session's call is checked by text.
+    @Test("#416: a dip the claim debt explains is held; fed to the estimator it resets the batch")
+    func segmentBoundaryDipIsHeldBeforeTheEstimator() throws {
+        let session = try #require(Self.repositoryText(
+            "Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift"))
+        #expect(session.contains("bytesAwaitingAppend: unaccountedClaimBytes + appendedDuringCallback")
+            && session.contains("onTransferRateSample?(rangeEntry.attemptKey, rateBytes, Date())"),
+                "the range callback no longer hands rateSampleBytes' result to the estimator: re-derive Callback's `dip`")
+
+        func answerAfterBoundary(hold: Bool, awaitingAppend: Int) -> Double? {
+            let train = Self.key(0)
+            let other = Self.key(1)
+            var estimator = DownloadAggregateRateEstimator()
+            estimator.setActiveTransfers([train, other])
+            var last = 0
+            var now = 0.0
+            while now < 10 {
+                now += 0.25
+                last = Int(now * 4_000_000)
+                estimator.sample(train, bytes: last, at: Self.time(now))
+                estimator.sample(other, bytes: Int(now * 1_000_000), at: Self.time(now))
+            }
+            // A 64 MiB segment has just left the in-flight sum; its body is not appended yet.
+            now += 0.25
+            let reported = Int(now * 4_000_000) - 64 * 1_048_576
+            let sampled = hold
+                ? DownloadLiveRangeProgressPolicy.rateSampleBytes(
+                    reportedBytes: reported, previous: last, bytesAwaitingAppend: awaitingAppend)
+                : reported
+            estimator.sample(train, bytes: sampled, at: Self.time(now))
+            estimator.sample(other, bytes: Int(now * 1_000_000), at: Self.time(now))
+            return estimator.rate(at: Self.time(now))
+        }
+        #expect(answerAfterBoundary(hold: true, awaitingAppend: 64 * 1_048_576) != nil,
+                "a held boundary dip must not cost the batch its speed")
+        #expect(answerAfterBoundary(hold: false, awaitingAppend: 64 * 1_048_576) == nil,
+                "an unheld dip is a regression: the estimator drops the batch")
+        // A loss the debt does not explain still reaches the estimator.
+        #expect(answerAfterBoundary(hold: true, awaitingAppend: 1_048_576) == nil)
+        #expect(answerAfterBoundary(hold: true, awaitingAppend: 0) == nil)
+    }
+
+    /// The model's `Callback` for a forward-only row: `disk' \in {disk, rec'}`.
+    @Test("Bytes: a progress sample between persistence tickets changes the live row only")
+    func throttledProgressHasNoPersistenceTicket() throws {
+        let submit = try #require(Self.appFunctionSource(
+            named: "submitProgress", in: "Labstream/Capabilities/Downloads/Core/DownloadStore.swift"))
+        #expect(submit.contains("|| now.timeIntervalSince(lastProgressPersist) >= Self.progressPersistInterval")
+            && submit.contains("let ticket = shouldPersist ? enqueueAttemptPersistenceLocked() : nil")
+            && submit.contains("setRowLocked(row, for: key.ratingKey)"),
+                "submitProgress changed: re-derive the forward-only branch of Callback in DownloadsStatus.tla")
+    }
+
     @Test("Progress fraction: inside 0...1, never complete from an estimate, never lower for more bytes")
     func progressFractionIsBoundedAndMonotone() {
         for seed in UInt64(6_001)...6_040 {
@@ -617,6 +716,100 @@ struct DownloadsFormalModelStatusTests {
                 }
             }
         }
+    }
+
+    private struct ModelPhaseRow {
+        var lifecycle: DownloadLifecycle
+        var zero: Bool
+        var done: Bool
+        var active: Bool
+        var isStatic: Bool
+        var backend: Bool
+        var phase: String
+    }
+
+    /// The rows of `PhaseTable` in `specs/downloads/status/DownloadsStatusPhase.tla`. TLC checks
+    /// that table against the model's `PhaseOf` every time it loads the status module.
+    private static func modelPhaseTable() throws -> [ModelPhaseRow] {
+        let text = try #require(repositoryText("specs/downloads/status/DownloadsStatusPhase.tla"))
+        var rows: [ModelPhaseRow] = []
+        for line in text.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("<<\""), let close = trimmed.range(of: ">>") else { continue }
+            let fields = trimmed[trimmed.index(trimmed.startIndex, offsetBy: 2)..<close.lowerBound]
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " \"")) }
+            guard fields.count == 7 else { continue }
+            let lifecycle = try #require(DownloadLifecycle(rawValue: fields[0]), "unknown lifecycle \(fields[0])")
+            let flags = try fields[1...5].map { field -> Bool in
+                try #require(["TRUE": true, "FALSE": false][field], "not a boolean: \(field)")
+            }
+            rows.append(ModelPhaseRow(lifecycle: lifecycle, zero: flags[0], done: flags[1], active: flags[2],
+                                      isStatic: flags[3], backend: flags[4], phase: fields[6]))
+        }
+        return rows
+    }
+
+    /// `DownloadJobPhase` without its associated values, as the model names it.
+    private static func modelName(_ phase: DownloadJobPhase) -> String {
+        switch phase {
+        case .failed: return "failed"
+        case .paused: return "paused"
+        case .complete: return "complete"
+        case .transferFinalizing: return "transferFinalizing"
+        case .activeStaticZeroByteTransfer: return "activeStaticZeroByteTransfer"
+        case .serverPrepFinalizing: return "serverPrepFinalizing"
+        case .serverPrepProgressing: return "serverPrepProgressing"
+        case .serverPrepQueued: return "serverPrepQueued"
+        case .serverPrepReady: return "serverPrepReady"
+        case .waitingForBackend: return "waitingForBackend"
+        case .activeServerPrep: return "activeServerPrep"
+        case .queued: return "queued"
+        case .activeTransfer: return "activeTransfer"
+        case .inactiveTransfer: return "inactiveTransfer"
+        }
+    }
+
+    @Test("Phase: DownloadRowStatusCaptionPolicy.phase equals the TLA+ PhaseOf table, row for row")
+    func phaseEqualsModelTable() throws {
+        let rows = try Self.modelPhaseTable()
+        // Every lifecycle with every combination of the five facts, once.
+        #expect(rows.count == DownloadLifecycle.allCases.count * 32)
+        let distinct = Set(rows.map { "\($0.lifecycle) \($0.zero) \($0.done) \($0.active) \($0.isStatic) \($0.backend)" })
+        #expect(distinct.count == rows.count)
+
+        for row in rows {
+            // The policy reads `progress >= 1` only; the bytes the row shows are its other input.
+            for bytes in row.zero ? [0] : [1, 4_096] {
+                for progress in row.done ? [1.0, 1.2] : [0.0, 0.5, 0.999] {
+                    let context = DownloadRowStatusCaptionPolicy.Context(
+                        status: row.lifecycle.derivedStatus, progress: progress, bytes: bytes,
+                        lane: .original, backend: .jellyfin,
+                        resumeMode: row.isStatic ? .staticByteRange : .liveForwardOnly,
+                        isServerPreparedVersion: false, resolutionLabel: nil, displayFraction: nil,
+                        isActive: row.active, isBackendConfigured: row.backend, isTranscodeLimited: false,
+                        serverPrepState: nil, serverPrepProgress: nil, serverPrepETA: nil,
+                        downloadETA: nil, downloadSpeedBytesPerSecond: nil, hasServerPrepQueueTitle: false,
+                        isRetrying: false, failureCaption: nil, lifecycle: row.lifecycle)
+                    let phase = DownloadRowStatusCaptionPolicy.phase(context)
+                    #expect(Self.modelName(phase) == row.phase, """
+                        \(row.lifecycle) zero=\(row.zero) done=\(row.done) active=\(row.active) \
+                        static=\(row.isStatic) backend=\(row.backend): the policy says \(phase), the model \(row.phase)
+                        """)
+                    // The model's ActiveWorkPhases is DownloadJobPhase.isActiveWork.
+                    let modelActiveWork = ["transferFinalizing", "activeStaticZeroByteTransfer", "activeServerPrep",
+                                           "queued", "activeTransfer"].contains(row.phase)
+                    #expect(phase.isActiveWork == modelActiveWork, "\(row.phase)")
+                }
+            }
+        }
+
+        // The model's `IsActive` and `ProgressDone` are the manager's inputs to the policy.
+        let published = try #require(Self.appFunctionSource(
+            named: "publishedRowPhase", in: "Labstream/Capabilities/Downloads/Core/DownloadManager.swift"))
+        #expect(published.contains("isActive: activeJobs.contains(record.ratingKey) || record.status == .downloading")
+            && published.contains("isBackendConfigured: isBackendConfigured(for: record)"),
+                "publishedRowPhase changed: re-derive IsActive and backendOn in DownloadsStatus.tla from it")
     }
 
     @Test("Persisted phase, the health snapshot and the watchdog agree on what counts as work")
@@ -906,17 +1099,234 @@ struct DownloadsFormalModelStatusTests {
         }
     }
 
-    /// The text of one function in an app source file, from its declaration to the next
-    /// declaration at the same indentation. Nil when the file or the function is missing.
-    private static func appFunctionSource(named name: String, in relativePath: String) -> String? {
+    /// S5 (`status/Finding-S5-StallCapNoVerdict.cfg`, `Finding-S5-StallCapHidesSpeed.cfg`). The
+    /// stall tracker restarts a wedged forward-only stream twice. If neither restart moves a
+    /// byte, `shouldRestartForwardOnlyStream` answers no from then on, and a restart is the only
+    /// verdict the tracker has. The row stays `downloading` at zero bytes with a task that
+    /// delivers nothing, and as a silent member of the batch it also holds "Updating speed…" up
+    /// for the rows that move (S1, for a forward-only row).
+    ///
+    /// The cap is deliberate: restarting for ever would hammer the encoder. Wanted: past the cap
+    /// the row gets a verdict (it fails, with the reason), so the screen stops saying it downloads.
+    @Test("S5: a forward-only stream that stalls after its two restarts still gets a verdict")
+    func stalledForwardOnlyStreamGetsVerdictPastTheCap() throws {
+        let manager = "Labstream/Capabilities/Downloads/Core/DownloadManager.swift"
+        let detect = try #require(Self.appFunctionSource(named: "detectForwardOnlyStreamStalls", in: manager))
+        let restart = try #require(Self.appFunctionSource(named: "restartStalledForwardOnlyStreamAsync", in: manager))
+        #expect(detect.contains("forwardOnlyStallTracker.detectRestarts(")
+            && restart.contains("applyLifecycleEvent(.stallDetected")
+            && restart.contains("forwardOnlyStallTracker.seedRestartAttempts(ratingKey, attempts: restart.attempt)")
+            && restart.contains("requestAdmission(for: failed, origin: .automatic)"),
+                "the stall restart path changed: re-derive StallDetect in DownloadsStatus.tla and this harness from it")
+
+        let ratingKey = "jellyfin:item-stalled"
+        let record = DownloadRecord(
+            ratingKey: ratingKey, title: "Fixture", localURL: URL(fileURLWithPath: "/tmp/fixture.mp4"),
+            bytes: 0, status: .downloading,
+            metadata: OfflineMetadata(ratingKey: ratingKey, title: "Fixture", type: "movie",
+                                      backendKind: .jellyfin, downloadLane: .optimize,
+                                      resumeMode: .liveForwardOnly),
+            lifecycle: .transferring)
+        #expect(DownloadStallRecoveryPolicy.isForwardOnlyMediaBrowserStream(record))
+
+        var tracker = DownloadForwardOnlyStallTracker()
+        var attempts: [Int] = []
+        var lastVerdictAt = 0.0
+        let horizon = 3_600.0
+        var now = 0.0
+        // The watchdog refreshes every 15 s; the stream never moves a byte.
+        while now <= horizon {
+            for found in tracker.detectRestarts(records: [record], now: Self.time(now), isActive: { _ in true }) {
+                attempts.append(found.attempt)
+                lastVerdictAt = now
+                // restartStalledForwardOnlyStreamAsync: the attempt fails, releaseInFlight wipes
+                // the tracker's entry, the count is seeded back, and the row is admitted again
+                // from byte 0.
+                tracker.remove(ratingKey)
+                tracker.seedRestartAttempts(ratingKey, attempts: found.attempt)
+            }
+            now += DownloadWatchdogPolicy.refreshIntervalSeconds
+        }
+        // The model's MaxStallRestarts, and its `restart == stalls[r] < MaxStallRestarts`.
+        #expect(DownloadStallRecoveryPolicy.defaultMaxAutomaticRestarts == 2)
+        #expect(attempts == [1, 2])
+        #expect(!DownloadStallRecoveryPolicy.shouldRestartForwardOnlyStream(
+            record: record, active: true, lastForwardProgressAt: Self.time(lastVerdictAt),
+            now: Self.time(horizon), restartAttempts: 2))
+
+        withKnownIssue("TLA+ finding S5: past the restart cap a stalled forward-only stream has no verdict") {
+            #expect(horizon - lastVerdictAt < 600, """
+                the stream has been `downloading` at zero bytes for \(Int(horizon - lastVerdictAt)) s since \
+                its second restart, with no further restart and no failure
+                """)
+        }
+    }
+
+    /// S6 (`status/Finding-S6-SlowMemberFlapsSpeed.cfg`). `rate(at:)` measures every transfer
+    /// over one common interval of at least `minimumWindow`, inside the last `windowDuration`.
+    /// So a transfer counts only while its last callback is at most 3.5 s old, although its
+    /// evidence is called fresh for `callbackGap` (6 s). The reviewer's case: both transfers are
+    /// settled, have two observations and reported within the last 0.11 s, and there is no total
+    /// because one window starts after the other's last observation.
+    @Test("S6: two settled, fresh transfers whose windows do not overlap have no total")
+    func freshNonOverlappingWindowsHideTotal() {
+        let first = Self.key(0)
+        let second = Self.key(1)
+        var estimator = DownloadAggregateRateEstimator()
+        estimator.setActiveTransfers([first, second])
+        estimator.sample(first, bytes: 0, at: Self.time(0))
+        estimator.sample(second, bytes: 0, at: Self.time(0.1))
+        estimator.sample(first, bytes: 4_000_000, at: Self.time(4))
+        // Still inside the second transfer's settling window: this replaces its baseline.
+        estimator.sample(second, bytes: 3_990_000, at: Self.time(4.09))
+        estimator.sample(second, bytes: 4_010_000, at: Self.time(4.11))
+
+        let answer = estimator.rate(at: Self.time(4.11))
+        withKnownIssue("TLA+ finding S6: fresh evidence without a common 0.5 s window hides the total") {
+            #expect(answer != nil, "both transfers moved about 1 MB/s for four seconds and reported within 0.11 s")
+        }
+        // It resolves once both report again at least 0.5 s after the newer baseline (the
+        // model's OverlapRipen and aggOvl).
+        estimator.sample(first, bytes: 4_700_000, at: Self.time(4.7))
+        estimator.sample(second, bytes: 4_600_000, at: Self.time(4.7))
+        let later = estimator.rate(at: Self.time(4.7))
+        #expect(abs((later ?? 0) - 2_000_000) < 50_000, "a common 0.61 s window: \(String(describing: later))")
+    }
+
+    /// S6, the lasting form. A transfer that reports every 4.5 s (a slow or bursty stream) is
+    /// inside `callbackGap` throughout, so nothing is stale and nothing resets. Its last
+    /// observation still leaves the common window 3.5 s after each callback, and the total is
+    /// hidden until the next one: "Updating speed…" for a second in every cycle, for as long as
+    /// the batch lasts. Wanted: a number for as long as every transfer's evidence is fresh.
+    @Test("S6: a transfer reporting every 4.5 s, inside callbackGap, makes the total come and go")
+    func slowMemberMakesTotalFlap() {
+        let fast = Self.key(0)
+        let slow = Self.key(1)
+        var estimator = DownloadAggregateRateEstimator()
+        estimator.setActiveTransfers([fast, slow])
+        let trueTotal = 1_000_000.0 + 200_000.0
+        var lastSlow = 0.0
+        var hiddenWhileFresh = 0
+        var shown = 0
+        for step in 0...480 {
+            let now = Double(step) * 0.25
+            estimator.sample(fast, bytes: step * 250_000, at: Self.time(now))
+            if step % 18 == 0 {
+                estimator.sample(slow, bytes: step * 50_000, at: Self.time(now))
+                lastSlow = now
+            }
+            guard now >= 30 else { continue }
+            let age = now - lastSlow
+            #expect(age < estimator.callbackGap, "the harness keeps the slow transfer inside callbackGap")
+            if let answer = estimator.rate(at: Self.time(now)) {
+                shown += 1
+                // Never a wrong number: only a missing one.
+                #expect(abs(answer - trueTotal) < 1, "t=\(now): \(answer)")
+                // The model's `thin` age: no answer once the last callback is 3.5 s old.
+                #expect(age <= estimator.windowDuration - estimator.minimumWindow, "t=\(now) age=\(age)")
+            } else {
+                hiddenWhileFresh += 1
+                #expect(age > estimator.windowDuration - estimator.minimumWindow, "t=\(now) age=\(age)")
+            }
+        }
+        #expect(shown > 200)
+        withKnownIssue("TLA+ finding S6: a transfer reporting every 3.5 to 6 s hides the total in every cycle") {
+            #expect(hiddenWhileFresh == 0, """
+                \(hiddenWhileFresh) of \(hiddenWhileFresh + shown) refreshes had no total although every \
+                transfer had reported within callbackGap
+                """)
+        }
+    }
+
+    /// S7 (`status/Finding-S7-LateBacklogInflatesTotal.cfg`), the reviewer's records. After a
+    /// wake the first callback starts a 4 s settling window in which every sample replaces the
+    /// baseline. The transfer really moves 100 B/s. If the rest of what piled up during the sleep
+    /// is reported only after that window, it is appended to the last settling baseline and
+    /// divided by the 1.1 s since it: (100,000 - 300) / 1.1 = 90,636 B/s.
+    ///
+    /// The estimator cannot tell a late backlog from a burst, so the fix is the owner's (as
+    /// `rebaseline` is for the row estimator). Whether URLSession ever reports a backlog that
+    /// late needs a device; the seeded batch tests above show what follows if it does.
+    @Test("S7: a backlog reported 4.1 s after the first post-wake callback is not published as speed")
+    func lateBacklogAfterSettlingIsNotPublishedAsSpeed() {
+        let transfer = Self.key(0)
+        var estimator = DownloadAggregateRateEstimator()
+        estimator.setActiveTransfers([transfer])
+        estimator.resetAfterWake()
+        for (seconds, bytes) in [(0.0, 0), (1.0, 100), (2.0, 200), (3.0, 300)] {
+            estimator.sample(transfer, bytes: bytes, at: Self.time(seconds))
+            #expect(estimator.rate(at: Self.time(seconds)) == nil, "settling at t=\(seconds)")
+        }
+        estimator.sample(transfer, bytes: 100_000, at: Self.time(4.1))
+        let answer = estimator.rate(at: Self.time(4.1))
+        withKnownIssue("TLA+ finding S7: a backlog reported after the 4 s settling window is published as live speed") {
+            #expect((answer ?? 0) <= 200, "published \(Int((answer ?? 0).rounded())) B/s for a transfer moving 100 B/s")
+        }
+    }
+
+    /// S7, the row (`status/Finding-S7-LateBacklogInflatesRow.cfg`). The first callback after a
+    /// wake re-baselines a static-range row and starts a 4 s grace in which every refresh
+    /// replaces the estimator with a one-sample one. Here the rest of the backlog is reported
+    /// 3.9 s after that callback: inside the grace, but the refresh that samples it runs at 4.9 s,
+    /// after it. The last grace-time baseline (3.5 s) holds the bytes from before the report, so
+    /// the row divides the backlog by 1.4 s.
+    ///
+    /// The grace branch is app code, so the harness mirrors it and the first expectation checks
+    /// the mirror against the source.
+    @Test("S7: a row's backlog reported at the end of its grace is not published as speed")
+    func lateBacklogAtTheEndOfTheGraceIsNotPublishedAsRowSpeed() throws {
+        let refresh = try #require(Self.appFunctionSource(
+            named: "refreshRecords", in: "Labstream/Capabilities/Downloads/Core/DownloadManager.swift"))
+        #expect(refresh.contains("if let graceUntil = rateEstimatorForegroundGraceUntil[record.ratingKey], now < graceUntil {")
+            && refresh.contains("var estimator = DownloadRateEstimator(rebaselineSuppressWindow: 4.0)")
+            && refresh.contains("rateEstimatorForegroundGraceUntil.removeValue(forKey: record.ratingKey)"),
+                "the grace branch of refreshRecords changed: re-derive this harness and RowSample from it")
+
+        let liveRate = 1_000_000.0
+        let backlog = 200_000_000
+        let firstReport = 60_000_000
+        func shownBytes(at now: Double) -> Int {
+            firstReport + Int(liveRate * now) + (now >= 3.9 ? backlog : 0)
+        }
+        // onRangeLiveProgress, first callback after foreground (t = 0): rebaseline and grace.
+        var estimator = DownloadRateEstimator(rebaselineSuppressWindow: 4.0)
+        estimator.rebaseline(bytes: shownBytes(at: 0), at: Self.time(0))
+        let graceUntil = 4.0
+        var published: Double?
+        for now in [1.0, 2.0, 3.0, 3.5, 4.9] {
+            if now < graceUntil {
+                var replacement = DownloadRateEstimator(rebaselineSuppressWindow: 4.0)
+                _ = replacement.sample(bytes: shownBytes(at: now), at: Self.time(now))
+                estimator = replacement
+                published = nil
+            } else {
+                let rate = estimator.sample(bytes: shownBytes(at: now), at: Self.time(now))
+                published = (rate ?? 0) > 0 ? rate : nil
+            }
+        }
+        withKnownIssue("TLA+ finding S7: a backlog reported after the 4 s settling window is published as live speed") {
+            #expect((published ?? 0) <= liveRate * 2,
+                    "the row shows \(Int((published ?? 0).rounded())) B/s while it moves \(Int(liveRate)) B/s")
+        }
+    }
+
+    /// A repository file as text, or nil when it is missing.
+    private static func repositoryText(_ relativePath: String) -> String? {
         // PMSKit/Tests/PMSKitTests/<this file> -> repository root.
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-        guard let source = try? String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8),
-              let start = source.range(of: "    private func \(name)(") else { return nil }
-        let rest = source[start.upperBound...]
-        let end = rest.range(of: "\n    private func ")?.lowerBound ?? rest.endIndex
-        return String(source[start.lowerBound..<end])
+        return try? String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+    }
+
+    /// The text of one type-level function in an app source file, from its declaration to its
+    /// closing brace. Nil when the file or the function is missing.
+    private static func appFunctionSource(named name: String, in relativePath: String) -> String? {
+        guard let source = repositoryText(relativePath) else { return nil }
+        guard let start = ["    private func \(name)(", "    func \(name)("]
+            .compactMap({ source.range(of: $0) }).first else { return nil }
+        let rest = source[start.lowerBound...]
+        let end = rest.range(of: "\n    }\n")?.upperBound ?? rest.endIndex
+        return String(rest[..<end])
     }
 }
