@@ -7,10 +7,63 @@ import Testing
 /// PR #505 review regressions in the completed-row side-asset repair: the Plex source refresh
 /// must not fetch chapter images from its raw chapter list (#504), and Pause All must keep launch
 /// from restoring an inactive session that only side assets need, leaving it to Resume All (#494).
+/// A session-scoped `URLProtocol` that runs its handler on a global queue, so one request whose
+/// response the test holds does not block the other requests of the same session.
+private final class AsyncAnsweringURLProtocol: URLProtocol, @unchecked Sendable {
+    typealias Handler = @Sendable (URLRequest) throws -> (HTTPURLResponse, Data)
+    private static let routeHeader = "X-Labstream-Async-Test-Route"
+    private static let handlers = TestLockedBox<[String: Handler]>([:])
+
+    final class Stub: @unchecked Sendable {
+        let configuration: URLSessionConfiguration
+        private let identifier = UUID().uuidString
+        init(handler: @escaping Handler) {
+            let identifier = identifier
+            AsyncAnsweringURLProtocol.handlers.withValue { $0[identifier] = handler }
+            configuration = .ephemeral
+            configuration.protocolClasses = [AsyncAnsweringURLProtocol.self]
+            configuration.httpAdditionalHeaders = [AsyncAnsweringURLProtocol.routeHeader: identifier]
+        }
+        deinit {
+            let identifier = identifier
+            AsyncAnsweringURLProtocol.handlers.withValue { $0.removeValue(forKey: identifier) }
+        }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.value(forHTTPHeaderField: routeHeader) != nil
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let request = self.request
+        guard let identifier = request.value(forHTTPHeaderField: Self.routeHeader),
+              let handler = Self.handlers.value[identifier] else {
+            client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
+            return
+        }
+        DispatchQueue.global().async { [self] in
+            do {
+                var routed = request
+                routed.setValue(nil, forHTTPHeaderField: Self.routeHeader)
+                let (response, data) = try handler(routed)
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: data)
+                client?.urlProtocolDidFinishLoading(self)
+            } catch {
+                client?.urlProtocol(self, didFailWithError: error)
+            }
+        }
+    }
+
+    override func stopLoading() {}
+}
+
 @Suite("Side-asset refresh review regressions", .downloadTestFiles, .serialized)
 @MainActor
 struct SideAssetRefreshReviewTests {
-    private static let png = Data(base64Encoded:
+    nonisolated private static let png = Data(base64Encoded:
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")!
 
     /// The saved list is [A@0 (cached), B@10s (missing)]. The saved-list worker's fetch of B
@@ -44,7 +97,9 @@ struct SideAssetRefreshReviewTests {
             "Chapter":[{"tag":"A","startTimeOffset":0,"thumb":"/a"},
                        {"tag":"X","startTimeOffset":5000,"thumb":"/x"}]}]}}
             """#.utf8)
-        let stub = TestURLProtocolStub { request in
+        // `TestURLProtocolStub` answers inside `startLoading`, so a held metadata response would
+        // also hold the chapter requests behind it. This stub answers off the loading thread.
+        let stub = AsyncAnsweringURLProtocol.Stub { request in
             let url = request.url!
             if url.path.contains("/library/metadata/") {
                 metadataEntered.signal(true)
