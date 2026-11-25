@@ -331,7 +331,10 @@ sequenceDiagram
   The store has one resume-blob slot per download row. When an unknown-size static source uses
   `Range: bytes=<durableOffset>-`, pausing can preserve that task's OS temp progress and display
   watermark in a blob. Adoption requires the blob's original open-ended Range offset to equal the
-  current durable partial.
+  current durable partial. The resumed task may count from its own baseline or cumulatively, so the
+  live display latches that choice on the task's first callback (`displayBytesForResumedTask`) and
+  shows `max(count + rebase, watermark)`; judged per sample, a fresh count crossing the watermark
+  made the bytes fall and the aggregate speed reset (#502).
 - **Closed train segments never persist or adopt URLSession resume data, including the head.**
   CFNetwork can replay a resumed closed request past its original end, so pausing a segment train
   clears any old blob/watermark and plain-cancels unfinished segments. The app-owned durable partial
@@ -1013,10 +1016,11 @@ timing assumption that a backlog is fully reported inside the 4 s windows; that 
 boundary never resets the batch (#416); that phase, sidebar and health snapshot say active work
 only when work exists; that "Waiting for <backend>" is said only of a row with no session and
 no task; that a row waiting for admission reads as waiting (pu-33); and that shown bytes never
-go down while a row stays downloading in a live process. The phase rule is a function with a
+go down while a row stays downloading in a live process, and that a task resumed from a blob
+publishes bytes that never fall and never pass the true total (#502). The phase rule is a function with a
 288-row table in `DownloadsStatusPhase.tla`; TLC checks the table against the function and
 `DownloadsFormalModelStatusTests` checks `DownloadRowStatusCaptionPolicy.phase` against the
-table. Findings Status-S1 to S7. The Swift suite adds seeded property tests and worked examples
+table. Findings Status-S1 to S7; #502 is fixed. The Swift suite adds seeded property tests and worked examples
 of the estimators' arithmetic. The callback-gap reset has no TLC mutant: every sleep in the
 model is reset at foreground first, so that rule is exercised only by the seeded Swift test.
 

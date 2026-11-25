@@ -633,7 +633,7 @@ struct DownloadsFormalModelStatusTests {
         // The reviewer's records, then on to the estimator as the session hands them over.
         let key = Self.key(0)
         var estimator = DownloadAggregateRateEstimator()
-        estimator.setActiveTransfers([key])
+        estimator.setActiveTransfers([key], at: Self.time(0))
         var rebase: Int?
         var previousRate: Int?
         var published: [Int] = []

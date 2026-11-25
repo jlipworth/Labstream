@@ -12,6 +12,8 @@ pending merge): the code now has the model's `SilentCountsAsZero`, `WatchdogCove
 that switches it off and must find the old violation. Their pins in
 `PMSKit/Tests/PMSKitTests/DownloadsFormalModelStatusTests.swift` now pass. S6 and S7 are pinned as
 known issues there; S3 and S4 have no pure decision to pin and are recorded as probable.
+A reviewer's ninth, #502 (a resumed task's bytes going backwards), is fixed too; see the end of
+Findings.
 
 ## What is modelled
 
@@ -22,12 +24,13 @@ known issues there; S3 and S4 have no pure decision to pin and are recorded as p
 | Refresh loop | `DownloadManager.updateDownloadWatchdog`, `DownloadWatchdogPolicy` | `refreshPending` (a callback or a store change scheduled one) and `watchdog` (the loop runs). |
 | Stall verdict | `DownloadStallRecoveryPolicy`, `DownloadForwardOnlyStallTracker`, `restartStalledForwardOnlyStreamAsync` | `StallObserve` and `StallAct` fail a stalled forward-only attempt and requests a retry, `GrantRetry` and `StartTask` restart it from byte 0, and `stalls` counts restarts up to `MaxStallRestarts`. Forward progress resets the count. Past the cap (`StallCapFails`, #497) the stall fails the row with no retry request. Detection and the verdict are two steps: `StallObserve` queues it with the bytes it saw (`stallQ`), `StallAct` runs it later and, with `FixStallRecheck` (S8), only if the bytes have not moved. Static-range rows have no stall verdict. |
 | Bytes | `DownloadStore.submitProgress`, `DownloadLiveRangeProgressPolicy`, `DownloadManager.displayBytes` | Three copies. `disk` is the index file. `rec` is the store's live row: a forward-only progress sample changes it at once and reaches `disk` only with a persistence ticket (a status change, or the 1 s cadence). `live` is the in-memory optimistic watermark of a static-range row. `pubBytes` is what the last refresh put on screen. A process death keeps `disk` only. |
+| Resumed remainder (#502) | `DownloadLiveRangeProgressPolicy.displayBytesForResumedTask`, the range callback and the pause path in `BackgroundDownloadSession` | Only for rows in `ResumeBlobRows`, a definition that is empty unless a config overrides it. `res` holds the resume watermark (`wm`), the task's reported count above the checkpoint (`cnt`), the blob bytes that count leaves out (`off`), the rebase the session latched on the task's first callback, and the sample it last published (`pub`). `Pause` keeps the task's bytes as the blob and the larger watermark; `StartTask` resumes from the blob with a fresh or a cumulative counter. `Fix502` switches between the latched rebase and the old per-sample rule. |
 | Segment boundary | `DownloadLiveRangeProgressPolicy.rateSampleBytes`, the range callback in `BackgroundDownloadSession` | `SegmentFinish` puts a finished segment's body in claim debt (`debt`), `AppendLands` moves the checkpoint. A callback during the debt reports a lower train total; the hold makes that invisible to the estimator. |
 | Phase and caption | `DownloadRowStatusCaptionPolicy`, `DownloadProgressDisplay.isTransferFinalizing`, `DownloadManager.publishedRowPhase`, `DownloadJobSnapshot`, `OfflineSidebarStatusPolicy`, `DownloadHealthSnapshotPolicy` | `PhaseOf` over the lifecycle, zero bytes, `progress >= 1`, `isActive` (`activeJobs` holds the key, or the row downloads), the route and `isBackendConfigured`. `jobs` is `activeJobs`; `backendOn` is the backend session. |
 | Lifecycle | `DownloadLifecycleReducer` | `Reduce` only. Each row keeps a whole reducer state, so there is no projection config. |
 
 Durable variables (`row`, `disk`, `task`, `flow`, `unrep`, `awake`, `backendOn`, `budget`) survive
-`Crash`. Everything else is in memory and returns to its `Init` value; `rec` is reloaded from
+`Crash`, and so do `res`'s watermark and the task's counts; its latch and published sample do not. Everything else is in memory and returns to its `Init` value; `rec` is reloaded from
 `disk`. Eleven ghost variables record what a published number was built from; no guard reads them.
 
 Time is abstract: an estimator is the stage it has reached. The arithmetic is covered by the seeded
@@ -72,7 +75,9 @@ configs use 1 or 2 and, where the run would leave the default tier, a subset of 
 | `SidebarHonest`, `HealthHonest` | invariant | The sidebar count and the health snapshot agree with the same notion of work. |
 | `WaitingReadsAsWaiting` | invariant | pu-33. A row waiting for admission reads as waiting. |
 | `StallRestartsCapped` | invariant | The tracker never restarts a stream more often than its cap between two forward bytes. |
+| `ResumedBytesHonest` | invariant | #502. Neither a resumed task's published sample nor the row's merged total claims bytes the row does not have. |
 | `BytesMonotone` | action | While the process lives and a row stays downloading, its shown bytes never go down unless a reducer effect reset them. |
+| `PublishedSampleMonotone` | action | #502. While the process lives and a resumed task keeps running, the sample the session publishes (to the row and to the aggregate estimator) never goes down. It is judged on that sample, not on `Shown`: the row's running max turns a fall into a freeze on screen, and the estimator still sees the fall. |
 | `RelaunchKeepsBytes` | action | The first snapshot published after relaunch reconcile shows, for every row reconcile left as it was, at least what the last snapshot before the death showed. A row whose callback already arrived is not judged. S3 violates it. |
 | `UpdatingResolves` | liveness | "Updating speed…" does not stay up for ever while a transferring row's bytes flow. S1 and S5 violate it. |
 | `SpeedSettlesAfterStall` | liveness | After a stall a transferring row stops showing a speed. S2 violates it. |
@@ -106,7 +111,9 @@ those fixes.
 | `Current-OneForward` | pass | 1,614,058 | 47 |
 | `Current-OneStatic` | pass | 556,054 | 27 |
 | `Current-Planned` | pass | 104,963 | 6 |
+| `Current-ResumeBlob` | pass | 224,161 | 3 |
 | `Current-TwoStatic` | pass | 1,415,698 | 84 |
+| `Faithful-502-off` | violation `PublishedSampleMonotone` | 3,656 | 1 |
 | `Faithful-B09-off` | violation `PhaseNoGhostWork` | 59 | 1 |
 | `Faithful-S1-off` | violation `UpdatingResolves` (reported as `TEMPORAL`) | 179,960 | 64 |
 | `Faithful-S2-off` | violation `SpeedSettlesAfterStall` (reported as `TEMPORAL`) | 18,477 | 4 |
@@ -172,6 +179,14 @@ Two historical bugs from `docs/evidence/2026-10-17-downloads-overhaul-bugs-vs-ma
 - **B09 off.** A progress callback queued before Pause promotes the paused row. It reads as an
   active transfer, and the sidebar counts it, with no task. This restores the late-progress part
   of B09 only; how an OS cancellation is classified is the session model's.
+
+And one fix from this round:
+
+- **#502 off** (`Faithful-502-off`, `Fix502 <- Off`). A resumed task's count is normalized per
+  sample. The 14-step trace: one byte, a second, Pause (watermark 2, blob 2), Resume, a start
+  whose counter is fresh, then counts 1 and 2 publish 3 and then 2. `ResumeBlobRows` and `Fix502`
+  are module definitions rather than constants so the other configs need no new lines; the two
+  #502 configs override them with `<-`.
 
 Mutants for protections that are not in that audit. Each removes one thing (`Mutant` in the
 module):
@@ -437,6 +452,33 @@ drops the verdict (diagnostic `downloads.forward_stream_stall_verdict_skipped`).
 needs no change: the next refresh sees the forward bytes and resets the restart budget. Pin:
 `queuedStallVerdictRechecksBytes`.
 
+### #502: a resumed task's published bytes go backwards (real, medium; fixed on `specs/downloads-tla`, pending merge)
+
+Issue: #502. Raised by a reviewer; not found by the model, which had no resume watermark.
+
+An open-ended remainder (the unknown-size fallback) pauses with URLSession resume data and
+persists a display watermark, `checkpoint + temp bytes`. The task resumed from that blob may
+report its count from its own baseline. `displayBytesForResumedTask` used to judge each sample
+alone: below the watermark it added the fresh delta to the watermark, at or above it it used the
+raw count. With a durable base of 100 and a watermark of 150, counts 49 and 50 published 199 and
+then 150. `mergedSample` froze the row at 199 until the count reached 100, and
+`rateSampleBytes` handed the estimator a fall that no append debt explains, so it dropped the
+batch (speed blank, "Updating speed…").
+
+Fix: whether the counter is fresh or cumulative is a property of the task, so the rebase
+(`watermark - base`, or 0) is latched on the task's first callback and kept on its
+`RangeTransfer` (`resumeDisplayRebase`); the pause path reuses it. The display is
+`max(count + rebase, watermark)`. A cumulative counter's first count is at least the watermark, so
+it latches 0 and is exact; a fresh counter's first count below the watermark latches the blob and
+is exact. A fresh counter whose first callback already passed the blob latches 0: it undercounts
+by the blob, but never goes back and never claims bytes that do not exist. A relaunch loses the
+latch with the rest of the session's memory and the next callback latches again.
+
+Model: `Current-ResumeBlob` passes (`PublishedSampleMonotone`, `ResumedBytesHonest`, and the
+usual invariants); `Faithful-502-off` violates `PublishedSampleMonotone`. Pins:
+`resumedTaskPublishedBytesAreMonotoneAndHonest` (the reviewer's records through the estimator,
+and a seeded run over both counters) and `DownloadLiveRangeProgressPolicyTests`.
+
 ## Modelling artefacts, fixed in the model
 
 - **A refresh held across pause, sleep, wake and resume.** A scheduled refresh could be delayed
@@ -453,7 +495,7 @@ needs no change: the next refresh sees the forward bytes and resets the restart 
 
 ## Swift tests
 
-`DownloadsFormalModelStatusTests` (23 tests; six of them carry known issues, six in all). The
+`DownloadsFormalModelStatusTests` (24 tests; six of them carry known issues, six in all). The
 seeded ones use a fixed-seed SplitMix64 generator.
 
 - Aggregate speed, steady batch across sleeps, staggered and late first callbacks, partial
@@ -472,6 +514,10 @@ seeded ones use a fixed-seed SplitMix64 generator.
 - Row speed: catch-up bytes inflate the rate unless the owner re-baselines on them.
 - Live range bytes: the merged watermark never goes down; a dip is held only when bodies awaiting
   append explain it; the optimistic total never reads complete before the durable file is.
+- #502: a resumed task's published bytes rise through its watermark, the estimator keeps the
+  batch's speed across it, and for either counter and any first-callback lateness the bytes never
+  fall, never pass the true bytes and never read below the watermark. Both session call sites are
+  checked by text.
 - #416 end to end: a held boundary dip keeps the batch's speed, the same dip unheld costs it, and
   a loss the debt does not explain still reaches the estimator. The session's call into the hold
   is checked by text, since the delegate is app code.
@@ -495,6 +541,9 @@ seeded ones use a fixed-seed SplitMix64 generator.
 - A static-range row's index bytes: its checkpoint is the file, and the model treats it as
   durable when the append lands.
 - What a returning backend session resumes: a row parked by a blocked start stays parked.
+- For #502: a blob row's crash and dropped task (the #502 configs leave both out), a watermark left
+  behind after its blob is lost, and a blob the daemon discards on resume, which neither the old
+  nor the new rule can see without `didResumeAtOffset`.
 - Delete, a user retry of a forward-only row, parallel segment trains beyond "a finished segment
   awaits its append", a loss the claim debt does not explain, and the foreground reconcile race
   (F2, in `DownloadsSessionCore`).

@@ -33,6 +33,11 @@
 (* change or the 1 s cadence).  `pubBytes` is what the last refresh put    *)
 (* on screen.  A death keeps `disk` only.                                  *)
 (*                                                                         *)
+(* #502: a static row in ResumeBlobRows pauses with resume data and its    *)
+(* next task may count from a fresh baseline or cumulatively; `res` holds  *)
+(* the resume watermark, the task's count and the sample the session last  *)
+(* published.  ResumeBlobRows is empty unless a config overrides it.       *)
+(*                                                                         *)
 (* Time is abstract.  A rate estimator is the stage it has reached, not    *)
 (* its numbers:                                                            *)
 (*   aggregate, per transfer   none -> settling -> settled -> window       *)
@@ -133,6 +138,14 @@ ASSUME /\ ForwardRows \subseteq Rows /\ PlannedRows \subseteq Rows /\ StallRows 
            FixStallRecheck}
               \subseteq BOOLEAN
 
+\* #502.  Static rows whose open-ended remainder pauses with resume data, and whether a resumed
+\* task's rebase is latched on its first callback (the fix) or judged per sample.  Definitions,
+\* not constants, so the existing configs need no new lines: a #502 config overrides them with
+\* `ResumeBlobRows <- StaticRows` and `Fix502 <- Off`.
+ResumeBlobRows == {}
+Fix502 == TRUE
+Off == FALSE
+
 VARIABLES
     \* Durable or outside the process: survives Crash.
     row,            \* the index row: a whole reducer state
@@ -184,7 +197,12 @@ VARIABLES
     shownAtCrash,   \* what each downloading row had published when the process died
     dipRows,        \* rows reconcile kept as they were, with no callback since, until the
                     \* first refresh after it
-    killedMoving    \* a queued stall verdict cancelled a stream whose bytes had moved since
+    killedMoving,   \* a queued stall verdict cancelled a stream whose bytes had moved since
+    \* #502, per ResumeBlobRows row: `wm` resumeDisplayBytes (durable metadata); `cnt` the bytes
+    \* the task reports above the checkpoint and `off` the blob bytes its counter leaves out
+    \* (the daemon's, so durable; while paused `cnt` is the blob); `latched` and `rebase` the
+    \* session's latched rebase and `pub` the sample it last published (all in memory).
+    res
 
 durable == <<row, disk, task, flow, unrep, awake, backendOn, budget>>
 memory == <<up, recovering, rec, live, debt, jobs, stalls, stallQ, aggActive, agg, aggAge, aggOvl,
@@ -192,7 +210,7 @@ memory == <<up, recovering, rec, live, debt, jobs, stalls, stallQ, aggActive, ag
             pubBytes, refreshPending, watchdog>>
 ghosts == <<aggTaint, cuRow, baseStale, rowTaint, pubMissing, pubAggTaint, pubThin,
             spuriousReset, resetRows, shownAtCrash, dipRows, killedMoving>>
-vars == <<durable, memory, ghosts>>
+vars == <<durable, memory, ghosts, res>>
 
 -----------------------------------------------------------------------------
 (* Vocabulary                                                              *)
@@ -228,6 +246,16 @@ Status(r) == StatusOf(Life(r))
 Known(r) == IF r \in ForwardRows THEN rec[r] ELSE Larger(rec[r], live[r])
 \* DownloadManager.displayBytes: the live overlay counts only while the row is downloading.
 Shown(r) == IF Status(r) = "downloading" THEN Known(r) ELSE rec[r]
+
+\* #502.  The bytes a ResumeBlobRows row really has: checkpoint, blob, and what the task fetched.
+TrueBytes(r) == rec[r] + res[r].off + res[r].cnt
+NoRes == [wm |-> 0, cnt |-> 0, off |-> 0, latched |-> FALSE, rebase |-> 0, pub |-> 0]
+\* displayBytesForResumedTask.  `t` is checkpoint + the task's count, `b` the checkpoint, `w` the
+\* watermark (0: none).  Per sample (fix off): rebase only while `t` is below the watermark.
+ResumedPerSample(t, b, w) == IF w = 0 THEN t ELSE IF t < w THEN w + (t - b) ELSE t
+\* The rebase a task latches on its first callback, and the display with it (the fix).
+FirstRebase(t, b, w) == IF w > 0 /\ t < w THEN w - b ELSE 0
+ResumedLatched(t, w, rebase) == IF w = 0 THEN t ELSE Larger(t + rebase, w)
 
 Flowing(r) == task[r] = "running" /\ flow[r]
 Transferring == {r \in Rows : Life(r) = "transferring"}
@@ -340,6 +368,7 @@ Init ==
     /\ resetRows = {}
     /\ shownAtCrash = Const(Rows, 0)
     /\ dipRows = {}
+    /\ res = Const(Rows, NoRes)
 
 \* Frames.  `resetRows` describes the last step only, so every action writes it.
 NoReset == resetRows' = {}
@@ -364,12 +393,13 @@ Observing == up /\ awake
 \* The task receives bytes.  Whether a callback can report them now decides what they are.
 DaemonWrite(r) ==
     /\ Flowing(r)
-    /\ Endless \/ Known(r) < MaxBytes
+    /\ Endless \/ (IF r \in ResumeBlobRows THEN TrueBytes(r) ELSE Known(r)) < MaxBytes
     /\ IF Observing THEN unrep[r] = "none" /\ unrep' = Upd(unrep, r, "fresh")
                     ELSE unrep[r] \in {"none", "fresh"} /\ unrep' = Upd(unrep, r, "catchup")
     /\ NoReset
     /\ UNCHANGED <<row, rec, disk, task, flow, live, lateCb, refreshPending, watchdog, dipRows>>
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepProcess /\ KeepManager
+    /\ UNCHANGED res
 
 DaemonFinish(r) ==
     /\ ~Endless
@@ -379,6 +409,7 @@ DaemonFinish(r) ==
     /\ NoReset
     /\ UNCHANGED <<row, rec, disk, flow, unrep, live, lateCb, refreshPending, watchdog, dipRows>>
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepProcess /\ KeepManager
+    /\ UNCHANGED res
 
 -----------------------------------------------------------------------------
 (* DownloadAggregateRateEstimator.sample                                   *)
@@ -434,6 +465,18 @@ Callback(r) ==
            \* so the train total this callback computes is lower than the last one.
            \* rateSampleBytes holds the previous sample when that debt explains the dip (#416).
            dip == r \in StaticRows /\ debt[r] /\ Mutant = "segmentNoHold"
+           \* #502: a resumed open-ended remainder.  The session normalizes the task's count
+           \* against the watermark, publishes that sample to the estimator, and merges it into
+           \* the row's running max (mergedSample).
+           blob == r \in ResumeBlobRows
+           cnt1 == IF TrueBytes(r) < MaxBytes THEN res[r].cnt + 1 ELSE res[r].cnt
+           taskBytes == rec[r] + cnt1
+           rb == IF res[r].latched THEN res[r].rebase
+                 ELSE FirstRebase(taskBytes, rec[r], res[r].wm)
+           sample == IF Fix502 THEN ResumedLatched(taskBytes, res[r].wm, rb)
+                     ELSE ResumedPerSample(taskBytes, rec[r], res[r].wm)
+           \* No append debt on an open-ended remainder: a lower sample is a regression.
+           fall == blob /\ sample < res[r].pub
        IN /\ IsApplied(t)
           /\ row' = Upd(row, r, t.state)
           /\ IF r \in ForwardRows
@@ -445,8 +488,13 @@ Callback(r) ==
                                                        ELSE disk' \in {disk, rec'}
                      \* Forward progress gives the stall tracker its restart budget back.
                      /\ stalls' = Upd(stalls, r, 0)
-                ELSE /\ live' = Upd(live, r, bumped)
+                ELSE /\ live' = Upd(live, r, IF blob THEN Larger(live[r], sample) ELSE bumped)
                      /\ UNCHANGED <<rec, disk, stalls>>
+          /\ res' = IF blob
+                       THEN [res EXCEPT ![r].cnt = cnt1, ![r].pub = sample,
+                                        ![r].latched = Fix502,
+                                        ![r].rebase = IF Fix502 THEN rb ELSE 0]
+                       ELSE res
           \* A first report after a blackout may carry only part of what piled up (A1).
           /\ \E left \in (IF unrep[r] = "catchup" THEN {"none", "rest"} ELSE {"none"}) :
                 /\ unrep' = Upd(unrep, r, left)
@@ -464,7 +512,7 @@ Callback(r) ==
                            /\ cuRow' = Upd(cuRow, r, cuRow[r] \/ isCU)
                            /\ UNCHANGED <<rowEst, suppress, grace, fgPending, pubSpeed,
                                           baseStale, rowTaint>>
-          /\ SampleAggregate(r, isCU, dip)
+          /\ SampleAggregate(r, isCU, dip \/ fall)
     /\ refreshPending' = TRUE
     /\ dipRows' = dipRows \ {r}
     /\ NoReset
@@ -476,13 +524,14 @@ Callback(r) ==
 \* to the durable partial a moment later.
 SegmentFinish(r) ==
     /\ Observing /\ ~recovering
-    /\ r \in StaticRows /\ task[r] = "running" /\ Life(r) = "transferring"
+    /\ r \in StaticRows \ ResumeBlobRows /\ task[r] = "running" /\ Life(r) = "transferring"
     /\ live[r] > rec[r] /\ ~debt[r]
     /\ debt' = Upd(debt, r, TRUE)
     /\ NoReset
     /\ UNCHANGED <<row, rec, disk, task, flow, unrep, live, lateCb, refreshPending, watchdog,
                    jobs, stalls, stallQ, killedMoving, dipRows>>
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepProcess
+    /\ UNCHANGED res
 
 \* The append lands: the checkpoint takes every byte reported so far.  The file is the
 \* checkpoint, so it is durable at once.
@@ -496,6 +545,7 @@ AppendLands(r) ==
     /\ NoReset
     /\ UNCHANGED <<row, task, flow, unrep, live, lateCb, watchdog, jobs, stalls, stallQ, killedMoving, dipRows>>
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepProcess
+    /\ UNCHANGED res
 
 \* A progress callback that was already on its way to the main actor when Pause ran.
 LateCallback(r) ==
@@ -511,6 +561,7 @@ LateCallback(r) ==
     /\ NoReset
     /\ UNCHANGED <<rec, disk, task, flow, unrep, live, watchdog, dipRows>>
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepProcess /\ KeepManager
+    /\ UNCHANGED res
 
 \* didFinishDownloadingTo, through to the body at its working path.
 DeliverFinish(r) ==
@@ -522,9 +573,11 @@ DeliverFinish(r) ==
     /\ task' = Upd(task, r, "none")
     /\ flow' = Upd(flow, r, FALSE)
     /\ unrep' = Upd(unrep, r, "none")
-    /\ rec' = Upd(rec, r, Known(r))
+    /\ rec' = Upd(rec, r, IF r \in ResumeBlobRows THEN TrueBytes(r) ELSE Known(r))
     /\ Persist
     /\ debt' = Upd(debt, r, FALSE)
+    \* The checkpoint commit clears the watermark (no resume data is left).
+    /\ res' = Upd(res, r, NoRes)
     /\ refreshPending' = TRUE
     /\ NoReset
     /\ UNCHANGED <<live, lateCb, watchdog, jobs, stalls, stallQ, killedMoving, dipRows>>
@@ -545,6 +598,7 @@ Finalize(r) ==
     /\ NoReset
     /\ UNCHANGED <<rec, task, flow, unrep, live, lateCb, watchdog, dipRows>>
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepProcess /\ KeepManager
+    /\ UNCHANGED res
 
 -----------------------------------------------------------------------------
 (* The manager                                                             *)
@@ -560,6 +614,7 @@ Admit(r) ==
     /\ NoReset
     /\ UNCHANGED <<rec, task, flow, unrep, live, lateCb, watchdog, stalls, stallQ, killedMoving, debt, dipRows>>
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepProcess
+    /\ UNCHANGED res
 
 \* The grant of a retry that a stall restart requested: the row starts again as a new attempt.
 GrantRetry(r) ==
@@ -576,6 +631,7 @@ GrantRetry(r) ==
     /\ NoReset
     /\ UNCHANGED <<rec, task, flow, unrep, live, lateCb, watchdog, stalls, stallQ, killedMoving, debt, dipRows>>
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepProcess
+    /\ UNCHANGED res
 
 \* The session creates the task and submits transferStarted with it.  A forward-only stream
 \* starts from byte 0.
@@ -591,6 +647,14 @@ StartTask(r) ==
     /\ unrep' = Upd(unrep, r, "none")
     /\ rec' = IF r \in ForwardRows THEN Upd(rec, r, 0) ELSE rec
     /\ Persist
+    \* #502: a task resumed from the blob counts from its own baseline (the blob is left out) or
+    \* cumulatively (the blob is counted from the first callback).
+    /\ \E fresh \in BOOLEAN :
+          res' = IF r \in ResumeBlobRows
+                    THEN [res EXCEPT ![r].cnt = IF fresh THEN 0 ELSE res[r].cnt + res[r].off,
+                                     ![r].off = IF fresh THEN res[r].cnt + res[r].off ELSE 0,
+                                     ![r].latched = FALSE, ![r].rebase = 0, ![r].pub = 0]
+                    ELSE res
     /\ jobs' = jobs \cup {r}
     \* A new task: the session rejects callbacks of the one Pause cancelled (B12).
     /\ lateCb' = Upd(lateCb, r, FALSE)
@@ -613,6 +677,7 @@ StartBlocked(r) ==
     /\ NoReset
     /\ UNCHANGED <<rec, task, flow, unrep, live, lateCb, watchdog, stalls, stallQ, killedMoving, debt, dipRows>>
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepProcess
+    /\ UNCHANGED res
 
 \* One row's estimator sample inside refreshRecords.
 RowSample(r) ==
@@ -699,6 +764,7 @@ Refresh ==
     /\ NoReset
     /\ UNCHANGED <<row, rec, disk, task, flow, unrep, live, lateCb, spuriousReset, stalls, stallQ, killedMoving, debt>>
     /\ KeepProcess
+    /\ UNCHANGED res
 
 \* The watchdog loop: every second while a number shows, every 15 s otherwise.
 WatchdogTick ==
@@ -708,6 +774,7 @@ WatchdogTick ==
     /\ NoReset
     /\ UNCHANGED <<row, rec, disk, task, flow, unrep, live, lateCb, watchdog, dipRows>>
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepProcess /\ KeepManager
+    /\ UNCHANGED res
 
 \* detectForwardOnlyStreamStalls: the watchdog's refresh finds a forward-only stream with no
 \* byte progress for the stall timeout and queues a verdict (restartStalledForwardOnlyStream
@@ -730,6 +797,7 @@ StallObserve(r) ==
     /\ UNCHANGED <<row, rec, disk, task, flow, unrep, live, lateCb, refreshPending, watchdog,
                    jobs, debt, killedMoving, dipRows>>
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepProcess
+    /\ UNCHANGED res
 
 \* The queued operation runs (restartStalledForwardOnlyStreamAsync, or
 \* failStalledForwardOnlyStreamAsync past the cap).  A callback may have moved the row's bytes
@@ -763,6 +831,7 @@ StallAct(r) ==
     /\ NoReset
     /\ UNCHANGED <<rec, flow, unrep, live, lateCb, watchdog, stalls, debt, dipRows>>
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepProcess
+    /\ UNCHANGED res
 
 \* beginDownloadRateForegroundRebaseline, shared by Wake and Relaunch.
 ForegroundRebaseline ==
@@ -801,6 +870,7 @@ Reconcile ==
     /\ UNCHANGED <<task, flow, unrep, lateCb, watchdog, up, awake, backendOn, budget,
                    shownAtCrash>>
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepManager
+    /\ UNCHANGED res
 
 -----------------------------------------------------------------------------
 (* The clock                                                               *)
@@ -815,6 +885,7 @@ SettleExpire(r) ==
     /\ UNCHANGED <<row, rec, disk, task, flow, unrep, live, lateCb, refreshPending, watchdog,
                    aggActive, aggAge, aggOvl, ovlRipe, aggTaint, spuriousReset, dipRows>>
     /\ KeepRowRate /\ KeepPublished /\ KeepProcess /\ KeepManager
+    /\ UNCHANGED res
 
 \* The 4 s foreground grace and the 4 s rebaseline suppression run out.  A1 covers only the
 \* remainder after a first callback, and the refresh that each callback schedules within a
@@ -829,6 +900,7 @@ GraceExpire(r) ==
     /\ UNCHANGED <<row, rec, disk, task, flow, unrep, live, lateCb, refreshPending, watchdog,
                    rowEst, fgPending, newBytes, cuRow, baseStale, rowTaint, pubSpeed, dipRows>>
     /\ KeepAgg /\ KeepPublished /\ KeepProcess /\ KeepManager
+    /\ UNCHANGED res
 
 \* minimumWindow (0.5 s) has passed since the batch's newest baseline.
 OverlapRipen ==
@@ -839,6 +911,7 @@ OverlapRipen ==
     /\ UNCHANGED <<row, rec, disk, task, flow, unrep, live, lateCb, refreshPending, watchdog,
                    aggActive, agg, aggAge, aggOvl, aggTaint, spuriousReset, dipRows>>
     /\ KeepRowRate /\ KeepPublished /\ KeepProcess /\ KeepManager
+    /\ UNCHANGED res
 
 \* An active transfer's last observation leaves the window: 3.5 s with no callback (the 4 s
 \* window less the 0.5 s minimum) and the batch has no common interval.  A4: a row whose bytes
@@ -854,6 +927,7 @@ Expire(r) ==
     /\ UNCHANGED <<row, rec, disk, task, flow, unrep, live, lateCb, refreshPending, watchdog,
                    aggActive, agg, aggOvl, ovlRipe, aggTaint, spuriousReset, dipRows>>
     /\ KeepRowRate /\ KeepPublished /\ KeepProcess /\ KeepManager
+    /\ UNCHANGED res
 
 \* callbackGap (6 s) with no callback: the transfer's next sample resets the batch.
 GoStale(r) ==
@@ -865,6 +939,7 @@ GoStale(r) ==
     /\ UNCHANGED <<row, rec, disk, task, flow, unrep, live, lateCb, refreshPending, watchdog,
                    aggActive, agg, aggOvl, ovlRipe, aggTaint, spuriousReset, dipRows>>
     /\ KeepRowRate /\ KeepPublished /\ KeepProcess /\ KeepManager
+    /\ UNCHANGED res
 
 -----------------------------------------------------------------------------
 (* The user, the OS and the network.  Each step spends budget.             *)
@@ -886,6 +961,19 @@ Pause(r) ==
     /\ unrep' = Upd(unrep, r, "none")
     \* The optimistic overlay is dropped: a paused row shows its resumable bytes.
     /\ live' = Upd(live, r, 0)
+    \* #502: the cancel produces resume data.  submitResumeData keeps the larger of the stored
+    \* watermark and the display total the pause path computes for this task; the blob keeps
+    \* every byte the task holds.
+    /\ res' = IF r \in ResumeBlobRows /\ task[r] = "running"
+                THEN LET tb == rec[r] + res[r].cnt
+                         rb == IF res[r].latched THEN res[r].rebase
+                               ELSE FirstRebase(tb, rec[r], res[r].wm)
+                         shown == IF Fix502 THEN ResumedLatched(tb, res[r].wm, rb)
+                                  ELSE ResumedPerSample(tb, rec[r], res[r].wm)
+                     IN [res EXCEPT ![r] = [wm |-> Larger(res[r].wm, shown),
+                                            cnt |-> res[r].cnt + res[r].off, off |-> 0,
+                                            latched |-> FALSE, rebase |-> 0, pub |-> 0]]
+                ELSE res
     /\ debt' = Upd(debt, r, FALSE)
     /\ jobs' = jobs \ {r}
     /\ PersistSame
@@ -910,6 +998,7 @@ Resume(r) ==
     /\ NoReset
     /\ UNCHANGED <<rec, task, flow, unrep, live, watchdog, stalls, stallQ, killedMoving, debt, dipRows>>
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepProcessButBudget
+    /\ UNCHANGED res
 
 \* The network stops delivering to one task, with no error.
 Stall(r) ==
@@ -919,6 +1008,7 @@ Stall(r) ==
     /\ NoReset
     /\ UNCHANGED <<row, rec, disk, task, unrep, live, lateCb, refreshPending, watchdog, dipRows>>
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepProcessButBudget /\ KeepManager
+    /\ UNCHANGED res
 
 Unstall(r) ==
     /\ Spend("unstall")
@@ -927,6 +1017,7 @@ Unstall(r) ==
     /\ NoReset
     /\ UNCHANGED <<row, rec, disk, task, unrep, live, lateCb, refreshPending, watchdog, dipRows>>
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepProcessButBudget /\ KeepManager
+    /\ UNCHANGED res
 
 \* The backend's session goes away (sign-out, a server switch) or comes back.  Running
 \* transfers keep their URLs; a start needs the session.
@@ -939,6 +1030,7 @@ BackendToggle ==
     /\ UNCHANGED <<row, rec, disk, task, flow, unrep, live, lateCb, watchdog, dipRows,
                    up, recovering, awake, shownAtCrash>>
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepManager
+    /\ UNCHANGED res
 
 \* The device sleeps and the app is suspended; its memory stays.  After a long sleep (longer
 \* than callbackGap) every timer has run out by the time it wakes.  After a nap none has.
@@ -958,6 +1050,7 @@ Sleep ==
                    newBytes, cuRow, baseStale, rowTaint, pubSpeed, up, recovering, backendOn,
                    shownAtCrash, dipRows>>
     /\ KeepPublished /\ KeepManager
+    /\ UNCHANGED res
 
 \* The scene becomes active again.
 Wake ==
@@ -970,6 +1063,7 @@ Wake ==
                    spuriousReset, rowEst, suppress, newBytes, cuRow, baseStale, rowTaint,
                    up, recovering, backendOn, budget, shownAtCrash, dipRows>>
     /\ UNCHANGED <<pubAgg, pubMissing, pubAggTaint, pubThin, pubBytes>> /\ KeepManager
+    /\ UNCHANGED res
 
 \* The process dies.  Every in-memory variable returns to its Init value; the row's bytes
 \* are what the index file holds.
@@ -1010,6 +1104,7 @@ Crash ==
     \* What the screen showed: the last published snapshot, not the live rows.
     /\ shownAtCrash' = pubBytes
     /\ dipRows' = {}
+    /\ res' = [r \in Rows |-> [res[r] EXCEPT !.latched = FALSE, !.rebase = 0, !.pub = 0]]
     /\ NoReset
     /\ UNCHANGED <<row, disk, task, flow, unrep, awake, backendOn, spuriousReset, killedMoving>>
 
@@ -1026,6 +1121,7 @@ Relaunch ==
                    spuriousReset, rowEst, suppress, newBytes, cuRow, baseStale, rowTaint,
                    backendOn, budget, shownAtCrash, dipRows>>
     /\ UNCHANGED <<pubAgg, pubMissing, pubAggTaint, pubThin, pubBytes>> /\ KeepManager
+    /\ UNCHANGED res
 
 \* While the app is dead the system discards a task (a force quit does this to all of them).
 DropTask(r) ==
@@ -1034,6 +1130,8 @@ DropTask(r) ==
     /\ task' = Upd(task, r, "none")
     /\ flow' = Upd(flow, r, FALSE)
     /\ unrep' = Upd(unrep, r, "none")
+    \* #502: the task's temp goes with it.  Not studied: the #502 configs leave out dropTask.
+    /\ res' = Upd(res, r, NoRes)
     /\ NoReset
     /\ UNCHANGED <<row, rec, disk, live, lateCb, refreshPending, watchdog, dipRows>>
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepProcessButBudget /\ KeepManager
@@ -1108,6 +1206,8 @@ TypeOK ==
     /\ spuriousReset \in BOOLEAN
     /\ resetRows \subseteq Rows /\ dipRows \subseteq Rows
     /\ shownAtCrash \in [Rows -> 0..MaxBytes]
+    /\ res \in [Rows -> [wm : 0..MaxBytes, cnt : 0..MaxBytes, off : 0..MaxBytes,
+                          latched : BOOLEAN, rebase : 0..MaxBytes, pub : 0..MaxBytes]]
 
 \* The UI is live: the process runs, is foreground, and has reconciled.
 Showing == up /\ awake /\ ~recovering
@@ -1162,6 +1262,11 @@ StallRestartsCapped == \A r \in Rows : stalls[r] <= MaxStallRestarts
 \* A queued stall verdict never cancels a stream whose bytes moved after the stall was observed.
 NoRestartOfMovingStream == ~killedMoving
 
+\* #502.  Neither the sample a resumed task publishes nor the row's merged total claims bytes
+\* the row does not have.
+ResumedBytesHonest ==
+    \A r \in ResumeBlobRows : res[r].pub <= TrueBytes(r) /\ live[r] <= TrueBytes(r)
+
 -----------------------------------------------------------------------------
 (* Action properties                                                       *)
 
@@ -1182,6 +1287,15 @@ RelaunchKeepsBytes ==
     [][(up' /\ refreshPending /\ ~refreshPending') =>
           \A r \in dipRows :
              Status(r)' = "downloading" => pubBytes'[r] >= shownAtCrash[r]]_vars
+
+\* #502.  While the process lives and a resumed task keeps running, the bytes the session
+\* publishes for it (onRangeLiveProgress, and the aggregate estimator's sample) never go down.
+\* Judged on the published sample, not on Shown: the row's running max hides a fall on screen
+\* (it freezes instead), the estimator does not.
+PublishedSampleMonotone ==
+    [][(up /\ up') =>
+          \A r \in ResumeBlobRows :
+             (task[r] = "running" /\ task'[r] = "running") => res'[r].pub >= res[r].pub]_vars
 
 -----------------------------------------------------------------------------
 (* Liveness (FairSpec)                                                     *)
