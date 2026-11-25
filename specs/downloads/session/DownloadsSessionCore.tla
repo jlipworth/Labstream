@@ -17,7 +17,8 @@
 (*              PublishBody, PromotionCommitted, PromotionAbandoned        *)
 (*   Sweeper    the stash sweep inside Reattach; CleanupRuns for Delete    *)
 (*   Recovery   Reattach and RelaunchObserved (reconcile), after a         *)
-(*              relaunch or a return to the foreground; AutoResume         *)
+(*              relaunch or a return to the foreground; AutoResume;        *)
+(*              AdmissionGranted (a requeued row granted again, A1)        *)
 (*   Crash      Crash drops every in-memory variable; Relaunch restarts;   *)
 (*              FinalizeTruncatedCrash is a crash inside one finalizer     *)
 (*              step                                                       *)
@@ -830,6 +831,19 @@ RelaunchObserved(r) ==
                    published, stash, task, up, superseded, tracked, halt, rebuild, liveSnap,
                    bodyDone, staleEffect, budget>>
 
+\* Admission-A1 (#475): reconcile sends a forward-only row with no task, body or
+\* checkpoint back to `planned`.  DownloadsAdmission models the window that
+\* grants it again; here the grant is one step once reconcile is done.
+\* (Foreground reconcile in the code skips forward-only rows a granted start
+\* may own; this model reconciles them too, which only adds behaviours.)
+\* reducer: admissionGranted
+AdmissionGranted(r) ==
+    /\ up /\ life[r] = "planned" /\ recon[r] = "idle"
+    /\ ~deleting[r] /\ halt[r] = "none"
+    /\ Submit(r, Ev("admissionGranted"))
+    /\ UNCHANGED <<owner, intent, deleting,
+                   fileVars, task, up, superseded, memVars, bodyDone, staleEffect, budget>>
+
 \* A row parked `deferredResume` restarts by itself from its checkpoint.
 \* reducer: retry(.staticCheckpoint)
 AutoResume(r) ==
@@ -846,7 +860,7 @@ AppStep(r) ==
     \/ BodyAtWorking(r) \/ FinalizeOutcomeReplayed(r)
     \/ PublishBody(r) \/ PromotionCommitted(r) \/ PromotionAbandoned(r)
     \/ CleanupRuns(r) \/ Reattach(r) \/ RelaunchObserved(r) \/ AutoResume(r)
-    \/ PauseSweep(r)
+    \/ PauseSweep(r) \/ AdmissionGranted(r)
     \/ \E o \in Outcomes : FinalizeOutcome(r, o)
     \/ \E a \in Attempts :
           \/ TransferProgress(r, a) \/ DidFinishDownloading(r, a)
@@ -871,6 +885,8 @@ Spec == Init /\ [][Next]_vars
 \*    instead, and spending one fails the row, which is a stable end; the
 \*    model does not count them, so without this assumption a static segment
 \*    could fail and be rebuilt for ever.
+\*  - Admission: a planned row is eventually granted (DownloadsAdmission
+\*    proves WaitingRowIsServed under its own fairness).
 \*  - Foreground: RebuildFires, StallDetected and AutoResume are the
 \*    manager's steps on the main actor (the error handoff, the stall
 \*    watchdog, the deferred-resume pass).  They are weakly fair here.  A
@@ -888,6 +904,7 @@ Fairness ==
           /\ WF_vars(PromotionAbandoned(r)) /\ WF_vars(CleanupRuns(r))
           /\ WF_vars(Reattach(r)) /\ WF_vars(RelaunchObserved(r))
           /\ WF_vars(AutoResume(r)) /\ WF_vars(PauseSweep(r))
+          /\ WF_vars(AdmissionGranted(r))
           /\ WF_vars(\E o \in Outcomes : FinalizeOutcome(r, o))
           /\ \A a \in Attempts :
                 /\ WF_vars(TransferProgress(r, a))

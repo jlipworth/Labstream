@@ -44,6 +44,11 @@ about field names.
   forward-only row up by key, so a handoff from a replaced attempt fails its replacement.
 - **Replay** (`FixReplay = FALSE`) is the counter before R2-5: one strike per truncated finalizer
   run, with no outcome IDs in the reducer or in `recordingTruncation`.
+- **Admission-A1 (#475).** Reconcile sends a forward-only row with no task, body or checkpoint
+  back to `planned`; `AdmissionGranted` is the window granting it again once reconcile is done
+  (`DownloadsAdmission` models the window itself). Foreground reconcile in the code skips
+  forward-only rows a granted start may own; this model reconciles them too, which only adds
+  behaviours.
 - **Liveness** assumptions are written out above `Fairness`: the session's own steps run; a
   retried task eventually finishes (the code has retry budgets instead, which the model does not
   count); the manager's main-actor steps run, which a suspended background app does not get.
