@@ -634,6 +634,9 @@ public final class DownloadManager {
                     session.abandonFinalizerRequest(request)
                     return
                 }
+                if !request.isRevalidation {
+                    self.unparkOptionalSideAssetsForFinishedBody(request.attemptKey)
+                }
                 guard self.downloadWorkRegistry.startIfAbsent(
                     for: request.attemptKey,
                     kind: request.isRevalidation ? .revalidationFinalizer : .finalizer,
@@ -2097,6 +2100,18 @@ public final class DownloadManager {
         setOptionalSideAssetHydrationParked(true, for: releaseKey)
         releaseInFlight(for: releaseKey, cancellationMode: .preservingSideCache)
         refreshRecords()
+    }
+
+    /// F3 (#474): a body that finished as a user pause landed finalizes and completes, and a
+    /// finished row has no Resume. The pause parked the attempt's side-asset owner and left its
+    /// tasks registered, so the repair pass starts nothing that would unpark it. The publishing
+    /// finalizer's admission lifts that park, so the row's side assets are not held for the rest
+    /// of the launch.
+    func unparkOptionalSideAssetsForFinishedBody(_ key: DownloadAttemptKey) {
+        guard DownloadSideAssetParkPolicy.finishedBodyUnparks(
+            isQueuePaused: isQueuePaused,
+            isExemptFromQueuePause: admission.isExempt(key.ratingKey)) else { return }
+        setOptionalSideAssetHydrationParked(false, for: key)
     }
 
     /// Stop only the incomplete rows that belong to a backend which is being signed out.

@@ -345,6 +345,11 @@ asks about.
   finalizes. The reducer's relaunch no longer excludes a paused row from the B10 clause. With
   F1 the Resume window is closed too: the row is `finalizing` before the user can act, and the
   manager ignores a pause of a finalizing row.
+- **F3 and side assets.** The pause had parked the row's optional side assets, and a row that
+  then finishes has no Resume. The publishing finalizer's admission unparks them
+  (`unparkOptionalSideAssetsForFinishedBody`); the side-assets model has the ordering as
+  `PausedBodyFinished`, with `Current-F3-FinishUnparks-Chapters` and
+  `Faithful-F3-finish-off-Chapters`.
 - **RangeTrain-R3 (#474), static.** `pauseRangeTask` asks
   `StaticRangeFinishedBodyPolicy.pauseSweepDisposition` and leaves a finished task tracked
   (URLSession reports it completed, or every declared byte has arrived), so its finish callback

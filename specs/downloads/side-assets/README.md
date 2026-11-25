@@ -155,6 +155,7 @@ crashes, outages, session changes and pass timeouts are not fair and are capped 
 | `Faithful-B32-off` | The coordinator applies commands in arrival order: a Pause's park lands after the Resume's unpark. | `ControlsApplyInRequestOrder` |
 | `Faithful-B32-off-PausedFetch` | The consequence of the same bug: the paused row's chapter image goes out on the network. | `PausedRowNotFetching` |
 | `Faithful-S1-off` | The poster fetch sends no registration (before #482), so a kept-attempt cancel keeps its owner closed. | `CachedThisLaunch` |
+| `Faithful-F3-finish-off-Chapters` | A body that finishes behind a user pause sends no unpark (before the #474 follow-up): the completed row's chapter images stay parked. | `CachedThisLaunch` |
 | `Faithful-S2-off-Subs`, `-Tiles` | Resume All sends no unpark (before #483): a completed row's late fetch entry stays parked. | `CachedThisLaunch` |
 | `Faithful-S6-off` | Launch hydrates only active-work backends (before #494), so a completed row on another backend stays cold. | `NeverForgotten` |
 | `Mutant-NoDiscoveryDispatch` | The refresh never starts the kinds it discovers. | `NeverForgotten` |
@@ -386,6 +387,24 @@ Not proposed in the model. Pin: `promotionSurvivesAnUnrelatedRowWrite`. Issue #4
 
 Neither has a Swift pin here: both are already tracked, and neither has a pure decision to pin.
 
+### F3 on this model: a body that finishes behind a user pause (real, fixed)
+
+Found while fixing F3 (#474). `PausedBodyFinished` (`AllowPausedFinish`): a forward-only
+transfer finishes as a user pause lands, the body is captured and the paused row finalizes and
+completes. The pause parked the attempt's owner and left its tasks registered. A finished row
+has no Resume, and the repair pass starts nothing for a registered kind, so chapter images (a
+kind with no discovery refresh to enter a new fetch) stayed parked until relaunch
+(`Faithful-F3-finish-off-Chapters`, `CachedThisLaunch`). A discovered kind escapes by the
+pass's source-metadata refresh, whose fetch entry unparks the owner.
+
+Fix (`FixFinishUnparks`, in the code): the publishing finalizer's admission unparks the row
+(`DownloadManager.unparkOptionalSideAssetsForFinishedBody`,
+`DownloadSideAssetParkPolicy.finishedBodyUnparks`), unless Pause All holds it, in which case
+Resume All does (S2). `Current-F3-FinishUnparks-Chapters` passes. Pins:
+`DownloadsFormalModelSideAssetsTests.finishedBodyUnparksSideAssets`,
+`P7SideAssetOrderingTests.finishedBodyUnparksTheOwnerItsPauseParked`. Every other config has
+`AllowPausedFinish = FALSE`.
+
 ## Delete, checked against the store
 
 `Current-Delete` runs the staged deletion against the three-step promotion and finds no orphan
@@ -417,6 +436,7 @@ and state directories and report wrong results.
 | `Current-Poster` | pass | pass | 85,656 | 4 s |
 | `Current-S1-PosterReregisters` | pass | pass | 3,675 | 2 s |
 | `Current-S2-ResumeAllUnparks-ChaptersSubs` | pass | pass | 42,585 | 10 s |
+| `Current-F3-FinishUnparks-Chapters` | pass | pass | 370 | 1 s |
 | `Current-S2-ResumeAllUnparks-Subs` | pass | pass | 12,228 | 4 s |
 | `Current-S2-ResumeAllUnparks-Tiles` | pass | pass | 8,580 | 5 s |
 | `Current-S6-HydrateCompleted` | pass | pass | 27,162 | 10 s |
@@ -439,6 +459,7 @@ and state directories and report wrong results.
 | `Faithful-B32-off-PausedFetch` | violation of `PausedRowNotFetching` | violated | 187 | 1 s or less |
 | `Faithful-B32-off` | violation of `ControlsApplyInRequestOrder` | violated | 48 | 1 s or less |
 | `Faithful-S1-off` | violation of `CachedThisLaunch` | violated | 275 | 1 s or less |
+| `Faithful-F3-finish-off-Chapters` | violation of `CachedThisLaunch` | violated | 328 | 1 s |
 | `Faithful-S2-off-Subs` | violation of `CachedThisLaunch` | violated | 5,761 | 2 s |
 | `Faithful-S2-off-Tiles` | violation of `CachedThisLaunch` | violated | 1,262 | 1 s or less |
 | `Faithful-S6-off` | violation of `NeverForgotten` | violated | 518 | 1 s or less |

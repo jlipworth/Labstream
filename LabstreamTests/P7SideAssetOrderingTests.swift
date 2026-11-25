@@ -159,6 +159,35 @@ struct P7SideAssetOrderingTests {
         await f.finish()
     }
 
+    /// F3 (#474): a transfer that finishes as a user pause lands still finalizes and completes.
+    /// The pause parked the attempt's owner and a finished row has no Resume, so the publishing
+    /// finalizer's admission unparks it. Behind Pause All it stays parked for Resume All.
+    @Test func finishedBodyUnparksTheOwnerItsPauseParked() async throws {
+        let f = try await P7PlaybackFixture(status: .complete)
+        let owner = DownloadManager.sideAssetOwner(for: f.key)
+        let parked = P6Acknowledgement<Bool>()
+        let unparked = P6Acknowledgement<Bool>()
+        f.manager.optionalSideAssetControlDidDeliver = { command, candidate, isFetch in
+            guard candidate == owner, !isFetch else { return }
+            if command == .park(true) { parked.signal(true) }
+            if command == .park(false) { unparked.signal(true) }
+        }
+        f.manager.setOptionalSideAssetHydrationParked(true, for: f.key)
+        #expect(await parked.wait(seconds: 10) == true)
+        // Pause All holds it: nothing is sent.
+        f.manager.setQueuePausedForTesting(true)
+        f.manager.unparkOptionalSideAssetsForFinishedBody(f.key)
+        f.manager.setQueuePausedForTesting(false)
+        let heldBehindPauseAll = await f.manager.sideAssetFetchCoordinator.isParkedForP7Testing(owner)
+        #expect(heldBehindPauseAll)
+        f.manager.unparkOptionalSideAssetsForFinishedBody(f.key)
+        #expect(await unparked.wait(seconds: 10) == true)
+        let stillParked = await f.manager.sideAssetFetchCoordinator.isParkedForP7Testing(owner)
+        #expect(!stillParked)
+        f.manager.optionalSideAssetControlDidDeliver = nil
+        await f.finish()
+    }
+
     @Test func cancellationFencesOldRegistrationButAllowsLaterRepairPass() async throws {
         let coordinator = SideAssetFetchCoordinator()
         let owner = SideAssetOwner(rawValue: "fixture-owner")

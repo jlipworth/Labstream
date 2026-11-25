@@ -56,6 +56,41 @@ struct DownloadsFormalModelSideAssetsTests {
                 "only a fetch-entry (registration) command reopens a cancelled owner")
     }
 
+    /// F3 (#474) on this model (`Faithful-F3-finish-off-Chapters.cfg`). A user pause parks the
+    /// attempt's owner and keeps its tasks registered. A forward-only transfer that finishes as
+    /// the pause lands still finalizes and completes. A finished row has no Resume, and the
+    /// repair pass starts nothing for a registered kind, so nothing unparked the owner until
+    /// relaunch. The publishing finalizer's admission now does.
+    @Test("F3: a body that finishes behind a user pause unparks its side assets")
+    func finishedBodyUnparksSideAssets() throws {
+        #expect(DownloadSideAssetParkPolicy.finishedBodyUnparks(
+            isQueuePaused: false, isExemptFromQueuePause: false))
+        #expect(DownloadSideAssetParkPolicy.finishedBodyUnparks(
+            isQueuePaused: true, isExemptFromQueuePause: true))
+        // Pause All still holds the row; Resume All unparks it (S2).
+        #expect(!DownloadSideAssetParkPolicy.finishedBodyUnparks(
+            isQueuePaused: true, isExemptFromQueuePause: false))
+        // The reducer lets the paused row finalize.
+        let paused = DownloadLifecycleState(
+            lifecycle: .paused, history: DownloadAttemptHistory(pauseCause: .user))
+        #expect(DownloadLifecycleReducer.reduce(
+            paused, .bodyCaptured, facts: DownloadRowFacts(route: .forwardOnly))
+            .state?.lifecycle == .finalizing)
+
+        let broker = try #require(Self.appSource(
+            from: "        self.session.onFinalizerRequest = {",
+            to: "\n        self.session.onRevalidationProbeDeferred", in: Self.managerPath))
+        let unpark = try #require(broker.range(
+            of: "self.unparkOptionalSideAssetsForFinishedBody(request.attemptKey)"))
+        let start = try #require(broker.range(of: "self.downloadWorkRegistry.startIfAbsent("))
+        #expect(unpark.lowerBound < start.lowerBound)
+        let helper = try #require(Self.appSource(
+            from: "    func unparkOptionalSideAssetsForFinishedBody(", to: "\n    }\n",
+            in: Self.managerPath))
+        #expect(helper.contains("DownloadSideAssetParkPolicy.finishedBodyUnparks("))
+        #expect(helper.contains("setOptionalSideAssetHydrationParked(false, for: key)"))
+    }
+
     /// S2 (#483, fixed). Behind Pause All every non-poster fetch entry parks the attempt's
     /// coordinator owner, whatever the row's lifecycle. Pause All sends a completed (or
     /// finalizing) row no command, but its side-asset tasks keep running, and the next fetch entry

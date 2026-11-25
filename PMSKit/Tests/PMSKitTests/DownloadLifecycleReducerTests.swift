@@ -428,10 +428,11 @@ struct DownloadLifecycleReducerTests {
         // keeps today's decisions.
         #expect(R.reduce(state(.admitted), .relaunchObserved, facts: DownloadRowFacts(
             route: .forwardOnly, liveTask: true)).state?.lifecycle == .admitted)
+        // A captured body is a finished transfer: it finalizes (F1, #472), paused or not (F3).
         #expect(R.reduce(state(.admitted), .relaunchObserved, facts: DownloadRowFacts(
-            route: .forwardOnly, body: .captured)).state?.lifecycle == .failed)
+            route: .forwardOnly, body: .captured)).state?.lifecycle == .finalizing)
         #expect(R.reduce(state(.paused), .relaunchObserved, facts: DownloadRowFacts(
-            route: .forwardOnly, body: .captured)).state?.lifecycle == .failed)
+            route: .forwardOnly, body: .captured)).state?.lifecycle == .finalizing)
         #expect(R.reduce(state(.transferring), .relaunchObserved, facts: noWork)
             .state?.lifecycle == .failed)
         // Other routes are untouched.

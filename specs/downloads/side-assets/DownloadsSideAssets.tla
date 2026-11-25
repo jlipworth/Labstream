@@ -85,6 +85,7 @@
 \* MODELS: Labstream/Capabilities/Downloads/Core/DownloadWorkRegistry.swift
 \* MODELS: Labstream/Shared/Player/SideAssetFetchCoordinator.swift
 \* MODELS: PMSKit/Sources/PMSKit/Downloads/DownloadSideAssetPolicy.swift
+\* MODELS: PMSKit/Sources/PMSKit/Downloads/DownloadSideAssetParkPolicy.swift
 EXTENDS DownloadsReducer, TLC
 
 CONSTANTS
@@ -110,6 +111,7 @@ CONSTANTS
     FixPublicationOwners, \* Delete also removes a file that is renamed but not yet recorded
     FixPosterReregisters, \* a poster fetch reopens its cancelled owner (S1, #482; in the code)
     FixResumeAllUnparks,  \* Resume All unparks every row that is not paused (S2, #483; in the code)
+    FixFinishUnparks,     \* a body that finishes behind a user pause unparks its row (F3, #474; in the code)
     FixUnparkOnAccept,    \* PROPOSED (not in the code): Resume unparks only once the resume is accepted (S4)
     FixPassReruns,        \* PROPOSED (not in the code): a dropped, timed-out or stale repair pass runs again (S5)
     FixHydrateCompleted,  \* launch restores the session of a backend whose completed rows miss assets (S6, #494; in the code)
@@ -122,6 +124,7 @@ CONSTANTS
     AllowCancelKeepingAttempt,
     AllowRefusedResume,
     AllowStoragePark,
+    AllowPausedFinish,    \* a transfer may finish as a user pause lands (F3, #474)
     AllowSessionLoss,
     AllowServerOutage,
     AllowPassTimeout,
@@ -499,6 +502,27 @@ BodyFinished(r) ==
                    authVars, serverUp, up, reg, req, ctlVars, budget, pub, earlyOffer,
                    exempt, pass, passRows, rerun, owedEdge, zombie, raceDropped, sent,
                    ctlReordered, env>>
+
+\* F3 (#474).  A forward-only transfer finishes as a user pause lands: the
+\* body is captured and the paused row finalizes (reducer: bodyCaptured).  The
+\* pause parked the attempt owner and left its tasks registered, and a
+\* finished row has no Resume.  The publishing finalizer's admission unparks
+\* it (unparkOptionalSideAssetsForFinishedBody), unless Pause All holds the
+\* row; before the fix nothing did.
+PausedBodyFinished(r) ==
+    /\ AllowPausedFinish /\ up /\ Live(r)
+    /\ Life(r) = "paused" /\ st[r].pauseCause = "user"
+    /\ LET t == Reduce(st[r], Ev("bodyCaptured"), NoFacts)
+       IN IsApplied(t) /\ st' = Upd(st, r, t.state)
+    /\ IF FixFinishUnparks /\ ~(queuePaused /\ ~exempt[r])
+          THEN SetCtl(pending \cup {Ctl(r, "attempt", "unpark", NextVer(r, "attempt"),
+                                         FALSE, NoItem)}, applied)
+          ELSE UNCHANGED <<pending, applied>>
+    /\ Touch({r})
+    /\ UNCHANGED <<present, attempt, recorded, deleting, delPaths, file, queuePaused,
+                   authVars, serverUp, up, reg, req, parked, cancelled, budget, pub,
+                   earlyOffer, exempt, pass, passRows, rerun, owedEdge, zombie,
+                   raceDropped, sent, ctlReordered, env>>
 
 \* The terminal refresh releases the attempt with
 \* .preservingFinalizerAndSideCache: side-asset work carries on.
@@ -1144,7 +1168,8 @@ EnvironmentNext ==
           \/ ResumeRefused(r) \/ UserDelete(r) \/ UserAdd(r)
           \/ TransferFails(r) \/ StorageInterrupt(r) \/ ReleaseKeepingRow(r)
 
-TransferNext == \E r \in Rows : StartTransfer(r) \/ BodyFinished(r) \/ Finalized(r)
+TransferNext ==
+    \E r \in Rows : StartTransfer(r) \/ BodyFinished(r) \/ PausedBodyFinished(r) \/ Finalized(r)
 DeliverNext == \E d \in pending : Deliver(d)
 AdmitNext == \E r \in Rows, it \in Items : Admit(r, it)
 RespondNext == \E r \in Rows, it \in Items : Respond(r, it)

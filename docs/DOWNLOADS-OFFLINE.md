@@ -141,6 +141,8 @@ Rules that follow from this:
   - Forward-only: the publication runs behind a pause halt (only a cancel, a Delete or a stale
     attempt stops it) and the row finalizes; a paused row found at relaunch with its whole body
     captured or at the working path finalizes too. Pausing a `finalizing` row does nothing.
+    The pause had parked the row's optional side assets, and a finished row has no Resume, so
+    the publishing finalizer unparks them (unless Pause All holds the row; Resume All then does).
   - Static range: a finished segment is appended and the row then pauses. The pause's task
     listing leaves a task that has already finished tracked, so its finish callback still
     writes the body; it supersedes and cancels only tasks that are still transferring.
