@@ -583,7 +583,9 @@ Recovery also:
   journal, then runs required server cleanup through the cleanup runner (see
   [Server cleanup](#server-cleanup));
 - inventories and repairs missing posters, subtitles, chapters, Plex/Emby BIF, and Jellyfin
-  trick-play playlists/tiles for completed rows without re-downloading playable media. Work runs
+  trick-play playlists/tiles for completed rows without re-downloading playable media. The Plex
+  BIF, like the subtitles, comes from the part the row downloaded (`mediaIndex`/`partIndex`), not
+  the media's first part. Work runs
   off-main, validates image/BIF/text payloads before promotion, and batches metadata publication.
   Retry authority is exact attempt + source + resource kind and is charged only when an eligible
   waiter actually admits transport; coalesced cancellation or a stale waiter hands authority to the
@@ -1099,7 +1101,7 @@ as the defect is fixed.
 | SideAssets-S4 | A refused Resume leaves a user-paused row's side assets unparked. | behaviour confirmed; product decision | #485 |
 | SideAssets-S5 | A completed-row repair pass that is dropped (an edge while one runs, the 30 s timeout, a row whose generation moved) is not run again. | real, low | #493 |
 | SideAssets-S6 | A completed row on a backend that is not selected gets no session at launch, so no launch repairs its side assets until the user switches backend. | real, medium; fixed on specs/downloads-tla, pending merge | #494 |
-| SideAssets-S7 | The Plex BIF is selected from the media's first part, not the downloaded part: never requested when only the downloaded part has one, the wrong index cached when the first part has one. | real, medium | #495 |
+| SideAssets-S7 | The Plex BIF is selected from the media's first part, not the downloaded part: never requested when only the downloaded part has one, the wrong index cached when the first part has one. Fixed on `specs/downloads-tla`, pending merge: the initial pass and the completed-row repair select `media[mediaIndex].part[partIndex]`. | real, medium; fixed | #495 |
 | SideAssets-S8 | A side-asset promotion gives up on any concurrent write to its row and nothing retries. | real, low | #496 |
 | st-39 | A side-asset file renamed but not yet recorded is left on disk by Delete. | real, known | #401 |
 | #394 | Fetched chapter-image and trickplay-tile payloads wait in memory behind one-at-a-time preparation. | real, known | #394 |

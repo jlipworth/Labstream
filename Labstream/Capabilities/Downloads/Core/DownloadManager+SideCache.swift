@@ -197,7 +197,7 @@ extension DownloadManager {
                 }
                 if kinds?.contains(.plexBIF) != false {
                     self.cachePlexBIF(for: attemptKey, item: currentItem, mediaIndex: mediaIndex,
-                                      server: server, token: token)
+                                      partIndex: partIndex, server: server, token: token)
                 }
                 if kinds?.contains(.chapterImages) != false {
                     self.cacheChapterImages(for: attemptKey, item: currentItem, backend: .plex,
@@ -560,13 +560,15 @@ extension DownloadManager {
         return comps.url
     }
 
-    /// Download + cache Plex's BIF trick-play index for the selected source Part so the
+    /// Download + cache Plex's BIF trick-play index for the downloaded source Part
+    /// (`media[mediaIndex].part[partIndex]`, never the media's first part — #495) so the
     /// local custom player can keep showing scrub previews fully offline (#78). Best-effort:
     /// a missing/invalid BIF never fails the media download. The request carries the token in
     /// query, so do not log the URL or surfaced error.
     func cachePlexBIF(for attemptKey: DownloadAttemptKey, item: MediaItem, mediaIndex: Int,
-                              server: URL, token: String) {
-        guard let part = DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: mediaIndex) else { return }
+                              partIndex: Int, server: URL, token: String) {
+        guard let part = DownloadSideAssetPolicy.selectedPlexBIFPart(
+            from: item, mediaIndex: mediaIndex, partIndex: partIndex) else { return }
         guard let sourceIdentity = store.sideAssetSourceIdentity(for: attemptKey) else { return }
         let destination = store.plexBIFDestinationURL(ratingKey: attemptKey.ratingKey)
         guard let staging = store.attemptStagingURL(for: attemptKey, stableURL: destination) else { return }

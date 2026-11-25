@@ -37,10 +37,25 @@ struct DownloadSideAssetPolicyTests {
             Media(id: 3, part: [part(id: 30, indexes: "sd,other")]),
         ])
 
-        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: 0)?.id == 10)
-        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: 1) == nil)
-        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: 2)?.id == 30)
-        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: 99)?.id == 10)
+        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: 0, partIndex: 0)?.id == 10)
+        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: 1, partIndex: 0) == nil)
+        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: 2, partIndex: 0)?.id == 30)
+        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: 99, partIndex: 0)?.id == 10)
+    }
+
+    @Test("Selected Plex BIF part is the downloaded part, not the media's first part (#495)")
+    func selectedPlexBIFPartUsesChosenPart() {
+        let item = MediaItem(ratingKey: "item", title: "Title", type: "movie", media: [
+            Media(id: 1, part: [part(id: 10, indexes: "sd"), part(id: 11, indexes: nil)]),
+            Media(id: 2, part: [part(id: 20, indexes: nil), part(id: 21, indexes: "sd")]),
+        ])
+
+        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: 0, partIndex: 1) == nil)
+        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: 1, partIndex: 1)?.id == 21)
+        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: 1, partIndex: 0) == nil)
+        // A part index the media does not have selects nothing, like the transfer.
+        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: 0, partIndex: 5) == nil)
+        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: 0, partIndex: -1) == nil)
     }
 
     @Test("Synthetic chapter image parser validates scheme shape and tag")

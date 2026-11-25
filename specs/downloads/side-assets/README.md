@@ -325,24 +325,30 @@ assumes. `Current-S6-HydrateCompleted` (was `Proposed-S6-HydrateCompleted`) pass
 
 Pin: `launchHydratesBackendsOfCompletedRowsMissingAssets` (no longer a known issue). Issue #494.
 
-### S7: the Plex BIF is taken from the first part, not the downloaded one (real)
+### S7: the Plex BIF is taken from the first part, not the downloaded one (real, fixed)
 
-- `Finding-S7-BifOfChosenPartNeverAsked` (`NeverForgotten`) and `-NotOwed`
+Fixed on `specs/downloads-tla`, pending merge (#495). The configs below are now
+`Faithful-S7-off-*`: the fix switched off (`FixBifChosenPart = FALSE`) must still violate.
+
+- `Faithful-S7-off-BifOfChosenPartNeverAsked` (`NeverForgotten`) and `-NotOwed`
   (`MissingIsDurablyOwed`): the user downloads the second part of a multi-part item, and only that
   part has a BIF. The initial pass and every refresh look at the first part, see no index and
   start nothing. The trick-play index is never requested, in any launch.
-- `Finding-S7-WrongPartBifCached` (`CachedBifIsForChosenPart`): the first part has a BIF. It is
+- `Faithful-S7-off-WrongPartBifCached` (`CachedBifIsForChosenPart`): the first part has a BIF. It is
   fetched and cached under the row, for a file it does not describe.
 
-Why it is real: the transfer uses `chosenMedia?.part[safe: partIndex]`, and the part index comes
-from the download options sheet. `cachePlexBIF(for:item:mediaIndex:server:token:)` takes no part
-index, at either call site, and `DownloadSideAssetPolicy.selectedPlexBIFPart` returns
-`selectedMedia.part.first`. The subtitle repair does use `part[safe: partIndex]`.
+Why it was real: the transfer uses `chosenMedia?.part[safe: partIndex]`, and the part index comes
+from the download options sheet. `cachePlexBIF(for:item:mediaIndex:server:token:)` took no part
+index, at either call site, and `DownloadSideAssetPolicy.selectedPlexBIFPart` returned
+`selectedMedia.part.first`. The subtitle repair already used `part[safe: partIndex]`.
 
-Proposed in the model (`FixBifChosenPart`): the BIF request names the downloaded part.
-`Proposed-S7-BifChosenPart` passes with it.
+The fix (`FixBifChosenPart`): `cachePlexBIF(for:item:mediaIndex:partIndex:server:token:)` is
+called with the row's part index from the initial pass and the completed-row repair, and
+`selectedPlexBIFPart(from:mediaIndex:partIndex:)` selects `part[partIndex]` (nothing when the media
+has no such part). `Current-S7-BifChosenPart` passes. The other `Current-*` configs download the
+first part (`ChosenPartIsFirst = TRUE`), where the switch has no effect, so they leave it `FALSE`.
 
-Pin: `plexBIFComesFromTheDownloadedPart` (behavioural, on the PMSKit policy). Issue #495.
+Test: `plexBIFComesFromTheDownloadedPart` (behavioural, on the PMSKit policy; passes). Issue #495.
 
 ### S8: a promotion gives up on any concurrent write to its row (real, low)
 
@@ -428,7 +434,7 @@ and state directories and report wrong results.
 | `Proposed-S4-UnparkOnAccept` | pass | pass | 608 | 2 s |
 | `Proposed-S5-PassReruns-Stale` | pass | pass | 1,474 | 1 s or less |
 | `Proposed-S5-PassReruns` | pass | pass | 299,686 | 15 s |
-| `Proposed-S7-BifChosenPart` | pass | pass | 16,441 | 7 s |
+| `Current-S7-BifChosenPart` | pass | pass | 16,441 | 7 s |
 | `Faithful-B25-off` | violation of `RepairWithinRateLimit` | violated | 131 | 1 s or less |
 | `Faithful-B32-off-PausedFetch` | violation of `PausedRowNotFetching` | violated | 187 | 1 s or less |
 | `Faithful-B32-off` | violation of `ControlsApplyInRequestOrder` | violated | 48 | 1 s or less |
@@ -451,9 +457,9 @@ and state directories and report wrong results.
 | `Finding-S5-BusyEdgeDropped` | violation of `NoEdgeOutsidePass` | violated | 509 | 1 s or less |
 | `Finding-S5-PassTimeoutNoRerun` | violation of `NoEdgeLost` | violated | 65 | 1 s or less |
 | `Finding-S5-StaleRowSkipped` | violation of `NoEdgeLost` | violated | 59 | 1 s or less |
-| `Finding-S7-BifOfChosenPartNeverAsked` | violation of `NeverForgotten` | violated | 11 | 1 s or less |
-| `Finding-S7-BifOfChosenPartNotOwed` | violation of `MissingIsDurablyOwed` | violated | 36 | 1 s or less |
-| `Finding-S7-WrongPartBifCached` | violation of `CachedBifIsForChosenPart` | violated | 124 | 1 s or less |
+| `Faithful-S7-off-BifOfChosenPartNeverAsked` | violation of `NeverForgotten` | violated | 11 | 1 s or less |
+| `Faithful-S7-off-BifOfChosenPartNotOwed` | violation of `MissingIsDurablyOwed` | violated | 36 | 1 s or less |
+| `Faithful-S7-off-WrongPartBifCached` | violation of `CachedBifIsForChosenPart` | violated | 124 | 1 s or less |
 | `Finding-S8-PromotionLostToRowMutation` | violation of `PromotionNotLostToRace` | violated | 124 | 1 s or less |
 | `Finding-st39-CrashOrphanAfterDelete` | violation of `NoOrphanAfterDelete` | violated | 811 | 1 s or less |
 | `Finding-st39-ReplacedAttemptOrphan` | violation of `NoOrphanAfterDelete` | violated | 962 | 1 s or less |
@@ -464,8 +470,8 @@ The violation runs stop at the first error, so their state counts are not totals
 The `Current-*` configs check every safety property except the ones the findings break:
 `NoOrphanAfterDelete` is checked only by `Current-Delete`, which has no process death and no
 replacement attempt (st-39); no `Current-*` config allows a refused Resume (S4), records edges
-(S5), uses the three-step promotion outside `Current-Delete` (S8), or downloads a part other than
-the first (S7). The `Liveness-Durable-*` configs are the code as it stands with every environment
+(S5), uses the three-step promotion outside `Current-Delete` (S8). Only `Current-S7-BifChosenPart`
+downloads a part other than the first (S7, fixed). The `Liveness-Durable-*` configs are the code as it stands with every environment
 switch on. The `Liveness-ThisLaunch-*` configs leave out the triggers of S1, S2 and S3 and give the
 budget more dispatches than the environment can spend; the S1 and S2 triggers are checked against
 the fixed code by `Current-S1-*` and `Current-S2-*`.

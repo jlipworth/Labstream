@@ -148,11 +148,13 @@ struct DownloadsFormalModelSideAssetsTests {
         #expect(owing.contains("!inventory.missing.isEmpty"))
     }
 
-    /// S7. A Plex download transfers the part the user chose (`part[partIndex]`). The BIF request,
-    /// in the initial pass and in the completed-row repair alike, is built from the media's first
-    /// part: `selectedPlexBIFPart` takes no part index. For a multi-part item downloaded from its
-    /// second part, the trick-play index is never requested when only that part has one, and the
-    /// first part's index is cached for the wrong file when the first part has one.
+    /// S7 (#495, fixed). A Plex download transfers the part the user chose (`part[partIndex]`).
+    /// The BIF request, in the initial pass and in the completed-row repair alike, used to be built
+    /// from the media's first part, so for a multi-part item downloaded from its second part the
+    /// trick-play index was never requested when only that part had one, and the first part's
+    /// index was cached for the wrong file when the first part had one. Both call sites now pass
+    /// the chosen part index and the policy selects `part[partIndex]`
+    /// (`side-assets/Current-S7-BifChosenPart`; `Faithful-S7-off-*` keep the old behaviour).
     @Test("S7: the Plex BIF comes from the downloaded part")
     func plexBIFComesFromTheDownloadedPart() throws {
         func part(_ id: Int, _ indexes: String?) -> Part {
@@ -166,19 +168,28 @@ struct DownloadsFormalModelSideAssetsTests {
             Media(id: 1, part: [part(10, "sd"), part(11, nil)]),
         ])
 
-        // What the model relies on: both call sites pass the media index and no part index.
+        // What the model relies on: both call sites pass the chosen media and part index, the
+        // same indexes the transfer and the subtitle repair use.
         let initial = try #require(Self.appSource(
             from: "        cachePlexBIF(for: attemptKey, item: item, mediaIndex: mediaIndex,",
             to: "\n        let initialRoute", in: Self.plexPath))
+        #expect(initial.contains("partIndex: partIndex, server: server, token: token)"))
         #expect(initial.contains("let staticPart = chosenMedia?.part[safe: partIndex]"))
-        #expect(!initial.contains("partIndex: partIndex"))
+        let repair = try #require(Self.appSource(
+            from: "                    self.cachePlexBIF(for: attemptKey, item: currentItem, mediaIndex: mediaIndex,",
+            to: "\n                }", in: Self.sideCachePath))
+        #expect(repair.contains("partIndex: partIndex, server: server, token: token)"))
+        let cache = try #require(Self.appSource(
+            from: "    func cachePlexBIF(for attemptKey:", to: "\n        guard let sourceIdentity",
+            in: Self.sideCachePath))
+        #expect(cache.contains("from: item, mediaIndex: mediaIndex, partIndex: partIndex)"))
 
-        withKnownIssue("TLA+ finding S7 (#495): the Plex BIF is selected from the first part, not the downloaded one") {
-            #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: onlyChosenHasBIF, mediaIndex: 0)?.id == 11,
-                    "the downloaded part's BIF is never requested")
-            #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: onlyFirstHasBIF, mediaIndex: 0) == nil,
-                    "the first part's BIF is cached for a download of the second part")
-        }
+        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: onlyChosenHasBIF, mediaIndex: 0, partIndex: 1)?.id == 11,
+                "the downloaded part's BIF is requested")
+        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: onlyFirstHasBIF, mediaIndex: 0, partIndex: 1) == nil,
+                "the first part's BIF is not cached for a download of the second part")
+        // Downloading the first part still selects the first part's BIF.
+        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: onlyFirstHasBIF, mediaIndex: 0, partIndex: 0)?.id == 10)
     }
 
     /// S8. A side-asset promotion snapshots the row's mutation generation, then checks it again

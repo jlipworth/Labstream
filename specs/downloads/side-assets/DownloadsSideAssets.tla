@@ -113,7 +113,7 @@ CONSTANTS
     FixUnparkOnAccept,    \* PROPOSED (not in the code): Resume unparks only once the resume is accepted (S4)
     FixPassReruns,        \* PROPOSED (not in the code): a dropped, timed-out or stale repair pass runs again (S5)
     FixHydrateCompleted,  \* launch restores the session of a backend whose completed rows miss assets (S6, #494; in the code)
-    FixBifChosenPart,     \* PROPOSED (not in the code): the BIF request names the downloaded part (S7)
+    FixBifChosenPart,     \* FIXED (#495): the BIF request names the downloaded part (S7); configs with ChosenPartIsFirst ignore it
     PayloadWindow,        \* PROPOSED (#394): payloads of one task group fetched but not yet promoted; 0 = no window
     Mutation,             \* an injected bug for a Mutant config; "none" otherwise
     AllowCrash,           \* environment switches: what the user, the transfer and the server may do
@@ -182,8 +182,10 @@ OwnerOf(it) == IF KindOf(it) = "poster" THEN "poster" ELSE "attempt"
 Backends == IF OtherBackendRows = {} THEN {"a"} ELSE {"a", "b"}
 BackendOf(r) == IF r \in OtherBackendRows THEN "b" ELSE "a"
 
-\* Plex BIF.  DownloadSideAssetPolicy.selectedPlexBIFPart looks at the
-\* media's first part; the transfer downloads the chosen part.  "bif" in
+\* Plex BIF.  DownloadSideAssetPolicy.selectedPlexBIFPart(from:mediaIndex:
+\* partIndex:) looks at the chosen part, the one the transfer downloads
+\* (FixBifChosenPart, #495); before the fix it looked at the media's first
+\* part (FixBifChosenPart = FALSE, the Faithful-S7-off configs).  "bif" in
 \* ServerHas means the chosen part has a BIF.
 AsksChosenPart == ChosenPartIsFirst \/ FixBifChosenPart
 BifAdvertised == IF AsksChosenPart THEN "bif" \in ServerHas ELSE BifOnFirstPart
