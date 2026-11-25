@@ -133,7 +133,7 @@ so nothing else changed.
 | `base/Reducer-Conformance` | pass | pass | one state; 298,368 reducer results compared | 24 s |
 | `session/Projection-SessionCore` | pass | pass | one state | 14 s |
 | `session/SessionRowMapCheck-Current-RowMap` | pass | pass | one state | 9 s |
-| `session/Deep-TwoStatic` (deep tier, symmetry) | pass | pass | 8,228,854 | 287 s |
+| `session/Deep-TwoStatic` (deep tier, symmetry) | pass | pass | 7,908,854 | 176 s (4 workers) |
 | `session/Faithful-B03-off` | `QueuedBodyNotSwept` violated | violated | stops at first error | < 1 s |
 | `session/Faithful-B10-off` | `WorkingBodyKept` violated | violated | stops at first error | 1 s |
 | `session/Faithful-B12-off` | `StaleCallbackInert` violated | violated | stops at first error | < 1 s |
@@ -350,7 +350,7 @@ same run was 153 configs, 335 s and 293 s.
 
 | Module | Configs | Pass | Violated as expected | Deep | Largest state space (config) | Default tier | Deep tier |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `DownloadsSessionCore` | 23 | 11 | 12 | 1 | 8,228,854 (`session/Deep-TwoStatic`) | 51 s | 58 s |
+| `DownloadsSessionCore` | 23 | 11 | 12 | 1 | 7,908,854 (`session/Deep-TwoStatic`) | 51 s | 58 s |
 | `DownloadsReducerConformance` | 5 | 2 | 3 | 0 | 1 (`base/Reducer-Conformance`) | 41 s |  |
 | `DownloadsSessionRowMapCheck` | 3 | 1 | 2 | 0 | 1 (`session/SessionRowMapCheck-Current-RowMap`) | 15 s |  |
 | `DownloadsAdmission` | 20 | 11 | 9 | 2 | 5,832,083 (`admission/Deep-CapLowered`) | 71 s | 120 s |

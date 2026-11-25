@@ -82,7 +82,7 @@ about field names.
 | `Finding-F3-PauseSupersedesFinishedSegment` | `FinishedBodySurvivesPause` violated | violated | stops at first error | 1 s |
 | `Finding-F4-FinalizingRowWithoutBody` | `FinalizingAlwaysHasBody` violated | violated | stops at first error | 1 s |
 | `Finding-F4-VerdictRenameCrash` | `VerdictSurvivesCrash` violated | violated | stops at first error | < 1 s |
-| `Deep-TwoStatic` (deep) | pass | pass | 8,228,854 | 287 s |
+| `Deep-TwoStatic` (deep) | pass | pass | 7,908,854 | 176 s (4 workers) |
 
 ## Findings added in the second round
 
