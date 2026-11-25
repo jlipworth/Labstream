@@ -141,7 +141,8 @@ a finding on this lane. The whole-file loss on this lane is R2 below.
 The `Current-*`, `Deep-*` and `Proposed-MidAppend` configs also check `ReconcileKeepsQueuedBody`,
 `ReconcileNeverFailsOwnedWork` and `PauseKeepsFinishedSegment` since the R2 and R3 fixes.
 `HaltedProgress` is enabled only with `FixProgressKeepsFinished = FALSE`, so the state counts
-above did not change when it was added.
+above did not change when it was added (both Deep configs rerun after it, 2026-11-25,
+`TLC_WORKERS=6`: 237,009 in 4 s and 2,438,318 in 49 s).
 
 ### Faithfulness and mutants
 

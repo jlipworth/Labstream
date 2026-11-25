@@ -117,8 +117,8 @@ proceeds and an outage ends, and that the user, crashes and faults take a bounde
 | `Current-Foreground` | pass | one forward-only row with foreground reconcile at any time; every safety property and `ForegroundKeepsSupervisedStart` (10,096 states, 1 s) |
 | `Current-ForegroundMixed` | pass | a forward-only and a static row with foreground reconcile, four environment steps; `RelaunchKeepsUnstartedRow` and `ForegroundKeepsSupervisedStart` (600,188 states, 26 s) |
 | `Faithful-A1-off-StaleSnapshot` | `ForegroundKeepsSupervisedStart` | foreground reconcile trusts its snapshot's exclusion: a row resumed during the task listing is requeued under its supervised start |
-| `Deep-ThreeRows` | pass (deep) | the three-row run with four environment steps (2,685,087 states, 108 s at 4 workers) |
-| `Deep-CapLowered` | pass (deep) | three rows, the setting switched between 3 and 1 (5,813,009 states, 3.5 min at 4 workers) |
+| `Deep-ThreeRows` | pass (deep) | the three-row run with four environment steps (2,685,087 states, 108 s at 4 workers; same count after foreground reconcile was added, 68 s at 6) |
+| `Deep-CapLowered` | pass (deep) | three rows, the setting switched between 3 and 1 (5,813,009 states, 3.5 min at 4 workers; same count after foreground reconcile was added, 133 s at 6) |
 
 B65 has one switch and one mutant. At the audit baseline a pause changed only the status, the
 pending first start was a separate durable mark that the planner cleared when it admitted the

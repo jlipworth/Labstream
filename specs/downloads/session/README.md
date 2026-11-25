@@ -211,7 +211,7 @@ no crash; F1 and the capture's durability stay with `DownloadsSessionCore`.
 | `Faithful-F3-off-Progress` | `FinishedBodySurvivesPause` violated | violated | stops at first error | 1 s |
 | `Finding-F4-FinalizingRowWithoutBody` | `FinalizingAlwaysHasBody` violated | violated | stops at first error | 1 s |
 | `Finding-F4-VerdictRenameCrash` | `VerdictSurvivesCrash` violated | violated | stops at first error | < 1 s |
-| `Deep-TwoStatic` (deep) | pass | pass | 5,517,342 | 108 s |
+| `Deep-TwoStatic` (deep) | pass | pass | 5,517,342 | 74 s (rerun after the review fixes, same count) |
 
 ## Findings added in the second round
 
