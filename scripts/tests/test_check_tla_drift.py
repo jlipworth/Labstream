@@ -371,9 +371,12 @@ class RepositorySpecHeaderTests(unittest.TestCase):
             self.assertTrue((REPO / path).is_file(), f"MODELS names a missing file: {path}")
 
     def test_every_downloads_module_declares_what_it_models(self):
-        # These two hold no model of their own: one is generated from the Swift reducer, the
-        # other compares that table with DownloadsReducer.tla.
-        exempt = {"DownloadsReducerTable.tla", "DownloadsReducerConformance.tla"}
+        # These hold no model of Swift of their own. One is generated from the Swift reducer and
+        # one compares that table with DownloadsReducer.tla. The session's row map is how the
+        # session model stores a reducer state (part of that model, which declares its files),
+        # and its check compares the map with the same table.
+        exempt = {"DownloadsReducerTable.tla", "DownloadsReducerConformance.tla",
+                  "DownloadsSessionRowMap.tla", "DownloadsSessionRowMapCheck.tla"}
         declaring = {Path(module).name
                      for modules in drift.modelled_files(drift.WorkTree(REPO, "specs")).values()
                      for module in modules}
