@@ -282,7 +282,7 @@ struct DownloadLifecycleStoreTests {
         }
     }
 
-    @Test("A resume manifest whose blob is gone does not keep a paused live-stream row")
+    @Test("A resume manifest whose blob is gone is no checkpoint; the paused live-stream row stays paused (A1)")
     func missingResumeBlobIsNotACheckpoint() throws {
         try withDirectory { directory in
             let store = DownloadTestFiles.store(baseDirectory: directory)
@@ -292,7 +292,11 @@ struct DownloadLifecycleStoreTests {
             let key = try seed("jellyfin:blob", status: .paused, metadata: metadata, in: store)
 
             store.reconcile(liveRatingKeys: [], snapshotRatingKeys: [key.ratingKey])
-            #expect(store.record(for: key)?.status == .failed)
+            // Without the blob there is no checkpoint, and a forward-only row with no task, body
+            // or checkpoint has nothing a failure would discard: it stays paused rather than
+            // failing as a network error (Admission-A1, #475). Resume starts it afresh.
+            #expect(store.record(for: key)?.status == .paused)
+            #expect(store.lifecycleState(for: key)?.history.lastFailure == nil)
 
             // With the blob on disk the same row stays resumable.
             let kept = try seed("jellyfin:blob2", status: .paused, metadata: {
