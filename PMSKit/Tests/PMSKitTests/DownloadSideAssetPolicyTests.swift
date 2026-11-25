@@ -58,6 +58,63 @@ struct DownloadSideAssetPolicyTests {
         #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: 0, partIndex: -1) == nil)
     }
 
+    @Test("Empty or blank artwork fields are absent and fall back to the next field (#504)")
+    func blankArtworkFallsBack() {
+        #expect(DownloadSideAssetPolicy.offlinePosterRef(for: MediaItem(ratingKey: "m1", title: "Movie", type: "movie",
+                                                                       thumb: "", art: "art")) == "art")
+        #expect(DownloadSideAssetPolicy.offlinePosterRef(for: MediaItem(ratingKey: "m2", title: "Movie", type: "movie",
+                                                                       thumb: "  ", art: "art")) == "art")
+        #expect(DownloadSideAssetPolicy.offlinePosterRef(for: MediaItem(ratingKey: "m3", title: "Movie", type: "movie",
+                                                                       thumb: "", art: "")) == nil)
+        #expect(DownloadSideAssetPolicy.offlinePosterRef(for: MediaItem(ratingKey: "e1", title: "Ep", type: "episode",
+                                                                       thumb: "episode", art: "art",
+                                                                       grandparentThumb: "",
+                                                                       parentThumb: "season")) == "season")
+        // Jellyfin/Emby synthetic refs go through the same selector.
+        #expect(DownloadSideAssetPolicy.offlinePosterRef(for: MediaItem(ratingKey: "j1", title: "Movie", type: "movie",
+                                                                       thumb: "",
+                                                                       art: "jellyfin://item/x/Backdrop?tag=t"))
+            == "jellyfin://item/x/Backdrop?tag=t")
+    }
+
+    @Test("Plex repair part is resolved by the persisted part ID, by index only without one (#503)")
+    func plexRepairPartByID() {
+        let item = MediaItem(ratingKey: "item", title: "Title", type: "movie", media: [
+            Media(id: 2, part: [part(id: 20, indexes: "sd"), part(id: 21)]),
+            Media(id: 1, part: [part(id: 10), part(id: 11, indexes: "sd")]),
+        ])
+        #expect(DownloadSideAssetPolicy.plexRepairPart(from: item, mediaIndex: 0, partIndex: 1, sourcePartID: 11)?.id == 11)
+        #expect(DownloadSideAssetPolicy.plexRepairPart(from: item, mediaIndex: 0, partIndex: 1, sourcePartID: 99) == nil)
+        // Legacy rows without an ID keep the index lookup, strictly in range.
+        #expect(DownloadSideAssetPolicy.plexRepairPart(from: item, mediaIndex: 0, partIndex: 1, sourcePartID: nil)?.id == 21)
+        #expect(DownloadSideAssetPolicy.plexRepairPart(from: item, mediaIndex: 5, partIndex: 0, sourcePartID: nil) == nil)
+        // The BIF follows the same identity, and still needs the part's own index.
+        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: 0, partIndex: 1, sourcePartID: 11)?.id == 11)
+        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: 0, partIndex: 0, sourcePartID: 10) == nil)
+        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: 1, partIndex: 1, sourcePartID: 99) == nil)
+    }
+
+    @Test("A source refresh teaches a row the chapter thumbnails it was saved without (#504)")
+    func learnedOfflineChapters() {
+        let bare = [OfflineChapter(tag: "A", startTimeOffset: 0), OfflineChapter(tag: "B", startTimeOffset: 10)]
+        let thumbed = [Chapter(tag: "A", startTimeOffset: 0, thumb: "/a"), Chapter(tag: "B", startTimeOffset: 10, thumb: "/b")]
+        #expect(DownloadSideAssetPolicy.learnedOfflineChapters(saved: bare, current: thumbed)?.map(\.thumb) == ["/a", "/b"])
+        #expect(DownloadSideAssetPolicy.learnedOfflineChapters(saved: nil, current: thumbed)?.count == 2)
+        // A saved list without thumbnails is replaced even when the chapters differ.
+        let other = [Chapter(tag: "X", startTimeOffset: 5, thumb: "/x")]
+        #expect(DownloadSideAssetPolicy.learnedOfflineChapters(saved: bare, current: other)?.map(\.tag) == ["X"])
+        // Nothing to learn.
+        #expect(DownloadSideAssetPolicy.learnedOfflineChapters(saved: bare, current: nil) == nil)
+        #expect(DownloadSideAssetPolicy.learnedOfflineChapters(
+            saved: bare, current: [Chapter(tag: "A", startTimeOffset: 0, thumb: " ")]) == nil)
+        #expect(DownloadSideAssetPolicy.learnedOfflineChapters(saved: thumbed.map(OfflineChapter.init), current: thumbed) == nil)
+        // A partly thumbed list gains the missing thumbnails only when the chapters match.
+        let partial = [OfflineChapter(tag: "A", startTimeOffset: 0, thumb: "/a"), OfflineChapter(tag: "B", startTimeOffset: 10)]
+        #expect(DownloadSideAssetPolicy.learnedOfflineChapters(saved: partial, current: thumbed)?.map(\.thumb) == ["/a", "/b"])
+        let shifted = [Chapter(tag: "A", startTimeOffset: 0, thumb: "/a"), Chapter(tag: "B", startTimeOffset: 20, thumb: "/b")]
+        #expect(DownloadSideAssetPolicy.learnedOfflineChapters(saved: partial, current: shifted) == nil)
+    }
+
     @Test("Synthetic chapter image parser validates scheme shape and tag")
     func parsedSyntheticChapterImageKey() {
         #expect(DownloadSideAssetPolicy.parsedSyntheticChapterImageKey("jellyfin://item/abc/Chapter/3?tag=v1", scheme: "jellyfin")

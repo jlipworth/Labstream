@@ -162,8 +162,12 @@ extension DownloadManager {
             // Stream/index detail is intentionally not persisted. Refresh the current Plex item
             // before retrying BIF and text subtitles; ownership/status guards prevent a delayed
             // response from reviving work after Delete, Pause, or another terminal failure.
+            // #503: Plex can reorder an item's media after the download, so the refreshed item's
+            // part is resolved by the persisted `sourcePartID`; the indexes are the fallback for a
+            // row that stored no ID.
             let mediaIndex = metadata.mediaIndex ?? 0
             let partIndex = metadata.partIndex ?? 0
+            let sourcePartID = metadata.sourcePartID
             if kinds == nil || kinds?.contains(.plexBIF) == true
                 || kinds?.contains(.textSubtitles) == true {
                 let discoveryKind: DownloadSideAssetKind = kinds?.contains(.plexBIF) == true
@@ -197,17 +201,23 @@ extension DownloadManager {
                 }
                 if kinds?.contains(.plexBIF) != false {
                     self.cachePlexBIF(for: attemptKey, item: currentItem, mediaIndex: mediaIndex,
-                                      partIndex: partIndex, server: server, token: token)
+                                      partIndex: partIndex, sourcePartID: sourcePartID,
+                                      server: server, token: token)
                 }
                 if kinds?.contains(.chapterImages) != false {
                     self.cacheChapterImages(for: attemptKey, item: currentItem, backend: .plex,
                                             server: server, token: token)
                 }
                 if kinds?.contains(.textSubtitles) != false,
-                   let part = currentItem.media?[safe: mediaIndex]?.part[safe: partIndex] {
+                   let part = DownloadSideAssetPolicy.plexRepairPart(
+                    from: currentItem, mediaIndex: mediaIndex, partIndex: partIndex,
+                    sourcePartID: sourcePartID) {
                     self.cachePlexTextSubtitles(for: attemptKey, part: part,
                                                 server: server, token: token)
                 }
+                await self.adoptRefreshedChapterImages(
+                    for: attemptKey, metadata: metadata, currentItem: currentItem,
+                    backend: .plex, server: server, token: token)
                 }
             }
 
@@ -247,7 +257,11 @@ extension DownloadManager {
                           let currentItem = try? await core.metadata(itemID: itemID),
                           let currentRecord = self.store.record(for: attemptKey),
                           currentRecord.metadata?.sideAssetSourceIdentity
-                            == metadata.sideAssetSourceIdentity,
+                            == metadata.sideAssetSourceIdentity else { return }
+                    await self.adoptRefreshedChapterImages(
+                        for: attemptKey, metadata: metadata, currentItem: currentItem,
+                        backend: .jellyfin, server: server, token: token)
+                    guard !Task.isCancelled,
                           let part = Self.subtitleRepairPart(item: currentItem, metadata: metadata) else { return }
                     self.cacheJellyfinTextSubtitles(
                         for: attemptKey, itemId: itemID,
@@ -294,7 +308,11 @@ extension DownloadManager {
                           let currentItem = try? await core.metadata(itemID: metadata.ratingKey),
                           let currentRecord = self.store.record(for: attemptKey),
                           currentRecord.metadata?.sideAssetSourceIdentity
-                            == metadata.sideAssetSourceIdentity,
+                            == metadata.sideAssetSourceIdentity else { return }
+                    await self.adoptRefreshedChapterImages(
+                        for: attemptKey, metadata: metadata, currentItem: currentItem,
+                        backend: .emby, server: server, token: token, userID: userID)
+                    guard !Task.isCancelled,
                           let part = Self.subtitleRepairPart(item: currentItem, metadata: metadata) else { return }
                     self.cacheEmbyTextSubtitles(
                         for: attemptKey, itemId: metadata.ratingKey,
@@ -304,6 +322,34 @@ extension DownloadManager {
             }
         }
         return true
+    }
+
+    /// #504: a successful source refresh is the latest inventory of the row's chapter
+    /// thumbnails. The completed-row inventory is derived from the saved chapters, so a row saved
+    /// before the server had thumbnails would never owe them. When the refresh teaches the row
+    /// thumbnails, persist the refreshed chapters (every later launch's inventory then owes the
+    /// images) and fetch them now, keyed by the persisted chapter indexes.
+    func adoptRefreshedChapterImages(for attemptKey: DownloadAttemptKey,
+                                     metadata: OfflineMetadata,
+                                     currentItem: MediaItem,
+                                     backend: DownloadBackendKind,
+                                     server: URL, token: String, userID: String? = nil) async {
+        let currentChapters = currentItem.chapters
+        guard DownloadSideAssetPolicy.learnedOfflineChapters(
+            saved: metadata.chapters, current: currentChapters) != nil else { return }
+        let result = await store.updateMetadataAsync(
+            for: attemptKey, expectedSideAssetSource: metadata.sideAssetSourceIdentity) {
+            if let learned = DownloadSideAssetPolicy.learnedOfflineChapters(
+                saved: $0.chapters, current: currentChapters) {
+                $0.chapters = learned
+            }
+        }
+        guard result == .applied || result == .noChange, !Task.isCancelled,
+              let persisted = store.record(for: attemptKey)?.metadata,
+              persisted.sideAssetSourceIdentity == metadata.sideAssetSourceIdentity else { return }
+        refreshRecords()
+        cacheChapterImages(for: attemptKey, item: persisted.makeMediaItem(), backend: backend,
+                           server: server, token: token, userID: userID)
     }
 
     /// Production subtitle-repair selection shared by the MediaBrowser repair branches.
@@ -566,9 +612,10 @@ extension DownloadManager {
     /// a missing/invalid BIF never fails the media download. The request carries the token in
     /// query, so do not log the URL or surfaced error.
     func cachePlexBIF(for attemptKey: DownloadAttemptKey, item: MediaItem, mediaIndex: Int,
-                              partIndex: Int, server: URL, token: String) {
+                              partIndex: Int, sourcePartID: Int? = nil, server: URL, token: String) {
         guard let part = DownloadSideAssetPolicy.selectedPlexBIFPart(
-            from: item, mediaIndex: mediaIndex, partIndex: partIndex) else { return }
+            from: item, mediaIndex: mediaIndex, partIndex: partIndex,
+            sourcePartID: sourcePartID) else { return }
         guard let sourceIdentity = store.sideAssetSourceIdentity(for: attemptKey) else { return }
         let destination = store.plexBIFDestinationURL(ratingKey: attemptKey.ratingKey)
         guard let staging = store.attemptStagingURL(for: attemptKey, stableURL: destination) else { return }

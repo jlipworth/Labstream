@@ -213,11 +213,12 @@ struct DownloadsFormalModelSideAssetsTests {
         let repair = try #require(Self.appSource(
             from: "                    self.cachePlexBIF(for: attemptKey, item: currentItem, mediaIndex: mediaIndex,",
             to: "\n                }", in: Self.sideCachePath))
-        #expect(repair.contains("partIndex: partIndex, server: server, token: token)"))
+        #expect(repair.contains("partIndex: partIndex, sourcePartID: sourcePartID,"))
         let cache = try #require(Self.appSource(
             from: "    func cachePlexBIF(for attemptKey:", to: "\n        guard let sourceIdentity",
             in: Self.sideCachePath))
-        #expect(cache.contains("from: item, mediaIndex: mediaIndex, partIndex: partIndex)"))
+        #expect(cache.contains("from: item, mediaIndex: mediaIndex, partIndex: partIndex,"))
+        #expect(cache.contains("sourcePartID: sourcePartID)"))
 
         #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: onlyChosenHasBIF, mediaIndex: 0, partIndex: 1)?.id == 11,
                 "the downloaded part's BIF is requested")
@@ -225,6 +226,100 @@ struct DownloadsFormalModelSideAssetsTests {
                 "the first part's BIF is not cached for a download of the second part")
         // Downloading the first part still selects the first part's BIF.
         #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: onlyFirstHasBIF, mediaIndex: 0, partIndex: 0)?.id == 10)
+    }
+
+    /// #503 (fixed). The completed-row repair refreshes the Plex item and used to look the
+    /// downloaded part up by media and part index. After Plex reorders the item's media another
+    /// part sits at that index, so the repair fetched that part's subtitles and BIF, or none, on
+    /// every launch, although the row persists the downloaded part's `sourcePartID`. Both repairs
+    /// now resolve the part by that ID; the indexes are used only when no ID was stored, and an ID
+    /// the refreshed item no longer has selects nothing
+    /// (`side-assets/Current-503-RepairByPartID`; `Faithful-503-off-*` keep the old behaviour).
+    @Test("#503: the Plex repair resolves the downloaded part by its persisted ID")
+    func plexRepairResolvesThePartByItsPersistedID() throws {
+        func part(_ id: Int, _ indexes: String?) -> Part {
+            Part(id: id, key: "/library/parts/\(id)", indexes: indexes)
+        }
+        // Downloaded: media 0, part 0, part ID 10. Plex then put another version first.
+        let reordered = MediaItem(ratingKey: "item", title: "Title", type: "movie", media: [
+            Media(id: 2, part: [part(20, "sd")]),
+            Media(id: 1, part: [part(10, "sd")]),
+        ])
+        #expect(DownloadSideAssetPolicy.plexRepairPart(
+            from: reordered, mediaIndex: 0, partIndex: 0, sourcePartID: 10)?.id == 10,
+            "the subtitle repair asks the downloaded part, wherever it moved")
+        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(
+            from: reordered, mediaIndex: 0, partIndex: 0, sourcePartID: 10)?.id == 10,
+            "the BIF repair asks the downloaded part, wherever it moved")
+        // The downloaded part is gone: nothing, never another part's asset.
+        let gone = MediaItem(ratingKey: "item", title: "Title", type: "movie", media: [
+            Media(id: 2, part: [part(20, "sd")]),
+        ])
+        #expect(DownloadSideAssetPolicy.plexRepairPart(
+            from: gone, mediaIndex: 0, partIndex: 0, sourcePartID: 10) == nil)
+        #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(
+            from: gone, mediaIndex: 0, partIndex: 0, sourcePartID: 10) == nil)
+
+        // What the model relies on: the repair passes the persisted ID to both lookups and no
+        // longer indexes the refreshed item itself.
+        let repair = try #require(Self.appSource(
+            from: "            let sourcePartID = metadata.sourcePartID",
+            to: "\n        case .jellyfin:", in: Self.sideCachePath))
+        #expect(repair.contains("partIndex: partIndex, sourcePartID: sourcePartID,"))
+        #expect(repair.contains("DownloadSideAssetPolicy.plexRepairPart("))
+        #expect(!repair.contains("currentItem.media?[safe: mediaIndex]"),
+                "the subtitle repair looks the part up by index")
+    }
+
+    /// #504 case 1 (fixed). The completed-row inventory is derived from the saved chapters, so a
+    /// row saved before the server had chapter thumbnails never offered `.chapterImages`, and the
+    /// source refresh that did return them skipped the chapter cache call, on every launch. Each
+    /// backend's successful refresh now persists the chapters it learns and fetches their images,
+    /// so every later inventory owes them (`side-assets/Current-504-LateChapters`;
+    /// `Faithful-504-off-LateChapters`).
+    @Test("#504: a source refresh that has chapter thumbnails puts them in the row's inventory")
+    func refreshedChapterThumbnailsJoinTheInventory() throws {
+        let refreshed = [Chapter(tag: "One", startTimeOffset: 0, thumb: "/thumb/1"),
+                         Chapter(tag: "Two", startTimeOffset: 60_000, thumb: "/thumb/2")]
+        let savedBare = [OfflineChapter(tag: "One", startTimeOffset: 0),
+                         OfflineChapter(tag: "Two", startTimeOffset: 60_000)]
+        let learned = try #require(DownloadSideAssetPolicy.learnedOfflineChapters(
+            saved: savedBare, current: refreshed))
+        #expect(learned.map(\.thumb) == ["/thumb/1", "/thumb/2"])
+        #expect(DownloadSideAssetPolicy.learnedOfflineChapters(saved: nil, current: refreshed)?.count == 2)
+
+        let adopt = "await self.adoptRefreshedChapterImages("
+        let plex = try #require(Self.appSource(
+            from: "            let sourcePartID = metadata.sourcePartID",
+            to: "\n        case .jellyfin:", in: Self.sideCachePath))
+        #expect(plex.contains(adopt))
+        let jellyfin = try #require(Self.appSource(
+            from: "        case .jellyfin:", to: "\n        case .emby:", in: Self.sideCachePath))
+        #expect(jellyfin.contains(adopt))
+        let emby = try #require(Self.appSource(
+            from: "        case .emby:", to: "\n        return true", in: Self.sideCachePath))
+        #expect(emby.contains(adopt))
+        let helper = try #require(Self.appSource(
+            from: "    func adoptRefreshedChapterImages(", to: "\n    /// Production subtitle-repair",
+            in: Self.sideCachePath))
+        #expect(helper.contains("$0.chapters = learned"), "the learned chapters are persisted")
+        #expect(helper.contains("cacheChapterImages(for: attemptKey, item: persisted.makeMediaItem()"),
+                "the images are fetched against the persisted chapter indexes")
+    }
+
+    /// #504 case 2 (fixed). A Plex movie with `thumb == ""` and a valid `art`: the artwork
+    /// selector returned the empty string, the initial fetch declined it and the repair inventory,
+    /// which asks the same selector, omitted the poster. An empty or blank field is now absent
+    /// (`side-assets/Current-504-EmptyThumb`; `Faithful-504-off-EmptyThumb`).
+    @Test("#504: an empty artwork field falls back to the next valid one")
+    func emptyArtworkFieldFallsBack() throws {
+        #expect(DownloadSideAssetPolicy.offlinePosterRef(for: MediaItem(
+            ratingKey: "m", title: "Movie", type: "movie", thumb: "", art: "/art")) == "/art")
+        // The inventory and the poster fetches all ask this selector.
+        let inventory = try #require(Self.appSource(
+            from: "    static func missingKinds(record:", to: "\n        switch backend {",
+            in: Self.servicePath))
+        #expect(inventory.contains("DownloadSideAssetPolicy.offlinePosterRef(for: item)"))
     }
 
     /// S8. A side-asset promotion snapshots the row's mutation generation, then checks it again
