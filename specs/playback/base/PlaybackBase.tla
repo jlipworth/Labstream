@@ -31,9 +31,10 @@
 (*                                                                         *)
 (*  4. Constants.  Controllers (a set: one member by default, two in a     *)
 (*     Deep-BackToBack config sharing the server), SessionIds,             *)
-(*     MaxGeneration, RecreateCountsAgainstServer and IdsNeverShared are   *)
-(*     declared here and every config assigns them: that line per config   *)
-(*     is the cost of keeping both in one place.                           *)
+(*     MaxGeneration, RecreateCountsAgainstServer, IdsNeverShared and      *)
+(*     StopEndsAllUnderId are declared here and every config assigns       *)
+(*     them: that line per config is the cost of keeping them in one       *)
+(*     place.                                                              *)
 (*     IdsNeverShared says whether two controllers can hold one session    *)
 (*     id.  TRUE for Plex: the id is minted by the client, once per        *)
 (*     controller (PlaybackController.sessionID).  For Jellyfin and Emby   *)
@@ -95,7 +96,10 @@
 (*                            client meant.  When several jobs run under   *)
 (*                            the id, the model lets it end any non-empty  *)
 (*                            set of them: which ones a backend ends was   *)
-(*                            not established.  So an acknowledged stop    *)
+(*                            not established.  StopEndsAllUnderId = TRUE  *)
+(*                            narrows that to all of them, for a config    *)
+(*                            that states the assumption.  Without it an   *)
+(*                            acknowledged stop                            *)
 (*                            ends the job the client meant only if no     *)
 (*                            other job runs under that id, and a client   *)
 (*                            cannot know that: a job whose stop was lost  *)
@@ -150,15 +154,22 @@ CONSTANTS
         \* client's (the judgement the design uses).  FALSE counts it as
         \* client-owned; Base-Mutant-RecreateCountsAgainstClient shows
         \* that judgement violates OneEncoder.
-    IdsNeverShared
+    IdsNeverShared,
         \* TRUE: a session id belongs to the controller that first used it
         \* (contract, 4).  FALSE lets a second controller start under it.
+    StopEndsAllUnderId
+        \* What an applied stop ends when several jobs run under its
+        \* session id.  FALSE: any non-empty set of them, the choice that
+        \* assumes nothing about the backend.  TRUE: every one of them.  A
+        \* module whose backend reuses a session id states which value a
+        \* config takes and why (contract, 7).
 
 ASSUME /\ IsFiniteSet(Controllers) /\ Controllers # {}
        /\ IsFiniteSet(SessionIds) /\ SessionIds # {}
        /\ MaxGeneration \in Nat \ {0}
        /\ RecreateCountsAgainstServer \in BOOLEAN
        /\ IdsNeverShared \in BOOLEAN
+       /\ StopEndsAllUnderId \in BOOLEAN
 
 VARIABLES
     server,    \* remote: server[s][g], incarnation g of session id s
@@ -326,9 +337,11 @@ Resolved(r, status) ==
 LiveUnder(s) == {g \in Incarnations : server[s][g].state \in LiveStates}
 
 \* What a stop for s may end: any non-empty set of the running jobs under
-\* the id (contract, 7).
+\* the id, or with StopEndsAllUnderId all of them (contract, 7).
 StopReach(s) ==
-    IF LiveUnder(s) = {} THEN {{}} ELSE SUBSET LiveUnder(s) \ {{}}
+    IF LiveUnder(s) = {} THEN {{}}
+    ELSE IF StopEndsAllUnderId THEN {LiveUnder(s)}
+    ELSE SUBSET LiveUnder(s) \ {{}}
 
 \* `server` after stop r ended the incarnations in G under s.
 EndedBy(s, G, r) ==

@@ -56,15 +56,21 @@ A module whose backend reuses a session id (Plex always does) should expect `One
 `NoWrongKill` to report it, and must then decide from the backend's real behaviour whether it
 is a finding or the abstraction.
 
+`StopEndsAllUnderId = TRUE` narrows the choice to every job under the id. It is an assumption
+about a backend, so a config that takes it says so in its comment and the module's README gives
+the evidence. `Base-Current-ReusedId` is `Base-Mutant-ReusedId`'s client against such a server:
+the careful reuse is then enough.
+
 ## Constants
 
-Every config assigns all five; that is the cost of declaring them once.
+Every config assigns all six; that is the cost of declaring them once.
 
 | Constant | Meaning |
 | --- | --- |
 | `Controllers`, `SessionIds`, `MaxGeneration` | the controllers sharing the server, the session ids, the bound on every generation and incarnation counter |
 | `RecreateCountsAgainstServer` | `TRUE` everywhere except the mutant that shows why: a server-recreated job is not the client's |
 | `IdsNeverShared` | `TRUE`: a session id belongs to the controller that first used it |
+| `StopEndsAllUnderId` | `FALSE`: an applied stop ends any non-empty set of the jobs under its id. `TRUE`: it ends all of them |
 
 `IdsNeverShared` is `TRUE` for Plex, whose id is minted by the client once per controller
 (`PlaybackController.sessionID`). Jellyfin and Emby mint the id on the server and can return one
@@ -108,12 +114,13 @@ For properties only.
 
 2026-11-25, tla2tools v1.7.4, `TLC_WORKERS=auto TLC_HEAP=4g`. All run `PlaybackBaseSmoke`.
 Unless noted: one controller, two session ids, `MaxGeneration = 2`, three stop requests,
-`IdsNeverShared = TRUE`.
+`IdsNeverShared = TRUE`, `StopEndsAllUnderId = FALSE`.
 
 | Config | Expect | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
 | `Base-Current-Smoke` | pass | pass | 963,454 | 5 s |
 | `Base-Current-TwoControllers` | pass | pass | 158,699 | 1 s |
+| `Base-Current-ReusedId` | pass | pass | 9,784,262 | 31 s |
 | `Base-Mutant-RecreateCountsAgainstClient` | `OneEncoder` violated | violated | stops at first error | 1 s |
 | `Base-Mutant-StartUnderLiveId` | `OneEncoder` violated | violated | stops at first error | 1 s |
 | `Base-Mutant-ReusedId` | `OneEncoder` violated | violated | stops at first error | 1 s |
@@ -122,9 +129,9 @@ Unless noted: one controller, two session ids, `MaxGeneration = 2`, three stop r
 | `Base-Mutant-SharedId` | `OneOwnerPerId` violated | violated | stops at first error | 1 s |
 | `Base-Mutant-CleanupNotTicketed` | `JoinCoversCleanup` violated | violated | stops at first error | 1 s |
 
-The two `Current` configs check `TypeOK`, `OneEncoder`, `NoWrongKill`, `JoinCoversCleanup` and
+The three `Current` configs check `TypeOK`, `OneEncoder`, `NoWrongKill`, `JoinCoversCleanup` and
 `OneOwnerPerId`. `Base-Current-TwoControllers` uses two controllers, `MaxGeneration = 1` and
-one stop request.
+one stop request. `Base-Current-ReusedId` sets `SmokeReusesIds` and `StopEndsAllUnderId`.
 
 - **RecreateCountsAgainstClient** (5 steps): start, stop, acknowledged, start the other session,
   the server recreates the first. Counted as the client's, that is two owned jobs.
