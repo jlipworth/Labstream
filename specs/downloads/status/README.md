@@ -161,7 +161,7 @@ switches S1 off too, since either fix clears that trace):
   stalled row keeps its speed.
 - **S5 off** (`Faithful-S5-off`, violates `ForwardStallGetsVerdict`; `Faithful-S5-off-Flow`,
   violates `UpdatingResolves`). Past the cap a stalled forward-only stream stays `transferring`.
-- **S8 off** (`Faithful-S8-off`, violates `NoRestartOfMovingStream`). A queued stall verdict
+- **S8 off** (#501, `Faithful-S8-off`, violates `NoRestartOfMovingStream`). A queued stall verdict
   cancels a stream that moved again before the verdict ran.
 
 Two historical bugs from `docs/evidence/2026-10-17-downloads-overhaul-bugs-vs-main.md`:
@@ -413,9 +413,9 @@ that outlast the settling window (the worst answer is 10.7 times the true total)
 cannot tell a late backlog from a burst, so a fix belongs to the owner. Whether URLSession ever
 reports a backlog that late needs a device.
 
-### S8: a queued stall restart cancels a stream that is moving again (real, low; fixed)
+### S8: a queued stall restart cancels a stream that is moving again (real, low; fixed, #501)
 
-Raised by the independent reviewer (rated probable), confirmed in the Swift. No issue number yet.
+Issue #501. Raised by the independent reviewer (rated probable), confirmed in the Swift.
 
 `refreshRecords` asks the tracker for stall verdicts and hands each to
 `restartStalledForwardOnlyStream`, which enqueues a manager operation. The operation re-read the

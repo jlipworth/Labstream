@@ -1138,7 +1138,7 @@ as the defect is fixed.
 | Status-S5 | Past its two automatic restarts a stalled forward-only stream has no verdict; it stays downloading at zero bytes and hides the batch speed. | real, medium; fixed on specs/downloads-tla, pending merge | #497 |
 | Status-S6 | Fresh evidence without a common 0.5 s window hides the batch speed; a member reporting every 3.5 to 6 s makes it come and go. | real, low | #498 |
 | Status-S7 | A backlog reported after the 4 s settling and grace windows is published as live speed. | probable, low | #499 |
-| Status-S8 | A queued forward-only stall verdict re-read the row but not its bytes, so a stream that moved again before the queued operation ran was cancelled and restarted from byte 0. | real, low; fixed on specs/downloads-tla, pending merge | none yet |
+| Status-S8 | A queued forward-only stall verdict re-read the row but not its bytes, so a stream that moved again before the queued operation ran was cancelled and restarted from byte 0. | real, low; fixed on specs/downloads-tla, pending merge | #501 |
 
 Wake-W1, Wake-W2, SideAssets-S3, SideAssets-S4, Status-S3, Status-S4, st-39 and #394 have a
 `Finding-*` config and no behavioural Swift pin: the decision is app-target code or a product

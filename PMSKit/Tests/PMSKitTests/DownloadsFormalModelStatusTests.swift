@@ -1156,13 +1156,13 @@ struct DownloadsFormalModelStatusTests {
         #expect(steady.allSatisfy { $0.outcome.lastRefresh > 100 })
     }
 
-    /// S8 (fixed; `status/Current-OneForward.cfg` checks `NoRestartOfMovingStream`, fix off:
+    /// S8 (#501, fixed; `status/Current-OneForward.cfg` checks `NoRestartOfMovingStream`, fix off:
     /// `Faithful-S8-off.cfg`). The watchdog's refresh finds a forward-only stream stalled and
     /// queues a verdict as a manager operation; before it runs, the stream moves again and a
     /// callback raises the row's bytes. The operation re-read the row and its route but not its
     /// bytes, so it cancelled the moving stream and restarted it from byte 0. The model's trace:
     /// StartTask, Stall, StallObserve (bytes 0), Unstall, DaemonWrite, Callback (bytes 1), StallAct.
-    @Test("S8: a queued stall verdict does not cancel a stream that moved again")
+    @Test("S8 (#501): a queued stall verdict does not cancel a stream that moved again")
     func queuedStallVerdictRechecksBytes() throws {
         let manager = "Labstream/Capabilities/Downloads/Core/DownloadManager.swift"
         let restart = try #require(Self.appFunctionSource(named: "restartStalledForwardOnlyStreamAsync", in: manager))

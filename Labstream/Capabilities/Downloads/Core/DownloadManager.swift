@@ -4993,7 +4993,7 @@ public final class DownloadManager {
         guard let current = store.record(for: ratingKey),
               let key = attemptKey(for: current),
               !store.isDeletionPending(for: key) else { return }
-        // TLA+ Status-S8: the verdict was queued from an earlier observation and callbacks may
+        // TLA+ Status-S8 (#501): the verdict was queued from an earlier observation and callbacks may
         // have moved the row since. Never cancel a stream that is moving again, nor act on a
         // different attempt.
         guard DownloadStallRecoveryPolicy.queuedStallVerdictStillWarranted(

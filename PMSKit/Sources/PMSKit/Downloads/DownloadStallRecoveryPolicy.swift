@@ -60,7 +60,7 @@ public enum DownloadStallRecoveryPolicy {
         return now.timeIntervalSince(lastForwardProgressAt) >= stallTimeout
     }
 
-    /// TLA+ Status-S8: whether a queued stall verdict may still act. The verdict is decided in
+    /// TLA+ Status-S8 (#501): whether a queued stall verdict may still act. The verdict is decided in
     /// `refreshRecords` but runs later as a manager operation, and delegate callbacks keep moving
     /// the row in between. It acts only on the same attempt, still a forward-only stream, whose
     /// bytes have not moved since the observation that queued it; otherwise it would cancel a

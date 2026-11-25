@@ -105,7 +105,7 @@ CONSTANTS
                                     \* callback after foreground, as a static row does
     StallCapFails,                  \* FIX S5 (#497, in the code: TRUE): a stall past the restart
                                     \* cap fails the row
-    FixStallRecheck                 \* FIX S8 (in the code: TRUE): a queued stall verdict acts only
+    FixStallRecheck                 \* FIX S8 (#501, in the code: TRUE): a queued stall verdict acts only
                                     \* if the row's bytes have not moved since it was observed
 
 \* One protection removed at a time.  noGapReset and noGrace have no config: see README.md.
@@ -468,7 +468,7 @@ Callback(r) ==
     /\ refreshPending' = TRUE
     /\ dipRows' = dipRows \ {r}
     /\ NoReset
-    \* A queued stall verdict is not touched: the stall race S8 (StallAct).
+    \* A queued stall verdict is not touched: the stall race S8, #501 (StallAct).
     /\ UNCHANGED <<task, flow, lateCb, watchdog, aggActive, jobs, debt, stallQ, killedMoving>>
     /\ UNCHANGED <<pubAgg, pubMissing, pubAggTaint, pubThin, pubBytes>> /\ KeepProcess
 
