@@ -575,7 +575,7 @@ PausedBodyFinished(r) ==
     /\ UNCHANGED <<present, attempt, recorded, deleting, delPaths, file, queuePaused,
                    authVars, serverUp, up, reg, req, parked, cancelled, budget, pub,
                    earlyOffer, exempt, pass, passRows, rerun, owedEdge, zombie,
-                   raceDropped, sent, ctlReordered, env>>
+                   raceDropped, sent, ctlReordered, env, driftVars>>
 
 \* The terminal refresh releases the attempt with
 \* .preservingFinalizerAndSideCache: side-asset work carries on.
