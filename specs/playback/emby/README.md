@@ -1,0 +1,463 @@
+# emby: the Emby replacement order
+
+`PlaybackEmby.tla` models how `PlaybackController` replaces an Emby stream. Every negotiation
+returns a play-session id the server minted, and the controller holds an exact-session stop for
+the session it plays. A reopen detaches the old item, hands that stop to `EmbyReopenStopBarrier`,
+waits for the reopen before it to return, waits for the stop to be acknowledged, and only then
+negotiates. An unacknowledged stop fails the reopen with `priorSessionStopUnconfirmed` (LS-PB-008)
+and keeps the stop for Retry.
+
+```sh
+scripts/check-tla-specs.sh specs/playback/emby
+scripts/check-tla-specs.sh --deep specs/playback/emby/Deep-BackToBack.cfg
+```
+
+What the model shows:
+
+- With one controller the order as it stands keeps every property but `JoinCoversCleanup`,
+  whatever id the server returns, as long as every stop is answered within its timeout. Once a
+  stop can time out it needs a server that never returns a used id.
+- The two `precondition`s in `EmbyReopenStopBarrier.begin` are not reachable. The transaction
+  tail is what keeps them so: without it both are reached (`Mutant-NoTransactionTail*`).
+- The 2026-10-04 overlap is visible: `Faithful-EmbyOverlap-off`.
+- One finding does not depend on the server: `stop()` does not join the task it cancels, so the
+  cleanup of a rejected session is sent after `waitForPendingStopRequests` returns
+  (`Finding-StopNoJoin`, the restart core's finding and the second half of suspect 4).
+- Three findings are conditional on what Emby does, which the repository does not establish:
+  a stale stop under a reused play-session id, within one playback
+  (`Finding-LateStopKillsReusedId`) and across two (`Finding-BackToBackStaleStop`), and a
+  cancelled negotiation the server still acts on (`Finding-AbandonedNegotiateOrphans`). See
+  [What Emby does](#what-emby-does).
+
+None of the findings has been reproduced in the app or against a server.
+
+## What is modelled
+
+Each MainActor run between two awaits is one action. Functions are in
+`Labstream/Shared/Player/PlaybackController.swift` unless another file is named.
+
+| Model | Swift |
+| --- | --- |
+| `Start` | `start()` with `beginRemoteStream`. `DetailPlaybackLauncher` negotiated the first session before the controller existed, so its job runs and its stop callbacks are installed |
+| `Reopen` | a settled seek outside the buffer, `reload(bitrateKbps:)` and the track changes (`restartAtCurrentPosition`), `attemptEmbyVideoCopyFallback`, `attemptEmbyCopyReopenRetry` and the MediaBrowser branch of `attemptStartupDeadlineRetry`, each ending in `reopenRemoteStream` |
+| `Approve`, `Decline` | `approveVideoTranscoding`, `declineVideoTranscoding` |
+| `Retry`, `RetryProceeds` | `retry()`, `failureRetryTask`, `waitForPendingStopRequests` |
+| `Close` | `stop()` |
+| `Fail`, `NegotiateFails` | `handlePlaybackFailure` and the watchdogs, and the `catch` of `reopenRemoteStream`, each ending in `surfaceFailure` |
+| `PlayerNeedsConsent` | the branch of `handlePlaybackFailure` that creates a task running `requestVideoTranscodeConsent` |
+| `ReopenCore` | the synchronous part of `reopenRemoteStream` |
+| `SurfaceFailure`, `StopRemote` | `surfaceFailure`; `stopRemoteSessionIfNeeded` with `beginEmbySessionStop` |
+| `Begin`, `BeginFinal`, `HasAuthority`, `CurrentTicket` | `EmbyReopenStopBarrier.begin(stop:)`, `beginFinalStop()`, `hasAuthority`, `currentTicket` (`Labstream/Shared/Player/EmbyReopenStopBarrier.swift`) |
+| `BarrierResolves` | the body of the barrier's own task, after `await operation()` |
+| `TaskJoins` | `await predecessor?.value`, the first `acceptsReopenResult` check, and the choice of `currentTicket ?? stopBarrier` |
+| `TaskStopAcked`, `TaskStopUnconfirmed` | the check after `await currentStopBarrier.value`; `throw PlaybackFailure(code: .priorSessionStopUnconfirmed)` and the `catch` |
+| `NegotiateLands` | Emby answers the `remoteStreamReopener` request (a PlaybackInfo request) |
+| `TaskAttaches` | `playableRemoteStreamURL` returns a URL; the session's callbacks are installed, `didStopRemoteSession = false`, `loadRemoteStream`, `load` |
+| `TaskNeedsConsent` | `playableRemoteStreamURL` calls `requestVideoTranscodeConsent` and returns nil; the task then calls `stopRejectedRemoteStream` |
+| `TaskRejects`, `TaskRejectDone`, `Reject` | `stopRejectedRemoteStream` after a failed `acceptsReopenResult` check |
+| `TaskUnwindExit` | the `catch` of a cancelled task: `guard acceptsReopenResult(...) else { return }` |
+| `InitialAttaches` | the task in `beginRemoteStream` |
+| `ConsentBegins`, `ConsentStopAcked`, `ConsentStopUnconfirmed` | `requestVideoTranscodeConsent`, split at `await barrier.value` |
+| `Accepts` | `RemoteStreamLifecyclePolicy.acceptsReopenResult` (`PMSKit/Sources/PMSKit/RemoteStreamLifecyclePolicy.swift`) and the `guard !Task.isCancelled, generation == playbackGeneration` of the consent request |
+| `ServerResolves`, `ClockTicks` | Emby applies an active-encoding stop, or it ends unacknowledged; the request timeout passes for the stop the barrier awaits |
+
+A task is `[gen, pc, sid, inc, kind, pred, tk]`: the generation it captured, where it is, the
+session its negotiation returned, whether it is the first start, a consent request or a reopen,
+the reopen task it joins first, and the barrier ticket it captured or awaits. Its places:
+
+| `pc` | The task is at |
+| --- | --- |
+| `begin` | created; a reopen is at `await predecessor?.value` |
+| `awaitStop` | `await currentStopBarrier.value` |
+| `negotiate` | `try await remoteStreamReopener(request)`, the request on the wire |
+| `negotiated` | the answer is back and the task holds a session: from the return of the reopener to the end of `playableRemoteStreamURL` |
+| `rejectStop` | `await barrier.value` in `stopRejectedRemoteStream` |
+| `consentStop` | `await barrier.value` in `requestVideoTranscodeConsent` |
+
+Cancelling a task moves it to `unwinding`; it keeps taking steps until it returns. A cancelled
+reopen still waits for its predecessor and for its ticket before it returns, as the Swift does.
+
+### The barrier
+
+`bar[c]` is one `EmbyReopenStopBarrier`: `op` (`operation`, the job whose stop it owns),
+`finalRetry` (`finalRetryAttempted`) and the tickets it has made. Ticket `n` is `latestTicket`,
+and is `pending` while its result is `"pending"`. A ticket is one run of the operation, which is
+one stop request. `Begin` is `begin(stop:)` as a function from the barrier and the offered stop
+to the barrier afterwards, the stop to send, the ticket returned and the `precondition` that was
+false, if one was. The task the barrier creates sends its request when it first runs; the model
+sends it in the same step, since a request that leaves later is one that takes longer.
+
+A `pendingStopTasks` entry for the barrier is `BarTicket(k)`. It ends when ticket `k` does, which
+for a request that timed out is before the server answers, so `Joined(c)` is this module's own
+reading of `waitForPendingStopRequests` and the base's `PendingStopsJoined` is not used.
+
+### How a stop is judged
+
+An Emby stop is an immutable closure over one negotiated session
+(`DetailPlaybackLauncher.reopenStream`, `stopActiveEncodingNow`). The client always knows which
+job a stop means, so every stop is sent with the incarnation the negotiation returned and the
+base's `NoWrongKill` is the property: `StopNeverKillsSuccessor` is that name for it.
+
+The base's `Owned` stops counting a job once a stop for it failed. That is the wrong judgement
+for LS-PB-008, whose point is that the client must not start another encoder after an
+unconfirmed stop. `NoEncoderWhileUnconfirmed` is stated over `Live(c)` instead, and
+`Mutant-ProceedsUnconfirmed` is a run where it fails and `OneEncoder` holds.
+
+## What Emby does
+
+Three server behaviours decide results, and the repository does not settle them. No live server
+was queried for this model.
+
+| Evidence in the repository | Says |
+| --- | --- |
+| `EmbyPlayback.playbackInfoRequest` and `resolveMediaBrowserStream` (`PMSKit/Sources/PMSKit/Emby/EmbyPlayback.swift`) | The play-session id is read from the PlaybackInfo response: the server mints it, once per negotiation. |
+| `EmbyLibrary.activeEncodingStopRequest` (`PMSKit/Sources/PMSKit/Emby/EmbyLibrary.swift`) | A stop is `DELETE /Videos/ActiveEncodings` with `DeviceId` and `PlaySessionId`. `DeviceId` is the app's client identifier, the same for every controller. |
+| `MediaBrowserActiveEncodingStopPolicy.isConfirmedStopped` (`PMSKit/Sources/PMSKit/MediaBrowser/MediaBrowserPlaybackPolicy.swift`) | 2xx, 400, 404 and 410 are acknowledgements, so "nothing to stop" is one. A transport error, a timeout included, is not. |
+| `EmbyBrowseService.stopActiveEncoding` (`Labstream/Shared/Backend/Emby/EmbyBrowseService.swift`) | The stop goes through `URLSession.shared` with no timeout of its own: the bound is the session's default request timeout. |
+| `RemoteStreamLifecyclePolicy.priorSessionStopDecision`, and `EmbyReopenStopBarrierTests` (`same-session`; "A newly opened encoder may reuse an ID") | The code is written for a backend that can return an id again. Nothing records Emby doing so. |
+| `docs/evidence/audits/2026-10-04-emby-reopen-session-overlap.md` | Two sessions overlapping on the server is the reproduced failure boundary. An acknowledgement is not proof the worker exited. |
+| `DetailPlaybackLauncher.acceptInitialOpen` ("A successful stale response may already own an encoder"), and `docs/PLAYBACK-ARCHITECTURE.md`, "Emby" | The code treats a PlaybackInfo answer as something that may need a stop. Whether the encoder starts at PlaybackInfo or at the first playlist request is not recorded. |
+| `MediaBrowserRemotePlayback.requiresActiveEncodingStop` (`Labstream/Shared/UI/DetailPlaybackLauncher.swift`) | For Emby the stop is sent only for a server-encoded stream; otherwise the callback answers `true` with no request. |
+
+So the model was run under each assumption:
+
+| Assumption | Values |
+| --- | --- |
+| `IdReuse` | `"never"`: a negotiation returns an id the server has not used. `"stopped"`: also a used id with no job running under it. `"live"`: any id, the setting that assumes nothing |
+| `AbandonedNegotiateCanLand` | `TRUE`: a PlaybackInfo request the client cancelled or gave up on may still be acted on, with nobody to hear the answer. `FALSE`: it never is |
+| `IdsNeverShared` (base) | `TRUE`: an id is never given to a second controller. `FALSE`: it can be |
+| `StopEndsAllUnderId` (base) | `FALSE` in every config: nothing here relies on what a stop does to several jobs under one id |
+
+What depends on them:
+
+- **`IdReuse`.** With one controller and every stop answered within its timeout,
+  `Current-Reopen` passes with `"live"`: the old job is stopped before the negotiation, so
+  whichever id comes back names nothing else. Once a stop can time out, the pass needs `"never"`
+  (`Current-LateAck`), and `Finding-LateStopKillsReusedId` is the same run with `"stopped"`.
+- **`IdsNeverShared`.** `Deep-BackToBack` takes `FALSE`. There is no evidence for `TRUE`: the
+  server mints the id, and the stop names the device and the id, with the same device for both
+  controllers. With `FALSE` and `"stopped"` a second playback can be given an id the first one's
+  stopped session had, and the run passes only where every stop is answered
+  (`StopsCanFail = FALSE`). `Finding-BackToBackStaleStop` is the same run with failing stops.
+- **`AbandonedNegotiateCanLand`.** `FALSE` in every config but
+  `Finding-AbandonedNegotiateOrphans`.
+
+## What is abstracted, and why
+
+- **What the restart core covers** is left out: seeks and their budget, pause intent and the
+  loopback proxy. `seekHold`, `budget`, `paused`, `proxy` and `jellyfinWindow` never change. No
+  module is imported; the core's `Terminal` and `RestartCore` shapes are rewritten here around
+  the barrier, because the core abstracts the barrier to "the stop was sent and the task waits".
+- **A PlaybackInfo answer is a running job**, as the base says (contract, 7). Emby may start the
+  encoder only at the first playlist request, which the model folds into the answer. For the
+  current order this is the cautious reading, and it is what the Swift assumes when it stops a
+  rejected result.
+- **`playableRemoteStreamURL`'s awaits** (the copy playlist fetch, the prewarm) are folded into
+  `negotiated`. A task cancelled there is rejected exactly as one cancelled before it.
+- **Consent inside a reopen.** `requestVideoTranscodeConsent` would await a barrier ticket if
+  the barrier held authority when a reopen's result needs consent. `TaskNeedsConsent` leaves
+  that branch out, and `NoAuthorityAtPrepare` is the checked invariant that it is not reached.
+  The return from `requestVideoTranscodeConsent` to `stopRejectedRemoteStream` has no await and
+  is one step.
+- **The legacy stop.** A session with no `onStopAcknowledged` gets `Task { false }` in
+  `reopenRemoteStream` and `stopAndWaitIgnoringCancellation` when rejected.
+  `DetailPlaybackLauncher` builds every Emby session with the callback, so neither is modelled.
+  For the same reason `guard let operation else { return Task { false } }` in `begin` is not
+  reached.
+- **Direct play.** A session that is not server-encoded acknowledges its stop with no request.
+  Every session here has an encoder.
+- **The progress stop** (`POST /Sessions/Playing/Stopped`, sent by the timeline) is not a stop
+  of an encoder and is not modelled.
+- **A stale auth context.** `DetailPlaybackLauncher.reopenStream` stops a result itself and
+  throws when the backend context changed during the negotiation. Sign-out and backend
+  switching belong to phase 3.
+- **Time.** The request timeout is `ClockTicks`, which can fire for the stop a barrier awaits.
+  The ticket then reads as unconfirmed and the request stays on the wire, where the server may
+  still apply it.
+- **`ServerRecreate` is not enabled.** Emby restarting an encoder by itself is recorded as a
+  server-side gate (#421) that the client does not trigger; the Jellyfin module owns the
+  recreate question.
+- **Automatic reopens** (the copy fallback, the copy reopen retry, the startup-deadline reopen)
+  are `Reopen` steps and count against `MaxUserActions`.
+- **`failureRetryTask`.** `Reopen` and `Approve` clear it, as `restartAtCurrentPosition` does. A
+  seek's direct `reopenRemoteStream` does not; that wedge is the restart core's
+  `Finding-RetryWedgedByAttach`.
+- **The consent overlay.** A reopen needs no consent choice showing, apart from `Approve`.
+  `reopenRemoteStream` does not clear `videoTranscodeConsent.generation` (`beginStreaming` and
+  `reload` do), so a track change while the choice shows would leave a choice that neither
+  button can dismiss. Whether the interface allows that was not checked; it changes nothing on
+  the server.
+- **One generation bump in `start()`**, and none for `beginRemoteStream`, which captures the
+  generation it finds.
+
+## Bounds
+
+- One controller unless noted. `MaxGeneration` bounds `playbackGeneration` and the incarnations
+  under one id. `GenerationsSuffice` is checked in every passing safety config: no guard on a
+  generation counter ever disables an action.
+- `MaxUserActions` bounds reopens, approvals and Retry taps together. Close, one failure per
+  attempt and one consent request per attached item are always available.
+- `SessionIds`: with `IdReuse = "never"` each negotiation uses one, so a config has one more id
+  than user actions.
+- `EnvFails`, `RestartFromFailure`, `ConsentPossible`, `StopsCanFail` and `StopsCanBeLate`
+  switch parts of the environment on.
+
+## Properties
+
+| Property | Kind | Meaning |
+| --- | --- | --- |
+| `OneEncoder` (base) | invariant | At most one job the client still owns. |
+| `NoEncoderWhileUnconfirmed` | invariant | At most one job runs for a controller with no acknowledged stop meant for it: no new encoder while the prior stop is unconfirmed (LS-PB-008). |
+| `StopNeverKillsSuccessor` | invariant | No stop meant for an older job under an id ends a newer one. **Violated by the code if Emby returns an id again (conditional).** |
+| `BarrierPreconditions` | invariant | Neither `precondition` in `EmbyReopenStopBarrier.begin` is reached false: `PendingTicketNeverReplaced` and `FailedTicketNeverReplaced`. |
+| `NoAuthorityAtPrepare` | invariant | While a current reopen holds a session it has not attached, the barrier has no authority. This is what lets `TaskNeedsConsent` leave a branch out. |
+| `DetachedWhileStopping` | invariant | The barrier never has a stop in flight while an item is attached. |
+| `ConsentBoundary` | invariant | While the consent choice shows, nothing is attached, the old session's stop has been handed over and acknowledged, and the only authority the barrier may still hold is for a rejected, newly negotiated session. |
+| `NoOrphans` | invariant | Every session a request created is the one whose stop the controller holds, is held by a task that will attach or stop it, or has had a stop sent; and after Close, or while a failure shows with nothing under way, the controller holds none. A stop that fails counts. **Violated by the code if Emby acts on a cancelled negotiation (conditional).** |
+| `JoinCoversCleanup` | invariant | Once `waitForPendingStopRequests` would return after Close, no task still holds a session to stop and the barrier has no stop in flight. **Violated by the code (suspect 4).** |
+| `GenerationsSuffice` | invariant | The generation bound is never what stops a behaviour. |
+| `ReopenSettles` | liveness | A start, reopen or consent request ends: it attaches, shows the choice, fails or is closed. |
+| `CloseCleansUp` | liveness | After Close every task returns and the joined cleanup ends. |
+
+Liveness is checked under two fairness assumptions. `FairSpec` answers every stop.
+`ClockFairSpec` never forces an answer and only runs the request timeout: a dead connection.
+
+## Configs and results
+
+2026-11-25, tla2tools v1.7.4, `TLC_WORKERS=auto TLC_HEAP=4g` on 30 cores. Unless noted: one
+controller, three session ids, two user actions, `MaxGeneration = 12`, failures, restarts from a
+failure and failing stops on, consent and late stops off, `IdReuse = "live"`,
+`AbandonedNegotiateCanLand = FALSE`, `IdsNeverShared = TRUE` (no effect with one controller),
+`StopEndsAllUnderId = FALSE`.
+
+| Config | Expect | Result | Distinct states | Time |
+| --- | --- | --- | --- | --- |
+| `Current-Reopen` | pass | pass | 930,715 | 6 s |
+| `Current-LateAck` | pass | pass (given `IdReuse = "never"`) | 861,167 | 4 s |
+| `Current-CloseAtConsent` | pass | pass | 3,033,765 | 13 s |
+| `Liveness-Reopen` | pass | pass | 37,338 | 5 s |
+| `Liveness-BoundedWait` | pass | pass | 787,928 | 106 s |
+| `Faithful-EmbyOverlap-off` | `OneEncoder` violated | violated | stops at first error | 1 s |
+| `Mutant-StopNotAwaited` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
+| `Mutant-ProceedsUnconfirmed` | `NoEncoderWhileUnconfirmed` violated | violated | stops at first error | 1 s |
+| `Mutant-NoTransactionTail` | `PendingTicketNeverReplaced` violated | violated | stops at first error | 1 s |
+| `Mutant-NoTransactionTail-FailedTicket` | `FailedTicketNeverReplaced` violated | violated | stops at first error | 1 s |
+| `Mutant-RejectedNotStopped` | `NoOrphans` violated | violated | stops at first error | 1 s |
+| `Mutant-CloseSkipsFinalStop` | `NoOrphans` violated | violated | stops at first error | 1 s |
+| `Mutant-StopBeforeDetach` | `DetachedWhileStopping` violated | violated | stops at first error | 1 s |
+| `Mutant-ConsentSkipsStop` | `ConsentBoundary` violated | violated | stops at first error | 1 s |
+| `Mutant-ConsentIgnoresAck` | `ConsentBoundary` violated | violated | stops at first error | 1 s |
+| `Mutant-ConsentAttachesNegotiated` | `ConsentBoundary` violated | violated | stops at first error | 1 s |
+| `Mutant-UnboundedStopWait` | `ReopenSettles` (temporal) violated | violated | stops at first error | 1 s |
+| `Finding-StopNoJoin` | `JoinCoversCleanup` violated | violated | stops at first error | 1 s |
+| `Finding-LateStopKillsReusedId` (conditional on Emby) | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
+| `Finding-BackToBackStaleStop` (conditional on Emby) | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
+| `Finding-AbandonedNegotiateOrphans` (conditional on Emby) | `NoOrphans` violated | violated | stops at first error | 1 s |
+| `Proposed-CloseJoinsTask` | pass | pass | 2,982,415 | 14 s |
+| `Proposed-Liveness` | pass | pass | 36,667 | 5 s |
+| `Deep-BackToBack` (deep) | pass | pass (given `StopsCanFail = FALSE`) | 82,121,915 | 6 min 38 s |
+
+- `Current-Reopen`: three user actions, four session ids, `MaxGeneration = 15`. It checks
+  `TypeOK`, `OneEncoder`, `NoEncoderWhileUnconfirmed`, `StopNeverKillsSuccessor`,
+  `BarrierPreconditions`, `NoAuthorityAtPrepare`, `DetachedWhileStopping`, `ConsentBoundary`,
+  `NoOrphans` and `GenerationsSuffice`, and so do the other `Current` configs,
+  `Proposed-CloseJoinsTask` and `Deep-BackToBack`.
+- `Current-LateAck` (review focus 3): `StopsCanBeLate` and `IdReuse = "never"`. A stop times out,
+  the reopen fails with LS-PB-008, the stop is retried, and the first request is acknowledged
+  afterwards (witness `NeverLateAck`). With three user actions the run is 44,996,159 states and
+  285 s, and passes; the config keeps two.
+- `Current-CloseAtConsent` (review focus 4): `ConsentPossible`, `MaxGeneration = 15`.
+- `Liveness-Reopen`: consent, one user action, `MaxGeneration = 11`, under `FairSpec`:
+  `ReopenSettles` and `CloseCleansUp`. `Liveness-BoundedWait`: the same with late stops and
+  `IdReuse = "never"`, under `ClockFairSpec`.
+- `Proposed-CloseJoinsTask`: `Current-CloseAtConsent`'s run with `FixCloseJoinsTask`, checking
+  `JoinCoversCleanup` beside the rest. `Proposed-Liveness`: `Liveness-Reopen`'s run with the fix.
+- `Deep-BackToBack`: two controllers, three session ids, one user action each,
+  `MaxGeneration = 12`, consent and failures, no restart from a failure, `IdsNeverShared = FALSE`,
+  `IdReuse = "stopped"`, `StopsCanFail = FALSE`. The second controller is given an id the first
+  one used (witness `NeverSharedId`). `Finding-BackToBackStaleStop` has the same constants with
+  `StopsCanFail = TRUE`.
+
+How the `Current` configs are scoped around the findings. `Finding-StopNoJoin` needs nothing
+from the environment, so `JoinCoversCleanup` is left to its `Finding` and `Proposed` configs and
+the `Current` configs keep the behaviour. The three conditional findings each need one server
+assumption, and each `Current` or `Deep` config that would otherwise reach one states the
+assumption it takes instead: `IdReuse = "never"` in `Current-LateAck`, `StopsCanFail = FALSE` in
+`Deep-BackToBack`, `AbandonedNegotiateCanLand = FALSE` everywhere.
+
+### Faithfulness and mutants
+
+| Config | Flips | Violates | Trace |
+| --- | --- | --- | --- |
+| `Faithful-EmbyOverlap-off` | `StopsBeforeNegotiate` | `OneEncoder` | A reopen negotiates with the old session still running and no stop sent: two owned jobs (the 2026-10-04 audit). |
+| `Mutant-StopNotAwaited` | `WaitsForStopAck` | `StopNeverKillsSuccessor` | The stop is sent, the negotiation follows at once and returns the same id, and the stop ends the replacement. |
+| `Mutant-ProceedsUnconfirmed` | `BlocksOnUnconfirmedStop` | `NoEncoderWhileUnconfirmed` | A stop is lost and the old job runs on; the reopen negotiates all the same. |
+| `Mutant-NoTransactionTail` | `JoinsPredecessor` | `PendingTicketNeverReplaced` | Two reopens negotiate at once. Both are superseded; the first rejected session's stop is in flight when the second is offered to the barrier. |
+| `Mutant-NoTransactionTail-FailedTicket` | `JoinsPredecessor` | `FailedTicketNeverReplaced` | The same, where the first rejected session's stop failed before the second is offered. |
+| `Mutant-RejectedNotStopped` | `RejectedIsStopped` | `NoOrphans` | A superseded reopen's answer arrives and is dropped. |
+| `Mutant-CloseSkipsFinalStop` | `CloseStopsSession` | `NoOrphans` | Close with a session playing and no stop. |
+| `Mutant-StopBeforeDetach` | `DetachesBeforeStop` | `DetachedWhileStopping` | A reopen sends the stop with the old item still attached. |
+| `Mutant-ConsentSkipsStop` | `ConsentStopsSession` | `ConsentBoundary` | The choice shows at the first start with the session's encoder running and its stop not sent. |
+| `Mutant-ConsentIgnoresAck` | `ConsentRequiresAck` | `ConsentBoundary` | The old session's stop fails and the choice shows all the same. |
+| `Mutant-ConsentAttachesNegotiated` | `ConsentRejectsNegotiated` | `ConsentBoundary` | A reopen's result needs consent; the choice shows over the attached result. |
+| `Mutant-UnboundedStopWait` | `StopTimesOut` | `ReopenSettles` | A reopen waits for ever on a stop that is never answered. |
+
+`StopNeverKillsSuccessor`, `NoOrphans` and `JoinCoversCleanup` also fail on the code as it
+stands, in the `Finding` configs. `OneEncoder`'s failing run is the `Faithful` config.
+`NoAuthorityAtPrepare` and `GenerationsSuffice` are checks on the model, not on the code: the
+first fails with `Mutant-NoTransactionTail`'s constants, the second with any `Current` config and
+a smaller `MaxGeneration`. `CloseCleansUp` has no failing run of its own; it fails with
+`Mutant-UnboundedStopWait`'s constants.
+
+### Every branch is taken
+
+The module ends with witnesses, each the negation of a state one branch reaches. Checked as the
+only invariant, each is violated:
+
+| Witness | Constants of |
+| --- | --- |
+| `NeverBlocked` (LS-PB-008 showing), `NeverFinalRetry`, `NeverRejected`, `NeverRejectFailed`, `NeverTwoUnwinding`, `NeverJoinedTicket` (a reopen awaits the stop of a rejected session), `NeverReusedId`, `NeverRestartFromFailure`, `NeverRetryWaits`, `NeverStopFailed` | `Current-Reopen` |
+| `NeverTimedOut`, `NeverLateAck` | `Current-LateAck` |
+| `NeverConsentShown`, `NeverConsentWhileRejecting`, `NeverClosedAtConsent`, `NeverClosedAtConsentRejecting` | `Current-CloseAtConsent` |
+
+No config lists them; to repeat one, copy the named config, replace its `INVARIANTS` with the
+witness and run TLC.
+
+## Findings
+
+Line numbers are `PlaybackController.swift` and `EmbyReopenStopBarrier.swift` as of commit
+`0b7f3fcb`, the last to change either before this model. Traces are the shortest TLC finds with
+one worker.
+
+### Suspect 4, second half: `stop()` does not join the task it cancels (`Finding-StopNoJoin`)
+
+`JoinCoversCleanup` is violated in 9 states. It depends on no server assumption. The restart
+core has the same finding for a request still on the wire; this is its Emby form, with the
+rejected session's stop.
+
+| Step | Model | Swift |
+| --- | --- | --- |
+| 1 | `Start` | `start()` 1092, `beginRemoteStream` 3232 |
+| 2 | `Reopen`: the old item is detached and the session's stop handed to the barrier | `reopenRemoteStream` 5750: 5766 to 5767, 5780, 5790 to 5793, `begin` at 5797 |
+| 3 | `ServerResolves`: Emby acknowledges the stop | |
+| 4 | `TaskJoins`: no predecessor; the task awaits the ticket | 5811, 5819 to 5822 |
+| 5 | `BarrierResolves`: the barrier gives up the operation | `EmbyReopenStopBarrier.swift` 29 to 31 |
+| 6 | `TaskStopAcked`: the task negotiates | 5823 to 5829, 5839 |
+| 7 | `NegotiateLands`: the answer is back; the task holds the new session | |
+| 8 | `Close`: the task is cancelled and dropped. The session has no stop installed and the barrier no authority, so nothing is appended to `pendingStopTasks` | `playbackTask?.cancel(); playbackTask = nil` at 1181 to 1182; `stopRemoteSessionIfNeeded` 1255: `beginEmbySessionStop` returns nil at 1252, `beginFinalStop` nil at 41 |
+
+`waitForPendingStopRequests` (1236) now returns at once. The cancelled task then fails its check
+at 5840 and calls `stopRejectedRemoteStream` (5844, 5919 to 5923), which sends the stop for the
+session it negotiated. `surfaceFailure` does append the cancelled task (5155 to 5158), so the
+same race after a failure is joined; `stop()` does not.
+
+What it costs: a probe that joins `waitForPendingStopRequests` before publishing its final
+report (the use `docs/PLAYBACK-ARCHITECTURE.md` gives the join) can report before this session's
+stop has been sent. If that stop then fails, nothing retries it: the barrier keeps the
+operation in a controller that is closed.
+
+`Proposed-CloseJoinsTask` turns on `FixCloseJoinsTask`: `stop()` appends the task it cancels and
+`embyReopenTransactionTail`. The tail is needed too, because a consent request's task replaces
+`playbackTask` without joining the chain, and a superseded reopen may still be behind it.
+
+### Conditional: a stop that timed out ends the replacement (`Finding-LateStopKillsReusedId`)
+
+`StopNeverKillsSuccessor` is violated in 12 states with `StopsCanBeLate` and
+`IdReuse = "stopped"`. It needs Emby to return a play-session id again, and to apply a request
+the client has stopped waiting for.
+
+| Step | Model | Swift |
+| --- | --- | --- |
+| 1 | `Start` | |
+| 2 | `Fail`: a failure surfaces and the session's stop goes to the barrier. Request 1 | `surfaceFailure` 5133, `stopRemoteSessionIfNeeded` 5178: `beginEmbySessionStop` 1244 to 1250 |
+| 3 | `ClockTicks`: the request passes its timeout with no answer | `URLSession.shared`'s request timeout; no other bound on the stop |
+| 4 | `BarrierResolves`: the stop reads as unconfirmed and the barrier keeps it | `MediaBrowserActiveEncodingStopExecutor.stop` returns `false` for a transport error; `EmbyReopenStopBarrier.swift` 30 keeps `operation` |
+| 5 | `Reopen`: a quality or track change while the failure shows. The barrier has authority, so it runs the operation again. Request 2 | `reopenRemoteStream` 5796 to 5797, `begin` 27 to 35 |
+| 6 | `ServerResolves`: request 2 is acknowledged and ends the old job | |
+| 7 to 9 | `TaskJoins`, `BarrierResolves`, `TaskStopAcked`: the acknowledgement is back and the task negotiates | 5822 to 5829, 5839 |
+| 10 | `NegotiateLands`: Emby returns the old session's id for the replacement | |
+| 11 | `ServerResolves`: request 1 is applied. It names the device and that id, and ends the replacement | `EmbyLibrary.activeEncodingStopRequest` |
+
+Retry in place of the quality change gives the same trace, two steps longer (`Retry`,
+`RetryProceeds`). Retaining the failed stop and retrying it is the design (LS-PB-008), and it is
+what puts two requests for one session on the wire. The barrier knows the first one was never
+answered; nothing uses that. If Emby mints a new id for every PlaybackInfo, the late request
+finds nothing under its id and the trace ends harmlessly at step 10: `Current-LateAck`.
+
+### Conditional: a closing playback's retried stop ends the next playback (`Finding-BackToBackStaleStop`)
+
+`StopNeverKillsSuccessor` is violated in 8 states with two controllers, `IdsNeverShared = FALSE`
+and `IdReuse = "stopped"`. No timeout is involved. It needs Emby to give the next playback a
+play-session id the previous one's stopped session had.
+
+| Step | Model | Swift |
+| --- | --- | --- |
+| 1 | `Start` (first controller) | |
+| 2 | `Reopen`: the session's stop goes to the barrier. Request 1 | 5797 |
+| 3 | `ServerResolves`: Emby applies it, and the answer is lost | |
+| 4 | `BarrierResolves`: unconfirmed; the barrier keeps the operation | `EmbyReopenStopBarrier.swift` 30 |
+| 5 | `Close`: the player is dismissed. Teardown retries the failed stop once. Request 2. Nothing waits for it | `stop()` 1203, `stopRemoteSessionIfNeeded` 1259, `beginFinalStop` 39 to 44 |
+| 6 | `Start` (second controller): the next playback's negotiation returns the same id | `DetailPlaybackLauncher`, before the controller exists |
+| 7 | `ServerResolves`: request 2 is applied and ends the new playback's job | |
+
+`docs/PLAYBACK-ARCHITECTURE.md` says "UI teardown remains non-blocking", so the next playback
+can start while request 2 is in flight. The single retry at teardown is deliberate. The trace
+needs the first request to be applied without its answer arriving, and the id to come back
+within the retry's flight.
+
+### Conditional: a cancelled negotiation the server still acts on (`Finding-AbandonedNegotiateOrphans`)
+
+`NoOrphans` is violated in 9 states with `AbandonedNegotiateCanLand`.
+
+| Step | Model | Swift |
+| --- | --- | --- |
+| 1 to 6 | `Start`, `Reopen`, `ServerResolves`, `TaskJoins`, `BarrierResolves`, `TaskStopAcked`: the old session is stopped and the PlaybackInfo request is on the wire | 5839 |
+| 7 | `Reopen`: a second reopen cancels the task, and with it the request. Close does the same | `playbackTask?.cancel()` 5766, or 1181 |
+| 8 | `NegotiateLands`: Emby acts on the request all the same | |
+
+The cancelled task's request throws and its `catch` returns (5903 to 5907): it has no result to
+reject, so `stopRejectedRemoteStream` is never called and the client never learns the id. This
+is suspect 4's late start in the MediaBrowser shape. It is a defect only if a PlaybackInfo answer
+alone leaves something on the server that needs a stop. The Swift is written as if it may
+(`acceptInitialOpen`, `stopRejectedRemoteStream`); if Emby starts the encoder at the first
+playlist request instead, which the client never makes without the answer, nothing is left
+behind.
+
+## Checked and not found
+
+- **The barrier's preconditions.** `BarrierPreconditions` holds in every `Current`, `Proposed`
+  and `Deep` config. A stop is offered to the barrier in three places: a reopen or a teardown
+  hands over the playing session's stop, and `stopRejectedRemoteStream` hands over a rejected
+  one. The first two need a session whose callbacks are installed, which only an attach does,
+  and an attach needs the barrier empty; the third comes from the one reopen that is past its
+  predecessor. The transaction tail is what makes that "the one".
+- **A restart from a failure.** The restart core's `Finding-RestartAfterFailureSkipsFinalStop`
+  does not carry over. `didStop` belongs to the session and an attach clears it, so a quality
+  change while a failure shows leaves a session that Close stops. `Current-Reopen` has
+  `RestartFromFailure` on and checks `NoOrphans`.
+- **Retry's join.** `retry()` awaits `waitForPendingStopRequests` before it reopens. For Emby
+  the barrier and the tail already hold the reopen back: `Current-Reopen` with
+  `RetryJoinsPendingStops = FALSE` passes every property (1,658,875 distinct states). The join
+  is not what keeps the order here, so no mutant is kept for it.
+- **Close while the consent choice shows** (review focus 4). `stop()` clears the consent
+  generation, joins a rejected session's stop if one is in flight, and retries a failed one once.
+  `Current-CloseAtConsent` reaches Close with the choice showing, with and without that stop in
+  flight.
+
+Two things the model shows about teardown that break no property, since a stop that was sent
+counts:
+
+- "Terminal cleanup has one bounded retry" holds only for a stop that had already failed before
+  the teardown. A session that is playing at Close gets one request and no retry: `stop()` hands
+  it over, `beginFinalStop` returns the ticket in flight, and nothing calls it again.
+- A rejected session whose stop fails after Close is never retried. The barrier keeps it, in a
+  controller nobody will ask again.
+
+## For the Jellyfin module
+
+- `IdReuse` is how this module lets the server choose the id it mints. `Mintable` offers one
+  unused id for all of them, so configs need no symmetry set.
+- A two-controller run with `IdsNeverShared = FALSE` passes here only without failing stops. Any
+  stop that can be sent twice for one job, or outlive its wait, reaches whatever the id names
+  next.
+- `BarTicket` shows how to keep a `pendingStops` entry whose end is not the request's end.
