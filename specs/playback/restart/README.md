@@ -12,7 +12,8 @@ scripts/check-tla-specs.sh specs/playback/restart
 ```
 
 The model reproduces suspect 1 and suspect 4, and found three defects nobody had named. Each
-has a `Finding-*` config and a trace below. None has been confirmed outside the model yet.
+has a `Finding-*` config and a trace below. A review read each against the Swift and found it
+plausible; none has been reproduced in the app.
 
 ## What is modelled
 
@@ -72,7 +73,8 @@ constants. Neither is a fix under test.
 | `RejectedResultStopped` | `reopenRemoteStream`: a result that fails the generation check is stopped by `stopRejectedRemoteStream` | `startStreaming`: every check is a bare `return` |
 | `StopLatchPerSession` | `MediaBrowserPlaybackSession.didStop`, cleared when a reopen installs the next session's callbacks | `sentTranscodeStop`, one latch per controller, cleared only by `retry()` |
 
-The `Current` and `Liveness` configs use `TRUE` for both. The `FALSE` shapes appear in
+The `Current` and `Liveness` configs use `TRUE` for both, except
+`Current-StartStreamingShape`, which uses `FALSE` for both. The `FALSE` shapes also appear in
 `Finding-StopNoJoin-LateStart`, `Finding-RestartAfterFailureSkipsFinalStop` and
 `Proposed-ControllerLatch`. With a fresh session id per start, the `startStreaming` shape
 overstates what a restart leaves behind (Plex reuses its id, so a later stop reaches the
@@ -87,9 +89,17 @@ same id); task 3 models that. `Finding-StopNoJoin-LateStart` therefore has no re
 - **Detach on restart.** The item is detached in the synchronous part, as `reopenRemoteStream`
   does. A Plex in-place restart stops first and detaches after, so `DetachBeforeStop` holds for
   restarts here by this choice. The property is claimed for `stop()` and `surfaceFailure` only.
+  The second half of `GenerationFencing` (an attached item has no task behind it) depends on
+  the same choice: a Plex in-place restart keeps the old item attached while its task waits
+  for the prior stop. Task 3 must not inherit either statement.
 - **Session ids.** Every start gets an id the server has not used, picked by a fixed choice
-  instead of every permutation. `OneEncoder` and `NoWrongKill` are not checked: with the order
+  instead of every permutation. `NegotiateLands` reads `Latest(s)` through `FreshIds` to do
+  that. This is the server choosing the id it mints, not a client guard reading the server. `OneEncoder` and `NoWrongKill` are not checked: with the order
   abstracted they say nothing, and they belong to the backend modules.
+- **Healthy playback.** `AbrSwitch` restarts the count of unattended restarts at one. An
+  upshift needs real progress first: `AdaptiveBitratePolicy` waits 180 s after a downshift
+  and wants 120 s of continuously healthy playback
+  (`PMSKit/Sources/PMSKit/Transcode/AdaptiveBitratePolicy.swift`, 23 and 36 to 37).
 - **Time.** The budget is one burst window with no cooldown: a `.deferred` answer only re-arms
   the same timer. The seek hold's 12-second deadline is an action that can always fire. The
   watchdogs fire whenever their guards hold.
@@ -131,11 +141,12 @@ same id); task 3 models that. `Finding-StopNoJoin-LateStart` therefore has no re
 | `PauseIntent` | invariant | The player never plays against the user's pause, a resume-seek completion resumes only its own current item, and only the user changes the pause intent (Retry keeps it). |
 | `DetachBeforeStop` | invariant | No stop is on the wire for the session an attached item plays from. |
 | `ProxyOwnership` | invariant | Every listener is the one in the slot or is being stopped, and the slot is empty after Close and while a failure shows. **Violated by the code (suspect 1).** |
-| `ProxyOwnershipOutsideYieldRace` | invariant | The same, unless a task was cancelled while suspended at `await oldProxy.stop`. This is what the code keeps. |
+| `ProxyOwnershipOutsideYieldRace` | invariant | The same for every listener except those the yield race touched (`Raced(c)`): a proxy whose task was cancelled while suspended at `await oldProxy.stop`, and a proxy that task's late write pushed out of the slot. Every other listener in the same behaviour is still held to the full property. This is what the code keeps. |
 | `NoOrphans` | invariant | Every session a request created is the one playing, has had a stop sent, or is held by a task that will attach or stop it; and Retry restarts only after `pendingStopTasks` is joined. |
 | `JoinCoversCleanup` | invariant | Once `waitForPendingStopRequests` would return after Close, or after a failure with no restart under way, no task can still reach the server and every session has had a stop sent. **Violated by the code (suspect 4).** |
 | `SeekIntentSurvivesAttach` | invariant | A recorded seek target always has a current settle timer or a running rebuild to act on it. **Violated by the code.** |
-| `CloseCleansUp` | liveness | After Close every task returns, the joined cleanup ends and every session has had a stop sent. |
+| `CloseCleansUp` | liveness | After Close every task returns, the joined cleanup ends, every session has had a stop sent and no listener is left. **Violated by the code with proxies (suspect 1).** |
+| `CloseCleansUpOutsideYieldRace` | liveness | The same, but a listener in `Raced(c)` may be left. This is what the code keeps. |
 | `AbandonedSessionStopped` | liveness | A session that is not the one playing gets a stop. |
 | `SeekHoldReleased` | liveness | A held scrubber is released. |
 | `RetryJoinEnds` | liveness | The wait of a retry task that is still current ends. |
@@ -157,35 +168,41 @@ cleanup shapes `TRUE`, proxies and failures on, automatic recovery off.
 
 | Config | Expect | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
-| `Current-AutoRecovery` | pass | pass | 4,463,294 | 33 s |
-| `Current-CancelPastCheck` | pass | pass | 26,436,637 | 119 s |
-| `Current-Core` | pass | pass | 12,407,383 | 46 s |
+| `Current-AutoRecovery` | pass | pass | 4,463,294 | 32 s |
+| `Current-CancelPastCheck` | pass | pass | 26,512,489 | 124 s |
+| `Current-Core` | pass | pass | 12,407,383 | 74 s |
 | `Current-RetryRetry` | pass | pass | 811,768 | 4 s |
-| `Liveness-Core` | pass | pass | 390,437 | 49 s |
-| `Liveness-Proxy` | pass | pass | 74,024 | 8 s |
+| `Current-StartStreamingShape` | pass | pass | 967,789 | 5 s |
+| `Liveness-Core` | pass | pass | 390,437 | 59 s |
+| `Liveness-Proxy` | pass | pass | 74,024 | 9 s |
 | `Faithful-DetachBeforeStop-off` | `DetachBeforeStop` violated | violated | stops at first error | 1 s |
 | `Mutant-AttachUnfenced` | `GenerationFencing` violated | violated | stops at first error | 1 s |
-| `Mutant-BudgetNotEnforced` | `BoundedRestarts` violated | violated | stops at first error | 2 s |
+| `Mutant-BudgetNotEnforced` | `BoundedRestarts` violated | violated | stops at first error | 1 s |
 | `Mutant-CleanupKeepsProxy` | `ProxyOwnershipOutsideYieldRace` violated | violated | stops at first error | 1 s |
 | `Mutant-CloseSkipsFinalStop` | `NoOrphans` violated | violated | stops at first error | 1 s |
-| `Mutant-ResumeUnguarded` | `PauseIntent` violated | violated | stops at first error | 1 s |
+| `Mutant-ResumeUnguarded` | `PauseIntent` violated | violated | stops at first error | 2 s |
 | `Mutant-RetryDropsPause` | `PauseIntent` violated | violated | stops at first error | 1 s |
 | `Mutant-RetrySkipsJoin` | `NoOrphans` violated | violated | stops at first error | 1 s |
 | `Mutant-SeekClearUnfenced` | `SeekHoldFencing` violated | violated | stops at first error | 1 s |
 | `Mutant-StartupRetryRearms` | `BoundedRestarts` violated | violated | stops at first error | 1 s |
-| `Finding-ProxyAfterCleanup` | `ProxyOwnership` violated | violated | stops at first error | 2 s |
-| `Finding-RestartAfterFailureSkipsFinalStop` | `NoOrphans` violated | violated | stops at first error | 2 s |
-| `Finding-RetryWedgedByAttach` | `RetryRuns` (temporal) violated | violated | stops at first error | 3 s |
+| `Finding-ProxyAfterCleanup` | `ProxyOwnership` violated | violated | stops at first error | 3 s |
+| `Finding-ProxyAfterCleanup-Liveness` | `CloseCleansUp` (temporal) violated | violated | stops at first error | 4 s |
+| `Finding-RestartAfterFailureSkipsFinalStop` | `NoOrphans` violated | violated | stops at first error | 1 s |
+| `Finding-RetryWedgedByAttach` | `RetryRuns` (temporal) violated | violated | stops at first error | 4 s |
 | `Finding-SeekDroppedByAttach` | `SeekIntentSurvivesAttach` violated | violated | stops at first error | 1 s |
 | `Finding-StopNoJoin` | `JoinCoversCleanup` violated | violated | stops at first error | 1 s |
 | `Finding-StopNoJoin-LateStart` | `NoOrphans` violated | violated | stops at first error | 1 s |
-| `Proposed-ControllerLatch` | pass | pass | 10,757,842 | 41 s |
-| `Proposed-Fixes` | pass | pass | 10,816,726 | 40 s |
-| `Proposed-Liveness` | pass | pass | 374,859 | 48 s |
+| `Proposed-ControllerLatch` | pass | pass | 10,814,542 | 55 s |
+| `Proposed-Fixes` | pass | pass | 10,873,426 | 51 s |
+| `Proposed-Liveness` | pass | pass | 374,859 | 58 s |
+| `Proposed-LivenessProxy` | pass | pass | 72,471 | 9 s |
 
 - `Current-Core` checks `TypeOK`, `GenerationFencing`, `SeekHoldFencing`, `PauseIntent`,
   `DetachBeforeStop`, `ProxyOwnershipOutsideYieldRace`, `NoOrphans` and `BoundedRestarts`, and
   so do the other `Current` configs.
+- `Current-StartStreamingShape`: `Current-Core` with both cleanup shapes `FALSE`. It checks
+  everything `Current-Core` does except `NoOrphans`, which that shape breaks (the two
+  findings below).
 - `Current-AutoRecovery`: the watchdogs and adaptive bitrate with one rung, six sessions,
   `MaxGeneration = 12`, no user, proxies, failures or resume seeks.
 - `Current-CancelPastCheck` (review focus 1): four sessions and three quality changes with
@@ -194,15 +211,19 @@ cleanup shapes `TRUE`, proxies and failures on, automatic recovery off.
 - `Current-RetryRetry` (review focus 5): three Retry or quality actions with failures,
   `MaxGeneration = 8`, no proxies, seeks, pauses or resume seeks.
 - `Liveness-Core`: two Retry or quality actions, no proxies or seeks. `Liveness-Proxy`: one
-  user action over two sessions with everything on.
+  user action over two sessions with everything on. Both check
+  `CloseCleansUpOutsideYieldRace`, `AbandonedSessionStopped`, `RetryJoinEnds` and
+  `SeekHoldReleased`.
 - `Proposed-Fixes` and `Proposed-ControllerLatch` check the full `ProxyOwnership`,
   `JoinCoversCleanup` and `SeekIntentSurvivesAttach` beside the rest; `Proposed-Liveness`
-  checks the full `RetryRuns`.
+  checks the full `RetryRuns`, and `Proposed-LivenessProxy` the full `CloseCleansUp` with
+  proxies.
 
 How the `Current` configs are scoped around the findings: each finding breaks one property and
 leaves the rest of the model as it was, so the `Current` configs keep the behaviour and check
-what the code does keep. For suspect 1 that is `ProxyOwnershipOutsideYieldRace`, which pins the
-defect to the one yield. For the others the broken property is left to its `Finding` and
+what the code does keep. For suspect 1 that is `ProxyOwnershipOutsideYieldRace` and
+`CloseCleansUpOutsideYieldRace`, which excuse only the listeners that race touched and so
+pin the defect to the one yield. For the others the broken property is left to its `Finding` and
 `Proposed` configs.
 
 ### Faithfulness and mutants
@@ -220,10 +241,9 @@ defect to the one yield. For the others the broken property is left to its `Find
 | `Mutant-CloseSkipsFinalStop` | `CloseSendsFinalStop` | `NoOrphans` | Close with a session playing and no stop. |
 | `Mutant-RetrySkipsJoin` | `RetryJoinsPendingStops` | `NoOrphans` | Retry restarts while the failed attempt's task is still unwinding. |
 
-`ProxyOwnership`, `JoinCoversCleanup`, `SeekIntentSurvivesAttach` and `RetryRuns` are violated
-by the code as it stands; their `Finding` configs are the proof they can fail and the
-`Proposed` configs the proof they can hold. `CloseCleansUp` was checked once with
-`RejectedResultStopped = FALSE` and `Liveness-Proxy`'s constants, and is violated.
+`ProxyOwnership`, `JoinCoversCleanup`, `SeekIntentSurvivesAttach`, `RetryRuns` and
+`CloseCleansUp` are violated by the code as it stands; their `Finding` configs are the proof
+they can fail and the `Proposed` configs the proof they can hold.
 `AbandonedSessionStopped`, `SeekHoldReleased` and `RetryJoinEnds` have no failing run.
 
 ### Every branch is taken
@@ -238,7 +258,8 @@ with the witness and run TLC.
 
 ## Findings
 
-Line numbers are `PlaybackController.swift` at the commit this model was written against.
+Line numbers are `PlaybackController.swift` as of commit `0b7f3fcb`, the last to change it
+before this model.
 Traces are the shortest TLC finds with one worker.
 
 ### Suspect 1, reproduced: a proxy installed after cleanup (`Finding-ProxyAfterCleanup`)
@@ -253,21 +274,30 @@ Traces are the shortest TLC finds with one worker.
 | 12 | `ProxyInstall`: the task resumes and writes proxy 3 into the slot. Its next check fails and it leaves | `remoteHLSProxy = proxy` at 3136 with no check since 3129; the check at 3157 returns. On the MediaBrowser path 3475, then `acceptsReopenResult` in the caller |
 
 The controller is closed and `remoteHLSProxy` holds a listening proxy that nothing will stop.
-`surfaceFailure` in place of `stop()` gives the same trace (5153, 5169 to 5172); the listener
-then lives until a later restart happens to stand up another proxy. `MediaSessionProxy` and
-`LoopbackOrigin` have no `deinit`, so nothing in the app stops the listener when the controller
-goes away.
+After `stop()` nothing stops it: `MediaSessionProxy` and `LoopbackOrigin` have no `deinit`.
+`surfaceFailure` in place of `stop()` gives the same trace (5153, 5169 to 5172), but that leak
+heals: the proxy is in the slot, so a later `stop()` stops it (1188), and so does a later
+restart that stands up another proxy. Until then a listener is up while the failure shows.
+
+`Finding-ProxyAfterCleanup-Liveness` is the same defect as liveness: `CloseCleansUp` is
+violated, because the listener is still there however long one waits.
 
 The window is the hop to the proxy actor and back, which is short: `MediaSessionProxy.stop`
 does no I/O. It opens only on a restart that stands up a proxy while one is installed (a
 second Dolby Vision injection session on Plex, a second deep-seek reopen on MediaBrowser), and
 it needs `stop()` or `surfaceFailure` to be the next MainActor job.
 
-A second way to the same leak needs no cleanup: two tasks both suspended at the yield for the
-same old proxy, the cancelled one resuming first. Each writes the slot and the first write is
-lost. It needs a whole restart to fit inside one actor hop, so it is far less likely.
-`ProxyOwnershipOutsideYieldRace` covers both: with no task cancelled at the yield, the full
-property holds.
+A second way to a leak needs no cleanup: two tasks suspended at the yield for the same old
+proxy, one of them cancelled by the restart that started the other. Each writes the slot when
+it resumes and one write is lost. If the cancelled task resumes first, its own proxy is the
+one left listening. If it resumes second, it pushes the current task's proxy out of the slot:
+the item then plays through a listener that Close will never stop (18 states). Either order
+needs a whole restart to fit inside one actor hop, so it is far less likely than the first.
+
+`ProxyOwnershipOutsideYieldRace` leaves out exactly the listeners that race touches: the
+proxy a task had stood up when it was cancelled at the yield, and a proxy its late write
+pushed out of the slot (`Raced(c)`). Every other listener, in the same behaviour, is held to
+the full property, and it holds.
 
 Proposed fix (`FixProxyRecheck`, checked by `Proposed-Fixes`): re-check the generation after
 `await oldProxy.stop` and stop the new proxy instead of installing it.
@@ -302,12 +332,14 @@ wherever `playbackTask` is cancelled.
 | Step | Model | Swift |
 | --- | --- | --- |
 | 1 | `Start`: a request that starts a session is on the wire | `startStreaming`: the `start.m3u8` fetch at 2999 or the prewarm at 3040, both on the Original lane only |
-| 2 | `Close` | `stop()`: `sendTranscodeStop` at 1202 |
-| 3 | `NegotiateLands`: the server acts on the start after the stop | |
+| 2 | `Close`. The model sends no stop here: `cur` is empty, as no session exists yet | `stop()` calls `sendTranscodeStop` (1202), which does send one, under the reused `sessionID`, whether or not a transcode exists (1286 to 1293) |
+| 3 | `NegotiateLands`: the server acts on the start | the start lands after that stop, which found nothing to end |
 | 4 | `TaskResume`: the cancelled task returns at its check | 3001 or 3043 |
 
-The session has no stop and no task holds it. Joining the task would not help: the final stop
-has already gone. Cancelling the Swift task cancels the URL request, so the window is one
+The session has no stop meant for it and no task holds it. The model and the Swift differ in
+step 2 only: the Swift's stop is sent and wasted, the model's is never sent. Either way
+nothing is sent after the start lands, because `sentTranscodeStop` is now set. Joining the
+task would not help: the final stop has already gone. Cancelling the Swift task cancels the URL request, so the window is one
 request the server has already read. Whether Plex then keeps a transcoder running is for task 3
 to judge; this module shows only that nothing in the controller would stop it.
 

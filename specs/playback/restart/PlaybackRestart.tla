@@ -145,6 +145,12 @@ ownRest ==
       playing, wantPause, pendingTarget, startupArmed, rung, autoRun,
       seekRun, userLeft, starts, breach>>
 
+\* ownRest without breach, for a rejected result.
+ownRejected ==
+    <<life, failed, cur, latch, retryGen, seekDone, resumeGen, resumeDone,
+      playing, wantPause, pendingTarget, startupArmed, rung, autoRun,
+      seekRun, userLeft, starts>>
+
 vars == <<serverVars, ctlVars, ownVars>>
 
 -----------------------------------------------------------------------------
@@ -176,9 +182,13 @@ IsRTask(t) ==
     /\ t.inc \in Gens /\ t.px \in Gens /\ t.old \in Gens
     /\ t.rb \in BOOLEAN
 
+\* A fencing break: its kind and, for a proxy the yield race touched, the
+\* generation of that proxy (0 otherwise).
+B(kind) == <<kind, 0>>
 BreachKinds ==
-    {"staleAttach", "staleSeekRelease", "staleResume", "retryBeforeJoin",
-     "yieldRace"}
+    ({"staleAttach", "staleSeekRelease", "staleResume", "retryBeforeJoin",
+      "yieldRace"} \X {0})
+    \cup ({"racedProxy"} \X ProxyGens)
 
 TypeOK ==
     /\ BaseTypeOK
@@ -288,7 +298,7 @@ DropTask(c, t) ==
 \* the `await oldProxy.stop` yield is the race of suspect 1.
 CancelBreach(c) ==
     IF task[c] # NoTask /\ task[c].pc = "oldProxyStop"
-    THEN breach[c] \cup {"yieldRace"}
+    THEN breach[c] \cup {B("yieldRace"), <<"racedProxy", task[c].px>>}
     ELSE breach[c]
 
 \* The ticket the proposed fix adds when a task is cancelled.
@@ -425,7 +435,7 @@ Attach(c, t, proxyNew) ==
     /\ DropTask(c, t)
     /\ breach' = Upd(breach, c,
            IF IsCurrentTask(c, t) THEN breach[c]
-           ELSE breach[c] \cup {"staleAttach"})
+           ELSE breach[c] \cup {B("staleAttach")})
     /\ UNCHANGED <<serverVars, budget, paused, pendingStops, jellyfinWindow,
                    life, latch, retryGen, seekDone, resumeGen, resumeDone,
                    wantPause, pendingTarget, startupArmed, rung, autoRun,
@@ -433,8 +443,9 @@ Attach(c, t, proxyNew) ==
 
 \* A cancelled task finds its result rejected.  reopenRemoteStream stops
 \* the session it negotiated and waits; startStreaming returns.
-Reject(c, t, proxyNew) ==
+Reject(c, t, proxyNew, breachNew) ==
     /\ proxy' = Upd(proxy, c, proxyNew)
+    /\ breach' = Upd(breach, c, breachNew)
     /\ IF RejectedResultStopped
        THEN /\ SendStopFor(c, t.sid, t.inc)
             /\ SetTask(c, t, [t EXCEPT !.pc = "awaitReject"])
@@ -443,7 +454,7 @@ Reject(c, t, proxyNew) ==
             /\ Tail(c, t, failed[c], gen[c])
             /\ UNCHANGED serverVars
     /\ UNCHANGED <<gen, itemGen, item, budget, paused, pendingStops,
-                   jellyfinWindow, ownRest>>
+                   jellyfinWindow, ownRejected>>
 
 -----------------------------------------------------------------------------
 (* User                                                                    *)
@@ -563,7 +574,7 @@ RetryProceeds(c) ==
     /\ paused' = Upd(paused, c, RetryPreservesPause /\ paused[c])
     /\ breach' = Upd(breach, c,
            CancelBreach(c)
-           \cup (IF PendingStopsJoined(c) THEN {} ELSE {"retryBeforeJoin"}))
+           \cup (IF PendingStopsJoined(c) THEN {} ELSE {B("retryBeforeJoin")}))
     /\ UNCHANGED userLeft
 
 \* failureRetryTask wakes to a generation that is no longer the one it
@@ -692,7 +703,7 @@ ResumeSeekComplete(c, g) ==
                  IF resumes THEN item[c] = "attached" ELSE playing[c])
           /\ breach' = Upd(breach, c,
                  IF resumes /\ ~isCurrent
-                 THEN breach[c] \cup {"staleResume"} ELSE breach[c])
+                 THEN breach[c] \cup {B("staleResume")} ELSE breach[c])
     /\ UNCHANGED <<serverVars, ctlVars, life, failed, cur, latch, retryGen,
                    seekDone, resumeGen, wantPause, settle, pendingTarget,
                    startupArmed, rung, autoRun, seekRun, userLeft, starts>>
@@ -708,7 +719,7 @@ SeekComplete(c, g) ==
                  IF releases THEN HoldClear(c) ELSE seekHold[c])
           /\ breach' = Upd(breach, c,
                  IF releases /\ seekHold[c].gen # g
-                 THEN breach[c] \cup {"staleSeekRelease"} ELSE breach[c])
+                 THEN breach[c] \cup {B("staleSeekRelease")} ELSE breach[c])
     /\ UNCHANGED <<serverVars, gen, itemGen, item, task, unwinding, budget,
                    paused, proxy, pendingStops, jellyfinWindow, life, failed,
                    cur, latch, retryGen, resumeGen, resumeDone, playing,
@@ -840,7 +851,7 @@ TaskResume(c, t) ==
                               budget, paused, proxy, pendingStops,
                               jellyfinWindow, ownVars>>
        ELSE IF AttachChecksGeneration
-            THEN Reject(c, t, proxy[c])
+            THEN Reject(c, t, proxy[c], breach[c])
             ELSE Attach(c, t, proxy[c])
 
 \* ProxyStandUp, first half: standUpLoopback returns with the listener
@@ -879,13 +890,18 @@ ProxyInstall(c, t) ==
                /\ UNCHANGED <<serverVars, gen, itemGen, item, seekHold,
                               budget, paused, pendingStops, jellyfinWindow,
                               ownVars>>
-          ELSE Reject(c, t, installed)
+          ELSE \* The late write.  A proxy another task put in the slot
+               \* meanwhile loses it, and is marked with the raced one.
+               Reject(c, t, installed,
+                      breach[c] \cup
+                          (IF proxy[c].slot \in {0, t.old} THEN {}
+                           ELSE {<<"racedProxy", proxy[c].slot>>}))
 
 \* A cancelled task's own proxy has stopped; its result is rejected.
 ProxyOwnStopped(c, t) ==
     /\ t \in unwinding[c]
     /\ t.pc = "stopOwnProxy"
-    /\ Reject(c, t, [proxy[c] EXCEPT !.live = @ \ {t.px}])
+    /\ Reject(c, t, [proxy[c] EXCEPT !.live = @ \ {t.px}], breach[c])
 
 \* stopRejectedRemoteStream returns and the cancelled task with it.
 TaskRejectDone(c, t) ==
@@ -977,7 +993,7 @@ IsCur(c, j) ==
 \* current task attaches, and an attached item has no restart behind it.
 GenerationFencing ==
     \A c \in Controllers :
-        /\ "staleAttach" \notin breach[c]
+        /\ B("staleAttach") \notin breach[c]
         /\ item[c] = "attached" /\ life[c] = "open" =>
                task[c] = NoTask /\ itemGen[c] = gen[c]
 
@@ -993,7 +1009,7 @@ SeekIntentSurvivesAttach ==
 
 \* A stale seek completion never releases a newer seek hold.
 SeekHoldFencing ==
-    \A c \in Controllers : "staleSeekRelease" \notin breach[c]
+    \A c \in Controllers : B("staleSeekRelease") \notin breach[c]
 
 \* An exhausted budget stops recovery, and restarts with no user action
 \* are bounded.  Both are counts kept beside the code's own counters.
@@ -1013,7 +1029,7 @@ PauseIntent ==
     \A c \in Controllers :
         /\ wantPause[c] => ~playing[c]
         /\ paused[c] = wantPause[c]
-        /\ "staleResume" \notin breach[c]
+        /\ B("staleResume") \notin breach[c]
 
 \* No stop is on the wire for the session an attached item plays from.
 DetachBeforeStop ==
@@ -1023,25 +1039,32 @@ DetachBeforeStop ==
 
 \* Every listener is the one in the slot or is being stopped, and the
 \* slot is empty after Close and while a failure is showing.
-ListenersAccounted(c) ==
-    \A g \in proxy[c].live :
+\* X is a set of listeners left out of the judgement.
+ListenersAccounted(c, X) ==
+    \A g \in proxy[c].live \ X :
         \/ g = proxy[c].slot
         \/ ProxyStopTicket(g) \in pendingStops[c]
         \/ \E t \in Tasks(c) :
               \/ t.pc \in {"oldProxyStop", "stopOwnProxy"} /\ t.px = g
               \/ t.pc = "oldProxyStop" /\ t.old = g
-NoProxyAfterCleanup(c) ==
-    life[c] \in {"closing", "closed"} \/ failed[c] => proxy[c].slot = 0
+NoProxyAfterCleanup(c, X) ==
+    life[c] \in {"closing", "closed"} \/ failed[c] =>
+        proxy[c].slot \in {0} \cup X
 
 ProxyOwnership ==
-    \A c \in Controllers : ListenersAccounted(c) /\ NoProxyAfterCleanup(c)
+    \A c \in Controllers :
+        ListenersAccounted(c, {}) /\ NoProxyAfterCleanup(c, {})
 
-\* What the code as it stands keeps: the same, unless a task was cancelled
-\* while suspended at `await oldProxy.stop`.
+\* The proxies the yield race touched: one a task had stood up when it
+\* was cancelled while suspended at `await oldProxy.stop`, and one that
+\* task's late write then pushed out of the slot.
+Raced(c) == {g \in ProxyGens : <<"racedProxy", g>> \in breach[c]}
+
+\* What the code as it stands keeps: the same for every listener but
+\* those.  Any other listener is still held to the full property.
 ProxyOwnershipOutsideYieldRace ==
     \A c \in Controllers :
-        "yieldRace" \notin breach[c] =>
-            ListenersAccounted(c) /\ NoProxyAfterCleanup(c)
+        ListenersAccounted(c, Raced(c)) /\ NoProxyAfterCleanup(c, Raced(c))
 
 \* Every session a request of c's created is the one playing, has had a
 \* stop sent, or is in the hands of a task that will attach or stop it;
@@ -1052,7 +1075,7 @@ NoOrphans ==
               \/ SentStopFor(c, j[1], j[2])
               \/ HeldByTask(c, j)
               \/ IsCur(c, j)
-        /\ "retryBeforeJoin" \notin breach[c]
+        /\ B("retryBeforeJoin") \notin breach[c]
 
 \* A task that can still reach the server: its request may yet create a
 \* job, or it has a job or a listener to dispose of.
@@ -1072,14 +1095,22 @@ JoinCoversCleanup ==
 -----------------------------------------------------------------------------
 (* Liveness, under FairSpec                                                *)
 
-\* After Close every task returns, the joined cleanup finishes and every
-\* session has had a stop sent.
+\* After Close every task returns, the joined cleanup finishes, every
+\* session has had a stop sent and no listener but those in X is left.
+CleanedUp(c, X) ==
+    /\ unwinding[c] = {}
+    /\ PendingStopsJoined(c)
+    /\ \A j \in JobsOf(c) : SentStopFor(c, j[1], j[2])
+    /\ proxy[c].live \subseteq X
+
+\* The code does not keep this with proxies (suspect 1; see
+\* Finding-ProxyAfterCleanup-Liveness).
 CloseCleansUp ==
-    \A c \in Controllers :
-        life[c] = "closed" ~>
-            /\ unwinding[c] = {}
-            /\ PendingStopsJoined(c)
-            /\ \A j \in JobsOf(c) : SentStopFor(c, j[1], j[2])
+    \A c \in Controllers : life[c] = "closed" ~> CleanedUp(c, {})
+
+\* What the code keeps: the same but for a proxy raced at the yield.
+CloseCleansUpOutsideYieldRace ==
+    \A c \in Controllers : life[c] = "closed" ~> CleanedUp(c, Raced(c))
 
 \* A session that is not the one playing gets a stop.
 AbandonedSessionStopped ==
@@ -1109,7 +1140,7 @@ SeekHoldReleased ==
 (* lists them; the README says how to repeat the check.                    *)
 
 NeverTwoUnwinding == \A c \in Controllers : Cardinality(unwinding[c]) < 2
-NeverYieldRace == \A c \in Controllers : "yieldRace" \notin breach[c]
+NeverYieldRace == \A c \in Controllers : B("yieldRace") \notin breach[c]
 NeverRejectWait ==
     \A c \in Controllers : \A t \in unwinding[c] : t.pc # "awaitReject"
 NeverOwnProxyStopped ==
