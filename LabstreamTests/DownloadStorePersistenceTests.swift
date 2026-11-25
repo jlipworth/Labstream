@@ -1225,10 +1225,12 @@ struct DownloadStorePersistenceTests {
             )
 
             #expect(restored.status(for: staticKey) == .paused)
-            #expect(restored.status(for: liveKey) == .failed)
+            // #475 (TLA+ Admission-A1): a paused forward-only row with no task, body or
+            // checkpoint has nothing a failure would discard, so reconcile keeps it paused.
+            #expect(restored.status(for: liveKey) == .paused)
             let afterRelaunch = DownloadTestFiles.store(baseDirectory: directory)
             #expect(afterRelaunch.status(for: staticKey) == .paused)
-            #expect(afterRelaunch.status(for: liveKey) == .failed)
+            #expect(afterRelaunch.status(for: liveKey) == .paused)
         }
     }
 
