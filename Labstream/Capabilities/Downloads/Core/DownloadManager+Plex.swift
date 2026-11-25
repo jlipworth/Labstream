@@ -100,7 +100,7 @@ extension DownloadManager {
         cachePoster(for: attemptKey, thumb: DownloadSideAssetPolicy.offlinePosterRef(for: item),
                     server: server, token: token)
         cachePlexBIF(for: attemptKey, item: item, mediaIndex: mediaIndex,
-                     server: server, token: token)
+                     partIndex: partIndex, server: server, token: token)
 
         let staticPart = chosenMedia?.part[safe: partIndex]
         let initialRoute = PlexDownloadRouter.initialRoute(

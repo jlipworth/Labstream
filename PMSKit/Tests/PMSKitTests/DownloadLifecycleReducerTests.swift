@@ -358,6 +358,10 @@ struct DownloadLifecycleReducerTests {
         // A live static task keeps transferring.
         #expect(relaunch(.transferring, DownloadRowFacts(route: .staticRange, liveTask: true)).state?
             .lifecycle == .transferring)
+        // A live task never promotes a paused row (F2, #473).
+        let pausedLive = relaunch(.paused, DownloadRowFacts(route: .staticRange, liveTask: true))
+        #expect(pausedLive.state?.lifecycle == .paused)
+        #expect(pausedLive.effects.isEmpty)
         // A static partial without a task parks at its durable checkpoint.
         let parked = relaunch(.transferring, DownloadRowFacts(
             route: .staticRange, checkpoint: .durablePartial(bytes: 10)))
@@ -394,6 +398,46 @@ struct DownloadLifecycleReducerTests {
         #expect(relaunch(.transferring, DownloadRowFacts(route: .forwardOnly, pendingArtifactHead: true))
             .effects.isEmpty)
         #expect(relaunch(.planned, DownloadRowFacts(route: .staticRange)).state?.lifecycle == .planned)
+    }
+
+    /// Admission-A1 (#475): a forward-only row with no task, body or checkpoint has nothing a
+    /// failure would discard. A granted start waits for a lane again; a paused row stays paused.
+    /// A row with transfer evidence still fails.
+    @Test func relaunchRequeuesForwardOnlyRowWithoutWork() {
+        let noWork = DownloadRowFacts(route: .forwardOnly)
+        var retried = state(.admitted)
+        retried.history.admissionIntent = .retryRequested
+        for start in [state(.admitted), retried] {
+            let requeued = R.reduce(start, .relaunchObserved, facts: noWork)
+            #expect(requeued.state?.lifecycle == .planned)
+            #expect(requeued.state?.history.admissionIntent == .seasonPlanned)
+            #expect(requeued.effects.isEmpty)
+        }
+        // An empty static-style partial is no checkpoint either.
+        #expect(R.reduce(state(.admitted), .relaunchObserved, facts: DownloadRowFacts(
+            route: .forwardOnly, checkpoint: .durablePartial(bytes: 0))).state?.lifecycle == .planned)
+
+        var parked = state(.paused)
+        parked.history.pauseCause = .deferredResume
+        parked.history.admissionIntent = .retryRequested
+        let kept = R.reduce(parked, .relaunchObserved, facts: noWork)
+        #expect(kept.state == parked)
+        #expect(kept.effects.isEmpty)
+
+        // Evidence of a transfer (a task, a body, a checkpoint, or the transferring lifecycle)
+        // keeps today's decisions.
+        #expect(R.reduce(state(.admitted), .relaunchObserved, facts: DownloadRowFacts(
+            route: .forwardOnly, liveTask: true)).state?.lifecycle == .admitted)
+        // A captured body is a finished transfer: it finalizes (F1, #472), paused or not (F3).
+        #expect(R.reduce(state(.admitted), .relaunchObserved, facts: DownloadRowFacts(
+            route: .forwardOnly, body: .captured)).state?.lifecycle == .finalizing)
+        #expect(R.reduce(state(.paused), .relaunchObserved, facts: DownloadRowFacts(
+            route: .forwardOnly, body: .captured)).state?.lifecycle == .finalizing)
+        #expect(R.reduce(state(.transferring), .relaunchObserved, facts: noWork)
+            .state?.lifecycle == .failed)
+        // Other routes are untouched.
+        #expect(R.reduce(state(.admitted), .relaunchObserved, facts: DownloadRowFacts(
+            route: .embyConvert(hasJobOrIdentity: false))).state?.lifecycle == .failed)
     }
 
     // MARK: - Persistence

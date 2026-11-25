@@ -16,7 +16,12 @@ struct P6PathLeaseTests {
     func appendExclusion(reconcile: Bool) async throws {
         let fixture = try P6Fixture()
         let store = fixture.store()
-        let key = try fixture.seed(store, mode: reconcile ? .liveForwardOnly : .staticByteRange)
+        // Reconcile must still condemn the working file for this to contend for its lease. A
+        // forward-only body at the working path is finished and is finalized, paused or not
+        // (F3, #474), so the reconcile half uses an Emby Convert row with no job, which
+        // reconcile fails and whose working file it deletes.
+        let key = try fixture.seed(store, mode: reconcile ? .serverPrepThenStatic : .staticByteRange,
+                                   ratingKey: reconcile ? "emby:fixture" : "plex:fixture")
         let working = try fixture.working(store, key)
         let body = fixture.directory.appendingPathComponent("append.part")
         try Data([4]).write(to: body)
@@ -89,7 +94,12 @@ struct P6PathLeaseTests {
     func storePathLeaseExclusion(reconcile: Bool) throws {
         let fixture = try P6Fixture()
         let store = fixture.store()
-        let key = try fixture.seed(store, mode: reconcile ? .liveForwardOnly : .staticByteRange)
+        // Reconcile must still condemn the working file for this to contend for its lease. A
+        // forward-only body at the working path is finished and is finalized, paused or not
+        // (F3, #474), so the reconcile half uses an Emby Convert row with no job, which
+        // reconcile fails and whose working file it deletes.
+        let key = try fixture.seed(store, mode: reconcile ? .serverPrepThenStatic : .staticByteRange,
+                                   ratingKey: reconcile ? "emby:fixture" : "plex:fixture")
         let working = try fixture.working(store, key)
         guard case .acquired(let lease) = store.tryAcquirePathLease(for: key,
             relativePaths: [working.lastPathComponent], purpose: .append) else {

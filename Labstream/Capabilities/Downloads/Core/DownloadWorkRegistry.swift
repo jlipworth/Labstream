@@ -167,6 +167,13 @@ final class DownloadWorkRegistry {
         } ?? []
         for task in tasks { await task.value }
     }
+
+    /// Join only the registered work of one kind, so a test can order another kind's response
+    /// after it (the #504 chapter-index race).
+    func waitForWorkForTesting(for key: DownloadAttemptKey, kind: Kind) async {
+        let tasks = entriesByAttempt[key]?.values.filter { $0.kind == kind }.map(\.task) ?? []
+        for task in tasks { await task.value }
+    }
     #endif
 
     /// Compare-remove exactly one task. A delayed completion from an old token is a no-op.

@@ -1,0 +1,26 @@
+# .woodpecker/tla-drift.yml
+# Drift guard for the TLA+ specs: a pull request that changes a Swift file a spec models
+# (the `\* MODELS:` lines under specs/) must change that spec, or carry a
+# `Spec-Unaffected: <reason>` commit trailer. Git and Python only: no Java, no macOS runner.
+# The model checker itself runs from tla.yml.
+when:
+  - event: pull_request
+
+steps:
+  - name: tla-drift
+    image: python:3.12-slim
+    commands:
+      - apt-get update && apt-get install -y --no-install-recommends git
+      - rm -rf /var/lib/apt/lists/*
+      # Compare against the branch this pull request targets, not always main: a PR into a
+      # release or stacked branch must be measured from that branch. Woodpecker sets
+      # CI_COMMIT_TARGET_BRANCH for pull_request events only. Woodpecker substitutes variables
+      # across this whole file (comments included) before parsing it, so every shell dollar sign
+      # below is doubled to reach the shell literally, and none may appear unescaped, even in a
+      # comment. An unset or malformed value stops the step: there is no fallback to main.
+      - TARGET="$${CI_COMMIT_TARGET_BRANCH:?not a pull request pipeline, so there is no target branch}"
+      - git check-ref-format "refs/heads/$$TARGET"
+      # Woodpecker clones shallowly by default; a shallow PR clone may have no merge base
+      # with the target branch, so deepen it before computing the range.
+      - if [ "$$(git rev-parse --is-shallow-repository)" = true ]; then git fetch --no-tags --unshallow origin "+refs/heads/$$TARGET:refs/remotes/origin/$$TARGET"; else git fetch --no-tags origin "+refs/heads/$$TARGET:refs/remotes/origin/$$TARGET"; fi
+      - python scripts/check-tla-drift.py "origin/$$TARGET...HEAD"

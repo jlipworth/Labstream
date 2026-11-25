@@ -97,6 +97,97 @@ struct P7SideAssetOrderingTests {
         await f.finish()
     }
 
+    /// #482 (TLA+ S1): a cancel that keeps the row and attempt closes the poster's owner too. A
+    /// later poster fetch must reopen it rather than throw `CancellationError` uncharged for the
+    /// rest of the launch.
+    @Test func posterFetchReopensAnOwnerAKeptAttemptCancelClosed() async throws {
+        let f = try await P7PlaybackFixture(status: .complete)
+        let posterOwner = DownloadManager.posterSideAssetOwner(for: f.key)
+        let cancelled = P6Acknowledgement<Bool>()
+        let registered = P6Acknowledgement<Bool>()
+        f.manager.optionalSideAssetControlDidDeliver = { command, candidate, isFetch in
+            guard candidate == posterOwner else { return }
+            if command == .cancel { cancelled.signal(true) }
+            if command == .park(false), isFetch { registered.signal(true) }
+        }
+        f.manager.cancelOptionalSideAssetHydration(for: f.key)
+        #expect(await cancelled.wait(seconds: 10) == true)
+        let source = try #require(f.store.sideAssetSourceIdentity(for: f.key))
+        let poster = Task { try await f.manager.fetchOptionalSideAsset(
+            URLRequest(url: URL(string: "https://media.invalid/poster")!),
+            for: f.key, source: source, kind: .poster) }
+        #expect(await registered.wait(seconds: 10) == true)
+        // The request reaches the transport (and fails on the invalid host); it is not refused
+        // at the coordinator's entry by the cancelled owner.
+        if case .failure(let error) = await poster.result {
+            #expect(!(error is CancellationError))
+        }
+        f.manager.optionalSideAssetControlDidDeliver = nil
+        await f.finish()
+    }
+
+    /// #483 (TLA+ S2): behind Pause All a completed row's fetch entry parks the attempt's owner.
+    /// Resume All must unpark it: the row's tasks stay registered, so the repair pass starts
+    /// nothing that would.
+    @Test func resumeAllUnparksACompletedRowParkedBehindPauseAll() async throws {
+        let f = try await P7PlaybackFixture(status: .complete)
+        let owner = DownloadManager.sideAssetOwner(for: f.key)
+        let parked = P6Acknowledgement<Bool>()
+        let unparked = P6Acknowledgement<Bool>()
+        f.manager.optionalSideAssetControlDidDeliver = { command, candidate, isFetch in
+            guard candidate == owner else { return }
+            if command == .park(true), isFetch { parked.signal(true) }
+            // Only Resume All's own command, not a fetch entry of a new repair task.
+            if command == .park(false), !isFetch { unparked.signal(true) }
+        }
+        f.manager.setQueuePausedForTesting(true)
+        let source = try #require(f.store.sideAssetSourceIdentity(for: f.key))
+        let chapters = Task { try await f.manager.fetchOptionalSideAsset(
+            URLRequest(url: URL(string: "https://media.invalid/chapter")!),
+            for: f.key, source: source, kind: .chapterImages) }
+        #expect(await parked.wait(seconds: 10) == true)
+        let parkedBehindPause = await f.manager.sideAssetFetchCoordinator.isParkedForP7Testing(owner)
+        #expect(parkedBehindPause)
+        f.manager.resumeQueue()
+        #expect(await unparked.wait(seconds: 10) == true)
+        let stillParked = await f.manager.sideAssetFetchCoordinator.isParkedForP7Testing(owner)
+        #expect(!stillParked)
+        chapters.cancel()
+        await f.manager.sideAssetFetchCoordinator.cancel(owner: owner)
+        _ = await chapters.result
+        f.manager.optionalSideAssetControlDidDeliver = nil
+        await f.finish()
+    }
+
+    /// F3 (#474): a transfer that finishes as a user pause lands still finalizes and completes.
+    /// The pause parked the attempt's owner and a finished row has no Resume, so the publishing
+    /// finalizer's admission unparks it. Behind Pause All it stays parked for Resume All.
+    @Test func finishedBodyUnparksTheOwnerItsPauseParked() async throws {
+        let f = try await P7PlaybackFixture(status: .complete)
+        let owner = DownloadManager.sideAssetOwner(for: f.key)
+        let parked = P6Acknowledgement<Bool>()
+        let unparked = P6Acknowledgement<Bool>()
+        f.manager.optionalSideAssetControlDidDeliver = { command, candidate, isFetch in
+            guard candidate == owner, !isFetch else { return }
+            if command == .park(true) { parked.signal(true) }
+            if command == .park(false) { unparked.signal(true) }
+        }
+        f.manager.setOptionalSideAssetHydrationParked(true, for: f.key)
+        #expect(await parked.wait(seconds: 10) == true)
+        // Pause All holds it: nothing is sent.
+        f.manager.setQueuePausedForTesting(true)
+        f.manager.unparkOptionalSideAssetsForFinishedBody(f.key)
+        f.manager.setQueuePausedForTesting(false)
+        let heldBehindPauseAll = await f.manager.sideAssetFetchCoordinator.isParkedForP7Testing(owner)
+        #expect(heldBehindPauseAll)
+        f.manager.unparkOptionalSideAssetsForFinishedBody(f.key)
+        #expect(await unparked.wait(seconds: 10) == true)
+        let stillParked = await f.manager.sideAssetFetchCoordinator.isParkedForP7Testing(owner)
+        #expect(!stillParked)
+        f.manager.optionalSideAssetControlDidDeliver = nil
+        await f.finish()
+    }
+
     @Test func cancellationFencesOldRegistrationButAllowsLaterRepairPass() async throws {
         let coordinator = SideAssetFetchCoordinator()
         let owner = SideAssetOwner(rawValue: "fixture-owner")

@@ -734,6 +734,13 @@ extension DownloadManager {
         let owner: SideAssetOwner
         if kind == .poster {
             owner = Self.posterSideAssetOwner(for: key)
+            // #482 (TLA+ S1): the poster's fetch entry registers too, never parked. A cancel that
+            // kept the row and attempt (`releaseInFlight`'s default mode) closed this owner, and
+            // only a registration reopens it; without one every later poster fetch would throw
+            // before it is charged, for the rest of the launch.
+            let version = sideAssetFetchCoordinator.downloadControlOrder.reserve()
+            await deliverOptionalSideAssetControl(.park(false), owner: owner,
+                                                  fetchEntry: true, version: version)
         } else {
             owner = Self.sideAssetOwner(for: key)
             let version = sideAssetFetchCoordinator.downloadControlOrder.reserve()

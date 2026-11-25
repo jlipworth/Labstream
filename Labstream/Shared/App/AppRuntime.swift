@@ -84,6 +84,11 @@ struct AppRuntime {
         authManager.onBackendWillSignOut = { [weak downloadManager] backend in
             downloadManager?.pauseDownloadsForBackendSignOut(backend)
         }
+        // #494: Resume All restores the inactive sessions that completed rows' side assets need,
+        // which launch skips while Pause All holds the queue.
+        downloadManager.completedSideAssetSessionHydrator = { [weak authManager] backend in
+            _ = await authManager?.hydrateSavedSessionForDownloads(backend: backend)
+        }
         let lifecycleCoordinator = RuntimeLifecycleCoordinator(
             requestDownloadRecovery: { [weak downloadManager] reason in
                 guard PlatformFeaturePolicy.supportsDownloads else { return }

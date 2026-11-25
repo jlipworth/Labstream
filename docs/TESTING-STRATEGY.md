@@ -280,10 +280,20 @@ Woodpecker provides the repository's default public, portable CI surface:
 - `.woodpecker/docs-pr.yml` performs the same strict build, rendered-link check, and Mermaid
   structural check for pull requests without receiving a deployment key or running a deploy
   command.
-- `.woodpecker/hygiene.yml` validates the macOS pipeline trust boundary with
-  `scripts/validate-macos-pipeline.py .woodpecker/macos.yml --default-branch main`, then runs
-  `scripts/ci-hygiene.sh`, including its Python tooling tests, on pushes, pull requests, and
-  manual runs.
+- `.woodpecker/hygiene.yml` validates the trust boundary of both macOS pipelines with
+  `scripts/validate-macos-pipeline.py` (`.woodpecker/macos.yml` and `.woodpecker/tla.yml`,
+  `--default-branch main`), then runs `scripts/ci-hygiene.sh`, including its Python tooling
+  tests, on pushes, pull requests, and manual runs.
+- `.woodpecker/tla.yml` model-checks the TLA+ specs (`scripts/check-tla-specs.sh`, default tier)
+  and runs `scripts/check-tla-drift.py` on the macOS runner. Like `macos.yml` it is manual and
+  `main`-only, and it is not operational until that runner is enrolled; the runner needs Homebrew
+  `openjdk`, and a missing JDK fails the step. Until then the model check is a local gate.
+- `.woodpecker/tla-drift.yml` runs `scripts/check-tla-drift.py` on pull requests, against the
+  pull request's own target branch (`origin/$CI_COMMIT_TARGET_BRANCH...HEAD`), so a PR into a
+  release or stacked branch is measured from that branch. The step stops if the variable is unset
+  or malformed and never falls back to `main`. A change to a Swift file that a spec models must
+  change the spec or carry a `Spec-Unaffected:` commit trailer. See
+  `docs/DOWNLOADS-OFFLINE.md#formal-model-tla`.
 - `.woodpecker/pmskit.yml` runs PMSKit's credential-free Linux suite. Live probe tests are designed
   to skip when their opt-in environment is absent; the pipeline does not select them as live
   acceptance. XCTest and

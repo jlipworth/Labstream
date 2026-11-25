@@ -61,6 +61,13 @@ extension DownloadManager {
             defer { self.completedSideAssetInventoryWorker = nil }
             guard let inventories = await work.observe(deadline: .after(30)),
                   !Task.isCancelled, !self.isQueuePaused else { return }
+            // #494: after Resume All, restore the sessions this inventory owes before dispatching.
+            // Launch skipped them under Pause All; this reuses the pass's observation.
+            if self.completedSideAssetHydrationOwed {
+                self.completedSideAssetHydrationOwed = false
+                await self.hydrateBackendsOwingSideAssets(Self.backendsOwingSideAssets(inventories))
+                guard !Task.isCancelled, !self.isQueuePaused else { return }
+            }
             self.completedSideAssetInventories = [:]
             for inventory in inventories {
                 let key = inventory.key
@@ -80,6 +87,51 @@ extension DownloadManager {
                 _ = self.rehydrateMissingOptionalSideAssets(
                     record: inventory.record, attemptKey: key, kinds: offerable, reason: reason)
             }
+        }
+    }
+
+    /// #494 (TLA+ S6): the backends of completed rows that miss an optional side asset. Launch
+    /// hydrates these too, because the repair (`rehydrateMissingOptionalSideAssets`) needs the
+    /// row's own backend session and does nothing to obtain one; without it a completed row on a
+    /// backend that is not selected would never be repaired at launch. The observation runs on a
+    /// store worker; a timeout hydrates nothing extra and the pass itself still runs.
+    ///
+    /// Under Pause All the launch repair pass dispatches nothing, so nothing is owed yet: no file
+    /// is scanned and no inactive session (with its network discovery) is restored. Resume All
+    /// hydrates them instead (`completedSideAssetHydrationOwed`).
+    func backendsOwingCompletedSideAssets(
+        deadline: DownloadStoreDeadline = .after(30)
+    ) async -> Set<DownloadBackendKind> {
+        guard !isQueuePaused else { return [] }
+        let candidates = records.filter(\.isComplete)
+        guard !candidates.isEmpty else { return [] }
+        let work = DownloadStoreWork { [store] in
+            candidates.compactMap { record -> DownloadBackendKind? in
+                guard let inventory = CompletedSideAssetInventory.observe(record: record, store: store),
+                      !inventory.missing.isEmpty else { return nil }
+                return DownloadJobSnapshot(record: record).backend
+            }
+        }
+        guard let backends = await work.observe(deadline: deadline), !isQueuePaused else { return [] }
+        return Set(backends)
+    }
+
+    /// The backends of observed completed rows that miss a side asset.
+    nonisolated static func backendsOwingSideAssets(
+        _ inventories: [CompletedSideAssetInventory]
+    ) -> Set<DownloadBackendKind> {
+        Set(inventories.lazy.filter { !$0.missing.isEmpty }
+            .map { DownloadJobSnapshot(record: $0.record).backend })
+    }
+
+    /// Restore the saved session of each owed backend that is not selected and has none yet,
+    /// exactly like launch recovery does for side assets (#494).
+    func hydrateBackendsOwingSideAssets(_ backends: Set<DownloadBackendKind>) async {
+        guard let hydrate = completedSideAssetSessionHydrator else { return }
+        for backend in backends.sorted(by: { $0.rawValue < $1.rawValue })
+        where backend != appModel.activeBackend && appModel.backendSession(for: backend) == nil {
+            guard !Task.isCancelled, !isQueuePaused else { return }
+            await hydrate(backend)
         }
     }
 
@@ -141,8 +193,12 @@ extension DownloadManager {
             // Stream/index detail is intentionally not persisted. Refresh the current Plex item
             // before retrying BIF and text subtitles; ownership/status guards prevent a delayed
             // response from reviving work after Delete, Pause, or another terminal failure.
+            // #503: Plex can reorder an item's media after the download, so the refreshed item's
+            // part is resolved by the persisted `sourcePartID`; the indexes are the fallback for a
+            // row that stored no ID.
             let mediaIndex = metadata.mediaIndex ?? 0
             let partIndex = metadata.partIndex ?? 0
+            let sourcePartID = metadata.sourcePartID
             if kinds == nil || kinds?.contains(.plexBIF) == true
                 || kinds?.contains(.textSubtitles) == true {
                 let discoveryKind: DownloadSideAssetKind = kinds?.contains(.plexBIF) == true
@@ -176,17 +232,23 @@ extension DownloadManager {
                 }
                 if kinds?.contains(.plexBIF) != false {
                     self.cachePlexBIF(for: attemptKey, item: currentItem, mediaIndex: mediaIndex,
+                                      partIndex: partIndex, sourcePartID: sourcePartID,
                                       server: server, token: token)
                 }
-                if kinds?.contains(.chapterImages) != false {
-                    self.cacheChapterImages(for: attemptKey, item: currentItem, backend: .plex,
-                                            server: server, token: token)
-                }
+                // Chapter images are fetched only against the saved chapter list (above) and the
+                // list `adoptRefreshedChapterImages` accepts and persists (below), never against
+                // the raw refreshed list: its indexes need not match the saved ones, and a worker
+                // started from it could publish one chapter's image under another's index.
                 if kinds?.contains(.textSubtitles) != false,
-                   let part = currentItem.media?[safe: mediaIndex]?.part[safe: partIndex] {
+                   let part = DownloadSideAssetPolicy.plexRepairPart(
+                    from: currentItem, mediaIndex: mediaIndex, partIndex: partIndex,
+                    sourcePartID: sourcePartID) {
                     self.cachePlexTextSubtitles(for: attemptKey, part: part,
                                                 server: server, token: token)
                 }
+                await self.adoptRefreshedChapterImages(
+                    for: attemptKey, metadata: metadata, currentItem: currentItem,
+                    backend: .plex, server: server, token: token)
                 }
             }
 
@@ -226,7 +288,11 @@ extension DownloadManager {
                           let currentItem = try? await core.metadata(itemID: itemID),
                           let currentRecord = self.store.record(for: attemptKey),
                           currentRecord.metadata?.sideAssetSourceIdentity
-                            == metadata.sideAssetSourceIdentity,
+                            == metadata.sideAssetSourceIdentity else { return }
+                    await self.adoptRefreshedChapterImages(
+                        for: attemptKey, metadata: metadata, currentItem: currentItem,
+                        backend: .jellyfin, server: server, token: token)
+                    guard !Task.isCancelled,
                           let part = Self.subtitleRepairPart(item: currentItem, metadata: metadata) else { return }
                     self.cacheJellyfinTextSubtitles(
                         for: attemptKey, itemId: itemID,
@@ -273,7 +339,11 @@ extension DownloadManager {
                           let currentItem = try? await core.metadata(itemID: metadata.ratingKey),
                           let currentRecord = self.store.record(for: attemptKey),
                           currentRecord.metadata?.sideAssetSourceIdentity
-                            == metadata.sideAssetSourceIdentity,
+                            == metadata.sideAssetSourceIdentity else { return }
+                    await self.adoptRefreshedChapterImages(
+                        for: attemptKey, metadata: metadata, currentItem: currentItem,
+                        backend: .emby, server: server, token: token, userID: userID)
+                    guard !Task.isCancelled,
                           let part = Self.subtitleRepairPart(item: currentItem, metadata: metadata) else { return }
                     self.cacheEmbyTextSubtitles(
                         for: attemptKey, itemId: metadata.ratingKey,
@@ -283,6 +353,34 @@ extension DownloadManager {
             }
         }
         return true
+    }
+
+    /// #504: a successful source refresh is the latest inventory of the row's chapter
+    /// thumbnails. The completed-row inventory is derived from the saved chapters, so a row saved
+    /// before the server had thumbnails would never owe them. When the refresh teaches the row
+    /// thumbnails, persist the refreshed chapters (every later launch's inventory then owes the
+    /// images) and fetch them now, keyed by the persisted chapter indexes.
+    func adoptRefreshedChapterImages(for attemptKey: DownloadAttemptKey,
+                                     metadata: OfflineMetadata,
+                                     currentItem: MediaItem,
+                                     backend: DownloadBackendKind,
+                                     server: URL, token: String, userID: String? = nil) async {
+        let currentChapters = currentItem.chapters
+        guard DownloadSideAssetPolicy.learnedOfflineChapters(
+            saved: metadata.chapters, current: currentChapters) != nil else { return }
+        let result = await store.updateMetadataAsync(
+            for: attemptKey, expectedSideAssetSource: metadata.sideAssetSourceIdentity) {
+            if let learned = DownloadSideAssetPolicy.learnedOfflineChapters(
+                saved: $0.chapters, current: currentChapters) {
+                $0.chapters = learned
+            }
+        }
+        guard result == .applied || result == .noChange, !Task.isCancelled,
+              let persisted = store.record(for: attemptKey)?.metadata,
+              persisted.sideAssetSourceIdentity == metadata.sideAssetSourceIdentity else { return }
+        refreshRecords()
+        cacheChapterImages(for: attemptKey, item: persisted.makeMediaItem(), backend: backend,
+                           server: server, token: token, userID: userID)
     }
 
     /// Production subtitle-repair selection shared by the MediaBrowser repair branches.
@@ -539,13 +637,16 @@ extension DownloadManager {
         return comps.url
     }
 
-    /// Download + cache Plex's BIF trick-play index for the selected source Part so the
+    /// Download + cache Plex's BIF trick-play index for the downloaded source Part
+    /// (`media[mediaIndex].part[partIndex]`, never the media's first part — #495) so the
     /// local custom player can keep showing scrub previews fully offline (#78). Best-effort:
     /// a missing/invalid BIF never fails the media download. The request carries the token in
     /// query, so do not log the URL or surfaced error.
     func cachePlexBIF(for attemptKey: DownloadAttemptKey, item: MediaItem, mediaIndex: Int,
-                              server: URL, token: String) {
-        guard let part = DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: mediaIndex) else { return }
+                              partIndex: Int, sourcePartID: Int? = nil, server: URL, token: String) {
+        guard let part = DownloadSideAssetPolicy.selectedPlexBIFPart(
+            from: item, mediaIndex: mediaIndex, partIndex: partIndex,
+            sourcePartID: sourcePartID) else { return }
         guard let sourceIdentity = store.sideAssetSourceIdentity(for: attemptKey) else { return }
         let destination = store.plexBIFDestinationURL(ratingKey: attemptKey.ratingKey)
         guard let staging = store.attemptStagingURL(for: attemptKey, stableURL: destination) else { return }

@@ -295,6 +295,13 @@ public final class DownloadManager {
     /// observes a single value and row bodies stay manager-free.
     @ObservationIgnored var completedSideAssetInventoryWorker: Task<Void, Never>?
     @ObservationIgnored var completedSideAssetInventories: [DownloadAttemptKey: CompletedSideAssetInventory] = [:]
+    /// #494: restores the saved session of a backend that is not selected, for the completed-row
+    /// repair (the app shell wires `AuthManager.hydrateSavedSessionForDownloads`). Launch skips
+    /// side-asset-only hydration while Pause All holds the queue; Resume All asks for it instead.
+    @ObservationIgnored var completedSideAssetSessionHydrator: (@MainActor (DownloadBackendKind) async -> Void)?
+    /// Set by Resume All: the next completed-row pass hydrates the backends its inventory owes
+    /// before dispatching, from the same observation, so the files are scanned once.
+    @ObservationIgnored var completedSideAssetHydrationOwed = false
     @ObservationIgnored var resumePresenceEvidence: [DownloadStore.ResumePresenceIdentity: Bool] = [:]
     @ObservationIgnored var resumePresenceWorkers: [DownloadStore.ResumePresenceIdentity: Task<Void, Never>] = [:]
     var offlineLibrarySnapshot: OfflineLibrarySnapshot = .empty
@@ -380,6 +387,10 @@ public final class DownloadManager {
     @ObservationIgnored private var unverifiedRevalidation = UnverifiedRevalidationCoordinator()
     @ObservationIgnored private var isAppSceneActive = false
     @ObservationIgnored private var downloadWatchdogTask: Task<Void, Never>?
+    /// #488 review: the one-shot refresh that removes a silent row's speed and ETA when its rate
+    /// evidence goes stale, and the moment it is set for.
+    @ObservationIgnored private var rateEvidenceExpiryTask: Task<Void, Never>?
+    @ObservationIgnored private var rateEvidenceExpiryAt: Date?
     @ObservationIgnored private var forwardOnlyStallTracker = DownloadForwardOnlyStallTracker()
     @ObservationIgnored private var lastDownloadHealthDiagnosticAt: Date?
 
@@ -634,6 +645,9 @@ public final class DownloadManager {
                     session.abandonFinalizerRequest(request)
                     return
                 }
+                if !request.isRevalidation {
+                    self.unparkOptionalSideAssetsForFinishedBody(request.attemptKey)
+                }
                 guard self.downloadWorkRegistry.startIfAbsent(
                     for: request.attemptKey,
                     kind: request.isRevalidation ? .revalidationFinalizer : .finalizer,
@@ -808,7 +822,7 @@ public final class DownloadManager {
         }
         self.session.onBackgroundWakeAuthorized = { [weak self] in
             Task { @MainActor in
-                self?.aggregateRateEstimator.resetAfterWake()
+                self?.aggregateRateEstimator.resetAfterWake(at: Date())
                 self?.scheduleRefreshRecords(reason: "background_wake_speed")
                 self?.resumeStartupRecoveryAfterAuthorization()
             }
@@ -1248,8 +1262,12 @@ public final class DownloadManager {
             ])
         }
         let snapshotRatingKeys = store.allRatingKeys
-        session.reattach { [weak self, store] liveKeys in
-            let submission = store.submitReconcile(liveRatingKeys: liveKeys, snapshotRatingKeys: snapshotRatingKeys)
+        // R2 (#476): `liveKeys` is a snapshot; reconcile also asks the session what it owns when
+        // it decides, so a finished body queued for its append is not failed with its row.
+        session.reattach { [weak self, store, session] liveKeys in
+            let submission = store.submitReconcile(
+                liveRatingKeys: liveKeys, snapshotRatingKeys: snapshotRatingKeys,
+                sessionOwnsWork: { session.ownsInProgressStaticRangeWork(ratingKey: $0) })
             Task { @MainActor in
                 let proof = await store.resolve(submission, deadline: .after(30))
                 guard let self, case .committed = proof, self.startupRecoveryState == .ready else { return }
@@ -2095,6 +2113,18 @@ public final class DownloadManager {
         refreshRecords()
     }
 
+    /// F3 (#474): a body that finished as a user pause landed finalizes and completes, and a
+    /// finished row has no Resume. The pause parked the attempt's side-asset owner and left its
+    /// tasks registered, so the repair pass starts nothing that would unpark it. The publishing
+    /// finalizer's admission lifts that park, so the row's side assets are not held for the rest
+    /// of the launch.
+    func unparkOptionalSideAssetsForFinishedBody(_ key: DownloadAttemptKey) {
+        guard DownloadSideAssetParkPolicy.finishedBodyUnparks(
+            isQueuePaused: isQueuePaused,
+            isExemptFromQueuePause: admission.isExempt(key.ratingKey)) else { return }
+        setOptionalSideAssetHydrationParked(false, for: key)
+    }
+
     /// Stop only the incomplete rows that belong to a backend which is being signed out.
     ///
     /// An open URLSession download has already copied its Authorization header into the request,
@@ -2171,6 +2201,18 @@ public final class DownloadManager {
         // Rows added behind the pause are already waiting requests; nothing above changes the
         // occupancy signature for them, so ask for an admission pass directly.
         scheduleAdmissionPump()
+        // #483 (TLA+ S2): behind Pause All, a fetch entry of a row the pause did not stop (a
+        // completed or finalizing row's next subtitle stream or trickplay tiles) parks the
+        // attempt's owner, and its tasks stay registered, so the repair pass below starts nothing
+        // that would unpark it. Unpark every row that is not itself paused; a paused row is
+        // unparked by `retryRecordAsync` once its resume is admitted.
+        for record in store.records where record.lifecycle != .paused {
+            guard let key = attemptKey(for: record) else { continue }
+            setOptionalSideAssetHydrationParked(false, for: key)
+        }
+        // #494: launch skipped hydrating the backends that only completed rows' side assets
+        // need while the queue was paused; the pass below hydrates them from its own inventory.
+        completedSideAssetHydrationOwed = true
         rehydrateMissingOptionalSideAssetsForCompletedRows(reason: "queue_resumed")
         resumePendingServerPrepDownloads()
         resumePendingStaticRangeDownloads()
@@ -2237,8 +2279,8 @@ public final class DownloadManager {
     /// queued static rows captured before reconcile as well as rows already downloading; either can
     /// be the row whose first reattached/restarted callback exposes accumulated background bytes.
     private func beginDownloadRateForegroundRebaseline() {
-        aggregateRateEstimator.resetAfterWake()
         let now = Date()
+        aggregateRateEstimator.resetAfterWake(at: now)
         let interruptedStaticKeys = Set(store.interruptedStaticByteRangeKeys())
         let downloadingRecords = store.records.filter { $0.status == .downloading }
         for ratingKey in downloadingRecords.map(\.ratingKey) {
@@ -2267,9 +2309,21 @@ public final class DownloadManager {
         let interruptedStaticKeys = store.interruptedStaticByteRangeKeys()
 
         // B.13: same snapshot rule as launch — rows created while `getAllTasks` runs are skipped.
-        let snapshotRatingKeys = store.allRatingKeys
-        session.reattach { [weak self, store] liveKeys in
-            let submission = store.submitReconcile(liveRatingKeys: liveKeys, snapshotRatingKeys: snapshotRatingKeys)
+        // Admission is open here, so forward-only rows a granted start may own are skipped too
+        // (Admission-A1, #475): relaunch would requeue one whose task does not exist yet.
+        // That exclusion is only as fresh as this snapshot. A paused row the user resumes while
+        // `getAllTasks` runs is granted and `admitted` before its task exists, so reconcile also
+        // gets each row's attempt and mutation generation, read before the exclusion, and leaves
+        // a row that changed since to whoever changed it (#475 review).
+        let observedRows = store.reconcileRowObservations()
+        let snapshotRatingKeys = Set(observedRows.keys).subtracting(forwardOnlyRowsAdmissionMayOwn())
+        // R2 (#476): `liveKeys` is a snapshot; reconcile also asks the session what it owns when
+        // it decides, so a finished body queued for its append is not failed with its row.
+        session.reattach { [weak self, store, session] liveKeys in
+            let submission = store.submitReconcile(
+                liveRatingKeys: liveKeys, snapshotRatingKeys: snapshotRatingKeys,
+                observedRows: observedRows,
+                sessionOwnsWork: { session.ownsInProgressStaticRangeWork(ratingKey: $0) })
             Task { @MainActor in
                 let proof = await store.resolve(submission, deadline: .after(30))
                 guard let self else { return }
@@ -2372,7 +2426,21 @@ public final class DownloadManager {
         for key: DownloadAttemptKey,
         context: String
     ) async -> Bool {
-        switch store.submitLifecycleEvent(event, for: key) {
+        await applyLifecycleSubmission(store.submitLifecycleEvent(event, for: key),
+                                       event: event, for: key, context: context)
+    }
+
+    /// `applyLifecycleEvent` for a submission the caller already made (a conditional store
+    /// commit). `onAccepted` runs synchronously once the store accepted the event and before its
+    /// durability is awaited: side effects that must follow the commit, never precede it.
+    func applyLifecycleSubmission(
+        _ submission: DownloadStore.LifecycleEventSubmission,
+        event: DownloadLifecycleEvent,
+        for key: DownloadAttemptKey,
+        context: String,
+        onAccepted: () -> Void = {}
+    ) async -> Bool {
+        switch submission {
         case .staleOrMissing:
             recordDownloadDiagnostic("downloads.status_owner_stale", fields: [
                 "download_id": .identifier(key.ratingKey),
@@ -2394,6 +2462,7 @@ public final class DownloadManager {
             assert(effects.isEmpty, "manager lifecycle event produced effects: \(effects)")
             let acceptedState = store.lifecycleState(for: key)
             let fence = managerActionGenerations[key.ratingKey, default: 0]
+            onAccepted()
             let result = await store.resolve(DownloadStore.AttemptMutationSubmission.accepted(change: .applied, ticket: ticket), deadline: .after(30))
             switch result {
             case .applied, .noChange:
@@ -4921,6 +4990,7 @@ public final class DownloadManager {
         downloadSpeed = downloadSpeed.filter { activeKeys.contains($0.key) }
         downloadETA = downloadETA.filter { activeKeys.contains($0.key) }
         updateDownloadWatchdog(for: recoveryEligibleFresh)
+        scheduleRateEvidenceExpiry(now: now)
         recordDownloadHealthSnapshotIfNeeded(records: fresh, now: now)
 
         // Release the in-flight protection for any job whose download has reached a terminal
@@ -4981,34 +5051,147 @@ public final class DownloadManager {
         let ratingKey = restart.record.ratingKey
         guard let current = store.record(for: ratingKey),
               let key = attemptKey(for: current),
-              !store.isDeletionPending(for: key),
-              DownloadStallRecoveryPolicy.isForwardOnlyMediaBrowserStream(current) else { return }
+              !store.isDeletionPending(for: key) else { return }
+        // TLA+ Status-S8 (#501): the verdict was queued from an earlier observation and callbacks may
+        // have moved the row since. Never cancel a stream that is moving again or has finished,
+        // nor act on a different attempt. This read is an early exit only; the store's
+        // conditional commit below is what decides.
+        guard DownloadStallRecoveryPolicy.queuedStallVerdictStillWarranted(
+            observed: restart.record, current: current) else {
+            noteStallVerdictSkipped(restart, current: current)
+            return
+        }
         let backend = DownloadJobSnapshot(record: current).backend
-        recordDownloadDiagnostic("downloads.forward_stream_stall_restart", fields: [
-            "download_id": .identifier(ratingKey),
-            "backend": .label(backend.rawValue),
-            "lane": .label(current.metadata?.resolvedDownloadLane().rawValue ?? "unknown"),
-            "bytes": .bytes(current.bytes),
-            "stalled_seconds": .int(Int(restart.stalledFor.rounded())),
-            "attempt": .int(restart.attempt),
-            "max_attempts": .int(DownloadStallRecoveryPolicy.defaultMaxAutomaticRestarts),
-        ])
-        session.cancel(ratingKey: ratingKey)
-        retryState.removeRetrying(ratingKey)
-        clearRetryHandoff(ratingKey: ratingKey)
-        lastError[ratingKey] = .transferFailed(
-            "Network stalled; restarting this forward-only stream from the beginning.")
-        // B61: only a transferring row stalls; a finalizing body is never failed for a stall.
-        guard await applyLifecycleEvent(.stallDetected, for: key, context: "stream_stall") else { return }
-        releaseInFlight(for: key)
+        if restart.verdict == .fail {
+            await failStalledForwardOnlyStreamAsync(restart, current: current, key: key, backend: backend)
+            return
+        }
+        // Review of PR #505: commit `stallDetected` against the exact attempt, its `transferring`
+        // lifecycle and the observed bytes atomically in the store BEFORE any cancel. A body that
+        // finished, or bytes the delegate advanced after the read above, reject the verdict and
+        // leave the stream, its session work and its error alone.
+        let submission = store.submitStallVerdict(for: key, observedBytes: restart.record.bytes)
+        guard case .accepted = submission else {
+            noteStallVerdictSkipped(restart, current: store.record(for: ratingKey) ?? current)
+            return
+        }
+        let committed = await applyLifecycleSubmission(
+            submission, event: .stallDetected, for: key, context: "stream_stall") {
+            recordDownloadDiagnostic("downloads.forward_stream_stall_restart", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label(backend.rawValue),
+                "lane": .label(current.metadata?.resolvedDownloadLane().rawValue ?? "unknown"),
+                "bytes": .bytes(current.bytes),
+                "stalled_seconds": .int(Int(restart.stalledFor.rounded())),
+                "attempt": .int(restart.attempt),
+                "max_attempts": .int(DownloadStallRecoveryPolicy.defaultMaxAutomaticRestarts),
+            ])
+            // Only the exact attempt the store just failed.
+            session.cancel(attemptKey: key)
+            retryState.removeRetrying(ratingKey)
+            clearRetryHandoff(ratingKey: ratingKey)
+            lastError[ratingKey] = .transferFailed(
+                "Network stalled; restarting this forward-only stream from the beginning.")
+        }
+        guard committed else { return }
         // `releaseInFlight` wipes the stall tracker entry, including the attempt count
-        // `detectRestarts` just incremented — without re-seeding it the 2-restart cap never binds
-        // and a persistent wedge restarts the encoder from byte 0 every stall timeout forever.
-        forwardOnlyStallTracker.seedRestartAttempts(ratingKey, attempts: restart.attempt)
+        // `detectRestarts` just incremented and the byte high-water mark. Seed both back: without
+        // the count the 2-restart cap never binds, and without the high-water mark the replacement's
+        // replay from byte 0 refills the budget (#497 review); either way a stream that wedges at
+        // the same offset restarts the encoder from byte 0 every stall timeout for ever.
+        let highWater = max(restart.highWaterBytes, forwardOnlyStallTracker.highWaterMark(for: ratingKey) ?? 0)
+        releaseInFlight(for: key)
+        forwardOnlyStallTracker.seedRestartAttempts(ratingKey, attempts: restart.attempt, highWaterBytes: highWater)
         refreshRecords()
         // P4: the restart goes through admission like any other start (it just freed its lane).
         if let failed = store.record(for: key) {
             requestAdmission(for: failed, origin: .automatic)
+        }
+    }
+
+    private func noteStallVerdictSkipped(_ restart: DownloadForwardOnlyStallRestart, current: DownloadRecord) {
+        guard DownloadStallRecoveryPolicy.isForwardOnlyMediaBrowserStream(current) else { return }
+        recordDownloadDiagnostic("downloads.forward_stream_stall_verdict_skipped", fields: [
+            "download_id": .identifier(restart.record.ratingKey),
+            "observed_bytes": .bytes(restart.record.bytes),
+            "bytes": .bytes(current.bytes),
+            "lifecycle": .label(current.lifecycle?.rawValue ?? "unknown"),
+            "same_attempt": .bool(current.attemptID == restart.record.attemptID),
+        ])
+    }
+
+    /// #497 (TLA+ Status-S5): the automatic restarts are spent and the stream stalled again. Fail
+    /// the row as stalled with a retryable reason instead of leaving it `downloading` at zero bytes
+    /// for ever (where it also held "Updating speed…" up for the batch). No admission request: the
+    /// user retries, and that retry starts with a fresh restart budget (`releaseInFlight` drops the
+    /// tracker entry, and `admitRowAction` refills it).
+    private func failStalledForwardOnlyStreamAsync(_ restart: DownloadForwardOnlyStallRestart,
+                                                   current: DownloadRecord,
+                                                   key: DownloadAttemptKey,
+                                                   backend: DownloadBackendKind) async {
+        let ratingKey = restart.record.ratingKey
+        // The same conditional commit as a restart, before any cancel.
+        let submission = store.submitStallVerdict(for: key, observedBytes: restart.record.bytes)
+        guard case .accepted = submission else {
+            noteStallVerdictSkipped(restart, current: store.record(for: ratingKey) ?? current)
+            return
+        }
+        let committed = await applyLifecycleSubmission(
+            submission, event: .stallDetected, for: key, context: "stream_stall_capped") {
+            recordDownloadDiagnostic("downloads.forward_stream_stall_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label(backend.rawValue),
+                "lane": .label(current.metadata?.resolvedDownloadLane().rawValue ?? "unknown"),
+                "bytes": .bytes(current.bytes),
+                "stalled_seconds": .int(Int(restart.stalledFor.rounded())),
+                "attempts": .int(restart.attempt),
+                "max_attempts": .int(DownloadStallRecoveryPolicy.defaultMaxAutomaticRestarts),
+            ])
+            session.cancel(attemptKey: key)
+            retryState.removeRetrying(ratingKey)
+            clearRetryHandoff(ratingKey: ratingKey)
+            lastError[ratingKey] = .transferFailed(
+                "Network stalled and the stream did not recover after \(restart.attempt) automatic restarts. Retry to start it again.")
+        }
+        guard committed else { return }
+        releaseInFlight(for: key)
+        refreshRecords()
+    }
+
+    /// An explicit user Retry or Resume gives a forward-only row its full automatic restart budget
+    /// back (#497 review); automatic restarts refill it only past the row's byte high-water mark.
+    func refillForwardOnlyStallBudgetForUserRetry(ratingKey: String) {
+        forwardOnlyStallTracker.refillRestartBudget(ratingKey)
+    }
+
+    /// #488 (TLA+ Status-S2) without the polling: a row's speed and ETA are recomputed only by a
+    /// refresh, and a row whose callbacks stop schedules none. Arm one refresh for the moment the
+    /// earliest shown rate goes stale (`DownloadRateEstimator.staleDeadline`); that refresh removes
+    /// it and, with nothing left to expire, arms nothing more. A silent static row therefore costs
+    /// one refresh instead of a library rebuild every 15 s for as long as it stays transferring.
+    private func scheduleRateEvidenceExpiry(now: Date) {
+        let deadlines = rateEstimators.compactMap { key, estimator -> Date? in
+            guard downloadSpeed[key] != nil || downloadETA[key] != nil else { return nil }
+            return estimator.staleDeadline
+        }
+        guard let expiry = DownloadWatchdogPolicy.nextRateEvidenceExpiry(staleDeadlines: deadlines, now: now) else {
+            rateEvidenceExpiryTask?.cancel()
+            rateEvidenceExpiryTask = nil
+            rateEvidenceExpiryAt = nil
+            return
+        }
+        // An earlier expiry already armed refreshes first and re-arms from what it finds.
+        if rateEvidenceExpiryTask != nil, let armed = rateEvidenceExpiryAt, armed <= expiry, armed > now { return }
+        rateEvidenceExpiryTask?.cancel()
+        rateEvidenceExpiryAt = expiry
+        rateEvidenceExpiryTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(max(0, expiry.timeIntervalSinceNow)))
+            } catch { return }
+            guard let self, self.rateEvidenceExpiryAt == expiry else { return }
+            self.rateEvidenceExpiryTask = nil
+            self.rateEvidenceExpiryAt = nil
+            self.refreshRecords()
         }
     }
 
@@ -5284,7 +5467,7 @@ public final class DownloadManager {
 
     func makeOfflineLibrarySnapshot(from records: [DownloadRecord]) -> OfflineLibrarySnapshot {
         refreshResumePresenceEvidence(records: records)
-        aggregateRateEstimator.setActiveTransfers(aggregateRateTransferKeys(records))
+        aggregateRateEstimator.setActiveTransfers(aggregateRateTransferKeys(records), at: Date())
         return OfflineLibrarySnapshotBuilder.make(
             records: records,
             isQueuePaused: isQueuePaused,

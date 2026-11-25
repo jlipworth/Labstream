@@ -18,7 +18,8 @@ public struct DownloadRowFacts: Sendable, Equatable {
 
     public enum Body: Sendable, Equatable {
         case none
-        /// Moved out of the URLSession temp into an attempt-owned capture path (B10).
+        /// Moved out of the URLSession temp into an attempt-owned capture path (B10): a finished
+        /// forward-only body whose publication to the working path has not run yet (F1, #472).
         case captured
         case workingComplete
         case published
@@ -475,9 +476,12 @@ public enum DownloadLifecycleReducer {
             return .applied(next, [])
         case .admitted, .transferring, .paused:
             let lifecycle = state.lifecycle
-            // A forward-only body exists only once its transfer finished (B10).
-            if facts.route == .forwardOnly, !facts.liveTask, facts.body == .workingComplete,
-               lifecycle != .paused {
+            // A forward-only body exists only once its transfer finished (B10): at the working
+            // path, or still at its attempt-owned capture path when the process died before the
+            // publication ran or before `bodyCaptured` was durable (F1, #472). It cannot be
+            // fetched again by range, so no pause discards it, the user's included (F3, #474).
+            if facts.route == .forwardOnly, !facts.liveTask,
+               facts.body == .workingComplete || facts.body == .captured {
                 return set(.finalizing, [.requestFinalization])
             }
             // Plex prep rows are queued (admitted) while the server renders; without a task they
@@ -486,9 +490,14 @@ public enum DownloadLifecycleReducer {
                 return set(.admitted, [.resetBytesToZero])
             }
             if facts.liveTask {
+                // A live task never promotes a paused row, whatever paused it (F2, #473). Every
+                // pause cause cancels its task, and reattach never adopts a paused row's task
+                // (B02), so a paused row in the live set is a stale snapshot of a task that is
+                // being torn down. The row stays as the pause left it.
+                if lifecycle == .paused { return .applied(next, []) }
                 if facts.route == .staticRange { return set(.transferring) }
-                // Other live tasks: unchanged, except a paused row a live task proves active.
-                return lifecycle == .paused ? set(.transferring) : .applied(next, [])
+                // Other live tasks: unchanged.
+                return .applied(next, [])
             }
             if case .embyConvert(let hasJob) = facts.route, hasJob, lifecycle == .paused {
                 return set(.paused, pauseCause: next.history.pauseCause ?? .deferredResume)
@@ -509,6 +518,17 @@ public enum DownloadLifecycleReducer {
             // A URLSession resume blob keeps a paused row resumable on any route.
             if lifecycle == .paused, facts.checkpoint == .resumeBlob {
                 return set(.paused)
+            }
+            // A forward-only row with no task, body or checkpoint has nothing a failure would
+            // discard (Admission-A1, #475). A granted start cut before its task existed waits for
+            // a lane again, as the same start does in process (`admissionDeferred`); a paused row
+            // stays paused. Reconcile while admission is open skips rows a start may own.
+            if facts.route == .forwardOnly, facts.body == .none, !facts.hasResumableCheckpoint {
+                if lifecycle == .admitted {
+                    next.history.admissionIntent = .seasonPlanned
+                    return set(.planned)
+                }
+                if lifecycle == .paused { return set(.paused) }
             }
             return set(.failed, [.deleteWorkingBody, .clearResumeBlob], failure: .network)
         }

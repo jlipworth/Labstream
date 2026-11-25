@@ -52,24 +52,35 @@ public enum DownloadLiveRangeProgressPolicy {
 
     /// Normalize a task byte count against a persisted resume display watermark. A
     /// `downloadTask(withResumeData:)` can report `countOfBytesReceived` from the new task's own
-    /// baseline (near zero) even though URLSession still owns prior temp bytes.
+    /// baseline (near zero) even though URLSession still owns prior temp bytes; it can also report
+    /// cumulatively, counting those temp bytes from its first callback.
     ///
     /// `taskBytes` is always `baseOffset` + the task's reported bytes, and the watermark itself
     /// already contains the base offset (it was persisted as `baseOffset + temp bytes` at pause).
-    /// So when a fresh-baseline report comes in below the watermark, only the fresh delta above
-    /// `baseOffset` is added — adding the whole `taskBytes` would count the durable base twice
-    /// and compound the watermark on every pause/resume cycle.
+    ///
+    /// Which of the two counters a task uses is a property of the TASK, not of one sample, so it is
+    /// decided once, on the task's first callback, and carried in `latchedRebase` (nil until then;
+    /// the caller keeps it for the task's life). A first count below the watermark can only be a
+    /// fresh baseline: every later count gets the blob's temp bytes (`watermark - baseOffset`)
+    /// added. A first count at or above it is cumulative and is used as is. Judging each sample
+    /// alone (#502) rebased a fresh count only while it stayed below the watermark: base 100,
+    /// watermark 150, counts 49 then 50 published 199 then 150, freezing the row behind its running
+    /// max and resetting the aggregate estimator. A late first callback from a fresh baseline is
+    /// latched as cumulative and undercounts by the blob, but stays monotonic and never claims bytes
+    /// that do not exist. Neither regime ever shows less than the watermark.
     public static func displayBytesForResumedTask(taskBytes: Int,
                                                   baseOffset: Int,
-                                                  resumeDisplayBytes: Int?) -> Int {
+                                                  resumeDisplayBytes: Int?,
+                                                  latchedRebase: inout Int?) -> Int {
+        let reported = max(taskBytes, 0)
         guard let resumeDisplayBytes, resumeDisplayBytes > 0 else {
-            return max(taskBytes, 0)
+            if latchedRebase == nil { latchedRebase = 0 }
+            return reported
         }
-        guard taskBytes > 0 else { return resumeDisplayBytes }
-        if taskBytes < resumeDisplayBytes {
-            return resumeDisplayBytes + max(taskBytes - max(baseOffset, 0), 0)
-        }
-        return taskBytes
+        let rebase = latchedRebase
+            ?? (reported < resumeDisplayBytes ? max(resumeDisplayBytes - max(baseOffset, 0), 0) : 0)
+        latchedRebase = rebase
+        return max(reported + rebase, resumeDisplayBytes)
     }
 
     /// Live display bytes across an active segment train: the durable partial already on disk plus

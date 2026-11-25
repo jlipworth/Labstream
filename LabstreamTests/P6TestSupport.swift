@@ -137,8 +137,9 @@ final class P6Fixture: @unchecked Sendable {
     }
     @discardableResult
     func seed(_ store: DownloadStore, status: DownloadStatus = .downloading,
-              mode: DownloadResumeMode = .staticByteRange) throws -> DownloadAttemptKey {
-        let record = record(status: status, mode: mode)
+              mode: DownloadResumeMode = .staticByteRange,
+              ratingKey: String = "plex:fixture") throws -> DownloadAttemptKey {
+        let record = record(status: status, mode: mode, ratingKey: ratingKey)
         let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: record.attemptID!)
         try #require(store.createAttemptOwnedRecord(record, attemptID: key.attemptID) == .committed(key))
         return key
