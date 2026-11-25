@@ -280,7 +280,7 @@ launch edge of a later launch scans the row.
 Proposed in the model (`FixPassReruns`): a pass that was asked for while one ran, that timed out
 or that skipped a row runs again. `Proposed-S5-PassReruns` and `-Stale` pass with it.
 
-Pin: `droppedRepairEdgeRunsAgain`.
+Pin: `droppedRepairEdgeRunsAgain`. Issue #493.
 
 ### S6: a completed row on a backend that is not selected is never repaired (real)
 
@@ -302,7 +302,7 @@ malformed: the record is durable, but no launch acts on it.
 Proposed in the model (`FixHydrateCompleted`): launch also restores the session of a backend that
 has a completed row with missing side assets. `Proposed-S6-HydrateCompleted` passes with it.
 
-Pin: `launchHydratesBackendsOfCompletedRowsMissingAssets`.
+Pin: `launchHydratesBackendsOfCompletedRowsMissingAssets`. Issue #494.
 
 ### S7: the Plex BIF is taken from the first part, not the downloaded one (real)
 
@@ -321,7 +321,7 @@ index, at either call site, and `DownloadSideAssetPolicy.selectedPlexBIFPart` re
 Proposed in the model (`FixBifChosenPart`): the BIF request names the downloaded part.
 `Proposed-S7-BifChosenPart` passes with it.
 
-Pin: `plexBIFComesFromTheDownloadedPart` (behavioural, on the PMSKit policy).
+Pin: `plexBIFComesFromTheDownloadedPart` (behavioural, on the PMSKit policy). Issue #495.
 
 ### S8: a promotion gives up on any concurrent write to its row (real, low)
 
@@ -338,7 +338,7 @@ do overlap. No caller retries: the payload is dropped, the dispatch stays charge
 waits for the next repair edge. The window is a file-existence check and a rename wide, so this is
 rare. It is a retry that is missing, not a fence that is wrong.
 
-Not proposed in the model. Pin: `promotionSurvivesAnUnrelatedRowWrite`.
+Not proposed in the model. Pin: `promotionSurvivesAnUnrelatedRowWrite`. Issue #496.
 
 ### Known deferred items the model reproduces
 

@@ -282,7 +282,7 @@ struct DownloadsFormalModelRangeTrainTests {
         let pauseTask = try #require(Self.appFunctionSource(
             named: "pauseRangeTask", in: Self.sessionSource))
         #expect(pauseTask.contains("rangeInflight.removeValue(forKey: task.taskIdentifier)"))
-        withKnownIssue("TLA+ finding R3 (broadens #474): a pause supersedes a finished segment") {
+        withKnownIssue("TLA+ finding R3 (#474): a pause supersedes a finished segment") {
             // The sweep supersedes every listed task without asking whether it has finished.
             // The fixed sweep leaves a finished task tracked (or routes its body through the
             // finished-body path), so `writeThenPause` gets to run.
@@ -311,7 +311,7 @@ struct DownloadsFormalModelRangeTrainTests {
             durableBytes: 1, stashedSegments: held.map { (offset: $0.offset, length: $0.length ?? 0) })
         #expect(run.append.isEmpty)
         #expect(run.hold.map(\.offset) == [2, 3])
-        withKnownIssue("TLA+ finding R4: held bodies fill the depth and starve the head gap") {
+        withKnownIssue("TLA+ finding R4 (#492): held bodies fill the depth and starve the head gap") {
             let plans = StaticRangeSegmentQueuePolicy.segmentsToEnqueue(
                 durableBytes: 1, expectedBytes: 6, liveSegments: held,
                 segmentBytes: 2, maxQueuedSegments: 2)

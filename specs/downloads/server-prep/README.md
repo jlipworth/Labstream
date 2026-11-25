@@ -172,7 +172,7 @@ is inline in app code, so the test pins the shape of the Plex retry branch.
 
 ## Finding S2: the render deadline can fail a Plex prep row before its create is dispatched
 
-New in the second review round; no issue yet.
+New in the second review round. Issue #500.
 
 Trace (4 states; `Finding-S2-TimeoutBeforeCreate`): a Plex prep row is seeded, a day passes with
 no poller attached to it, a poller attaches, and its first poll fails the row.

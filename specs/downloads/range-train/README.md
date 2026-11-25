@@ -279,7 +279,7 @@ while its callback is queued was not executed. Low severity on a train, medium o
 fallback.
 Proposed fix (`FixPauseKeepsFinished`): the sweep leaves a finished task tracked, or routes its
 body through the finished-body path.
-Pinned by `DownloadsFormalModelRangeTrainTests.pauseKeepsAFinishedSegment`.
+Pinned by `DownloadsFormalModelRangeTrainTests.pauseKeepsAFinishedSegment`. Recorded on #474.
 
 ### R4: held bodies fill the depth and starve the gap at the checkpoint
 
@@ -312,7 +312,7 @@ those inputs was traced by reading, not run. Medium severity (the row never fini
 rare trigger (a kill inside an append, a segment finished while dead, one transient error).
 Proposed fix (`FixHeadGapPlanned`, `Proposed-MidAppend`, `Proposed-Liveness-MidAppend`): the
 planner always plans the gap at the checkpoint, whatever the depth left over.
-Pinned by `DownloadsFormalModelRangeTrainTests.plannerAlwaysFetchesTheHeadGap`.
+Pinned by `DownloadsFormalModelRangeTrainTests.plannerAlwaysFetchesTheHeadGap`. Issue #492.
 
 ### Modelling artefacts fixed in the model
 

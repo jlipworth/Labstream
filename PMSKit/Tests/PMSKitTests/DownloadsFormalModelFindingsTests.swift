@@ -133,7 +133,7 @@ struct DownloadsFormalModelFindingsTests {
         let rename = try #require(finalize.range(of: "condemnBody(afterCommitOf: ticket)\n"))
         let commit = try #require(finalize.range(
             of: "verdict, key: attemptKey, phase: \"finalize_truncated_verdict\") else { return }"))
-        withKnownIssue("TLA+ finding F4: a crash between the condemn rename and the verdict's commit") {
+        withKnownIssue("TLA+ finding F4 (#491): a crash between the condemn rename and the verdict's commit") {
             #expect(commit.lowerBound < rename.lowerBound,
                     "the body is renamed away before the verdict that explains it is durable")
         }

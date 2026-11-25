@@ -265,7 +265,7 @@ struct DownloadsFormalModelStatusTests {
         #expect(answers > 1_000, "the runs must publish speeds, or the test checks nothing")
         #expect(longPeriods > 50)
         #expect(latePeriods > 20, "the runs must include backlogs that outlast the settling window")
-        withKnownIssue("TLA+ finding S7: a backlog reported after the 4 s settling window is published as live speed") {
+        withKnownIssue("TLA+ finding S7 (#499): a backlog reported after the 4 s settling window is published as live speed") {
             #expect(lateWrong == 0, """
                 \(lateWrong) answers in \(latePeriods) awake periods with a late backlog were not the \
                 batch's true total; the worst was \(worst) times it
@@ -286,7 +286,7 @@ struct DownloadsFormalModelStatusTests {
         }
         #expect(answers > 200, "the runs must publish speeds, or the test checks nothing")
         #expect(latePeriods > 20, "the runs must include backlogs that outlast the settling window")
-        withKnownIssue("TLA+ finding S7: a backlog reported after the 4 s settling window is published as live speed") {
+        withKnownIssue("TLA+ finding S7 (#499): a backlog reported after the 4 s settling window is published as live speed") {
             #expect(lateWrong == 0, "\(lateWrong) answers after a late backlog exceeded the batch's peak total")
         }
     }
@@ -1154,7 +1154,7 @@ struct DownloadsFormalModelStatusTests {
             record: record, active: true, lastForwardProgressAt: Self.time(lastVerdictAt),
             now: Self.time(horizon), restartAttempts: 2))
 
-        withKnownIssue("TLA+ finding S5: past the restart cap a stalled forward-only stream has no verdict") {
+        withKnownIssue("TLA+ finding S5 (#497): past the restart cap a stalled forward-only stream has no verdict") {
             #expect(horizon - lastVerdictAt < 600, """
                 the stream has been `downloading` at zero bytes for \(Int(horizon - lastVerdictAt)) s since \
                 its second restart, with no further restart and no failure
@@ -1182,7 +1182,7 @@ struct DownloadsFormalModelStatusTests {
         estimator.sample(second, bytes: 4_010_000, at: Self.time(4.11))
 
         let answer = estimator.rate(at: Self.time(4.11))
-        withKnownIssue("TLA+ finding S6: fresh evidence without a common 0.5 s window hides the total") {
+        withKnownIssue("TLA+ finding S6 (#498): fresh evidence without a common 0.5 s window hides the total") {
             #expect(answer != nil, "both transfers moved about 1 MB/s for four seconds and reported within 0.11 s")
         }
         // It resolves once both report again at least 0.5 s after the newer baseline (the
@@ -1230,7 +1230,7 @@ struct DownloadsFormalModelStatusTests {
             }
         }
         #expect(shown > 200)
-        withKnownIssue("TLA+ finding S6: a transfer reporting every 3.5 to 6 s hides the total in every cycle") {
+        withKnownIssue("TLA+ finding S6 (#498): a transfer reporting every 3.5 to 6 s hides the total in every cycle") {
             #expect(hiddenWhileFresh == 0, """
                 \(hiddenWhileFresh) of \(hiddenWhileFresh + shown) refreshes had no total although every \
                 transfer had reported within callbackGap
@@ -1259,7 +1259,7 @@ struct DownloadsFormalModelStatusTests {
         }
         estimator.sample(transfer, bytes: 100_000, at: Self.time(4.1))
         let answer = estimator.rate(at: Self.time(4.1))
-        withKnownIssue("TLA+ finding S7: a backlog reported after the 4 s settling window is published as live speed") {
+        withKnownIssue("TLA+ finding S7 (#499): a backlog reported after the 4 s settling window is published as live speed") {
             #expect((answer ?? 0) <= 200, "published \(Int((answer ?? 0).rounded())) B/s for a transfer moving 100 B/s")
         }
     }
@@ -1304,7 +1304,7 @@ struct DownloadsFormalModelStatusTests {
                 published = (rate ?? 0) > 0 ? rate : nil
             }
         }
-        withKnownIssue("TLA+ finding S7: a backlog reported after the 4 s settling window is published as live speed") {
+        withKnownIssue("TLA+ finding S7 (#499): a backlog reported after the 4 s settling window is published as live speed") {
             #expect((published ?? 0) <= liveRate * 2,
                     "the row shows \(Int((published ?? 0).rounded())) B/s while it moves \(Int(liveRate)) B/s")
         }

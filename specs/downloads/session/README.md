@@ -124,4 +124,4 @@ Proposed fix (`FixVerdictBeforeRename`, `Proposed-F4-VerdictBeforeRename`): make
 durable before the rename. A commit that fails or wedges then leaves a whole body on a
 `finalizing` row, which relaunch finalizes again and which replays the same outcome ID, so the
 deliberate property is kept another way.
-Pinned by `DownloadsFormalModelFindingsTests.truncationVerdictIsDurableBeforeTheBodyMoves`.
+Pinned by `DownloadsFormalModelFindingsTests.truncationVerdictIsDurableBeforeTheBodyMoves`. Issue #491.

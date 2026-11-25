@@ -106,7 +106,7 @@ struct DownloadsFormalModelSideAssetsTests {
         #expect(pass.contains("guard inventory.matches(self.store)"))
         #expect(pass.contains("defer { self.completedSideAssetInventoryWorker = nil }"))
 
-        withKnownIssue("TLA+ finding S5: a busy, timed-out or stale repair pass is not rerun") {
+        withKnownIssue("TLA+ finding S5 (#493): a busy, timed-out or stale repair pass is not rerun") {
             #expect(!pass.contains(
                         "guard !isQueuePaused, completedSideAssetInventoryWorker == nil else { return }"),
                     "an edge that arrives while a pass runs is dropped without a rerun note")
@@ -136,7 +136,7 @@ struct DownloadsFormalModelSideAssetsTests {
             from: "    private func runLaunchDownloadRecovery(", to: "\n        for backend in inactiveDownloadBackends",
             in: Self.contentViewPath))
         #expect(hydration.contains(".filter { $0.status.isActiveWork }"))
-        withKnownIssue("TLA+ finding S6: a completed row on an inactive backend is never repaired at launch") {
+        withKnownIssue("TLA+ finding S6 (#494): a completed row on an inactive backend is never repaired at launch") {
             #expect(hydration.contains("isComplete") || hydration.contains("ideAsset"),
                     "launch hydration ignores completed rows whose side assets are missing")
         }
@@ -167,7 +167,7 @@ struct DownloadsFormalModelSideAssetsTests {
         #expect(initial.contains("let staticPart = chosenMedia?.part[safe: partIndex]"))
         #expect(!initial.contains("partIndex: partIndex"))
 
-        withKnownIssue("TLA+ finding S7: the Plex BIF is selected from the first part, not the downloaded one") {
+        withKnownIssue("TLA+ finding S7 (#495): the Plex BIF is selected from the first part, not the downloaded one") {
             #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: onlyChosenHasBIF, mediaIndex: 0)?.id == 11,
                     "the downloaded part's BIF is never requested")
             #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: onlyFirstHasBIF, mediaIndex: 0) == nil,
@@ -196,7 +196,7 @@ struct DownloadsFormalModelSideAssetsTests {
         #expect(store.contains("rowMutationGenerations[ratingKey, default: 0] &+= 1"))
         #expect(tail.contains("stagingURL: stagingURL, to: stableURL) == .promoted"))
 
-        withKnownIssue("TLA+ finding S8: a concurrent write to the row makes a side-asset promotion give up") {
+        withKnownIssue("TLA+ finding S8 (#496): a concurrent write to the row makes a side-asset promotion give up") {
             #expect(!promote.contains(
                         "guard lock.withLock({ rowMutationGenerations[key.ratingKey, default: 0] == snapshot.0 }) else { return .staleOrMissingOwner }"),
                     "the pre-rename check fails on any row write, and nothing retries")

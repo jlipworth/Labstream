@@ -295,7 +295,7 @@ device. Proposed in the model (`ForwardFirstCallbackRebaseline`).
 
 ### S5: past its two restarts a stalled forward-only stream has no verdict (real, medium)
 
-Not filed yet.
+Issue #497.
 
 Trace (`Finding-S5-StallCapNoVerdict`): the stream starts and stalls with no bytes; `StallDetect`
 fails the attempt and requests a retry; admission grants it and it starts again from byte 0; it
@@ -323,7 +323,7 @@ model (`StallCapFails`): past the cap the row fails with the stall reason and wa
 
 ### S6: fresh evidence without a common 0.5 s window hides the total (real, low)
 
-Not filed yet.
+Issue #498.
 
 `rate(at:)` measures every transfer over one common interval inside the last 4 s and needs that
 interval to be at least 0.5 s. So a transfer counts only while its last callback is at most 3.5 s
@@ -347,7 +347,7 @@ no common window, so it could not see this.
 
 ### S7: a backlog reported after the 4 s windows is published as live speed (probable, low)
 
-Not filed yet. Related: #224, #489.
+Issue #499. Related: #224, #489.
 
 This is what follows when A1 does not hold. The first callback after a wake starts the aggregate's
 4 s settling window, and a static-range row's rebaseline and 4 s grace. Both treat everything

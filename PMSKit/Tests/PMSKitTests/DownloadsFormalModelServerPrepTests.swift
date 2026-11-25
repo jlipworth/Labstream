@@ -300,7 +300,7 @@ struct DownloadsFormalModelServerPrepTests {
             from: "    private func resumePendingOptimizeDownload(", through: "let part = try await pollForOptimizedPart("))
         #expect(resume.contains("let optimizeStartedAt = metadata.plexOptimizeStartedAtEpochSeconds"))
 
-        withKnownIssue("TLA+ finding S2: the Plex render deadline can fail a row before its create is dispatched") {
+        withKnownIssue("TLA+ finding S2 (#500): the Plex render deadline can fail a row before its create is dispatched") {
             let deadlineUsesDispatch = poll[deadline.lowerBound...].prefix(300)
                 .contains("plexOptimizeCreateDispatchedAtEpochSeconds")
             #expect(decision.lowerBound < deadline.lowerBound || deadlineUsesDispatch,
