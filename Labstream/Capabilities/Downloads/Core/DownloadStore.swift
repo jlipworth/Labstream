@@ -1216,6 +1216,46 @@ final class DownloadStore: @unchecked Sendable {
         attemptWorkingFileLayout(for: key)?.workingURL
     }
 
+    /// F1 (#472): where a finished forward-only body waits between the URLSession temp and the
+    /// working path. The name is derived from the exact attempt, so the row itself is the durable
+    /// reference: `artifactPathsReferenced` names it while the row is not terminal, which keeps
+    /// it out of the staging sweep, puts it in the row's deletion, and lets reconcile report it
+    /// as `Body.captured`. It lives beside the working file, not in `tmp/`, which the OS may
+    /// purge while the app is not running. Nil unless `key` owns a forward-only row that may
+    /// still take a body.
+    func forwardOnlyCapturedBodyURL(for key: DownloadAttemptKey) -> URL? {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
+              !Self.hasPendingRowDeletion(row),
+              let relative = capturedBodyRelativePath(for: row) else { return nil }
+        return baseDirectory.appendingPathComponent(relative)
+    }
+
+    /// The capture path of a row that can still own one: a forward-only row with an attempt,
+    /// not terminal and not condemned.
+    private func capturedBodyRelativePath(for row: Row) -> String? {
+        guard let attemptID = row.attemptID, !row.lifecycle.isTerminal,
+              !row.history.isBodyCondemned,
+              row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey) == .liveForwardOnly
+        else { return nil }
+        return Self.attemptStagingRelativePath(
+            for: DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: attemptID),
+            stableRelativePath: Self.capturedBodyStagingComponent)
+    }
+
+    /// Not a relative path any row can have (it starts with NUL), so the digest never collides
+    /// with an attempt's working or side-asset staging name.
+    private static let capturedBodyStagingComponent = "\u{0}forward-only-captured-body"
+
+    /// RangeTrain-R2 (#476): the session took ownership of a finished body for a task it was
+    /// not tracking (a redelivery after relaunch). Invalidate any row observation in flight, so a
+    /// reconcile that asked the session just before retries and sees the owned work.
+    func noteSessionAdoptedFinishedBody(for key: DownloadAttemptKey) {
+        lock.lock(); defer { lock.unlock() }
+        guard rows[key.ratingKey]?.attemptID == key.attemptID else { return }
+        rowMutationGenerations[key.ratingKey, default: 0] &+= 1
+    }
+
     func submitValidatedPromotion(
         for key: DownloadAttemptKey,
         terminalStatus: DownloadStatus
@@ -4818,6 +4858,8 @@ final class DownloadStore: @unchecked Sendable {
             result.insert(path)
         }
         if let working = row.attemptWorkingRelativePath { result.insert(working) }
+        // F1: a finished forward-only body at its capture path belongs to the row.
+        if let captured = capturedBodyRelativePath(for: row) { result.insert(captured) }
         result.formUnion(sideAssetRelativePaths(for: row.metadata))
         if let resume = row.metadata?.resumeDataRelativePath { result.insert(resume) }
         result.formUnion((row.metadata?.heldRangeSegments ?? []).map(\.relativePath))
@@ -5255,6 +5297,12 @@ final class DownloadStore: @unchecked Sendable {
         case (.liveForwardOnly?, _): route = .forwardOnly
         default: route = .staticRange
         }
+        // F1: read the capture path before the working path. Publication renames the first onto
+        // the second, so in this order a body in transit is seen at one of them, never neither.
+        let capturedBodyPresent = observeFiles && route == .forwardOnly
+            && capturedBodyRelativePath(for: row)
+                .flatMap { fileSize(at: baseDirectory.appendingPathComponent($0)) }
+                .map { $0 > 0 } == true
         let workingBytes = (observeFiles ? workingRelativePath(for: row, key: key) : nil)
             .flatMap { fileSize(at: baseDirectory.appendingPathComponent($0)) } ?? 0
         let resumeRelative = metadata?.resumeDataRelativePath
@@ -5280,6 +5328,9 @@ final class DownloadStore: @unchecked Sendable {
         } else if workingBytes > 0, row.lifecycle == .finalizing || route == .forwardOnly {
             // A forward-only body reaches the working path only once its transfer finished.
             body = .workingComplete
+        } else if capturedBodyPresent {
+            // F1: finished and captured, not yet published to the working path.
+            body = .captured
         } else {
             body = .none
         }
@@ -5563,7 +5614,12 @@ final class DownloadStore: @unchecked Sendable {
         return CondemnedFileIdentity(fileNumber: fileNumber, size: size, modified: modified)
     }
 
-    func reconcileOnWorker(liveRatingKeys: Set<String>, snapshotRatingKeys: Set<String>) {
+    /// `sessionOwnsWork` is asked per row at the moment reconcile decides (RangeTrain-R2, #476):
+    /// `liveRatingKeys` is reattach's earlier snapshot, and a finished body queued for its append
+    /// has no task in it. The question is asked off the store lock, between the row snapshot and
+    /// the generation check that commits the decision, so a row change in between retries it.
+    func reconcileOnWorker(liveRatingKeys: Set<String>, snapshotRatingKeys: Set<String>,
+                           sessionOwnsWork: (@Sendable (String) -> Bool)? = nil) {
         let candidates = lock.withLock { Array(rows.keys).filter { snapshotRatingKeys.contains($0) } }
         for ratingKey in candidates {
             for _ in 0..<3 {
@@ -5572,7 +5628,10 @@ final class DownloadStore: @unchecked Sendable {
                       DownloadStatus.reconcileEligible(ratingKey: ratingKey, snapshotRatingKeys: snapshotRatingKeys) else { break }
                 let key = DownloadAttemptKey(ratingKey: ratingKey,
                     attemptID: row.attemptID ?? DownloadAttemptID(rawValue: "unowned-legacy-row")!)
-                let hasLiveTask = liveRatingKeys.contains(ratingKey)
+                let hasLiveTask = DownloadReconcileLiveWorkPolicy.hasLiveTask(
+                    inReattachSnapshot: liveRatingKeys.contains(ratingKey),
+                    lifecycle: row.lifecycle,
+                    sessionOwnsWork: { sessionOwnsWork?(ratingKey) ?? false })
                 let facts = observeLifecycleFacts(row: row, key: key, liveTask: hasLiveTask)
                 guard case .applied(let next, let effects) = DownloadLifecycleReducer.reduce(
                     DownloadLifecycleState(lifecycle: row.lifecycle, history: row.history), .relaunchObserved, facts: facts) else { break }

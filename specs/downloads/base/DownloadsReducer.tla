@@ -184,8 +184,10 @@ RRelaunch(s, f) ==
            ELSE Applied(RRelaunchSet(s, "failed", "none", "internalError"), <<>>)
     \* admitted, transferring, paused
     ELSE IF /\ f.route = "forwardOnly" /\ ~f.liveTask
-            /\ f.body = "workingComplete" /\ L # "paused" THEN
-        \* A forward-only body exists only once its transfer finished (B10).
+            /\ f.body \in {"workingComplete", "captured"} THEN
+        \* A forward-only body exists only once its transfer finished (B10): at
+        \* the working path, or still at its capture path (F1).  A paused row
+        \* keeps it too (F3).
         Applied(RRelaunchSet(s, "finalizing", "none", "none"), <<"requestFinalization">>)
     ELSE IF f.route = "plexPrep" /\ ~f.liveTask /\ L # "paused" THEN
         Applied(RRelaunchSet(s, "admitted", "none", "none"), <<"resetBytesToZero">>)

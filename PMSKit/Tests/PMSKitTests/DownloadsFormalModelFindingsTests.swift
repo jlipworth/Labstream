@@ -5,14 +5,15 @@ import Testing
 /// Orderings the TLA+ model of the downloads session core found on the current design
 /// (`specs/downloads/session/Finding-*.cfg`, `docs/plans/2026-11-24-downloads-tla-model.md`).
 ///
-/// Each test states the behaviour the design wants and is wrapped in `withKnownIssue`, so the
-/// suite stays green while the finding is open. When a fix lands the expectations hold, no issue
-/// is recorded, and `withKnownIssue` fails the test: delete the wrapper then, and flip the
-/// matching `Finding-*.cfg` to `EXPECT: pass`.
+/// Each test states the behaviour the design wants. A test for an open finding is wrapped in
+/// `withKnownIssue`, so the suite stays green while the finding is open. When a fix lands the
+/// expectations hold, no issue is recorded, and `withKnownIssue` fails the test: delete the
+/// wrapper then, and turn the matching `Finding-*.cfg` into a `Faithful-*-off.cfg`. F1 and F3
+/// are fixed and their tests are plain regression tests.
 ///
-/// These pin the pure decisions only. The session glue that feeds them (the stash claim, the
-/// live-key snapshot) is app code and needs a `LabstreamTests` pin with the fix. F3 and F4 have
-/// no pure decision for their main ordering, so they also pin the shape of the app source.
+/// These pin the pure decisions. The session glue that feeds them (the capture, the live-key
+/// snapshot) is app code, held here as source text until a `LabstreamTests` case runs it. F4
+/// has no pure decision for its ordering, so it pins the shape of the app source.
 /// F3's static-lane ordering is pinned as R3 in `DownloadsFormalModelRangeTrainTests`.
 ///
 /// The `Model rule` tests are not findings: they tie two things the model assumes (Faithful-B12-off,
@@ -21,28 +22,67 @@ import Testing
 struct DownloadsFormalModelFindingsTests {
     private typealias R = DownloadLifecycleReducer
 
-    /// F1. A forward-only transfer finishes; the delegate moves the body into a `tmp/` stash and
-    /// queues its publication to the working path; the process dies before that hop runs.
-    /// On relaunch the task is no longer live, so the stash sweep deletes the only copy, and the
-    /// reducer fails the row. The whole body is lost and the stream restarts from zero.
-    @Test("F1: a finished forward-only body in the stash survives relaunch")
-    func finishedForwardOnlyBodyInStashSurvivesRelaunch() {
-        withKnownIssue("TLA+ finding F1 (#472): crash between stash and working path loses the body") {
-            // The stash of finished task 7. After the crash no task is live.
-            let stash = BackgroundTempFileCleanupPolicy.rangeBodyStashPrefix + "7-o0"
-            let swept = BackgroundTempFileCleanupPolicy.shouldDeleteRangeBodyStash(
-                fileName: stash, liveTaskIdentifiers: [])
-            #expect(!swept, "the relaunch sweep deletes the only copy of a finished body")
+    /// F1 (#472, fixed). A forward-only transfer finishes; the delegate used to move the body into
+    /// a `tmp/` stash under an in-memory claim and queue its publication to the working path. A
+    /// crash before that hop left a transferring row with no task: the stash sweep deleted the
+    /// only copy and the reducer failed the row. Now the body goes to the attempt's capture
+    /// path, which the row references, `bodyCaptured` is recorded with it, and relaunch reports
+    /// `Body.captured` (`session/Faithful-F1-off.cfg` is the old behaviour).
+    @Test("F1: a finished forward-only body at its capture path survives relaunch")
+    func finishedForwardOnlyBodyInStashSurvivesRelaunch() throws {
+        // Only a media response is captured durably: after a relaunch the response is gone, so
+        // a captured body is published without the HTTP checks.
+        typealias Body = ForwardOnlyFinishedBodyPolicy
+        #expect(Body.custody(responseRejection: Body.responseRejection(
+            httpStatus: 200, mimeType: "video/mp4")) == .durableCapture)
+        #expect(Body.custody(responseRejection: Body.responseRejection(
+            httpStatus: nil, mimeType: nil)) == .durableCapture)
+        #expect(Body.responseRejection(httpStatus: 404, mimeType: "video/mp4") == .httpStatus(404))
+        #expect(Body.responseRejection(httpStatus: 200, mimeType: "Text/HTML") == .nonMediaMIME("text/html"))
+        #expect(Body.responseRejection(httpStatus: 200, mimeType: "application/json") != nil)
+        #expect(Body.custody(responseRejection: .httpStatus(500)) == .volatileStash)
 
-            // The reducer already names this fact (`Body.captured`), but nothing reports it and
-            // a transferring row does not act on it.
+        // The capture: the row is `finalizing` from the moment the delegate holds the body,
+        // from a transferring row or from one the user just paused.
+        for lifecycle in [DownloadLifecycle.transferring, .admitted, .paused] {
+            let captured = R.reduce(DownloadLifecycleState(lifecycle: lifecycle), .bodyCaptured,
+                                    facts: DownloadRowFacts(route: .forwardOnly))
+            #expect(captured.state?.lifecycle == .finalizing)
+        }
+
+        // Relaunch. A finalizing row keeps its captured body and asks for its publication.
+        let recorded = R.reduce(
+            DownloadLifecycleState(lifecycle: .finalizing), .relaunchObserved,
+            facts: DownloadRowFacts(route: .forwardOnly, body: .captured))
+        #expect(recorded.state?.lifecycle == .finalizing)
+        #expect(recorded.effects == [.requestFinalization])
+        // The process may also die after the rename and before `bodyCaptured` is durable: the
+        // row is still transferring (or paused), and the captured body decides.
+        for lifecycle in [DownloadLifecycle.transferring, .admitted, .paused] {
             let relaunch = R.reduce(
-                DownloadLifecycleState(lifecycle: .transferring), .relaunchObserved,
+                DownloadLifecycleState(lifecycle: lifecycle), .relaunchObserved,
                 facts: DownloadRowFacts(route: .forwardOnly, body: .captured))
             #expect(relaunch.state?.lifecycle == .finalizing)
             #expect(relaunch.effects.contains(.requestFinalization))
             #expect(!relaunch.effects.contains(.deleteWorkingBody))
         }
+        // A live task means the transfer is not finished; the row is left to it.
+        let live = R.reduce(
+            DownloadLifecycleState(lifecycle: .transferring), .relaunchObserved,
+            facts: DownloadRowFacts(route: .forwardOnly, body: .captured, liveTask: true))
+        #expect(live.state?.lifecycle == .transferring)
+
+        // The session glue, as source: the delegate captures and records, the store references
+        // the capture path and reports it, and launch recovery requeues the publication.
+        let session = try #require(Self.appSource(
+            "Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift"))
+        #expect(session.contains("store.forwardOnlyCapturedBodyURL(for: entry.attemptKey)"))
+        #expect(session.contains(".bodyCaptured, for: entry.attemptKey"))
+        #expect(session.contains("requeueCapturedForwardOnlyBody(attemptKey: attemptKey, destination: destination)"))
+        let store = try #require(Self.appSource(
+            "Labstream/Capabilities/Downloads/Core/DownloadStore.swift"))
+        #expect(store.contains("if let captured = capturedBodyRelativePath(for: row) { result.insert(captured) }"))
+        #expect(store.contains("body = .captured"))
     }
 
     /// F2. The app returns to the foreground and reattach snapshots its live tasks; the user
@@ -73,44 +113,64 @@ struct DownloadsFormalModelFindingsTests {
         #expect(transferring.state?.lifecycle == .transferring)
     }
 
-    /// F3. A finished body must survive a user pause on either lane. The static lane keeps it
-    /// (`StaticRangeFinishedBodyPolicy`: `.pause` is `writeThenPause`). The forward-only lane
-    /// drops it, in two orderings:
+    /// F3 (#474, fixed). A finished body must survive a user pause on either lane. The static
+    /// lane writes it (`StaticRangeFinishedBodyPolicy`: `.pause` is `writeThenPause`; its pause
+    /// sweep is R3 in `DownloadsFormalModelRangeTrainTests`). The forward-only lane dropped it,
+    /// in two orderings:
     ///
     /// 1. The transfer finishes while a pause is landing. The delegate stashes the body and
-    ///    queues `finishOpaqueBody`, which requires that the attempt has no halt at all, so the
-    ///    pause halt makes it release the claim and return. The row stays paused, the stash is
-    ///    orphaned, and Resume restarts the stream from zero.
+    ///    queues `finishOpaqueBody`, which required that the attempt had no halt at all, so the
+    ///    pause halt made it release the claim and return.
     /// 2. The body is already at the working path when the user pauses, and the process dies
-    ///    before `bodyAtWorking` is persisted. On relaunch the reducer fails the paused row and
-    ///    deletes the body.
+    ///    before `bodyAtWorking` is persisted. On relaunch the reducer failed the paused row and
+    ///    deleted the body.
+    ///
+    /// `session/Faithful-F3-off.cfg` is the old behaviour.
     @Test("F3: a finished forward-only body survives a user pause")
     func finishedForwardOnlyBodySurvivesUserPause() throws {
-        // Ordering 1 is decided inline in app code, with no PMSKit policy to call. Until the fix
-        // extracts one, pin the guard itself.
-        let finishOpaqueBody = try #require(Self.appFunctionSource(
-            named: "finishOpaqueBody",
-            in: "Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift"))
-
-        // The decision the static lane already makes, and the reducer already allows.
+        typealias Body = ForwardOnlyFinishedBodyPolicy
+        func publication(_ halt: StaticRangeHaltKind?, generationCurrent: Bool = true,
+                         admits: Bool = true, trainCurrent: Bool = true) -> Body.Publication {
+            Body.publication(attemptAdmitsWork: admits, trainEpochIsCurrent: trainCurrent,
+                             retryGenerationIsCurrent: generationCurrent, haltKind: halt)
+        }
+        // 1. The queued publication accepts a pause halt and still rejects a cancel. Installing
+        // a pause halt advances the retry generation, which must not discard the body either.
+        #expect(publication(nil) == .publish)
+        #expect(publication(.pause) == .publish)
+        #expect(publication(.pause, generationCurrent: false) == .publish)
+        #expect(publication(.cancel) == .discard)
+        #expect(publication(nil, generationCurrent: false) == .discard)
+        #expect(publication(.pause, admits: false) == .discard)
+        #expect(publication(.pause, trainCurrent: false) == .discard)
+        // The same decision the static lane makes, and the reducer allows.
         #expect(StaticRangeFinishedBodyPolicy.disposition(haltKind: .pause) == .writeThenPause)
         let paused = DownloadLifecycleState(
             lifecycle: .paused, history: DownloadAttemptHistory(pauseCause: .user))
         #expect(R.reduce(paused, .bodyAtWorking, facts: DownloadRowFacts(route: .forwardOnly))
             .state?.lifecycle == .finalizing)
+        // A finalizing row is not paused at all.
+        let finalizing = DownloadLifecycleState(lifecycle: .finalizing)
+        #expect(R.reduce(finalizing, .pause(.user), facts: DownloadRowFacts(route: .forwardOnly))
+            .state?.lifecycle == .finalizing)
 
-        withKnownIssue("TLA+ finding F3 (#474): a user pause discards a finished forward-only body") {
-            // 1. `halt: nil` means "current only while nothing halted the attempt", which a
-            // pause halt fails. The fixed guard accepts a pause halt and still rejects a cancel.
-            let requiresNoHalt = finishOpaqueBody.contains("checkpointIsCurrent(currency, halt: nil)")
-            #expect(!requiresNoHalt, "finishOpaqueBody drops the finished body of a paused attempt")
+        // The app asks the policy, and no longer requires an unhalted attempt.
+        let finishOpaqueBody = try #require(Self.appFunctionSource(
+            named: "finishOpaqueBody",
+            in: "Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift"))
+        #expect(finishOpaqueBody.contains("opaquePublication(for: currency) == .publish"))
+        #expect(!finishOpaqueBody.contains("checkpointIsCurrent(currency, halt: nil)"))
 
-            // 2. Relaunch with the whole body at the working path of a user-paused row.
-            let relaunch = R.reduce(paused, .relaunchObserved,
-                                    facts: DownloadRowFacts(route: .forwardOnly, body: .workingComplete))
-            #expect(!relaunch.effects.contains(.deleteWorkingBody))
-            #expect(relaunch.state?.lifecycle != .failed)
-        }
+        // 2. Relaunch with the whole body at the working path of a user-paused row.
+        let relaunch = R.reduce(paused, .relaunchObserved,
+                                facts: DownloadRowFacts(route: .forwardOnly, body: .workingComplete))
+        #expect(relaunch.state?.lifecycle == .finalizing)
+        #expect(relaunch.state?.history.pauseCause == nil)
+        #expect(relaunch.effects == [.requestFinalization])
+        // Without a body a user-paused forward-only row stays paused (Admission-A1, #475).
+        let empty = R.reduce(paused, .relaunchObserved, facts: DownloadRowFacts(route: .forwardOnly))
+        #expect(empty.state?.lifecycle == .paused)
+        #expect(empty.effects.isEmpty)
     }
 
     /// F4. A failing truncation verdict goes through the reducer, which condemns the body, counts
@@ -186,14 +246,19 @@ struct DownloadsFormalModelFindingsTests {
         }
     }
 
-    /// The text of one function in an app source file, from its declaration to the next
-    /// declaration at the same indentation. Nil when the file or the function is missing.
-    private static func appFunctionSource(named name: String, in relativePath: String) -> String? {
+    /// The text of an app source file. Nil when it is missing.
+    private static func appSource(_ relativePath: String) -> String? {
         // PMSKit/Tests/PMSKitTests/<this file> -> repository root.
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-        guard let source = try? String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8),
+        return try? String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+    }
+
+    /// The text of one function in an app source file, from its declaration to the next
+    /// declaration at the same indentation. Nil when the file or the function is missing.
+    private static func appFunctionSource(named name: String, in relativePath: String) -> String? {
+        guard let source = appSource(relativePath),
               let start = source.range(of: "    private func \(name)(") else { return nil }
         let rest = source[start.upperBound...]
         let end = rest.range(of: "\n    private func ")?.lowerBound ?? rest.endIndex

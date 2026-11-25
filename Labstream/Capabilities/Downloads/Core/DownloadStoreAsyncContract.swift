@@ -199,9 +199,11 @@ extension DownloadStore {
         return .timedOut(epoch: submission.epoch)
     }
 
-    func submitReconcile(liveRatingKeys: Set<String>, snapshotRatingKeys: Set<String>) -> ReconcileSubmission {
+    func submitReconcile(liveRatingKeys: Set<String>, snapshotRatingKeys: Set<String>,
+                         sessionOwnsWork: (@Sendable (String) -> Bool)? = nil) -> ReconcileSubmission {
         DownloadStoreWork {
-            self.reconcileOnWorker(liveRatingKeys: liveRatingKeys, snapshotRatingKeys: snapshotRatingKeys)
+            self.reconcileOnWorker(liveRatingKeys: liveRatingKeys, snapshotRatingKeys: snapshotRatingKeys,
+                                   sessionOwnsWork: sessionOwnsWork)
             return self.flushPersistenceSynchronouslyForP6Adapter()
         }
     }

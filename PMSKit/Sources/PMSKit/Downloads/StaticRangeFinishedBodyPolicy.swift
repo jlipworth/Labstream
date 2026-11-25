@@ -25,7 +25,32 @@ public enum StaticRangeFinishedBodyDisposition: Sendable, Equatable {
     case writeThenContinue
 }
 
+/// What a pause's task listing does with one listed task of the row (RangeTrain-R3, #474).
+public enum StaticRangePauseSweepDisposition: Sendable, Equatable {
+    /// The task is still transferring: drop its tracking, mark it superseded and cancel it.
+    case supersedeAndCancel
+    /// The task has finished and only its finish callback is outstanding. Leave it tracked, so
+    /// the callback takes the finished-body path and `writeThenPause` keeps the body.
+    case leaveForFinishCallback
+}
+
 public enum StaticRangeFinishedBodyPolicy {
+    /// A task that finished in the daemon while a pause was landing is still listed by the
+    /// pause's `getAllTasks`, with its finish callback queued behind that completion.
+    /// Superseding it there made the callback ignore the body: one segment of a train, or the
+    /// whole remainder on the open-ended fallback. A task counts as finished when URLSession
+    /// says so, or when every byte its response declared has arrived. If that judgement is
+    /// early, the next progress callback under the halt cancels the task as before.
+    public static func pauseSweepDisposition(taskStateIsCompleted: Bool,
+                                             bytesReceived: Int64,
+                                             bytesExpectedToReceive: Int64) -> StaticRangePauseSweepDisposition {
+        if taskStateIsCompleted { return .leaveForFinishCallback }
+        if bytesExpectedToReceive > 0, bytesReceived >= bytesExpectedToReceive {
+            return .leaveForFinishCallback
+        }
+        return .supersedeAndCancel
+    }
+
     public static func shouldDiscardBeforeStash(haltKind: StaticRangeHaltKind?) -> Bool {
         haltKind == .cancel
     }

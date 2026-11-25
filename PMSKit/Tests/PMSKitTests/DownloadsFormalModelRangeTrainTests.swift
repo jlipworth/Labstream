@@ -6,14 +6,16 @@ import Testing
 ///
 /// The first tests tie the model's rules to the pure policies it copies, so a policy change that
 /// the spec does not follow fails here. The `R1` to `R4` tests are orderings TLC found on the
-/// current design (`specs/downloads/range-train/Finding-*.cfg`). Each states the behaviour the
-/// design wants and is wrapped in `withKnownIssue`, so the suite stays green while the finding is
-/// open. When a fix lands the expectation holds, no issue is recorded, and `withKnownIssue` fails
-/// the test: delete the wrapper then, and flip the matching config to `EXPECT: pass`.
+/// design (`specs/downloads/range-train/Finding-*.cfg`). Each states the behaviour the design
+/// wants. A test for an open finding is wrapped in `withKnownIssue`, so the suite stays green
+/// while the finding is open. When a fix lands the expectation holds, no issue is recorded, and
+/// `withKnownIssue` fails the test: delete the wrapper then, and turn the matching config into a
+/// `Faithful-*-off.cfg`. R2 and R3 are fixed and their tests are plain regression tests.
 ///
-/// R1, R2 and R3 are decided inline in app code, with no PMSKit policy to call, so they pin the
-/// shape of the app source and the pure decisions on either side of it. The fix needs a
-/// `LabstreamTests` pin of the session behaviour itself. R4 is a pure policy decision.
+/// R1 is decided inline in app code, with no PMSKit policy to call, so it pins the shape of the
+/// app source and the pure decisions on either side of it. R2 and R3 are PMSKit policies now;
+/// the calls into them are still held as source text until a `LabstreamTests` case runs the
+/// session itself. R4 is a pure policy decision.
 @Suite("Downloads formal-model range train")
 struct DownloadsFormalModelRangeTrainTests {
     private typealias R = DownloadLifecycleReducer
@@ -224,14 +226,19 @@ struct DownloadsFormalModelRangeTrainTests {
         }
     }
 
-    /// R2. A segment task finishes; the delegate stashes its body, drops the task from live
-    /// tracking and queues the append. The app returns to the foreground (or was just relaunched)
-    /// and reattach hands reconcile its live keys, which are the tracked tasks only. The row has
-    /// none, and no durable bytes yet, so `relaunchObserved` fails it and deletes its working
-    /// file; the queued append then has nothing to open and the body is discarded. For a file of
-    /// one segment that is the whole download. The stale-row self-heal already counts this work
-    /// (`ownsInProgressStaticRangeWork`, B00); reconcile does not. The live keys are a snapshot:
-    /// reattach takes it, and reconcile uses it later on another queue.
+    /// R2 (#476, fixed for work the session owns). A segment task finishes; the delegate stashes
+    /// its body, drops the task from live tracking and queues the append. The app returns to the
+    /// foreground (or was just relaunched) and reattach hands reconcile its live keys, which are
+    /// the tracked tasks only. The row has none, and no durable bytes yet, so `relaunchObserved`
+    /// failed it and deleted its working file; the queued append then had nothing to open and
+    /// the body was discarded. For a file of one segment that is the whole download. The live
+    /// keys are a snapshot: reattach takes it, and reconcile uses it later on another queue. So
+    /// reconcile now also asks the session what it owns when it decides, as the stale-row
+    /// self-heal does (`ownsInProgressStaticRangeWork`, B00). `Faithful-R2-off.cfg` is the old
+    /// behaviour and `Faithful-R2-off-SnapshotOnly.cfg` the fix that is not enough.
+    ///
+    /// One ordering stays open (`Finding-R2-UndeliveredBodyLost.cfg`): a finished task the
+    /// daemon has not redelivered at all when reconcile runs. The session owns nothing then.
     @Test("R2: reconcile does not fail a row whose finished body is queued for append")
     func reconcileCountsQueuedBodiesAsLiveWork() throws {
         // The reducer does what the facts say: with no live task and no checkpoint the row is
@@ -246,53 +253,85 @@ struct DownloadsFormalModelRangeTrainTests {
         #expect(live.state?.lifecycle == .transferring)
         #expect(live.effects.isEmpty)
 
+        // The live-task fact: the snapshot, or what the session owns now for an active row.
+        typealias Live = DownloadReconcileLiveWorkPolicy
+        for lifecycle in [DownloadLifecycle.admitted, .transferring] {
+            #expect(Live.hasLiveTask(inReattachSnapshot: false, lifecycle: lifecycle,
+                                     sessionOwnsWork: { true }))
+            #expect(!Live.hasLiveTask(inReattachSnapshot: false, lifecycle: lifecycle,
+                                      sessionOwnsWork: { false }))
+        }
+        // Never for a paused row: session work would promote it (F2, #473). Nor for any other
+        // lifecycle, which reconcile judges by its body or leaves alone.
+        for lifecycle in DownloadLifecycle.allCases where lifecycle != .admitted && lifecycle != .transferring {
+            #expect(!Live.consultsSessionOwnedWork(lifecycle: lifecycle))
+            var asked = false
+            #expect(!Live.hasLiveTask(inReattachSnapshot: false, lifecycle: lifecycle,
+                                      sessionOwnsWork: { asked = true; return true }))
+            #expect(!asked, "the session is not asked about a \(lifecycle) row")
+        }
+        // The snapshot still answers by itself, as before.
+        #expect(Live.hasLiveTask(inReattachSnapshot: true, lifecycle: .paused,
+                                 sessionOwnsWork: { false }))
+
         // Where the evidence is taken. Reattach builds the live keys on the delegate queue and
-        // hands them over; reconcile runs later on a store worker and reads only that set.
+        // hands them over; reconcile runs later on a store worker and asks the policy there,
+        // inside its generation-checked retry loop.
         let reattach = try #require(Self.appFunctionSource(
             named: "reattachToResumedTasks", in: Self.sessionSource))
         #expect(reattach.contains("liveKeys.insert("))
         #expect(reattach.contains("onReattached?(liveKeys)"))
         let reconcile = try #require(Self.appFunctionSource(
             named: "reconcileOnWorker", in: Self.storeSource))
-        withKnownIssue("TLA+ finding R2 (#476): reconcile fails a row whose finished body is queued") {
-            // Adding session-owned work to the keys reattach builds is not enough
-            // (Finding-R2-SnapshotFixLeavesWindow): a finished task the daemon redelivers between
-            // reattach and reconcile queues its body after the snapshot. Reconcile has to ask
-            // the session for owned work when it decides, as the stale-row self-heal does, so
-            // its live-task fact cannot be the snapshot alone.
-            let snapshotOnly = reconcile.contains("let hasLiveTask = liveRatingKeys.contains(ratingKey)")
-            #expect(!snapshotOnly,
-                    "reconcile decides from the reattach snapshot, not from session-owned work now")
-        }
+        #expect(!reconcile.contains("let hasLiveTask = liveRatingKeys.contains(ratingKey)"),
+                "reconcile decides from the reattach snapshot, not from session-owned work now")
+        #expect(reconcile.contains("DownloadReconcileLiveWorkPolicy.hasLiveTask("))
+        #expect(reconcile.contains("sessionOwnsWork?(ratingKey)"))
+        let manager = try #require(Self.appSource(
+            "Labstream/Capabilities/Downloads/Core/DownloadManager.swift"))
+        #expect(manager.components(separatedBy:
+            "sessionOwnsWork: { session.ownsInProgressStaticRangeWork(ratingKey: $0) }").count == 3,
+                "launch and foreground recovery both hand reconcile the session's ownership")
     }
 
-    /// R3. A segment finishes in the daemon while a user pause is landing. The pause snapshots the
-    /// row's task IDs and installs the halt; its `getAllTasks` completion then runs
-    /// `pauseRangeTask` for every listed task, which removes the task's tracking and marks its
-    /// identifier superseded. A task that has finished but whose finish callback is queued behind
-    /// that completion is still listed. Its callback then sees `superseded` and returns, so the
-    /// body, which `writeThenPause` exists to keep, is dropped with the OS temp file. On a train
-    /// that is one segment to fetch again; on the open-ended fallback it is the whole remainder.
+    /// R3 (#474, fixed). A segment finishes in the daemon while a user pause is landing. The
+    /// pause snapshots the row's task IDs and installs the halt; its `getAllTasks` completion
+    /// then runs `pauseRangeTask` for every listed task. A task that has finished but whose
+    /// finish callback is queued behind that completion is still listed. The sweep used to
+    /// remove its tracking and mark it superseded, so its callback returned early and the body,
+    /// which `writeThenPause` exists to keep, was dropped with the OS temp file: one segment of a
+    /// train, the whole remainder on the open-ended fallback. Now a finished task stays tracked.
+    /// `Faithful-R3-off.cfg` is the old behaviour.
     @Test("R3: a pause keeps a segment that has already finished")
     func pauseKeepsAFinishedSegment() throws {
         // The decision the design states: a finished body under a pause halt is written.
         #expect(StaticRangeFinishedBodyPolicy.disposition(haltKind: .pause) == .writeThenPause)
         #expect(!StaticRangeFinishedBodyPolicy.shouldDiscardBeforeStash(haltKind: .pause))
 
+        func sweep(completed: Bool = false, received: Int64, expected: Int64) -> StaticRangePauseSweepDisposition {
+            StaticRangeFinishedBodyPolicy.pauseSweepDisposition(
+                taskStateIsCompleted: completed, bytesReceived: received,
+                bytesExpectedToReceive: expected)
+        }
+        // A task that is still transferring is superseded and cancelled, as before.
+        #expect(sweep(received: 10, expected: 64) == .supersedeAndCancel)
+        #expect(sweep(received: 0, expected: 0) == .supersedeAndCancel)
+        // An open-ended remainder of unknown size (-1) is finished only when URLSession says so.
+        #expect(sweep(received: 1_000, expected: -1) == .supersedeAndCancel)
+        #expect(sweep(completed: true, received: 1_000, expected: -1) == .leaveForFinishCallback)
+        // Every declared byte has arrived: only the finish callback is outstanding.
+        #expect(sweep(received: 64, expected: 64) == .leaveForFinishCallback)
+        #expect(sweep(completed: true, received: 10, expected: 64) == .leaveForFinishCallback)
+
         let pauseTask = try #require(Self.appFunctionSource(
             named: "pauseRangeTask", in: Self.sessionSource))
         #expect(pauseTask.contains("rangeInflight.removeValue(forKey: task.taskIdentifier)"))
-        withKnownIssue("TLA+ finding R3 (#474): a pause supersedes a finished segment") {
-            // The sweep supersedes every listed task without asking whether it has finished.
-            // The fixed sweep leaves a finished task tracked (or routes its body through the
-            // finished-body path), so `writeThenPause` gets to run.
-            let supersedesUnconditionally = pauseTask.contains(
-                "supersededRangeTaskIdentifiers.insert(task.taskIdentifier)")
-                && !pauseTask.contains(".completed")
-                && !pauseTask.contains("countOfBytesExpectedToReceive")
-            #expect(!supersedesUnconditionally,
-                    "pauseRangeTask supersedes a task whose finish callback is already queued")
-        }
+        // The sweep asks the policy before it supersedes, and returns for a finished task.
+        let asks = try #require(pauseTask.range(of: "StaticRangeFinishedBodyPolicy.pauseSweepDisposition("))
+        let keeps = try #require(pauseTask.range(of: "if sweep == .leaveForFinishCallback"))
+        let supersedes = try #require(pauseTask.range(
+            of: "supersededRangeTaskIdentifiers.insert(task.taskIdentifier)"))
+        #expect(asks.lowerBound < keeps.lowerBound && keeps.lowerBound < supersedes.lowerBound)
     }
 
     /// R4. Two-byte segments, depth two. The process dies in the middle of an append, so the
@@ -320,14 +359,19 @@ struct DownloadsFormalModelRangeTrainTests {
         }
     }
 
-    /// The text of one function in an app source file, from its declaration to the next
-    /// declaration at the same indentation. Nil when the file or the function is missing.
-    private static func appFunctionSource(named name: String, in relativePath: String) -> String? {
+    /// The text of an app source file. Nil when it is missing.
+    private static func appSource(_ relativePath: String) -> String? {
         // PMSKit/Tests/PMSKitTests/<this file> -> repository root.
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-        guard let source = try? String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8),
+        return try? String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+    }
+
+    /// The text of one function in an app source file, from its declaration to the next
+    /// declaration at the same indentation. Nil when the file or the function is missing.
+    private static func appFunctionSource(named name: String, in relativePath: String) -> String? {
+        guard let source = appSource(relativePath),
               let start = source.range(of: "    private func \(name)(")
                 ?? source.range(of: "    func \(name)(") else { return nil }
         let rest = source[start.upperBound...]

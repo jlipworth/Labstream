@@ -243,6 +243,91 @@ struct DownloadLifecycleStoreTests {
         }
     }
 
+    /// F1 (#472): the body is at its capture path, between the URLSession temp and the working
+    /// path, when the process dies. The row references it whether or not `bodyCaptured` was
+    /// durable yet, the staging sweep leaves it, and reconcile makes (or keeps) the row
+    /// finalizing. F3 (#474): the same for a row the user paused, and for a paused row whose
+    /// body already reached the working path.
+    @Test("Relaunch keeps a captured forward-only body, recorded or not, paused or not (F1, F3)")
+    func relaunchKeepsCapturedForwardOnlyBody() throws {
+        try withDirectory { directory in
+            let store = DownloadTestFiles.store(baseDirectory: directory)
+            func forwardOnly(_ ratingKey: String, status: DownloadStatus) throws -> DownloadAttemptKey {
+                var metadata = OfflineMetadata(ratingKey: ratingKey, title: "Stream", type: "movie")
+                metadata.resumeMode = .liveForwardOnly
+                return try seed(ratingKey, status: status, metadata: metadata, in: store)
+            }
+            let unrecorded = try forwardOnly("jellyfin:unrecorded", status: .downloading)
+            let recorded = try forwardOnly("jellyfin:recorded", status: .downloading)
+            let paused = try forwardOnly("jellyfin:paused", status: .paused)
+            var captures: [URL] = []
+            for key in [unrecorded, recorded, paused] {
+                let capture = try #require(store.forwardOnlyCapturedBodyURL(for: key))
+                #expect(capture != store.attemptWorkingFileURL(for: key))
+                try Data(repeating: 7, count: 4_096).write(to: capture)
+                captures.append(capture)
+            }
+            _ = store.submitLifecycleEvent(.bodyCaptured, for: recorded)
+            #expect(store.lifecycleState(for: recorded)?.lifecycle == .finalizing)
+            let pausedAtWorking = try forwardOnly("jellyfin:paused-working", status: .paused)
+            let workingBody = try #require(store.attemptWorkingFileURL(for: pausedAtWorking))
+            try Data(repeating: 8, count: 4_096).write(to: workingBody)
+
+            // A static row has no capture path.
+            var staticMetadata = OfflineMetadata(ratingKey: "plex:static", title: "Static", type: "movie")
+            staticMetadata.resumeMode = .staticByteRange
+            let staticKey = try seed("plex:static", status: .downloading, metadata: staticMetadata,
+                                     in: store)
+            #expect(store.forwardOnlyCapturedBodyURL(for: staticKey) == nil)
+
+            let relaunched = DownloadTestFiles.store(baseDirectory: directory)
+            let captureNames = Set(captures.map(\.lastPathComponent))
+            #expect(relaunched.unreferencedAttemptStagingURLs()
+                .allSatisfy { !captureNames.contains($0.lastPathComponent) },
+                    "a captured body is referenced by its row")
+            _ = relaunched.sweepUnreferencedAttemptStaging()
+            relaunched.reconcile(
+                liveRatingKeys: [],
+                snapshotRatingKeys: [unrecorded.ratingKey, recorded.ratingKey, paused.ratingKey,
+                                     pausedAtWorking.ratingKey])
+
+            for key in [unrecorded, recorded, paused, pausedAtWorking] {
+                #expect(relaunched.lifecycleState(for: key)?.lifecycle == .finalizing)
+            }
+            for capture in captures {
+                #expect(FileManager.default.fileExists(atPath: capture.path), "the body is never swept")
+            }
+            #expect(FileManager.default.fileExists(atPath: workingBody.path))
+        }
+    }
+
+    /// RangeTrain-R2 (#476): reattach's live keys are a snapshot. A finished body the session
+    /// stashed and queued for its append has no task in it, so reconcile also asks the session
+    /// what it owns when it decides. Only for an active row: a paused row stays paused.
+    @Test("Reconcile leaves an active row whose work the session owns (R2)")
+    func reconcileAsksTheSessionForOwnedWork() throws {
+        try withDirectory { directory in
+            let store = DownloadTestFiles.store(baseDirectory: directory)
+            func staticRow(_ ratingKey: String, status: DownloadStatus) throws -> DownloadAttemptKey {
+                var metadata = OfflineMetadata(ratingKey: ratingKey, title: "Static", type: "movie")
+                metadata.resumeMode = .staticByteRange
+                return try seed(ratingKey, status: status, metadata: metadata, in: store)
+            }
+            let owned = try staticRow("plex:owned", status: .downloading)
+            let abandoned = try staticRow("plex:abandoned", status: .downloading)
+            let paused = try staticRow("plex:paused", status: .paused)
+            let keys: Set<String> = [owned.ratingKey, abandoned.ratingKey, paused.ratingKey]
+
+            store.reconcileOnWorker(
+                liveRatingKeys: [], snapshotRatingKeys: keys,
+                sessionOwnsWork: { $0 == owned.ratingKey || $0 == paused.ratingKey })
+
+            #expect(store.record(for: owned)?.status == .downloading, "the queued body's row is live")
+            #expect(store.record(for: abandoned)?.status == .failed)
+            #expect(store.record(for: paused)?.status == .paused, "session work never promotes a pause")
+        }
+    }
+
     @Test("A persisted finalizing static row survives relaunch with its body")
     func relaunchKeepsFinalizingStaticRow() throws {
         try withDirectory { directory in

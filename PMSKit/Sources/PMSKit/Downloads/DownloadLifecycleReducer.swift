@@ -18,7 +18,8 @@ public struct DownloadRowFacts: Sendable, Equatable {
 
     public enum Body: Sendable, Equatable {
         case none
-        /// Moved out of the URLSession temp into an attempt-owned capture path (B10).
+        /// Moved out of the URLSession temp into an attempt-owned capture path (B10): a finished
+        /// forward-only body whose publication to the working path has not run yet (F1, #472).
         case captured
         case workingComplete
         case published
@@ -475,9 +476,12 @@ public enum DownloadLifecycleReducer {
             return .applied(next, [])
         case .admitted, .transferring, .paused:
             let lifecycle = state.lifecycle
-            // A forward-only body exists only once its transfer finished (B10).
-            if facts.route == .forwardOnly, !facts.liveTask, facts.body == .workingComplete,
-               lifecycle != .paused {
+            // A forward-only body exists only once its transfer finished (B10): at the working
+            // path, or still at its attempt-owned capture path when the process died before the
+            // publication ran or before `bodyCaptured` was durable (F1, #472). It cannot be
+            // fetched again by range, so no pause discards it, the user's included (F3, #474).
+            if facts.route == .forwardOnly, !facts.liveTask,
+               facts.body == .workingComplete || facts.body == .captured {
                 return set(.finalizing, [.requestFinalization])
             }
             // Plex prep rows are queued (admitted) while the server renders; without a task they

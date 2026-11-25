@@ -1248,8 +1248,12 @@ public final class DownloadManager {
             ])
         }
         let snapshotRatingKeys = store.allRatingKeys
-        session.reattach { [weak self, store] liveKeys in
-            let submission = store.submitReconcile(liveRatingKeys: liveKeys, snapshotRatingKeys: snapshotRatingKeys)
+        // R2 (#476): `liveKeys` is a snapshot; reconcile also asks the session what it owns when
+        // it decides, so a finished body queued for its append is not failed with its row.
+        session.reattach { [weak self, store, session] liveKeys in
+            let submission = store.submitReconcile(
+                liveRatingKeys: liveKeys, snapshotRatingKeys: snapshotRatingKeys,
+                sessionOwnsWork: { session.ownsInProgressStaticRangeWork(ratingKey: $0) })
             Task { @MainActor in
                 let proof = await store.resolve(submission, deadline: .after(30))
                 guard let self, case .committed = proof, self.startupRecoveryState == .ready else { return }
@@ -2279,8 +2283,12 @@ public final class DownloadManager {
         // Admission is open here, so forward-only rows a granted start may own are skipped too
         // (Admission-A1, #475): relaunch would requeue one whose task does not exist yet.
         let snapshotRatingKeys = store.allRatingKeys.subtracting(forwardOnlyRowsAdmissionMayOwn())
-        session.reattach { [weak self, store] liveKeys in
-            let submission = store.submitReconcile(liveRatingKeys: liveKeys, snapshotRatingKeys: snapshotRatingKeys)
+        // R2 (#476): `liveKeys` is a snapshot; reconcile also asks the session what it owns when
+        // it decides, so a finished body queued for its append is not failed with its row.
+        session.reattach { [weak self, store, session] liveKeys in
+            let submission = store.submitReconcile(
+                liveRatingKeys: liveKeys, snapshotRatingKeys: snapshotRatingKeys,
+                sessionOwnsWork: { session.ownsInProgressStaticRangeWork(ratingKey: $0) })
             Task { @MainActor in
                 let proof = await store.resolve(submission, deadline: .after(30))
                 guard let self else { return }
