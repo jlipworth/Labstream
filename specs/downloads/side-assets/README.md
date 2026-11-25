@@ -561,7 +561,7 @@ and state directories and report wrong results.
 | `Finding-S8-PromotionLostToRowMutation` | violation of `PromotionNotLostToRace` | violated | 124 | 1 s or less |
 | `Finding-st39-CrashOrphanAfterDelete` | violation of `NoOrphanAfterDelete` | violated | 811 | 1 s or less |
 | `Finding-st39-ReplacedAttemptOrphan` | violation of `NoOrphanAfterDelete` | violated | 962 | 1 s or less |
-| `Deep-AllKinds` (deep tier; not rerun after the S1, S2 and S6 fixes) | pass | pass | 16,294,270 | 577 s |
+| `Deep-AllKinds` (deep tier; rerun 2026-11-25 after the #503 and #504 fixes, `TLC_WORKERS=6`) | pass | pass | 21,547,911 | 291 s |
 
 The violation runs stop at the first error, so their state counts are not totals.
 
