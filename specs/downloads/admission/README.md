@@ -106,8 +106,8 @@ proceeds and an outage ends, and that the user, crashes and faults take a bounde
 | `Faithful-B67-off` | `OutageDefersFirstStart` | an outage fails a first start |
 | `Mutant-NoBackoffWake` | `TEMPORAL` | without the wake timer a deferred row waits forever (`WaitingRowIsServed`, the one property it checks; the script reports any liveness violation as `TEMPORAL`) |
 | `Faithful-A1-off` | `RelaunchKeepsUnstartedRow` | relaunch fails a granted forward-only row cut before its task existed, or a paused first start (A1 before #475) |
-| `Deep-ThreeRows` | pass (deep) | the three-row run with four environment steps |
-| `Deep-CapLowered` | pass (deep) | three rows, the setting switched between 3 and 1 (5,832,083 states, 6.5 min) |
+| `Deep-ThreeRows` | pass (deep) | the three-row run with four environment steps (2,685,087 states, 108 s at 4 workers) |
+| `Deep-CapLowered` | pass (deep) | three rows, the setting switched between 3 and 1 (5,813,009 states, 3.5 min at 4 workers) |
 
 B65 has one switch and one mutant. At the audit baseline a pause changed only the status, the
 pending first start was a separate durable mark that the planner cleared when it admitted the
