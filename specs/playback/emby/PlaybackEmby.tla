@@ -712,7 +712,9 @@ InitialAttaches(c, t) ==
 \* start's playableRemoteStreamURL, or from the task PlayerNeedsConsent
 \* made.  It detaches, hands the session's stop to the barrier
 \* (beginEmbySessionStop) or reads currentTicket, and awaits the ticket.
-\* With none it shows the choice at once.
+\* With none it shows the choice at once.  A cancelled task returns here
+\* whether or not consent is possible: a cancelled first start that never
+\* attached simply returns (beginRemoteStream), consent or not.
 ConsentBegins(c, t) ==
     LET r == IF ~ConsentStopsSession THEN NoBegin(bar[c], 0)
              ELSE IF st[c].sess # NoJ THEN Begin(c, bar[c], st[c].sess)
@@ -721,11 +723,11 @@ ConsentBegins(c, t) ==
                        ![c].sess = IF ConsentStopsSession THEN NoJ ELSE @]
     IN
     /\ t.kind \in {"initial", "consent"} /\ t.pc = "begin"
-    /\ t.kind = "initial" => ConsentPossible
     /\ IF ~Accepts(c, t)
        THEN /\ EndTask(c, t)
             /\ UNCHANGED <<serverVars, item, st, bar, ghost>>
-       ELSE /\ item' = Upd(item, c, Detached(c))
+       ELSE /\ t.kind = "initial" => ConsentPossible
+            /\ item' = Upd(item, c, Detached(c))
             /\ ApplyBar(c, r)
             /\ ghost' = [ghost EXCEPT ![c].trap = Trapped(@, r)]
             /\ IF r.tk = 0

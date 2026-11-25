@@ -234,9 +234,9 @@ failure and failing stops on, consent and late stops off, `IdReuse = "live"`,
 
 | Config | Expect | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
-| `Current-Reopen` | pass | pass | 930,715 | 6 s |
-| `Current-LateAck` | pass | pass (given `IdReuse = "never"`) | 861,167 | 4 s |
-| `Current-LateAckLive` | pass | pass (`StopNeverKillsSuccessor` not checked) | 2,376,179 | 10 s |
+| `Current-Reopen` | pass | pass | 1,546,786 | 8 s |
+| `Current-LateAck` | pass | pass (given `IdReuse = "never"`) | 1,525,899 | 7 s |
+| `Current-LateAckLive` | pass | pass (`StopNeverKillsSuccessor` not checked) | 4,198,431 | 17 s |
 | `Current-LateAckConsent` | pass | pass (given `IdReuse = "never"`) | 787,928 | 5 s |
 | `Current-CloseAtConsent` | pass | pass | 3,033,765 | 13 s |
 | `Liveness-Reopen` | pass | pass | 37,338 | 5 s |
@@ -269,8 +269,9 @@ failure and failing stops on, consent and late stops off, `IdReuse = "live"`,
   `Current-LateAckLive`), `Proposed-CloseJoinsTask` and `Deep-BackToBack`.
 - `Current-LateAck` (review focus 3): `StopsCanBeLate` and `IdReuse = "never"`. A stop times out,
   the reopen fails with LS-PB-008, the stop is retried, and the first request is acknowledged
-  afterwards (witness `NeverLateAck`). With three user actions the run is 44,996,159 states and
-  285 s, and passes; the config keeps two. `Current-LateAckLive`: the same run with
+  afterwards (witness `NeverLateAck`). With three user actions the run was 44,996,159 states and
+  285 s, and passed, before the cancelled-first-start fix below (not re-run since); the config
+  keeps two. `Current-LateAckLive`: the same run with
   `IdReuse = "live"`, checking every `Current` invariant except `StopNeverKillsSuccessor`, which
   `Finding-LateStopKillsReusedId` shows failing under reuse. `Current-LateAckConsent`: late stops
   with consent, `Liveness-BoundedWait`'s constants with `MaxGeneration = 12` under `Spec`, one
@@ -317,9 +318,15 @@ assumption it takes instead: `IdReuse = "never"` in `Current-LateAck` and
 stands, in the `Finding` configs. `OneEncoder`'s failing run is the `Faithful` config.
 `NoAuthorityAtPrepare` and `GenerationsSuffice` are checks on the model, not on the code: the
 first fails with `Mutant-NoTransactionTail`'s constants, the second with any `Current` config and
-a smaller `MaxGeneration`. `Mutant-CloseUnboundedStopWait` keeps consent on, as
-`Liveness-BoundedWait` does: with `ConsentPossible = FALSE` a cancelled first start has no step
-in the model, so `CloseCleansUp` fails for that reason, and the liveness configs all take consent.
+a smaller `MaxGeneration`. `Mutant-CloseUnboundedStopWait` keeps consent on so that it differs
+from the passing `Liveness-BoundedWait` in the one flag it injects.
+
+An earlier version of `ConsentBegins` required `ConsentPossible` for a first start's task even on
+its cancelled path, so with consent off a first start cancelled before attaching never returned.
+That pruned safety coverage, not only liveness: after `Start`, `Fail`, `ServerResolves`, `Retry`
+the retry waited for ever on the stranded task and `RetryProceeds` never ran. The guard now sits
+on the live path only, as in the Swift, where a cancelled `beginRemoteStream` task returns. The
+consent-off counts above are from the fixed module.
 
 ### Every branch is taken
 
