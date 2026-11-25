@@ -108,7 +108,8 @@ fixes with `TLC_WORKERS=4` (about 47 minutes for the two). State counts were ref
 rows' seconds are from that run, the other seconds from the two-worker runs. The four review-fix
 configs (`Current-Stall*`, `Faithful-488-*`, `Faithful-497-*`, `Faithful-501-*`) were added from a
 two-worker run after the review of PR #505; the review fixes moved the other rows' counts by a
-few percent (for example `Current-OneForward` 2,508,114, `Liveness-StallCap` 505,536).
+few percent (for example `Current-OneForward` 2,508,114, `Liveness-StallCap` 505,536). `Deep-Mixed`
+and `Deep-TwoStatic` were rerun after those fixes with `TLC_WORKERS=6` (their rows show that run).
 
 | Config | Expect | Distinct states | Seconds |
 | --- | --- | ---: | ---: |
@@ -158,8 +159,8 @@ few percent (for example `Current-OneForward` 2,508,114, `Liveness-StallCap` 505
 | `Proposed-Mixed` | pass | 2,547,620 | 110 |
 | `Proposed-OneForward` | pass | 928,761 | 47 |
 | `Deep-LivenessFlow` (deep) | pass | 1,148,455 | 107 |
-| `Deep-Mixed` (deep) | pass | 73,353,389 | 734 |
-| `Deep-TwoStatic` (deep) | pass | 34,252,117 | 383 |
+| `Deep-Mixed` (deep) | pass | 76,864,337 | 1,382 |
+| `Deep-TwoStatic` (deep) | pass | 34,269,645 | 674 |
 
 The `Current` and `Liveness` configs leave out what an open finding violates: none checks
 `RelaunchKeepsBytes` (S3), `NoInflatedRowRate` is checked only where no forward-only row exists
