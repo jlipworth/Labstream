@@ -259,19 +259,25 @@ struct ContentView: View {
     }
 
     #if !os(tvOS)
-    /// Launch download recovery: restore the selected browse lane first, then hydrate only
-    /// inactive backends that currently own durable active work. Paused/failed/completed rows
-    /// remain cold until their explicit resume, retry, or side-asset dispatch edge.
+    /// Launch download recovery: restore the selected browse lane first, then hydrate the
+    /// inactive backends that own durable active work, journaled server cleanup, or a completed
+    /// row with a missing side asset. Paused/failed rows remain cold until their explicit resume
+    /// or retry.
     private func runLaunchDownloadRecovery(reason: String) async {
         // P2: backends that only owe journaled server cleanup need a session too, or their
         // cleanup could never run while the user stays on another backend.
         let cleanupBackends = await downloadManager.pendingCleanupBackends()
+        guard !Task.isCancelled else { return }
+        // #494 (TLA+ S6): the launch repair pass below needs each completed row's own backend
+        // session, or a row on a backend that is not selected is never repaired.
+        let sideAssetBackends = await downloadManager.backendsOwingCompletedSideAssets()
         guard !Task.isCancelled else { return }
         let inactiveDownloadBackends = Set(
             downloadManager.records.lazy
                 .filter { $0.status.isActiveWork }
                 .map { DownloadJobSnapshot(record: $0).backend }
         ).union(cleanupBackends)
+            .union(sideAssetBackends)
             .subtracting([appModel.activeBackend])
         for backend in inactiveDownloadBackends.sorted(by: { $0.rawValue < $1.rawValue }) {
             _ = await authManager.hydrateSavedSessionForDownloads(backend: backend)

@@ -67,8 +67,8 @@ A session is a hydrated session for the row's own backend that matches the serve
 was downloaded from (`BackendSession.matchesPersistedServer`). A session for another server or
 user of the same backend is no session, so `SessionLost` also stands for signing in as someone
 else. `creds` is the saved session and `session` its in-memory copy. `Relaunch` hydrates the
-selected backend, plus any other backend that owns active work, which is what
-`runLaunchDownloadRecovery` does. Rows in `OtherBackendRows` are on the backend that is not
+selected backend, plus any other backend that owns active work or (S6, #494) a completed row that
+misses an asset, which is what `runLaunchDownloadRecovery` does. Rows in `OtherBackendRows` are on the backend that is not
 selected at the start.
 
 ### Delete
@@ -154,6 +154,9 @@ crashes, outages, session changes and pass timeouts are not fair and are capped 
 | `Faithful-B25-off` | The completed-row repair refetches source metadata outside the coordinator and its budget. | `RepairWithinRateLimit` |
 | `Faithful-B32-off` | The coordinator applies commands in arrival order: a Pause's park lands after the Resume's unpark. | `ControlsApplyInRequestOrder` |
 | `Faithful-B32-off-PausedFetch` | The consequence of the same bug: the paused row's chapter image goes out on the network. | `PausedRowNotFetching` |
+| `Faithful-S1-off` | The poster fetch sends no registration (before #482), so a kept-attempt cancel keeps its owner closed. | `CachedThisLaunch` |
+| `Faithful-S2-off-Subs`, `-Tiles` | Resume All sends no unpark (before #483): a completed row's late fetch entry stays parked. | `CachedThisLaunch` |
+| `Faithful-S6-off` | Launch hydrates only active-work backends (before #494), so a completed row on another backend stays cold. | `NeverForgotten` |
 | `Mutant-NoDiscoveryDispatch` | The refresh never starts the kinds it discovers. | `NeverForgotten` |
 | `Mutant-PayloadsFail` | No asset request ever returns a payload. | `NeverForgotten` |
 | `Mutant-PayloadsFail-ThisLaunch` | The same, against the this-launch property. | `CachedThisLaunch` |
@@ -171,13 +174,15 @@ attempt IDs are reset as a whole. The mutant shows the properties' scope is load
 
 ## Findings
 
-Each was checked against the Swift before it was recorded. None is fixed here.
+Each was checked against the Swift before it was recorded. S1, S2 and S6 are fixed on
+specs/downloads-tla (pending merge); the rest are open.
 
-### S1: a cancelled poster owner stays cancelled for the launch (real)
+### S1: a cancelled poster owner stays cancelled for the launch (real, fixed)
 
 Issue: #482.
 
-Trace (`Finding-S1-PosterOwnerStaysCancelled`, `CachedThisLaunch`): a row is released with the
+Trace (`Faithful-S1-off`, was `Finding-S1-PosterOwnerStaysCancelled`, `CachedThisLaunch`): a row
+is released with the
 default `releaseInFlight` mode and keeps its attempt; the release cancels both of the attempt's
 coordinator owners; the row later completes under the same attempt; the repair pass offers the
 poster; the fetch throws at the coordinator's entry because the poster owner is cancelled; no
@@ -192,23 +197,28 @@ poller's `plexSessionUnavailable` handler.
 `NeverForgotten` holds with this trigger on: the cancelled owner is in memory, and the next launch
 fetches the poster.
 
-Proposed in the model (`FixPosterReregisters`): a poster fetch reopens its owner.
-`Proposed-S1-PosterReregisters` passes with it.
+Fixed (`FixPosterReregisters`, now `TRUE` in every config but `Faithful-S1-off`): the poster
+branch of `fetchOptionalSideAsset` delivers `.park(false)` as a fetch-entry (registration)
+command, so a poster fetch reopens its owner like every other kind. The poster is still never
+parked. `Current-S1-PosterReregisters` (was `Proposed-S1-PosterReregisters`) passes;
+`Faithful-S1-off` still fails with the fix switched off.
 
-Pin: `posterFetchReopensItsCancelledOwner`.
+Pin: `posterFetchReopensItsCancelledOwner` (no longer a known issue).
 
-### S2: Pause All can strand a completed row's side assets (real)
+### S2: Pause All can strand a completed row's side assets (real, fixed)
 
 Issue: #483.
 
-Trace (`Finding-S2-PauseAllStrandsCompletedRow`, `CachedThisLaunch`): a row completes; a repair
+Trace (`Faithful-S2-off-Subs`, was `Finding-S2-PauseAllStrandsCompletedRow`, `CachedThisLaunch`):
+a row completes; a repair
 pass queues a source-metadata refresh; the user taps Pause All, which sends a completed row no
 command; the subtitle task moves on to its next stream, and that fetch entry parks the attempt's
 owner because the queue is paused; the user taps Resume All; the repair pass runs again and starts
 nothing, because the refresh and the subtitle task are both still registered. Nothing enters a new
 fetch, so nothing unparks the owner.
 
-Trickplay has the same exposure (`Finding-S2-TilesParkedBehindPauseAll`): the tiles enter their
+Trickplay has the same exposure (`Faithful-S2-off-Tiles`, was
+`Finding-S2-TilesParkedBehindPauseAll`): the tiles enter their
 fetch after the playlist is parsed, and behind Pause All that entry parks the owner of a finalizing
 or completed row. Any fetch entry that comes late in a task does it. The Plex BIF, which enters
 when the refresh returns, heals in the model as long as the refresh has budget left: the next pass
@@ -220,10 +230,14 @@ is in `retryRecordAsync`; and every repair entry point is `startIfAbsent`.
 
 `NeverForgotten` holds with this trigger on: the next launch starts with nothing parked.
 
-Proposed in the model (`FixResumeAllUnparks`): Resume All unparks every row that is not paused.
-`Proposed-S2-ResumeAllUnparks-Subs`, `-ChaptersSubs` and `-Tiles` pass with it.
+Fixed (`FixResumeAllUnparks`, now `TRUE` in every config but the two `Faithful-S2-off-*`):
+`resumeQueue` sends `setOptionalSideAssetHydrationParked(false, ...)` for every row whose
+lifecycle is not `paused`, before its repair pass. A paused row is left to `retryRecordAsync`,
+which unparks it when its resume is admitted. `Current-S2-ResumeAllUnparks-Subs`,
+`-ChaptersSubs` and `-Tiles` (were `Proposed-S2-*`) pass; the `Faithful-S2-off-*` configs still
+fail with the fix switched off.
 
-Pin: `resumeAllUnparksCompletedRows`.
+Pin: `resumeAllUnparksCompletedRows` (no longer a known issue).
 
 ### S3: an outage spends the launch's retry budget (probable, a design limit)
 
@@ -282,9 +296,10 @@ or that skipped a row runs again. `Proposed-S5-PassReruns` and `-Stale` pass wit
 
 Pin: `droppedRepairEdgeRunsAgain`. Issue #493.
 
-### S6: a completed row on a backend that is not selected is never repaired (real)
+### S6: a completed row on a backend that is not selected is never repaired (real, fixed)
 
-Trace (`Finding-S6-InactiveBackendStaysCold`, `NeverForgotten`): a row on the other backend
+Trace (`Faithful-S6-off`, was `Finding-S6-InactiveBackendStaysCold`, `NeverForgotten`): a row on
+the other backend
 completes with its poster missing (here an outage spent the budget); the app is terminated and
 relaunched; launch restores the selected backend, finds no active work on the other one and leaves
 it without a session; the launch pass scans the row and starts nothing; every later launch does the
@@ -299,10 +314,16 @@ The row is repaired only when the user switches to that backend (`backend_switch
 This is the one finding where the durable property fails on a supported path with nothing
 malformed: the record is durable, but no launch acts on it.
 
-Proposed in the model (`FixHydrateCompleted`): launch also restores the session of a backend that
-has a completed row with missing side assets. `Proposed-S6-HydrateCompleted` passes with it.
+Fixed (`FixHydrateCompleted`, now `TRUE` in every config but `Faithful-S6-off`): launch also
+restores the saved session of a backend that has a completed row with a missing side asset.
+`DownloadManager.backendsOwingCompletedSideAssets` observes completed rows on a store worker with
+the same `CompletedSideAssetInventory` the repair pass uses, and `runLaunchDownloadRecovery`
+adds those backends to the ones it hydrates. The repair still requires the saved session to match
+the row's own server and user (`matchesPersistedServer`), which is what the model's `Quiet`
+assumes. `Current-S6-HydrateCompleted` (was `Proposed-S6-HydrateCompleted`) passes;
+`Faithful-S6-off` still fails with the fix switched off.
 
-Pin: `launchHydratesBackendsOfCompletedRowsMissingAssets`. Issue #494.
+Pin: `launchHydratesBackendsOfCompletedRowsMissingAssets` (no longer a known issue). Issue #494.
 
 ### S7: the Plex BIF is taken from the first part, not the downloaded one (real)
 
@@ -382,61 +403,61 @@ and state directories and report wrong results.
 
 | Config | Expectation | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
-| `Current-AllKinds` | pass | pass | 2,789,338 | 94 s |
-| `Current-Bif` | pass | pass | 23,593 | 1 s or less |
-| `Current-Chapters` | pass | pass | 27,737 | 1 s or less |
-| `Current-ChaptersSubs` | pass | pass | 65,456 | 3 s |
-| `Current-Delete` | pass | pass | 132,265 | 4 s |
-| `Current-Poster` | pass | pass | 54,189 | 2 s |
-| `Current-Subs` | pass | pass | 40,664 | 2 s |
-| `Current-Tiles` | pass | pass | 39,275 | 2 s |
-| `Current-TwoBackends` | pass | pass | 90,817 | 4 s |
-| `Current-TwoRows` | pass | pass | 149,674 | 6 s |
-| `Liveness-Durable-Discovered` | pass | pass | 119,213 | 30 s |
-| `Liveness-Durable-PosterChapters` | pass | pass | 82,349 | 21 s |
-| `Liveness-Durable-Tiles` | pass | pass | 45,104 | 11 s |
+| `Current-AllKinds` | pass | pass | 3,629,869 | 136 s |
+| `Current-Bif` | pass | pass | 25,512 | 1 s or less |
+| `Current-Chapters` | pass | pass | 29,385 | 3 s |
+| `Current-ChaptersSubs` | pass | pass | 67,804 | 5 s |
+| `Current-Delete` | pass | pass | 181,188 | 8 s |
+| `Current-Poster` | pass | pass | 85,656 | 4 s |
+| `Current-S1-PosterReregisters` | pass | pass | 3,675 | 2 s |
+| `Current-S2-ResumeAllUnparks-ChaptersSubs` | pass | pass | 42,585 | 10 s |
+| `Current-S2-ResumeAllUnparks-Subs` | pass | pass | 12,228 | 4 s |
+| `Current-S2-ResumeAllUnparks-Tiles` | pass | pass | 8,580 | 5 s |
+| `Current-S6-HydrateCompleted` | pass | pass | 27,162 | 10 s |
+| `Current-Subs` | pass | pass | 44,023 | 2 s |
+| `Current-Tiles` | pass | pass | 42,107 | 2 s |
+| `Current-TwoBackends` | pass | pass | 124,766 | 6 s |
+| `Current-TwoRows` | pass | pass | 276,741 | 12 s |
+| `Liveness-Durable-Discovered` | pass | pass | 128,540 | 32 s |
+| `Liveness-Durable-PosterChapters` | pass | pass | 108,919 | 31 s |
+| `Liveness-Durable-Tiles` | pass | pass | 48,069 | 11 s |
 | `Liveness-ThisLaunch-Discovered` | pass | pass | 22,862 | 5 s |
-| `Liveness-ThisLaunch-PosterChapters` | pass | pass | 6,190 | 2 s |
-| `Liveness-ThisLaunch-Tiles` | pass | pass | 4,666 | 1 s or less |
+| `Liveness-ThisLaunch-PosterChapters` | pass | pass | 7,439 | 2 s |
+| `Liveness-ThisLaunch-Tiles` | pass | pass | 4,666 | 2 s |
 | `Proposed-394-Window` | pass | pass | 282,392 | 11 s |
-| `Proposed-S1-PosterReregisters` | pass | pass | 3,675 | 2 s |
-| `Proposed-S2-ResumeAllUnparks-ChaptersSubs` | pass | pass | 42,585 | 8 s |
-| `Proposed-S2-ResumeAllUnparks-Subs` | pass | pass | 12,228 | 2 s |
-| `Proposed-S2-ResumeAllUnparks-Tiles` | pass | pass | 8,580 | 2 s |
-| `Proposed-S4-UnparkOnAccept` | pass | pass | 608 | 1 s or less |
-| `Proposed-S5-PassReruns-Stale` | pass | pass | 1,255 | 1 s or less |
-| `Proposed-S5-PassReruns` | pass | pass | 205,479 | 7 s |
-| `Proposed-S6-HydrateCompleted` | pass | pass | 19,113 | 5 s |
-| `Proposed-S7-BifChosenPart` | pass | pass | 15,328 | 3 s |
-| `Faithful-B25-off` | violation of `RepairWithinRateLimit` | violated | 106 | 1 s or less |
-| `Faithful-B32-off-PausedFetch` | violation of `PausedRowNotFetching` | violated | 154 | 1 s or less |
+| `Proposed-S4-UnparkOnAccept` | pass | pass | 608 | 2 s |
+| `Proposed-S5-PassReruns-Stale` | pass | pass | 1,474 | 1 s or less |
+| `Proposed-S5-PassReruns` | pass | pass | 299,686 | 15 s |
+| `Proposed-S7-BifChosenPart` | pass | pass | 16,441 | 7 s |
+| `Faithful-B25-off` | violation of `RepairWithinRateLimit` | violated | 131 | 1 s or less |
+| `Faithful-B32-off-PausedFetch` | violation of `PausedRowNotFetching` | violated | 187 | 1 s or less |
 | `Faithful-B32-off` | violation of `ControlsApplyInRequestOrder` | violated | 48 | 1 s or less |
-| `Mutant-DeleteSkipsPublished` | violation of `NoOrphanAfterDelete` | violated | 225 | 1 s or less |
+| `Faithful-S1-off` | violation of `CachedThisLaunch` | violated | 275 | 1 s or less |
+| `Faithful-S2-off-Subs` | violation of `CachedThisLaunch` | violated | 5,761 | 2 s |
+| `Faithful-S2-off-Tiles` | violation of `CachedThisLaunch` | violated | 1,262 | 1 s or less |
+| `Faithful-S6-off` | violation of `NeverForgotten` | violated | 518 | 1 s or less |
+| `Mutant-DeleteSkipsPublished` | violation of `NoOrphanAfterDelete` | violated | 267 | 1 s or less |
 | `Mutant-NoDiscoveryDispatch` | violation of `NeverForgotten` | violated | 3,861 | 2 s |
-| `Mutant-PayloadsFail-ThisLaunch` | violation of `CachedThisLaunch` | violated | 2,056 | 1 s or less |
+| `Mutant-PayloadsFail-ThisLaunch` | violation of `CachedThisLaunch` | violated | 2,531 | 2 s |
 | `Mutant-PayloadsFail` | violation of `NeverForgotten` | violated | 2,567 | 2 s |
-| `Mutant-PromoteConfirmUnfenced` | violation of `NoOrphanAfterDelete` | violated | 488 | 1 s or less |
+| `Mutant-PromoteConfirmUnfenced` | violation of `NoOrphanAfterDelete` | violated | 502 | 1 s or less |
 | `Mutant-UnownedRow` | violation of `MissingIsDurablyOwedAnyRow` | violated | at the initial state | 1 s or less |
-| `Mutant-WindowChaptersOnly` | violation of `PayloadsBounded` | violated | 3,178 | 1 s or less |
-| `Finding-394-PayloadsBehindPreparation` | violation of `PayloadsBounded` | violated | 2,849 | 1 s or less |
-| `Finding-394-TilePayloadsBehindPreparation` | violation of `PayloadsBounded` | violated | 3,156 | 1 s or less |
-| `Finding-S1-PosterOwnerStaysCancelled` | violation of `CachedThisLaunch` | violated | 275 | 1 s or less |
-| `Finding-S2-PauseAllStrandsCompletedRow` | violation of `CachedThisLaunch` | violated | 5,761 | 2 s |
-| `Finding-S2-TilesParkedBehindPauseAll` | violation of `CachedThisLaunch` | violated | 1,262 | 1 s or less |
-| `Finding-S3-OutageExhaustsBudget` | violation of `CachedThisLaunch` | violated | 439 | 1 s or less |
+| `Mutant-WindowChaptersOnly` | violation of `PayloadsBounded` | violated | 2,923 | 1 s or less |
+| `Finding-394-PayloadsBehindPreparation` | violation of `PayloadsBounded` | violated | 2,939 | 1 s or less |
+| `Finding-394-TilePayloadsBehindPreparation` | violation of `PayloadsBounded` | violated | 3,132 | 1 s or less |
+| `Finding-S3-OutageExhaustsBudget` | violation of `CachedThisLaunch` | violated | 600 | 1 s or less |
 | `Finding-S3-TilesBehindPlaylistBudget` | violation of `CachedThisLaunch` | violated | 1,580 | 1 s or less |
-| `Finding-S4-RefusedResumeUnparks` | violation of `PausedRowNotFetching` | violated | 443 | 1 s or less |
-| `Finding-S5-BusyEdgeDropped` | violation of `NoEdgeOutsidePass` | violated | 552 | 1 s or less |
+| `Finding-S4-RefusedResumeUnparks` | violation of `PausedRowNotFetching` | violated | 474 | 1 s or less |
+| `Finding-S5-BusyEdgeDropped` | violation of `NoEdgeOutsidePass` | violated | 509 | 1 s or less |
 | `Finding-S5-PassTimeoutNoRerun` | violation of `NoEdgeLost` | violated | 65 | 1 s or less |
-| `Finding-S5-StaleRowSkipped` | violation of `NoEdgeLost` | violated | 50 | 1 s or less |
-| `Finding-S6-InactiveBackendStaysCold` | violation of `NeverForgotten` | violated | 441 | 1 s or less |
+| `Finding-S5-StaleRowSkipped` | violation of `NoEdgeLost` | violated | 59 | 1 s or less |
 | `Finding-S7-BifOfChosenPartNeverAsked` | violation of `NeverForgotten` | violated | 11 | 1 s or less |
-| `Finding-S7-BifOfChosenPartNotOwed` | violation of `MissingIsDurablyOwed` | violated | 34 | 1 s or less |
-| `Finding-S7-WrongPartBifCached` | violation of `CachedBifIsForChosenPart` | violated | 132 | 1 s or less |
-| `Finding-S8-PromotionLostToRowMutation` | violation of `PromotionNotLostToRace` | violated | 101 | 1 s or less |
-| `Finding-st39-CrashOrphanAfterDelete` | violation of `NoOrphanAfterDelete` | violated | 566 | 1 s or less |
-| `Finding-st39-ReplacedAttemptOrphan` | violation of `NoOrphanAfterDelete` | violated | 697 | 1 s or less |
-| `Deep-AllKinds` (deep tier) | pass | pass | 16,294,270 | 577 s |
+| `Finding-S7-BifOfChosenPartNotOwed` | violation of `MissingIsDurablyOwed` | violated | 36 | 1 s or less |
+| `Finding-S7-WrongPartBifCached` | violation of `CachedBifIsForChosenPart` | violated | 124 | 1 s or less |
+| `Finding-S8-PromotionLostToRowMutation` | violation of `PromotionNotLostToRace` | violated | 124 | 1 s or less |
+| `Finding-st39-CrashOrphanAfterDelete` | violation of `NoOrphanAfterDelete` | violated | 811 | 1 s or less |
+| `Finding-st39-ReplacedAttemptOrphan` | violation of `NoOrphanAfterDelete` | violated | 962 | 1 s or less |
+| `Deep-AllKinds` (deep tier; not rerun after the S1, S2 and S6 fixes) | pass | pass | 16,294,270 | 577 s |
 
 The violation runs stop at the first error, so their state counts are not totals.
 
@@ -446,7 +467,8 @@ replacement attempt (st-39); no `Current-*` config allows a refused Resume (S4),
 (S5), uses the three-step promotion outside `Current-Delete` (S8), or downloads a part other than
 the first (S7). The `Liveness-Durable-*` configs are the code as it stands with every environment
 switch on. The `Liveness-ThisLaunch-*` configs leave out the triggers of S1, S2 and S3 and give the
-budget more dispatches than the environment can spend.
+budget more dispatches than the environment can spend; the S1 and S2 triggers are checked against
+the fixed code by `Current-S1-*` and `Current-S2-*`.
 
 ## Modelling artefacts, fixed in the model
 

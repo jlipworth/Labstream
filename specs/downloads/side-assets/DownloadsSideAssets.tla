@@ -108,11 +108,11 @@ CONSTANTS
     FixB25,               \* the source-metadata refresh goes through the coordinator and the budget
     FixB32,               \* the coordinator drops a command older than one it has applied
     FixPublicationOwners, \* Delete also removes a file that is renamed but not yet recorded
-    FixPosterReregisters, \* PROPOSED (not in the code): a poster fetch reopens its cancelled owner (S1)
-    FixResumeAllUnparks,  \* PROPOSED (not in the code): Resume All unparks every row that is not paused (S2)
+    FixPosterReregisters, \* a poster fetch reopens its cancelled owner (S1, #482; in the code)
+    FixResumeAllUnparks,  \* Resume All unparks every row that is not paused (S2, #483; in the code)
     FixUnparkOnAccept,    \* PROPOSED (not in the code): Resume unparks only once the resume is accepted (S4)
     FixPassReruns,        \* PROPOSED (not in the code): a dropped, timed-out or stale repair pass runs again (S5)
-    FixHydrateCompleted,  \* PROPOSED (not in the code): launch restores the session of a backend whose completed rows miss assets (S6)
+    FixHydrateCompleted,  \* launch restores the session of a backend whose completed rows miss assets (S6, #494; in the code)
     FixBifChosenPart,     \* PROPOSED (not in the code): the BIF request names the downloaded part (S7)
     PayloadWindow,        \* PROPOSED (#394): payloads of one task group fetched but not yet promoted; 0 = no window
     Mutation,             \* an injected bug for a Mutant config; "none" otherwise
@@ -335,7 +335,8 @@ Entering(r, W) == UNION {EnterNow(r, w) : w \in W}
 EntryState(r, it) ==
     \* B25 off: the refresh used the shared client, outside the coordinator.
     IF it = RefreshItem /\ ~FixB25 THEN "inflight"
-    \* The poster fetch delivers no command; a cancelled owner throws at once.
+    \* Fix off (before #482): the poster fetch delivers no command; a cancelled
+    \* owner throws at once.  With the fix it registers like every other kind.
     ELSE IF KindOf(it) = "poster" /\ ~FixPosterReregisters
         THEN (IF cancelled[r]["poster"] THEN "resolved" ELSE "queued")
     ELSE "entering"
@@ -595,7 +596,8 @@ PauseAll ==
 
 \* resumeQueue: clears the gate.  Paused rows are re-admitted one by one
 \* (the Resume actions below); completed rows get a repair edge
-\* ("queue_resumed") and, in the code as it stands, no unpark.
+\* ("queue_resumed").  With FixResumeAllUnparks (#483) every live row that is
+\* not paused is unparked; without it (before the fix) nothing is.
 ResumeAll ==
     /\ up /\ queuePaused /\ Spend
     /\ queuePaused' = FALSE
@@ -1112,8 +1114,10 @@ ProcessEnds ==
 Crash == AllowCrash /\ up /\ Spend /\ ProcessEnds
 
 \* runLaunchDownloadRecovery restores the selected backend, then hydrates
-\* only the other backends that own active work (pending server cleanup is
-\* DownloadsCleanup's), then fires the launch repair edge.
+\* the other backends that own active work (pending server cleanup is
+\* DownloadsCleanup's) and, with FixHydrateCompleted (#494,
+\* backendsOwingCompletedSideAssets), those with a completed row that misses
+\* a side asset, then fires the launch repair edge.
 HydratedAtLaunch(b) ==
     /\ creds[b]
     /\ \/ b = selected

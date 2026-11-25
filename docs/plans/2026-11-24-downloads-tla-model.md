@@ -377,12 +377,12 @@ decision to call. Full traces and evidence are in the module notes and the issue
 | B30 | On a completely full volume the deletion intent cannot be saved, so nothing is unlinked. A reserve must cover four writes, and a retried Delete must reuse a durable intent. Fix together with Cleanup-C1. | real, known; reviewer confirmed | `cleanup/Finding-B30-FullVolumeDelete` | `deleteOnFullVolumeReclaims` | #393 |
 | Wake-W1 | A completion handler that arrives while a claimed batch waits for its MainActor release inherits that batch's deadline. | probable, low; reviewer confirmed by reading | `wake/Finding-W1-StaleDeadline` | none (app-target code) | #480 |
 | Wake-W2 | An operation begun while an expired operation lingers is marked expired and does not hold the next wake. | behaviour confirmed, low; intent is a product decision | `wake/Finding-W2-UnsettledWork` | none (app-target code) | #481 |
-| SideAssets-S1 | A cancel that keeps the attempt leaves the poster's coordinator owner cancelled for the launch, so the poster is not fetched until a relaunch. | real, medium; reviewer confirmed | `side-assets/Finding-S1-PosterOwnerStaysCancelled` | `posterFetchReopensItsCancelledOwner` | #482 |
-| SideAssets-S2 | Pause All parks a completed row's side assets, Resume All never unparks them, and repair cannot re-enter a registered kind. Subtitles, Jellyfin trickplay tiles and any late fetch entry; lasts one launch. | real, medium; reviewer confirmed | `side-assets/Finding-S2-PauseAllStrandsCompletedRow`, `side-assets/Finding-S2-TilesParkedBehindPauseAll` | `resumeAllUnparksCompletedRows` | #483 |
+| SideAssets-S1 | A cancel that keeps the attempt leaves the poster's coordinator owner cancelled for the launch, so the poster is not fetched until a relaunch. | real, medium; reviewer confirmed; fixed on specs/downloads-tla, pending merge (the poster fetch registers its owner) | `side-assets/Faithful-S1-off` (was `Finding-S1-PosterOwnerStaysCancelled`); `side-assets/Current-S1-PosterReregisters` passes | `posterFetchReopensItsCancelledOwner` (no longer a known issue) | #482 |
+| SideAssets-S2 | Pause All parks a completed row's side assets, Resume All never unparks them, and repair cannot re-enter a registered kind. Subtitles, Jellyfin trickplay tiles and any late fetch entry; lasts one launch. | real, medium; reviewer confirmed; fixed on specs/downloads-tla, pending merge (Resume All unparks every row that is not paused) | `side-assets/Faithful-S2-off-Subs`, `side-assets/Faithful-S2-off-Tiles` (were `Finding-S2-PauseAllStrandsCompletedRow`, `Finding-S2-TilesParkedBehindPauseAll`); `side-assets/Current-S2-ResumeAllUnparks-*` pass | `resumeAllUnparksCompletedRows` (no longer a known issue) | #483 |
 | SideAssets-S3 | A server outage spends the per-launch retry budget for an asset the server has. Trickplay retries are gated by the playlist's budget alone; a park of an in-flight request also costs a dispatch. | behaviour confirmed by the reviewer, low; product decision | `side-assets/Finding-S3-OutageExhaustsBudget`, `side-assets/Finding-S3-TilesBehindPlaylistBudget` | none | #484 |
 | SideAssets-S4 | A refused Resume leaves a user-paused row's side assets unparked. | behaviour confirmed by the reviewer, low; product decision | `side-assets/Finding-S4-RefusedResumeUnparks` | none | #485 |
 | SideAssets-S5 | A completed-row repair pass that is dropped (an edge while one runs, the 30 s timeout, a row whose generation moved) is not run again. Raised by the reviewer. | real, low | `side-assets/Finding-S5-BusyEdgeDropped`, `-PassTimeoutNoRerun`, `-StaleRowSkipped` | `droppedRepairEdgeRunsAgain` | #493 |
-| SideAssets-S6 | A completed row on a backend that is not selected gets no session at launch, so no launch repairs its side assets until the user switches backend. Raised by the reviewer. | real, medium | `side-assets/Finding-S6-InactiveBackendStaysCold` | `launchHydratesBackendsOfCompletedRowsMissingAssets` | #494 |
+| SideAssets-S6 | A completed row on a backend that is not selected gets no session at launch, so no launch repairs its side assets until the user switches backend. Raised by the reviewer. | real, medium; fixed on specs/downloads-tla, pending merge (launch also hydrates backends of completed rows missing an asset) | `side-assets/Faithful-S6-off` (was `Finding-S6-InactiveBackendStaysCold`); `side-assets/Current-S6-HydrateCompleted` passes | `launchHydratesBackendsOfCompletedRowsMissingAssets` (no longer a known issue) | #494 |
 | SideAssets-S7 | The Plex BIF is selected from the media's first part, not the downloaded part: never requested when only the downloaded part has one, the wrong index cached when the first part has one. Raised by the reviewer; the wrong-index half is from the model. | real, medium | `side-assets/Finding-S7-BifOfChosenPartNeverAsked`, `-BifOfChosenPartNotOwed`, `-WrongPartBifCached` | `plexBIFComesFromTheDownloadedPart` | #495 |
 | SideAssets-S8 | A side-asset promotion gives up on any concurrent write to its row and nothing retries. | real, low | `side-assets/Finding-S8-PromotionLostToRowMutation` | `promotionSurvivesAnUnrelatedRowWrite` | #496 |
 | st-39 | A side-asset file renamed but not yet recorded is left on disk by Delete, after a crash or after a replacement attempt. | real, known, deferred; reviewer confirmed | `side-assets/Finding-st39-CrashOrphanAfterDelete`, `side-assets/Finding-st39-ReplacedAttemptOrphan` | none | #401 |
@@ -408,7 +408,7 @@ Findings that touch each other:
   session when reconcile decides, and must not count session work as live for a paused row.
 - F3 and RangeTrain-R3 are one defect on two lanes; one fix should cover both.
 - SideAssets-S1, S2, S3 and S5 each last one launch; S6 and S7 are the ones a relaunch does not
-  heal.
+  heal. S1, S2 and S6 are fixed on specs/downloads-tla (pending merge).
 - Status-S5 is Status-S1 for a forward-only row past its restart cap. Status-S7 and Status-S4
   both depend on how late URLSession reports a backlog after a wake; one device capture settles
   both.
@@ -471,7 +471,7 @@ What the first round got wrong, stated plainly:
 | R2-2 | The Plex BIF uses the first part, not the chosen part. | valid, fixed | Advertised, produced and served parts separated; `CachedBifIsForChosenPart`. SideAssets-S7. | `Finding-S7-*`; `Proposed-S7-BifChosenPart` passes |
 | R2-3 | A completed legacy row with no attempt ID is excluded from the inventory. | partly valid | The exclusion is real, but the store treats such a row as a malformed index and resets it on load, and a test asserts that. Properties are scoped to owned rows. Not a finding. | `side-assets/Mutant-UnownedRow` |
 | R2-4 | Recurring repair is assumed, but edges are dropped when busy, on the 30 s timeout or on a generation mismatch. | valid, fixed | The scan is an edge, a pass with a snapshot, a timeout and a rerun; only the launch edge is assumed for the durable property. SideAssets-S5. | `Finding-S5-*`; `Proposed-S5-PassReruns*` pass |
-| R2-5 | Launch leaves inactive backends with only completed rows cold. | valid, fixed | Per-backend sessions, launch hydration, `SwitchBackend`. SideAssets-S6. | `Finding-S6-InactiveBackendStaysCold`; `Proposed-S6-HydrateCompleted` passes |
+| R2-5 | Launch leaves inactive backends with only completed rows cold. | valid, fixed | Per-backend sessions, launch hydration, `SwitchBackend`. SideAssets-S6. | `Finding-S6-InactiveBackendStaysCold`; `Proposed-S6-HydrateCompleted` passes (since the #494 fix: `Faithful-S6-off`, `Current-S6-HydrateCompleted`) |
 | R2-6 | The repair requires the row's own server and user; one global session is not enough. | valid, fixed | Sessions and saved credentials are per backend and mean the row's own server and user. No finding: refusing another server's credentials is correct. | Covered by the S6 pair and `Current-TwoBackends` |
 | R2-7 | Delete atomicity assumes fences the coordinator does not provide. | partly valid, fixed | The model did assume it. The code is fenced, by the store and not the coordinator. Delete and promotion are now multi-step with those fences. Surfaced SideAssets-S8. | `Mutant-PromoteConfirmUnfenced`, `Mutant-DeleteSkipsPublished`; `Current-Delete` passes |
 | R2-8 | Jellyfin tiles are not the serial subtitle shape; retries are gated by the playlist's budget; the #394 fix does not cover tiles. | valid, fixed | New kind `tiles` with a playlist and a task group; the payload bound covers both groups. | `Finding-394-TilePayloadsBehindPreparation`, `Mutant-WindowChaptersOnly`, `Finding-S3-TilesBehindPlaylistBudget` |
@@ -692,9 +692,16 @@ Round 2 renamed or split these configs:
 The side-assets S1, S2 and S3 finding configs keep their names and now check `CachedThisLaunch`;
 the properties `AvailableEventuallyCached` and `Accounted` no longer exist.
 
+The S1, S2 and S6 fixes (#482, #483, #494; pending merge) renamed again: each `Proposed-S1/S2/S6-*`
+config is now `Current-S1/S2/S6-*`, and each `Finding-S1/S2/S6-*` config is a `Faithful-*-off`
+config (`Faithful-S1-off`, `Faithful-S2-off-Subs`, `Faithful-S2-off-Tiles`, `Faithful-S6-off`)
+that still fails with its fix switched off. The three `Fix*` constants are `TRUE` in every other
+config.
+
 So `specs/downloads/Finding-F1-StashCrash.cfg` is `specs/downloads/session/Finding-F1-StashCrash.cfg`,
 and `specs/downloads/SideAssets-Finding-S1-PosterOwnerStaysCancelled.cfg` is
-`specs/downloads/side-assets/Finding-S1-PosterOwnerStaysCancelled.cfg`. This document and the
+`specs/downloads/side-assets/Finding-S1-PosterOwnerStaysCancelled.cfg` (since the #482 fix,
+`specs/downloads/side-assets/Faithful-S1-off.cfg`). This document and the
 module notes name a config as `<folder>/<config>`.
 
 ## Verification gates for this plan

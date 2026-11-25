@@ -83,6 +83,27 @@ extension DownloadManager {
         }
     }
 
+    /// #494 (TLA+ S6): the backends of completed rows that miss an optional side asset. Launch
+    /// hydrates these too, because the repair (`rehydrateMissingOptionalSideAssets`) needs the
+    /// row's own backend session and does nothing to obtain one; without it a completed row on a
+    /// backend that is not selected would never be repaired at launch. The observation runs on a
+    /// store worker; a timeout hydrates nothing extra and the pass itself still runs.
+    func backendsOwingCompletedSideAssets(
+        deadline: DownloadStoreDeadline = .after(30)
+    ) async -> Set<DownloadBackendKind> {
+        let candidates = records.filter(\.isComplete)
+        guard !candidates.isEmpty else { return [] }
+        let work = DownloadStoreWork { [store] in
+            candidates.compactMap { record -> DownloadBackendKind? in
+                guard let inventory = CompletedSideAssetInventory.observe(record: record, store: store),
+                      !inventory.missing.isEmpty else { return nil }
+                return DownloadJobSnapshot(record: record).backend
+            }
+        }
+        guard let backends = await work.observe(deadline: deadline) else { return [] }
+        return Set(backends)
+    }
+
     /// Reuse the pass inventory when still current. Other cache entry points perform their
     /// observation on a worker too; no caller blocks MainActor on attributes or file existence.
     func reusableSideAssetObservations(for key: DownloadAttemptKey, destinations: [URL]) async -> Set<String> {

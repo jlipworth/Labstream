@@ -481,7 +481,9 @@ keep their normal later scheduling. It uses the existing paced, authenticated si
 and respects network preferences. A pause stops transfers, not a row's own artwork: paused rows
 and rows waiting behind Pause All are offered a poster too, and the poster fetch has its own
 side-asset owner that Pause and Pause All never park (every other side asset stays parked with
-the attempt; Delete cancels both). Each attempt/source gets one early offer per
+the attempt; Delete cancels both). Like every other side asset, a poster fetch registers its
+owner when it starts, so a cancel that kept the row and attempt (for example a Plex preparation
+poller that found no session) does not stop later poster fetches for that attempt (#482). Each attempt/source gets one early offer per
 launch; a failed fetch is non-fatal and remains eligible for normal later side-asset hydration.
 Validation, attempt/source-fenced staging and promotion, `sideAssetBundleOwner`, and
 `posterGeneration` are unchanged. Cached poster bytes count as side-asset storage, survive
@@ -588,7 +590,9 @@ Recovery also:
   next eligible waiter. The worker inventories every owned side asset even after finding a missing file, so playlist
   repair retains later existing tiles when their server requests would fail. Successful promotion,
   including a same-path replacement, advances the side-asset generation so byte accounting and
-  storage-cap snapshots cannot retain stale cache values;
+  storage-cap snapshots cannot retain stale cache values. The repair needs the row's own backend
+  session, so launch also restores the saved session of a backend that is not selected when one
+  of its completed rows misses a side asset (#494);
 - keeps completed media available without requiring the source server to be reachable;
 - keeps a failed Emby Convert row's server job when Retry would resume it: the launch and
   backend-switch cleanup sweep cancels Convert jobs only for completed, deleted or abandoned rows,
@@ -687,7 +691,10 @@ available on visionOS, iOS/iPadOS and macOS; tvOS has no Downloads settings.
   ownership, with supported remote-job cleanup belonging to Delete.
   Finished bodies already being verified are allowed to finish. A row's own Resume or Retry
   during Pause All is exempt for that row only; its pending or active work offers Pause All
-  again, and the next Pause All revokes every exemption.
+  again, and the next Pause All revokes every exemption. Side-asset work that enters a fetch
+  behind Pause All is parked even for a row the pause did not stop (a completed row's next
+  subtitle stream or trickplay tiles), so **Resume All** unparks the side assets of every row
+  that is not itself paused before it runs the completed-row repair (#483).
 - **Barriers.** Nothing is granted before startup recovery has reattached tasks and pollers (work
   the OS still owned counts first, even over a cap), or while a season commit is proving
   durability.
@@ -880,8 +887,8 @@ all discovery switched off; that result is withdrawn.
 
 The completed-row scan is modelled as it is in the code: one inventory pass per edge, dropped
 while another runs, on its 30 s timeout, or for a row whose generation moved. Sessions are per
-backend and mean the row's own server and user; launch hydrates the selected backend and
-backends with active work. Delete is the store's staged deletion against its three-step
+backend and mean the row's own server and user; launch hydrates the selected backend,
+backends with active work, and backends with a completed row that misses an asset. Delete is the store's staged deletion against its three-step
 promotion. Properties are scoped to rows with an attempt ID; a completed row without one is a
 malformed index that the store resets on load (`Mutant-UnownedRow`). The model also checks that
 repair stays inside the coordinator's cap and budget (B25), that commands apply in request
@@ -889,8 +896,9 @@ order (B32), and that a user-paused row's parked payloads stay off the network.
 
 Findings SideAssets-S1 to S8; the model also reproduces the deferred st-39 and #394 (for
 trickplay tiles too). `NeverForgotten` holds on the code as it stands for every kind with every
-environment switch on, including the triggers of S1, S2, S3 and S5, so each of those lasts one
-launch; it fails for S6 and S7. Not covered: request pacing, coalesced waiters, a
+environment switch on, including the triggers of S3 and S5, so each of those lasts one launch; it
+fails for S7. S1, S2 and S6 are fixed in the code (each keeps a `Faithful-*-off` config that
+fails with its fix switched off). Not covered: request pacing, coalesced waiters, a
 source-identity change inside one attempt, a recorded file that disappears from disk, a task
 cancelled mid-promotion, an offline launch.
 
@@ -1085,12 +1093,12 @@ as the defect is fixed.
 | B30 | On a completely full volume the deletion intent cannot be saved, so Delete frees nothing. | real, known | #393 |
 | Wake-W1 | A completion handler that arrives while a claimed batch waits for its release inherits that batch's deadline. | probable | #480 |
 | Wake-W2 | An operation begun while an expired operation lingers does not hold the next wake. | probable | #481 |
-| SideAssets-S1 | A cancel that keeps the attempt leaves the poster's coordinator owner cancelled for the launch. | real | #482 |
-| SideAssets-S2 | Pause All can park a completed row's side assets with nothing left to unpark them: subtitles, Jellyfin trickplay tiles, and any fetch that enters late in a task. Lasts one launch. | real | #483 |
+| SideAssets-S1 | A cancel that keeps the attempt leaves the poster's coordinator owner cancelled for the launch. | real; fixed on specs/downloads-tla, pending merge | #482 |
+| SideAssets-S2 | Pause All can park a completed row's side assets with nothing left to unpark them: subtitles, Jellyfin trickplay tiles, and any fetch that enters late in a task. Lasts one launch. | real; fixed on specs/downloads-tla, pending merge | #483 |
 | SideAssets-S3 | A server outage spends the per-launch retry budget for an asset the server has. Trickplay retries are gated by the playlist's budget alone, and a park of an in-flight request also costs a dispatch. | behaviour confirmed; product decision | #484 |
 | SideAssets-S4 | A refused Resume leaves a user-paused row's side assets unparked. | behaviour confirmed; product decision | #485 |
 | SideAssets-S5 | A completed-row repair pass that is dropped (an edge while one runs, the 30 s timeout, a row whose generation moved) is not run again. | real, low | #493 |
-| SideAssets-S6 | A completed row on a backend that is not selected gets no session at launch, so no launch repairs its side assets until the user switches backend. | real, medium | #494 |
+| SideAssets-S6 | A completed row on a backend that is not selected gets no session at launch, so no launch repairs its side assets until the user switches backend. | real, medium; fixed on specs/downloads-tla, pending merge | #494 |
 | SideAssets-S7 | The Plex BIF is selected from the media's first part, not the downloaded part: never requested when only the downloaded part has one, the wrong index cached when the first part has one. | real, medium | #495 |
 | SideAssets-S8 | A side-asset promotion gives up on any concurrent write to its row and nothing retries. | real, low | #496 |
 | st-39 | A side-asset file renamed but not yet recorded is left on disk by Delete. | real, known | #401 |

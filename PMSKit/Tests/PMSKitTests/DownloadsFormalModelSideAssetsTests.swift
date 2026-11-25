@@ -26,13 +26,12 @@ struct DownloadsFormalModelSideAssetsTests {
     private static let storePath = "Labstream/Capabilities/Downloads/Core/DownloadStore.swift"
     private static let contentViewPath = "Labstream/Shared/App/ContentView.swift"
 
-    /// S1. `releaseInFlight` in its default mode cancels both coordinator owners of an attempt:
-    /// the attempt's and the poster's. Several callers keep the row and its attempt afterwards
-    /// (a Plex prep poller that finds no session, for one). A cancelled owner is reopened only by
-    /// a fetch-entry command, and the poster fetch is the one fetch that sends none. Every later
-    /// poster fetch for that attempt throws `CancellationError` before it is charged to the retry
-    /// budget, so the repair pass offers it again on every foreground edge and it fails every
-    /// time. The row has no poster until the app is relaunched.
+    /// S1 (#482, fixed). `releaseInFlight` in its default mode cancels both coordinator owners of
+    /// an attempt: the attempt's and the poster's. Several callers keep the row and its attempt
+    /// afterwards (a Plex prep poller that finds no session, for one). A cancelled owner is
+    /// reopened only by a fetch-entry command. The poster fetch used to be the one fetch that sent
+    /// none, so every later poster fetch for that attempt threw `CancellationError` before it was
+    /// charged, for the rest of the launch. It now registers with an unpark, like every other kind.
     @Test("S1: a poster fetch reopens its cancelled coordinator owner")
     func posterFetchReopensItsCancelledOwner() throws {
         let fetch = try #require(Self.appSource(
@@ -51,20 +50,20 @@ struct DownloadsFormalModelSideAssetsTests {
         #expect(apply.contains("if registration { cancelledDownloadOwners.remove(owner) }"))
 
         let posterBranch = try #require(Self.slice(fetch, from: "if kind == .poster {", to: "} else {"))
-        withKnownIssue("TLA+ finding S1 (#482): a cancelled poster owner stays cancelled for the launch") {
-            #expect(posterBranch.contains("deliverOptionalSideAssetControl"),
-                    "the poster fetch never reopens the owner that a kept-attempt cancel closed")
-        }
+        #expect(posterBranch.contains("deliverOptionalSideAssetControl(.park(false)"),
+                "the poster fetch never reopens the owner that a kept-attempt cancel closed")
+        #expect(posterBranch.contains("fetchEntry: true"),
+                "only a fetch-entry (registration) command reopens a cancelled owner")
     }
 
-    /// S2. Behind Pause All every non-poster fetch entry parks the attempt's coordinator owner,
-    /// whatever the row's lifecycle. Pause All sends a completed (or finalizing) row no command,
-    /// but its side-asset tasks keep running, and the next fetch entry of one of them (the next
-    /// subtitle stream, say) parks the owner and everything queued under it. Resume All re-admits
-    /// paused and failed rows only; for a completed row it runs the repair pass, which starts a
-    /// kind only when the registry holds no task of that kind. The parked tasks are still
-    /// registered, so nothing enters a new fetch, nothing unparks the owner, and the remaining
-    /// assets are not fetched until the app is relaunched.
+    /// S2 (#483, fixed). Behind Pause All every non-poster fetch entry parks the attempt's
+    /// coordinator owner, whatever the row's lifecycle. Pause All sends a completed (or
+    /// finalizing) row no command, but its side-asset tasks keep running, and the next fetch entry
+    /// of one of them (the next subtitle stream, trickplay tiles) parks the owner and everything
+    /// queued under it. Resume All re-admits paused and failed rows only, and the repair pass it
+    /// runs starts a kind only when the registry holds no task of that kind, so nothing entered a
+    /// new fetch and nothing unparked the owner until relaunch. Resume All now unparks every row
+    /// that is not itself paused.
     @Test("S2: Resume All unparks the side assets of a completed row")
     func resumeAllUnparksCompletedRows() throws {
         // The pure half: Resume All does not re-admit a row that is already playable.
@@ -79,14 +78,15 @@ struct DownloadsFormalModelSideAssetsTests {
             in: Self.managerPath))
         #expect(resumeQueue.contains("rehydrateMissingOptionalSideAssetsForCompletedRows"))
 
-        withKnownIssue("TLA+ finding S2 (#483): Pause All strands a completed row's parked side assets") {
-            let entryParksAnyLifecycle = fetch.contains(
-                "|| (isQueuePaused && !admission.isExempt(key.ratingKey))")
-            let resumeAllUnparks = resumeQueue.contains("setOptionalSideAssetHydrationParked(false")
-                || resumeQueue.contains("deliverOptionalSideAssetControl(")
-            #expect(resumeAllUnparks || !entryParksAnyLifecycle,
-                    "a completed row parked behind Pause All is never unparked by Resume All")
-        }
+        let entryParksAnyLifecycle = fetch.contains(
+            "|| (isQueuePaused && !admission.isExempt(key.ratingKey))")
+        let resumeAllUnparks = resumeQueue.contains("setOptionalSideAssetHydrationParked(false")
+            || resumeQueue.contains("deliverOptionalSideAssetControl(")
+        #expect(resumeAllUnparks || !entryParksAnyLifecycle,
+                "a completed row parked behind Pause All is never unparked by Resume All")
+        // The model's fix unparks every row that is not paused (a completed row included) and
+        // leaves a paused row to its own resume.
+        #expect(resumeQueue.contains("where record.lifecycle != .paused"))
     }
 
     /// S5. The completed-row repair is edge driven: launch, foreground, backend ready or switched,
@@ -113,11 +113,11 @@ struct DownloadsFormalModelSideAssetsTests {
         }
     }
 
-    /// S6. Launch restores the selected backend's session, then hydrates only the other backends
-    /// that own active work or journaled server cleanup. A completed row on a backend that is not
-    /// selected therefore has no session: `rehydrateMissingOptionalSideAssets` looks the session
-    /// up, finds none and returns. Its missing poster, subtitles and trick-play index stay missing
-    /// through every launch until the user switches to that backend.
+    /// S6 (#494, fixed). Launch restores the selected backend's session, then used to hydrate
+    /// only the other backends that own active work or journaled server cleanup. A completed row
+    /// on a backend that is not selected had no session: `rehydrateMissingOptionalSideAssets`
+    /// looks the session up, finds none and returns, so its missing assets stayed missing through
+    /// every launch. Launch now also hydrates the backends of completed rows missing an asset.
     @Test("S6: launch gives a completed row that misses side assets its backend session")
     func launchHydratesBackendsOfCompletedRowsMissingAssets() throws {
         // The pure half: a completed row is not active work, so it never asks for hydration.
@@ -136,10 +136,16 @@ struct DownloadsFormalModelSideAssetsTests {
             from: "    private func runLaunchDownloadRecovery(", to: "\n        for backend in inactiveDownloadBackends",
             in: Self.contentViewPath))
         #expect(hydration.contains(".filter { $0.status.isActiveWork }"))
-        withKnownIssue("TLA+ finding S6 (#494): a completed row on an inactive backend is never repaired at launch") {
-            #expect(hydration.contains("isComplete") || hydration.contains("ideAsset"),
-                    "launch hydration ignores completed rows whose side assets are missing")
-        }
+        #expect(hydration.contains("downloadManager.backendsOwingCompletedSideAssets()"),
+                "launch hydration ignores completed rows whose side assets are missing")
+        #expect(hydration.contains(".union(sideAssetBackends)"))
+        let owing = try #require(Self.appSource(
+            from: "    func backendsOwingCompletedSideAssets(", to: "\n    /// Reuse the pass inventory",
+            in: Self.sideCachePath))
+        // The same durable observation the repair pass uses decides which backends are owed.
+        #expect(owing.contains("records.filter(\\.isComplete)"))
+        #expect(owing.contains("CompletedSideAssetInventory.observe(record: record, store: store)"))
+        #expect(owing.contains("!inventory.missing.isEmpty"))
     }
 
     /// S7. A Plex download transfers the part the user chose (`part[partIndex]`). The BIF request,

@@ -2171,6 +2171,15 @@ public final class DownloadManager {
         // Rows added behind the pause are already waiting requests; nothing above changes the
         // occupancy signature for them, so ask for an admission pass directly.
         scheduleAdmissionPump()
+        // #483 (TLA+ S2): behind Pause All, a fetch entry of a row the pause did not stop (a
+        // completed or finalizing row's next subtitle stream or trickplay tiles) parks the
+        // attempt's owner, and its tasks stay registered, so the repair pass below starts nothing
+        // that would unpark it. Unpark every row that is not itself paused; a paused row is
+        // unparked by `retryRecordAsync` once its resume is admitted.
+        for record in store.records where record.lifecycle != .paused {
+            guard let key = attemptKey(for: record) else { continue }
+            setOptionalSideAssetHydrationParked(false, for: key)
+        }
         rehydrateMissingOptionalSideAssetsForCompletedRows(reason: "queue_resumed")
         resumePendingServerPrepDownloads()
         resumePendingStaticRangeDownloads()
