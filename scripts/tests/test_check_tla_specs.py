@@ -645,18 +645,28 @@ class TlaPipelineTests(unittest.TestCase):
         self.assertNotIn("backend: local", pipeline)
         # The range starts at the pull request's own target branch, read at run time.
         self.assertIn('TARGET="$${CI_COMMIT_TARGET_BRANCH:?', pipeline)
-        self.assertIn('scripts/check-tla-drift.py "origin/$TARGET...HEAD"', pipeline)
-        self.assertIn('--unshallow origin "+refs/heads/$TARGET:refs/remotes/origin/$TARGET"', pipeline)
+        self.assertIn('scripts/check-tla-drift.py "origin/$$TARGET...HEAD"', pipeline)
+        self.assertIn('--unshallow origin "+refs/heads/$$TARGET:refs/remotes/origin/$$TARGET"', pipeline)
         commands = [line for line in pipeline.splitlines() if line.lstrip().startswith("- ")]
         self.assertFalse([line for line in commands if "main" in line], "no command may hard-code main")
+
+    def test_woodpecker_pipelines_have_no_unescaped_dollar_signs(self):
+        """Woodpecker substitutes variables over the whole file, comments included, before it
+        parses the YAML. A lone `$` is replaced by the server (usually with nothing) or, as a
+        `${...}` in a comment once did, fails the whole pipeline with "unable to parse variable
+        name", so no check reports at all. Shell dollars must be written `$$`."""
+        for name in ("tla.yml", "tla-drift.yml"):
+            text = (REPO / ".woodpecker" / name).read_text(encoding="utf-8")
+            lone = [line for line in text.splitlines() if "$" in line.replace("$$", "")]
+            self.assertEqual(lone, [], f".woodpecker/{name} has an unescaped $")
 
     def test_the_drift_step_compares_against_the_target_branch(self):
         """Run the pipeline's own commands against a PR that targets a release branch."""
         pipeline = (REPO / ".woodpecker" / "tla-drift.yml").read_text(encoding="utf-8")
         commands = [line.strip()[2:] for line in pipeline.split("commands:", 1)[1].splitlines()
                     if line.strip().startswith("- ")]
-        # Woodpecker's pre-processing turns `$${X}` into `${X}`; the image setup needs no test.
-        steps = [command.replace("$${", "${").replace("python scripts/", f"{sys.executable} {REPO}/scripts/")
+        # Woodpecker's pre-processing turns every `$$` into `$`; the image setup needs no test.
+        steps = [command.replace("$$", "$").replace("python scripts/", f"{sys.executable} {REPO}/scripts/")
                  .replace("check-tla-drift.py ", "check-tla-drift.py --repo . ")
                  for command in commands if not command.startswith(("apt-get", "rm -rf /var/lib/apt"))]
         self.assertEqual(len(steps), 4, steps)

@@ -14,12 +14,13 @@ steps:
       - rm -rf /var/lib/apt/lists/*
       # Compare against the branch this pull request targets, not always main: a PR into a
       # release or stacked branch must be measured from that branch. Woodpecker sets
-      # CI_COMMIT_TARGET_BRANCH for pull_request events only; `$$` keeps Woodpecker's own
-      # `${...}` pre-processing out of it, so the shell reads the variable at run time. An unset
-      # or malformed value stops the step: there is no fallback to main.
+      # CI_COMMIT_TARGET_BRANCH for pull_request events only. Woodpecker substitutes variables
+      # across this whole file (comments included) before parsing it, so every shell dollar sign
+      # below is doubled to reach the shell literally, and none may appear unescaped, even in a
+      # comment. An unset or malformed value stops the step: there is no fallback to main.
       - TARGET="$${CI_COMMIT_TARGET_BRANCH:?not a pull request pipeline, so there is no target branch}"
-      - git check-ref-format "refs/heads/$TARGET"
+      - git check-ref-format "refs/heads/$$TARGET"
       # Woodpecker clones shallowly by default; a shallow PR clone may have no merge base
       # with the target branch, so deepen it before computing the range.
-      - if [ "$(git rev-parse --is-shallow-repository)" = true ]; then git fetch --no-tags --unshallow origin "+refs/heads/$TARGET:refs/remotes/origin/$TARGET"; else git fetch --no-tags origin "+refs/heads/$TARGET:refs/remotes/origin/$TARGET"; fi
-      - python scripts/check-tla-drift.py "origin/$TARGET...HEAD"
+      - if [ "$$(git rev-parse --is-shallow-repository)" = true ]; then git fetch --no-tags --unshallow origin "+refs/heads/$$TARGET:refs/remotes/origin/$$TARGET"; else git fetch --no-tags origin "+refs/heads/$$TARGET:refs/remotes/origin/$$TARGET"; fi
+      - python scripts/check-tla-drift.py "origin/$$TARGET...HEAD"

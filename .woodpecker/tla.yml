@@ -29,5 +29,5 @@ steps:
       - ./scripts/check-tla-specs.sh
       # Woodpecker clones shallowly by default; a shallow PR clone may have no merge base
       # with main, so deepen it before computing the range.
-      - if [ "$(git rev-parse --is-shallow-repository)" = true ]; then git fetch --no-tags --unshallow origin +refs/heads/main:refs/remotes/origin/main; else git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main; fi
+      - if [ "$$(git rev-parse --is-shallow-repository)" = true ]; then git fetch --no-tags --unshallow origin +refs/heads/main:refs/remotes/origin/main; else git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main; fi
       - python3 scripts/check-tla-drift.py origin/main...HEAD
