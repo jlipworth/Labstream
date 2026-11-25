@@ -5618,7 +5618,13 @@ final class DownloadStore: @unchecked Sendable {
     /// `liveRatingKeys` is reattach's earlier snapshot, and a finished body queued for its append
     /// has no task in it. The question is asked off the store lock, between the row snapshot and
     /// the generation check that commits the decision, so a row change in between retries it.
+    ///
+    /// `observedRows` is what a foreground caller saw when it chose `snapshotRatingKeys`
+    /// (`reconcileRowObservations`). A row that changed since is not judged: admission is open
+    /// in the foreground, and the caller's exclusion of rows a start may own is only as fresh as
+    /// that snapshot (`DownloadReconcileSnapshotPolicy`). Launch reconcile passes nil.
     func reconcileOnWorker(liveRatingKeys: Set<String>, snapshotRatingKeys: Set<String>,
+                           observedRows: [String: DownloadReconcileRowObservation]? = nil,
                            sessionOwnsWork: (@Sendable (String) -> Bool)? = nil) {
         let candidates = lock.withLock { Array(rows.keys).filter { snapshotRatingKeys.contains($0) } }
         for ratingKey in candidates {
@@ -5626,6 +5632,10 @@ final class DownloadStore: @unchecked Sendable {
                 let snapshot = lock.withLock { (rows[ratingKey], rowMutationGenerations[ratingKey, default: 0]) }
                 guard var row = snapshot.0, !row.deletionPending, row.pendingArtifactIntents.isEmpty,
                       DownloadStatus.reconcileEligible(ratingKey: ratingKey, snapshotRatingKeys: snapshotRatingKeys) else { break }
+                guard DownloadReconcileSnapshotPolicy.judgesRow(
+                    ratingKey: ratingKey, observations: observedRows,
+                    current: DownloadReconcileRowObservation(
+                        attemptID: row.attemptID, mutationGeneration: snapshot.1)) else { break }
                 let key = DownloadAttemptKey(ratingKey: ratingKey,
                     attemptID: row.attemptID ?? DownloadAttemptID(rawValue: "unowned-legacy-row")!)
                 let hasLiveTask = DownloadReconcileLiveWorkPolicy.hasLiveTask(
@@ -5981,6 +5991,18 @@ final class DownloadStore: @unchecked Sendable {
 
     func mutationGeneration(for ratingKey: String) -> UInt64 {
         lock.withLock { rowMutationGenerations[ratingKey, default: 0] }
+    }
+
+    /// Every row's attempt and mutation generation, read in one step. A foreground reconcile
+    /// takes this before it chooses the rows it covers and hands it to `submitReconcile`.
+    func reconcileRowObservations() -> [String: DownloadReconcileRowObservation] {
+        lock.withLock {
+            rows.reduce(into: [:]) { observations, element in
+                observations[element.key] = DownloadReconcileRowObservation(
+                    attemptID: element.value.attemptID,
+                    mutationGeneration: rowMutationGenerations[element.key, default: 0])
+            }
+        }
     }
 
     func timeoutFailure(_ ticket: PersistenceTicket) -> PersistenceFlushResult {

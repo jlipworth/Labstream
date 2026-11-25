@@ -200,10 +200,11 @@ extension DownloadStore {
     }
 
     func submitReconcile(liveRatingKeys: Set<String>, snapshotRatingKeys: Set<String>,
+                         observedRows: [String: DownloadReconcileRowObservation]? = nil,
                          sessionOwnsWork: (@Sendable (String) -> Bool)? = nil) -> ReconcileSubmission {
         DownloadStoreWork {
             self.reconcileOnWorker(liveRatingKeys: liveRatingKeys, snapshotRatingKeys: snapshotRatingKeys,
-                                   sessionOwnsWork: sessionOwnsWork)
+                                   observedRows: observedRows, sessionOwnsWork: sessionOwnsWork)
             return self.flushPersistenceSynchronouslyForP6Adapter()
         }
     }

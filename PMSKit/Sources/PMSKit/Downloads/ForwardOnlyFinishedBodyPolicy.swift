@@ -42,6 +42,27 @@ public enum ForwardOnlyFinishedBodyPolicy {
         responseRejection == nil ? .durableCapture : .volatileStash
     }
 
+    public enum PublicationStep: Sendable, Equatable {
+        /// The body is at its capture (or stash) path: move it onto the working path.
+        case moveBody
+        /// The body is gone from its capture path and the working path holds a body: another
+        /// publication of the same attempt already moved it. Nothing is left to do, and the
+        /// working file must not be touched.
+        case alreadyPublished
+        /// Neither path holds the body. The move fails and fails the row, as before.
+        case bodyMissing
+    }
+
+    /// What a publication does once it holds the working path's lease. Publication is
+    /// idempotent: the lease serializes two publications of one attempt, and the second finds
+    /// the body already moved. It used to clear the working path before it noticed, which
+    /// deleted the only copy of the body and then failed the row.
+    public static func publicationStep(bodyExistsAtCapturePath: Bool,
+                                       workingBodyBytes: Int) -> PublicationStep {
+        if bodyExistsAtCapturePath { return .moveBody }
+        return workingBodyBytes > 0 ? .alreadyPublished : .bodyMissing
+    }
+
     public enum Publication: Sendable, Equatable {
         case publish
         case discard

@@ -2297,12 +2297,18 @@ public final class DownloadManager {
         // B.13: same snapshot rule as launch — rows created while `getAllTasks` runs are skipped.
         // Admission is open here, so forward-only rows a granted start may own are skipped too
         // (Admission-A1, #475): relaunch would requeue one whose task does not exist yet.
-        let snapshotRatingKeys = store.allRatingKeys.subtracting(forwardOnlyRowsAdmissionMayOwn())
+        // That exclusion is only as fresh as this snapshot. A paused row the user resumes while
+        // `getAllTasks` runs is granted and `admitted` before its task exists, so reconcile also
+        // gets each row's attempt and mutation generation, read before the exclusion, and leaves
+        // a row that changed since to whoever changed it (#475 review).
+        let observedRows = store.reconcileRowObservations()
+        let snapshotRatingKeys = Set(observedRows.keys).subtracting(forwardOnlyRowsAdmissionMayOwn())
         // R2 (#476): `liveKeys` is a snapshot; reconcile also asks the session what it owns when
         // it decides, so a finished body queued for its append is not failed with its row.
         session.reattach { [weak self, store, session] liveKeys in
             let submission = store.submitReconcile(
                 liveRatingKeys: liveKeys, snapshotRatingKeys: snapshotRatingKeys,
+                observedRows: observedRows,
                 sessionOwnsWork: { session.ownsInProgressStaticRangeWork(ratingKey: $0) })
             Task { @MainActor in
                 let proof = await store.resolve(submission, deadline: .after(30))

@@ -135,6 +135,13 @@ Rules that follow from this:
     relaunch reconcile reports the body as captured, keeps or makes the row `finalizing`
     (whether or not `bodyCaptured` was durable yet), and launch recovery requeues the
     publication.
+  - A body has one publication at a time. The delegate claims it before the body is at the
+    capture path, so a recovery pass that finds the body there cannot queue a second one, and a
+    finish delivered twice is dropped. A publication that finds the body already at the working
+    path does nothing.
+  - A publication that cannot get the working path before its deadline is parked, not dropped.
+    It runs again when that path's lease is released, when a recovery pass asks for the body,
+    or after five seconds.
   - A rejected response is not a download. It keeps an in-memory `tmp/` stash until the
     publication fails the row with the server's reason.
 - **A pause never discards a finished body, on either lane.**
@@ -145,7 +152,9 @@ Rules that follow from this:
     the publishing finalizer unparks them (unless Pause All holds the row; Resume All then does).
   - Static range: a finished segment is appended and the row then pauses. The pause's task
     listing leaves a task that has already finished tracked, so its finish callback still
-    writes the body; it supersedes and cancels only tasks that are still transferring.
+    writes the body; it supersedes and cancels only tasks that are still transferring. A
+    progress callback under the pause makes the same decision, so the last progress of a
+    finished task does not drop it either.
 - **Reconcile asks the session what it owns when it decides.** Its live keys are a snapshot
   reattach took earlier. For an active row (never a paused one) reconcile also counts work the
   session owns at that moment: a finished body queued for its append, a delayed retry, a request
@@ -651,7 +660,10 @@ Recovery also:
   checkpoint: a granted start that the process lost before its task existed waits for a lane
   again, as it would in process, and a row paused before it ever started stays paused (it used
   to come back as a network failure; Admission-A1, #475). Foreground reconcile skips
-  forward-only rows a granted start may still own, since admission is open then;
+  forward-only rows a granted start may still own, since admission is open then. It also
+  leaves any row that changed between its snapshot and its decision (it compares the row's
+  attempt and mutation generation), so a row the user resumes while the task listing runs is
+  not requeued under its start;
 - fails a Jellyfin download or retry with "version no longer available" when the requested
   MediaSource has disappeared, instead of silently fetching another edition;
 - treats sign-out of a backend as a resumable pause of that backend's active rows. Records

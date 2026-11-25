@@ -211,6 +211,25 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Claimed BEFORE renames; retained through queued append and held manifest publication.
     /// Both orphan sweeps check this under `lock` while deleting.
     private var claimedRangeBodyURLs: [URL: (key: DownloadAttemptKey, bytes: Int, offset: Int?, trainEpoch: Int)] = [:]
+    /// A finished forward-only body waiting for its publication, with what the publication
+    /// needs to run again after a lease wait timed out.
+    private struct ParkedOpaquePublication {
+        let entry: OpaqueTransfer
+        let response: URLResponse?
+        let requestURL: URL?
+        let stash: URL
+        let currency: DelayedRangeRetryCurrency
+    }
+    /// Who publishes a finished forward-only body: one worker, or one parked retry. Keyed by
+    /// the path the body waits at (an attempt's capture path, or a task's `tmp/` stash).
+    /// Claimed BEFORE the body is moved to its capture path, where launch recovery looks for
+    /// it, and released only when the publication ends. `claimedRangeBodyURLs` still carries the
+    /// body's file claim for the sweeps and the storage estimate.
+    private let opaquePublications = ForwardOnlyPublicationLedger<URL, ParkedOpaquePublication>()
+    /// A parked publication is woken by the release of the lease it waited for. Other
+    /// reservations of the working path end without a lease release, so it also asks again
+    /// after this long.
+    var parkedOpaquePublicationBackstop: TimeInterval = 5
     /// Last aggregate-rate sample per live Range attempt and the train epoch it belongs to (#416).
     private var rangeRateSamples: [DownloadAttemptKey: (bytes: Int, trainEpoch: Int)] = [:]
     /// RatingKeys whose static Range lane must not create replacement work — inserted by
@@ -789,7 +808,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         self.releaseBackgroundCompletion = releaseBackgroundCompletion
         super.init()
         store.setPathLeaseReleaseHandler { [weak self] lease in
-            self?.rangeIOQueue.async { [weak self] in self?.resumeDeferredHealthRefill(releasedPaths: lease.relativePaths) }
+            self?.rangeIOQueue.async { [weak self] in
+                self?.resumeDeferredHealthRefill(releasedPaths: lease.relativePaths)
+                self?.resumeParkedOpaquePublications(releasedPaths: lease.relativePaths)
+            }
         }
         backgroundWakeCoordinator.setEffectHandler { [weak self] drain in
             self?.applyBackgroundWakeDrain(drain)
@@ -834,6 +856,27 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     var delayedRetryWillRegisterForTesting: (() -> Void)?
     var delayedRetryRegistrationRejectedForTesting: (() -> Void)?
     var rangeBodyDidConsumeForTesting: ((URL) -> Void)?
+    /// A finished opaque body has just been moved out of the URLSession temp, to its capture
+    /// path or its stash, and the delegate has not queued its publication yet.
+    var opaqueBodyDidReachStashForTesting: (() -> Void)?
+    /// A publication's lease wait ran out and it was parked.
+    var opaquePublicationDidParkForTesting: (() -> Void)?
+    /// Who owns the publication of the body at `key`'s capture path.
+    func opaquePublicationOwnerForTesting(_ key: DownloadAttemptKey) -> ForwardOnlyPublicationOwner? {
+        store.forwardOnlyCapturedBodyURL(for: key)
+            .flatMap { opaquePublications.owner(of: $0.standardizedFileURL) }
+    }
+    /// Queue one more publication of the body at `key`'s capture path, beside whatever owns it:
+    /// the second publisher the claim now prevents. Publication must still be idempotent.
+    func queueCompetingOpaquePublicationForTesting(_ key: DownloadAttemptKey) {
+        guard let captured = store.forwardOnlyCapturedBodyURL(for: key),
+              let destination = store.attemptWorkingFileURL(for: key) else { return }
+        let currency = checkpointCurrency(for: key)
+        let entry = OpaqueTransfer(attemptKey: key, destination: destination)
+        rangeIOQueue.async { [self] in
+            finishOpaqueBody(entry: entry, response: nil, requestURL: nil, stash: captured, currency: currency)
+        }
+    }
 
     func sweepRangeBodiesForTesting(durable: Bool) {
         if durable { sweepOrphanedDurableHeldRangeSegments() }
@@ -3999,8 +4042,21 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             let accountedBodyBytes = DownloadLiveRangeProgressPolicy.accountedTaskBodyBytes(
                 reportedBytes: bodyBytesWritten,
                 segmentLength: rangeEntry.segmentLength)
+            // A task that has finished is left tracked under a pause halt: this can be its last
+            // progress, delivered after the pause installed the halt and before the finish
+            // callback, and superseding it here made that callback drop the body (#474 review).
+            let expectedBodyBytes = totalBytesExpectedToWrite > 0
+                ? totalBytesExpectedToWrite : downloadTask.countOfBytesExpectedToReceive
+            let taskIsCompleted = downloadTask.state == .completed
+            let receivedBodyBytes = max(totalBytesWritten, downloadTask.countOfBytesReceived)
             lock.lock()
-            let halted = rangeHaltKinds[rangeEntry.attemptKey] != nil
+            let haltKind = rangeHaltKinds[rangeEntry.attemptKey]
+            let haltedDisposition = haltKind.map {
+                StaticRangeFinishedBodyPolicy.haltedProgressDisposition(
+                    haltKind: $0, taskStateIsCompleted: taskIsCompleted,
+                    bytesWritten: receivedBodyBytes, bytesExpectedToWrite: expectedBodyBytes)
+            }
+            let halted = haltedDisposition == .supersedeAndCancel
             if halted {
                 rangeInflight.removeValue(forKey: downloadTask.taskIdentifier)
                 supersededRangeTaskIdentifiers.insert(downloadTask.taskIdentifier)
@@ -4008,6 +4064,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 lastRangeProgressDiagnostic.removeValue(forKey: downloadTask.taskIdentifier)
             }
             lock.unlock()
+            if haltedDisposition == .leaveForFinishCallback {
+                AppDiagnostics.record(.downloads, "downloads.range_halted_progress_finished_task_kept", fields: [
+                    "download_id": .identifier(rangeEntry.ratingKey),
+                    "task_id": .int(downloadTask.taskIdentifier),
+                    "base_offset": .int(rangeEntry.baseOffset),
+                    "body_bytes": .int(bodyBytesWritten),
+                ])
+                return
+            }
             if halted {
                 downloadTask.cancel()
                 AppDiagnostics.record(.downloads, "downloads.range_halted_progress_ignored", fields: [
@@ -4389,10 +4454,25 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ? store.forwardOnlyCapturedBodyURL(for: entry.attemptKey) : nil
         let stash = capturePath
             ?? rangeBodyStashURL(taskIdentifier: downloadTask.taskIdentifier, offset: 0)
+        // Claim before the body is where anyone else can find it. Launch recovery looks for a
+        // body at the capture path; claiming only after the move let it claim the same body in
+        // between, and the two publications then deleted it (#472 review). A capture path that
+        // already has a publication keeps that one: this finish is a second delivery of the
+        // attempt's body. (A `tmp/` stash is named by its task, so its claim always succeeds.)
+        guard opaquePublications.claim(stash.standardizedFileURL) else {
+            try? fileManager.removeItem(at: location)
+            AppDiagnostics.record(.downloads, "downloads.opaque_duplicate_finish_ignored", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "task_id": .int(downloadTask.taskIdentifier),
+            ])
+            return
+        }
+        claimRangeBody(stash, for: entry.attemptKey, bytes: fileSize(at: location) ?? 0)
         do {
             if capturePath != nil { try? fileManager.removeItem(at: stash) }
             try fileManager.moveItem(at: location, to: stash)
         } catch {
+            releaseOpaqueBodyClaims(stash: stash)
             let outOfSpace = DownloadDiskSpacePolicy.isOutOfSpace(error)
             AppDiagnostics.record(.downloads, "downloads.move_failed", fields: [
                 "download_id": .identifier(entry.ratingKey),
@@ -4405,7 +4485,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             onChange?()
             return
         }
-        claimRangeBody(stash, for: entry.attemptKey, bytes: fileSize(at: stash) ?? 0)
+        #if DEBUG
+        opaqueBodyDidReachStashForTesting?()
+        #endif
         let currency = checkpointCurrency(for: entry.attemptKey)
         let response = downloadTask.response
         let requestURL = downloadTask.originalRequest?.url
@@ -4437,7 +4519,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                   acquiredLease: DownloadPathLease? = nil) {
         guard opaquePublication(for: currency) == .publish else {
             if let acquiredLease { store.releasePathLease(acquiredLease) }
-            releaseRangeBodyClaim(stash)
+            releaseOpaqueBodyClaims(stash: stash)
             return
         }
         let lease: DownloadPathLease
@@ -4451,16 +4533,39 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 case .acquired(let lease):
                     finishOpaqueBody(entry: entry, response: response, requestURL: requestURL,
                         stash: stash, currency: currency, acquiredLease: lease)
-                case .staleOrMissing, .invalidPath: releaseRangeBodyClaim(stash)
-                case .busy, .timedOut: break
+                case .staleOrMissing, .invalidPath:
+                    releaseOpaqueBodyClaims(stash: stash)
+                case .busy, .timedOut:
+                    // The wait ran out with the working path still busy. Leaving here with the
+                    // claim and nothing queued stranded the body: every later recovery pass saw
+                    // the claim and scheduled nothing (#472 review). Park the publication.
+                    publishOpaqueBodyWithoutWaiting(ParkedOpaquePublication(
+                        entry: entry, response: response, requestURL: requestURL,
+                        stash: stash, currency: currency))
                 }
             }
             return
-        case .invalidPath, .staleOrMissing, .timedOut: releaseRangeBodyClaim(stash); return
+        case .invalidPath, .staleOrMissing, .timedOut:
+            releaseOpaqueBodyClaims(stash: stash)
+            return
         }
-        defer { store.releasePathLease(lease); releaseRangeBodyClaim(stash) }
+        defer {
+            store.releasePathLease(lease)
+            releaseOpaqueBodyClaims(stash: stash)
+        }
         guard opaquePublication(for: currency) == .publish,
               store.attemptWorkingFileURL(for: entry.attemptKey) == entry.workingURL else { return }
+        // Publication is idempotent. The lease serializes two publications of one attempt; the
+        // second finds the body already moved and must not clear the working path it is at.
+        let publicationStep = ForwardOnlyFinishedBodyPolicy.publicationStep(
+            bodyExistsAtCapturePath: fileManager.fileExists(atPath: stash.path),
+            workingBodyBytes: fileSize(at: entry.workingURL) ?? 0)
+        if publicationStep == .alreadyPublished {
+            AppDiagnostics.record(.downloads, "downloads.opaque_publication_already_done", fields: [
+                "download_id": .identifier(entry.ratingKey),
+            ])
+            return
+        }
         // F3 (#474): the transfer is finished, so a pause that raced it has nothing left to
         // stop. Drop the pause halt: the finalizer treats any halt as a reason to stand down,
         // and a finished body finalizes (the reducer keeps a finalizing row through a pause).
@@ -4601,14 +4706,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func requeueCapturedForwardOnlyBody(attemptKey: DownloadAttemptKey, destination: URL) -> Bool {
         guard let captured = store.forwardOnlyCapturedBodyURL(for: attemptKey),
               let bytes = fileSize(at: captured), bytes > 0 else { return false }
-        let claimed = lock.withLock { () -> Bool in
-            // A claim means this process's own publication is still queued.
-            guard claimedRangeBodyURLs[captured.standardizedFileURL] == nil else { return false }
-            claimedRangeBodyURLs[captured.standardizedFileURL] =
-                (key: attemptKey, bytes: bytes, offset: nil, trainEpoch: rangeTrainEpochs[attemptKey] ?? 0)
+        guard opaquePublications.claim(captured.standardizedFileURL) else {
+            // This process already owns the body's publication: a worker, or a retry parked on
+            // the working path's lease. Ask a parked one again instead of only reporting it.
+            rangeIOQueue.async { [self] in resumeParkedOpaquePublication(at: captured) }
             return true
         }
-        guard claimed else { return true }
+        claimRangeBody(captured, for: attemptKey, bytes: bytes)
         AppDiagnostics.record(.downloads, "downloads.opaque_captured_body_requeued", fields: [
             "download_id": .identifier(attemptKey.ratingKey),
             "bytes": .bytes(bytes),
@@ -4625,6 +4729,65 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             finishOpaqueBody(entry: entry, response: nil, requestURL: nil, stash: captured, currency: currency)
         }
         return true
+    }
+
+    /// Both claims on a finished opaque body end together, when its publication ends.
+    private func releaseOpaqueBodyClaims(stash: URL) {
+        releaseRangeBodyClaim(stash)
+        opaquePublications.release(stash.standardizedFileURL)
+    }
+
+    /// Runs on `rangeIOQueue`. Publish if the working path is free now; otherwise park the
+    /// publication. Never waits: the caller's lease wait has already run out, or this is a
+    /// retry of a parked publication.
+    ///
+    /// Trying once more before parking closes the gap between the wait's last poll and this
+    /// call: a lease released in that gap has already sent its wake, which found nothing
+    /// parked. A release after this try queues its wake behind this call on the same queue.
+    private func publishOpaqueBodyWithoutWaiting(_ publication: ParkedOpaquePublication) {
+        let key = publication.entry.attemptKey
+        let path = publication.entry.workingURL.lastPathComponent
+        beginPendingStaticRangeWork(ratingKey: key.ratingKey)
+        let operation = beginPendingBackgroundCompletionOperation(kind: .append)
+        defer {
+            endPendingStaticRangeWork(ratingKey: key.ratingKey)
+            endPendingBackgroundCompletionOperation(operation)
+        }
+        switch store.tryAcquirePathLease(for: key, relativePaths: [path], purpose: .append) {
+        case .acquired(let lease):
+            finishOpaqueBody(entry: publication.entry, response: publication.response,
+                requestURL: publication.requestURL, stash: publication.stash,
+                currency: publication.currency, acquiredLease: lease)
+        case .busy, .timedOut:
+            let stash = publication.stash
+            guard opaquePublications.park(stash.standardizedFileURL, waitingFor: path,
+                                          work: publication) else { return }
+            AppDiagnostics.record(.downloads, "downloads.opaque_publication_parked", fields: [
+                "download_id": .identifier(key.ratingKey),
+            ])
+            let backstop = parkedOpaquePublicationBackstop
+            rangeIOQueue.asyncAfter(deadline: .now() + backstop) { [weak self] in
+                self?.resumeParkedOpaquePublication(at: stash)
+            }
+            #if DEBUG
+            opaquePublicationDidParkForTesting?()
+            #endif
+        case .staleOrMissing, .invalidPath:
+            releaseOpaqueBodyClaims(stash: publication.stash)
+        }
+    }
+
+    /// Runs on `rangeIOQueue`: a lease was released, so publications parked on its paths run.
+    private func resumeParkedOpaquePublications(releasedPaths: Set<String>) {
+        for resumed in opaquePublications.resume(releasedPaths: releasedPaths) {
+            publishOpaqueBodyWithoutWaiting(resumed.work)
+        }
+    }
+
+    /// Runs on `rangeIOQueue`: a recovery pass or the backstop asks for this body again.
+    private func resumeParkedOpaquePublication(at stash: URL) {
+        guard let publication = opaquePublications.resume(stash.standardizedFileURL) else { return }
+        publishOpaqueBodyWithoutWaiting(publication)
     }
 
     /// JF-F4: adopt a finished OPAQUE (forward-only) background task that this session is tracking
