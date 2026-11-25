@@ -808,7 +808,7 @@ public final class DownloadManager {
         }
         self.session.onBackgroundWakeAuthorized = { [weak self] in
             Task { @MainActor in
-                self?.aggregateRateEstimator.resetAfterWake()
+                self?.aggregateRateEstimator.resetAfterWake(at: Date())
                 self?.scheduleRefreshRecords(reason: "background_wake_speed")
                 self?.resumeStartupRecoveryAfterAuthorization()
             }
@@ -2246,8 +2246,8 @@ public final class DownloadManager {
     /// queued static rows captured before reconcile as well as rows already downloading; either can
     /// be the row whose first reattached/restarted callback exposes accumulated background bytes.
     private func beginDownloadRateForegroundRebaseline() {
-        aggregateRateEstimator.resetAfterWake()
         let now = Date()
+        aggregateRateEstimator.resetAfterWake(at: now)
         let interruptedStaticKeys = Set(store.interruptedStaticByteRangeKeys())
         let downloadingRecords = store.records.filter { $0.status == .downloading }
         for ratingKey in downloadingRecords.map(\.ratingKey) {
@@ -4995,6 +4995,10 @@ public final class DownloadManager {
               !store.isDeletionPending(for: key),
               DownloadStallRecoveryPolicy.isForwardOnlyMediaBrowserStream(current) else { return }
         let backend = DownloadJobSnapshot(record: current).backend
+        if restart.verdict == .fail {
+            await failStalledForwardOnlyStreamAsync(restart, current: current, key: key, backend: backend)
+            return
+        }
         recordDownloadDiagnostic("downloads.forward_stream_stall_restart", fields: [
             "download_id": .identifier(ratingKey),
             "backend": .label(backend.rawValue),
@@ -5021,6 +5025,35 @@ public final class DownloadManager {
         if let failed = store.record(for: key) {
             requestAdmission(for: failed, origin: .automatic)
         }
+    }
+
+    /// #497 (TLA+ Status-S5): the automatic restarts are spent and the stream stalled again. Fail
+    /// the row as stalled with a retryable reason instead of leaving it `downloading` at zero bytes
+    /// for ever (where it also held "Updating speed…" up for the batch). No admission request: the
+    /// user retries, and that retry starts with a fresh restart budget (`releaseInFlight` drops the
+    /// tracker entry).
+    private func failStalledForwardOnlyStreamAsync(_ restart: DownloadForwardOnlyStallRestart,
+                                                   current: DownloadRecord,
+                                                   key: DownloadAttemptKey,
+                                                   backend: DownloadBackendKind) async {
+        let ratingKey = restart.record.ratingKey
+        recordDownloadDiagnostic("downloads.forward_stream_stall_failed", fields: [
+            "download_id": .identifier(ratingKey),
+            "backend": .label(backend.rawValue),
+            "lane": .label(current.metadata?.resolvedDownloadLane().rawValue ?? "unknown"),
+            "bytes": .bytes(current.bytes),
+            "stalled_seconds": .int(Int(restart.stalledFor.rounded())),
+            "attempts": .int(restart.attempt),
+            "max_attempts": .int(DownloadStallRecoveryPolicy.defaultMaxAutomaticRestarts),
+        ])
+        session.cancel(ratingKey: ratingKey)
+        retryState.removeRetrying(ratingKey)
+        clearRetryHandoff(ratingKey: ratingKey)
+        lastError[ratingKey] = .transferFailed(
+            "Network stalled and the stream did not recover after \(restart.attempt) automatic restarts. Retry to start it again.")
+        guard await applyLifecycleEvent(.stallDetected, for: key, context: "stream_stall_capped") else { return }
+        releaseInFlight(for: key)
+        refreshRecords()
     }
 
     private func updateDownloadWatchdog(for records: [DownloadRecord]) {
@@ -5295,7 +5328,7 @@ public final class DownloadManager {
 
     func makeOfflineLibrarySnapshot(from records: [DownloadRecord]) -> OfflineLibrarySnapshot {
         refreshResumePresenceEvidence(records: records)
-        aggregateRateEstimator.setActiveTransfers(aggregateRateTransferKeys(records))
+        aggregateRateEstimator.setActiveTransfers(aggregateRateTransferKeys(records), at: Date())
         return OfflineLibrarySnapshotBuilder.make(
             records: records,
             isQueuePaused: isQueuePaused,

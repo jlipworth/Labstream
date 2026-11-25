@@ -48,6 +48,18 @@ struct DownloadWatchdogPolicyTests {
                                                                resumeMode: .staticByteRange)))
     }
 
+    @Test("Any transferring row needs watchdog refreshes, so a silent stall loses its speed (#488)")
+    func transferringRowsNeedWatchdog() {
+        var staticRow = record(status: .downloading, backend: .plex, lane: .original, resumeMode: .staticByteRange)
+        #expect(!DownloadWatchdogPolicy.requiresWatchdog(staticRow))
+        staticRow.lifecycle = .transferring
+        #expect(DownloadWatchdogPolicy.requiresWatchdog(staticRow))
+        for lifecycle: DownloadLifecycle in [.admitted, .paused, .failed, .finalizing, .complete] {
+            staticRow.lifecycle = lifecycle
+            #expect(!DownloadWatchdogPolicy.requiresWatchdog(staticRow), "\(lifecycle)")
+        }
+    }
+
     @Test("Collections require watchdog when any row does")
     func collectionPredicate() {
         let complete = record(status: .complete, backend: .plex, lane: .original, resumeMode: .staticByteRange)

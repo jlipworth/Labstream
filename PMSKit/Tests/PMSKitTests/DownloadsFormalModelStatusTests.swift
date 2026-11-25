@@ -87,6 +87,9 @@ struct DownloadsFormalModelStatusTests {
 
     private struct BatchRun {
         var nonNilAnswers = 0
+        /// Answers that counted a silent transfer as zero (#487). In a steady batch every one of
+        /// them is a flowing transfer whose first callback after a wake came callbackGap late.
+        var zeroCountedAnswers = 0
         var longAwakePeriods = 0
         /// Awake periods in which some transfer's backlog outlasted the settling window (A1 broken).
         var lateBacklogPeriods = 0
@@ -138,14 +141,24 @@ struct DownloadsFormalModelStatusTests {
         var run = BatchRun()
         // Some transfer's backlog is still being reported after its settling window (A1 broken).
         var lateBacklog = false
-        estimator.setActiveTransfers(Set(keys))
+        estimator.setActiveTransfers(Set(keys), at: time(0))
+        // The batch's last reset: the silence clock of a transfer with no evidence since (#487).
+        var resetAt = 0.0
+        func silent(_ index: Int, _ now: Double) -> Bool {
+            let since = evidence[index]?.last ?? resetAt
+            return now >= since && now - since >= gap
+        }
 
         func check(_ now: Double, _ context: String) {
             guard let rate = estimator.rate(at: time(now)) else { return }
             run.nonNilAnswers += 1
             #expect(rate.isFinite && rate >= 0, "seed \(seed) \(context) t=\(now)")
-            // #379: an answer needs settled, fresh evidence from every transfer of the batch.
-            for index in 0..<count {
+            // #379: an answer needs settled, fresh evidence from every transfer of the batch,
+            // except one silent for callbackGap, which counts as zero (#487).
+            let counted = (0..<count).filter { !silent($0, now) }
+            #expect(!counted.isEmpty, "seed \(seed) \(context) t=\(now): every transfer is silent")
+            if counted.count < count { run.zeroCountedAnswers += 1 }
+            for index in counted {
                 guard let seen = evidence[index] else {
                     Issue.record("seed \(seed) \(context) t=\(now): transfer \(index) has no evidence")
                     continue
@@ -154,7 +167,9 @@ struct DownloadsFormalModelStatusTests {
                 #expect(now >= seen.first + settle, "seed \(seed) \(context) t=\(now): transfer \(index) is settling")
                 #expect(now - seen.last < gap, "seed \(seed) \(context) t=\(now): transfer \(index) is stale")
             }
-            let wrong = steady ? abs(rate - trueTotal) > tolerance : rate > trueTotal + tolerance
+            // In a steady batch the true total of the transfers that are counted.
+            let countedTotal = counted.map { peaks[$0] }.reduce(0, +)
+            let wrong = steady ? abs(rate - countedTotal) > tolerance : rate > trueTotal + tolerance
             if lateBacklog {
                 // Finding S7: counted here, stated as a known issue by the tests.
                 if wrong {
@@ -163,7 +178,7 @@ struct DownloadsFormalModelStatusTests {
                 }
             } else if steady {
                 // #379: never a partial sum. #224: never an inflated one.
-                #expect(!wrong, "seed \(seed) \(context) t=\(now): \(rate) is not the batch's \(trueTotal)")
+                #expect(!wrong, "seed \(seed) \(context) t=\(now): \(rate) is not the batch's \(countedTotal)")
             } else {
                 // #224: bytes that piled up are never divided by a short interval.
                 #expect(!wrong, "seed \(seed) \(context) t=\(now): \(rate) exceeds the peak total \(trueTotal)")
@@ -208,6 +223,10 @@ struct DownloadsFormalModelStatusTests {
                 if bytes > transfers[index].lastReported {
                     if let seen = evidence[index], at - seen.last >= gap || bytes < seen.lastBytes {
                         evidence.removeAll()
+                        resetAt = at
+                    } else if evidence[index] == nil, at - resetAt >= gap {
+                        evidence.removeAll()
+                        resetAt = at
                     }
                     if var seen = evidence[index] {
                         seen.last = at
@@ -240,8 +259,9 @@ struct DownloadsFormalModelStatusTests {
             let sleepFor = hinted ? rng.real(0.2...300) : rng.real(gap + 0.5...300)
             now = awakeUntil + sleepFor
             if hinted {
-                estimator.resetAfterWake()
+                estimator.resetAfterWake(at: time(now))
                 evidence.removeAll()
+                resetAt = now
             }
         }
         return run
@@ -254,9 +274,11 @@ struct DownloadsFormalModelStatusTests {
         var latePeriods = 0
         var lateWrong = 0
         var worst = 0.0
+        var zeroCounted = 0
         for seed in UInt64(1)...60 {
             let run = Self.runBatch(seed: seed, steady: true)
             answers += run.nonNilAnswers
+            zeroCounted += run.zeroCountedAnswers
             longPeriods += run.longAwakePeriods
             latePeriods += run.lateBacklogPeriods
             lateWrong += run.lateBacklogWrongAnswers
@@ -265,6 +287,9 @@ struct DownloadsFormalModelStatusTests {
         #expect(answers > 1_000, "the runs must publish speeds, or the test checks nothing")
         #expect(longPeriods > 50)
         #expect(latePeriods > 20, "the runs must include backlogs that outlast the settling window")
+        // #487's trade-off is exercised: a first post-wake callback up to 12 s late leaves its
+        // transfer silent for callbackGap, so it counts as zero and the rest is published exactly.
+        #expect(zeroCounted > 0, "the runs must include a transfer silent for callbackGap")
         withKnownIssue("TLA+ finding S7 (#499): a backlog reported after the 4 s settling window is published as live speed") {
             #expect(lateWrong == 0, """
                 \(lateWrong) answers in \(latePeriods) awake periods with a late backlog were not the \
@@ -304,12 +329,19 @@ struct DownloadsFormalModelStatusTests {
             var evidence: [Int: Evidence] = [:]
             var bytes = [0, 0, 0, 0]
             var now = 0.0
+            var resetAt: Double?
+            var activeKeys: Set<DownloadAttemptKey> = []
+            func silent(_ index: Int, _ query: Double) -> Bool {
+                guard let since = evidence[index]?.last ?? resetAt else { return false }
+                return query >= since && query - since >= estimator.callbackGap
+            }
 
             for _ in 0..<600 {
                 switch rng.int(0...19) {
                 case 0:
-                    estimator.resetAfterWake()
+                    estimator.resetAfterWake(at: Self.time(now))
                     evidence.removeAll()
+                    resetAt = now
                 case 1, 2:
                     // Membership: add, remove, or replace an attempt (a retry is a new key).
                     var next = active
@@ -324,7 +356,11 @@ struct DownloadsFormalModelStatusTests {
                         next.insert(index)
                         evidence.removeAll()
                     }
-                    estimator.setActiveTransfers(Set(next.map { Self.key($0, attempt: attempts[$0]) }))
+                    let keys = Set(next.map { Self.key($0, attempt: attempts[$0]) })
+                    // A new or replaced attempt resets the batch and restarts the silence clock.
+                    if !keys.subtracting(activeKeys).isEmpty { resetAt = now }
+                    activeKeys = keys
+                    estimator.setActiveTransfers(keys, at: Self.time(now))
                     active = next
                     evidence = evidence.filter { active.contains($0.key) }
                 default:
@@ -339,6 +375,11 @@ struct DownloadsFormalModelStatusTests {
                         if let seen = evidence[index],
                            now - seen.last >= estimator.callbackGap || now < seen.last || bytes[index] < seen.lastBytes {
                             evidence.removeAll()
+                            resetAt = now
+                        } else if evidence[index] == nil, let since = resetAt,
+                                  now - since >= estimator.callbackGap {
+                            evidence.removeAll()
+                            resetAt = now
                         }
                         if var seen = evidence[index] {
                             seen.last = now
@@ -357,7 +398,10 @@ struct DownloadsFormalModelStatusTests {
                 answers += 1
                 #expect(rate.isFinite && rate >= 0, "seed \(seed)")
                 #expect(!active.isEmpty, "seed \(seed): a speed with no active transfer")
-                for index in active {
+                // #487: a transfer silent for callbackGap counts as zero; at least one is measured.
+                let counted = active.filter { !silent($0, query) }
+                #expect(!counted.isEmpty, "seed \(seed) t=\(query): every transfer is silent")
+                for index in counted {
                     guard let seen = evidence[index] else {
                         Issue.record("seed \(seed) t=\(query): transfer \(index) has no evidence")
                         continue
@@ -544,7 +588,7 @@ struct DownloadsFormalModelStatusTests {
             let train = Self.key(0)
             let other = Self.key(1)
             var estimator = DownloadAggregateRateEstimator()
-            estimator.setActiveTransfers([train, other])
+            estimator.setActiveTransfers([train, other], at: Self.time(0))
             var last = 0
             var now = 0.0
             while now < 10 {
@@ -831,7 +875,9 @@ struct DownloadsFormalModelStatusTests {
                     records.append(record)
                     let snapshot = DownloadJobSnapshot(record: record)
                     #expect(snapshot.persistedPhase.isActiveWork == status.isActiveWork, "\(ratingKey) \(status)")
-                    // Only a downloading forward-only stream and a preparing row need the watchdog.
+                    // With no lifecycle (records built outside the store) only a downloading
+                    // forward-only stream and a preparing row need the watchdog; a transferring
+                    // row of any route does too (#488), checked in DownloadWatchdogPolicyTests.
                     #expect(DownloadWatchdogPolicy.requiresWatchdog(record)
                         == ((status == .downloading && mode == .liveForwardOnly) || status == .preparing),
                             "\(ratingKey) \(status)")
@@ -941,22 +987,21 @@ struct DownloadsFormalModelStatusTests {
 
     // MARK: - Findings
 
-    /// S1 (`status/Finding-S1-SilentMemberHidesSpeed.cfg`). Two transfers share the batch. One
-    /// stalls silently: no bytes, so no callbacks, and nothing takes a static-range row out of
-    /// `transferring` (only forward-only streams have a stall verdict). The other keeps moving.
-    /// The estimator hides the whole total while any member is silent, so the top of Downloads
-    /// reads "Updating speed…" for as long as the stall lasts.
+    /// S1 (#487, fixed; `status/Liveness-SilentMember.cfg`, fix off: `Faithful-S1-off.cfg`). Two
+    /// transfers share the batch. One stalls silently: no bytes, so no callbacks, and nothing takes
+    /// a static-range row out of `transferring`. The other keeps moving. The estimator used to hide
+    /// the whole total while any member was silent, so the top of Downloads read "Updating speed…"
+    /// for as long as the stall lasted.
     ///
-    /// `DownloadAggregateRateEstimatorTests.silentMember` pins the first seconds of this on
-    /// purpose: a silent member may be about to deliver catch-up bytes. The finding is that the
-    /// hidden state has no end. Wanted: in a process that stayed awake, a number returns for the
-    /// rows that move (the silent one counting as zero, or leaving the batch).
+    /// `DownloadAggregateRateEstimatorTests.silentMember` still pins the first seconds of this: a
+    /// silent member may be about to deliver catch-up bytes. Now, in a process that stayed awake, a
+    /// member silent for `callbackGap` counts as zero and a number returns for the rows that move.
     @Test("S1: a silently stalled transfer does not hide the batch speed for ever")
     func silentTransferDoesNotHideBatchSpeedForever() {
         let moving = Self.key(0)
         let silent = Self.key(1)
         var estimator = DownloadAggregateRateEstimator()
-        estimator.setActiveTransfers([moving, silent])
+        estimator.setActiveTransfers([moving, silent], at: Self.time(0))
         var answers: [Double] = []
         for second in 0...180 {
             estimator.sample(moving, bytes: second * 1_000_000, at: Self.time(Double(second)))
@@ -971,10 +1016,19 @@ struct DownloadsFormalModelStatusTests {
         let stats = OfflineDownloadAggregateStats.make(
             records: [record], activeSpeedBytesPerSecond: estimator.rate(at: Self.time(180)))
 
-        withKnownIssue("TLA+ finding S1 (#487): a silent transfer hides the batch speed for as long as it is silent") {
-            #expect(!answers.isEmpty, "no speed in two minutes although one transfer moved 1 MB/s throughout")
-            #expect(!stats.isUpdatingSpeed, "the screen still says \"Updating speed…\" 170 s into the stall")
+        // The model's trace: the silent member stays `transferring` and the number returns.
+        #expect(answers.count == 121, "no speed in two minutes although one transfer moved 1 MB/s throughout")
+        #expect(answers.allSatisfy { abs($0 - 1_000_000) < 1 }, "the silent member counts as zero, not more")
+        #expect(!stats.isUpdatingSpeed, "the screen still says \"Updating speed…\" 170 s into the stall")
+        // Seconds 14-15: silent past the 3.5 s window but short of callbackGap, the total stays hidden (#379).
+        var early = DownloadAggregateRateEstimator()
+        early.setActiveTransfers([moving, silent], at: Self.time(0))
+        for second in 0...15 {
+            early.sample(moving, bytes: second * 1_000_000, at: Self.time(Double(second)))
+            if second <= 10 { early.sample(silent, bytes: second * 500_000, at: Self.time(Double(second))) }
+            if second >= 14 { #expect(early.rate(at: Self.time(Double(second))) == nil, "t=\(second)") }
         }
+        #expect(early.rate(at: Self.time(16)) == 1_000_000)
     }
 
     /// What `refreshRecords` and the watchdog loop leave on screen for one static-range row whose
@@ -1024,7 +1078,7 @@ struct DownloadsFormalModelStatusTests {
             if scheduled == now { scheduled = nil }
             // refreshRecords: sample the row, publish, then decide whether the loop goes on.
             outcome.lastRefresh = now
-            aggregate.setActiveTransfers([transfer])
+            aggregate.setActiveTransfers([transfer], at: time(now))
             let sampled = row.sample(bytes: liveBytes, at: time(now))
             outcome.rowSpeed = (sampled ?? 0) > 0 ? sampled : nil
             outcome.topAnswer = aggregate.rate(at: time(now))
@@ -1042,7 +1096,8 @@ struct DownloadsFormalModelStatusTests {
         return outcome
     }
 
-    /// S2 (`status/Finding-S2-StaleRowSpeed.cfg`). A row's speed is recomputed only inside
+    /// S2 (#488, fixed; `status/Liveness-StaleRowSettles.cfg`, fix off: `Faithful-S2-off.cfg`).
+    /// A row's speed is recomputed only inside
     /// `refreshRecords`. After a static-range row's last callback the only refreshes left are
     /// the watchdog loop's, and that loop stops at the first refresh that finds the aggregate
     /// without an answer. The aggregate loses its answer 3.5 s after the last callback (its 4 s
@@ -1053,7 +1108,9 @@ struct DownloadsFormalModelStatusTests {
     /// hidden by S1) there is no loop at all and the row keeps its full last speed.
     ///
     /// The loop rule is app code, so the harness mirrors it and the first expectation checks the
-    /// mirror against the source. Wanted: a stalled row's speed is removed.
+    /// mirror against the source. The fix: `DownloadWatchdogPolicy.requiresWatchdog` now holds for
+    /// any transferring row, so the loop keeps refreshing (every 15 s once the aggregate is hidden)
+    /// and the next refresh past the row estimator's 6 s `stallTimeout` removes the speed.
     @Test("S2: a stalled static-range row stops showing a speed")
     func stalledStaticRowStopsShowingSpeed() throws {
         let watchdog = try #require(Self.appFunctionSource(
@@ -1088,26 +1145,27 @@ struct DownloadsFormalModelStatusTests {
         #expect(early.topAnswerAtLastCallback == nil && early.topAnswer == nil)
 
         let stale = steady.filter { $0.outcome.rowSpeed != nil }
-        withKnownIssue("TLA+ finding S2 (#488): the refresh loop stops before a stalled row's speed has decayed") {
-            #expect(stale.isEmpty, """
-                \(stale.count) of \(steady.count) steady-state stalls leave a speed on the row; seed \
-                \(stale.first?.seed ?? 0) shows \(Int(stale.first?.outcome.rowSpeed ?? 0)) B/s after its last \
-                refresh at t=\(stale.first?.outcome.lastRefresh ?? 0) s
-                """)
-            #expect(early.rowSpeed == nil,
-                    "the row still shows \(Int(early.rowSpeed ?? 0)) B/s; its last refresh was at t=\(early.lastRefresh) s")
-        }
+        #expect(stale.isEmpty, """
+            \(stale.count) of \(steady.count) steady-state stalls leave a speed on the row; seed \
+            \(stale.first?.seed ?? 0) shows \(Int(stale.first?.outcome.rowSpeed ?? 0)) B/s after its last \
+            refresh at t=\(stale.first?.outcome.lastRefresh ?? 0) s
+            """)
+        #expect(early.rowSpeed == nil,
+                "the row still shows \(Int(early.rowSpeed ?? 0)) B/s; its last refresh was at t=\(early.lastRefresh) s")
+        // The loop keeps running while the row is transferring: the harness refreshed to its horizon.
+        #expect(steady.allSatisfy { $0.outcome.lastRefresh > 100 })
     }
 
-    /// S5 (`status/Finding-S5-StallCapNoVerdict.cfg`, `Finding-S5-StallCapHidesSpeed.cfg`). The
-    /// stall tracker restarts a wedged forward-only stream twice. If neither restart moves a
-    /// byte, `shouldRestartForwardOnlyStream` answers no from then on, and a restart is the only
-    /// verdict the tracker has. The row stays `downloading` at zero bytes with a task that
-    /// delivers nothing, and as a silent member of the batch it also holds "Updating speed…" up
-    /// for the rows that move (S1, for a forward-only row).
+    /// S5 (#497, fixed; `status/Liveness-StallCap.cfg`, `Liveness-StallCapFlow.cfg`, fix off:
+    /// `Faithful-S5-off.cfg`, `Faithful-S5-off-Flow.cfg`). The stall tracker restarts a wedged
+    /// forward-only stream twice. If neither restart moved a byte, `shouldRestartForwardOnlyStream`
+    /// answers no from then on, and a restart used to be the only verdict the tracker had: the row
+    /// stayed `downloading` at zero bytes and, as a silent member of the batch, held "Updating
+    /// speed…" up for the rows that move.
     ///
-    /// The cap is deliberate: restarting for ever would hammer the encoder. Wanted: past the cap
-    /// the row gets a verdict (it fails, with the reason), so the screen stops saying it downloads.
+    /// The cap is deliberate: restarting for ever would hammer the encoder. The fix: past the cap
+    /// the next stall is a `.fail` verdict; the manager fails the row as stalled with a retryable
+    /// reason and requests no admission, so the user retries.
     @Test("S5: a forward-only stream that stalls after its two restarts still gets a verdict")
     func stalledForwardOnlyStreamGetsVerdictPastTheCap() throws {
         let manager = "Labstream/Capabilities/Downloads/Core/DownloadManager.swift"
@@ -1116,8 +1174,13 @@ struct DownloadsFormalModelStatusTests {
         #expect(detect.contains("forwardOnlyStallTracker.detectRestarts(")
             && restart.contains("applyLifecycleEvent(.stallDetected")
             && restart.contains("forwardOnlyStallTracker.seedRestartAttempts(ratingKey, attempts: restart.attempt)")
-            && restart.contains("requestAdmission(for: failed, origin: .automatic)"),
+            && restart.contains("requestAdmission(for: failed, origin: .automatic)")
+            && restart.contains("if restart.verdict == .fail {"),
                 "the stall restart path changed: re-derive StallDetect in DownloadsStatus.tla and this harness from it")
+        let fail = try #require(Self.appFunctionSource(named: "failStalledForwardOnlyStreamAsync", in: manager))
+        #expect(fail.contains("applyLifecycleEvent(.stallDetected") && fail.contains("releaseInFlight(for: key)")
+            && fail.contains("lastError[ratingKey] = .transferFailed(") && !fail.contains("requestAdmission"),
+                "the capped stall path changed: re-derive StallDetect's StallCapFails arm from it")
 
         let ratingKey = "jellyfin:item-stalled"
         let record = DownloadRecord(
@@ -1132,11 +1195,19 @@ struct DownloadsFormalModelStatusTests {
         var tracker = DownloadForwardOnlyStallTracker()
         var attempts: [Int] = []
         var lastVerdictAt = 0.0
+        var failedAt: Double?
         let horizon = 3_600.0
         var now = 0.0
         // The watchdog refreshes every 15 s; the stream never moves a byte.
-        while now <= horizon {
+        while now <= horizon, failedAt == nil {
             for found in tracker.detectRestarts(records: [record], now: Self.time(now), isActive: { _ in true }) {
+                if found.verdict == .fail {
+                    // failStalledForwardOnlyStreamAsync: the row fails; no admission is requested.
+                    failedAt = now
+                    #expect(found.attempt == 2)
+                    tracker.remove(ratingKey)
+                    continue
+                }
                 attempts.append(found.attempt)
                 lastVerdictAt = now
                 // restartStalledForwardOnlyStreamAsync: the attempt fails, releaseInFlight wipes
@@ -1154,12 +1225,15 @@ struct DownloadsFormalModelStatusTests {
             record: record, active: true, lastForwardProgressAt: Self.time(lastVerdictAt),
             now: Self.time(horizon), restartAttempts: 2))
 
-        withKnownIssue("TLA+ finding S5 (#497): past the restart cap a stalled forward-only stream has no verdict") {
-            #expect(horizon - lastVerdictAt < 600, """
-                the stream has been `downloading` at zero bytes for \(Int(horizon - lastVerdictAt)) s since \
-                its second restart, with no further restart and no failure
-                """)
-        }
+        // The verdict lands one stall timeout (plus at most a refresh interval and the re-observation
+        // tick) after the second restart, not an hour later.
+        let failed = try #require(failedAt, """
+            the stream has been `downloading` at zero bytes for \(Int(horizon - lastVerdictAt)) s since \
+            its second restart, with no further restart and no failure
+            """)
+        #expect(failed - lastVerdictAt >= DownloadStallRecoveryPolicy.defaultForwardOnlyStallTimeout)
+        #expect(failed - lastVerdictAt <= DownloadStallRecoveryPolicy.defaultForwardOnlyStallTimeout
+            + 2 * DownloadWatchdogPolicy.refreshIntervalSeconds)
     }
 
     /// S6 (`status/Finding-S6-SlowMemberFlapsSpeed.cfg`). `rate(at:)` measures every transfer
@@ -1173,7 +1247,7 @@ struct DownloadsFormalModelStatusTests {
         let first = Self.key(0)
         let second = Self.key(1)
         var estimator = DownloadAggregateRateEstimator()
-        estimator.setActiveTransfers([first, second])
+        estimator.setActiveTransfers([first, second], at: Self.time(0))
         estimator.sample(first, bytes: 0, at: Self.time(0))
         estimator.sample(second, bytes: 0, at: Self.time(0.1))
         estimator.sample(first, bytes: 4_000_000, at: Self.time(4))
@@ -1203,7 +1277,7 @@ struct DownloadsFormalModelStatusTests {
         let fast = Self.key(0)
         let slow = Self.key(1)
         var estimator = DownloadAggregateRateEstimator()
-        estimator.setActiveTransfers([fast, slow])
+        estimator.setActiveTransfers([fast, slow], at: Self.time(0))
         let trueTotal = 1_000_000.0 + 200_000.0
         var lastSlow = 0.0
         var hiddenWhileFresh = 0
@@ -1251,8 +1325,8 @@ struct DownloadsFormalModelStatusTests {
     func lateBacklogAfterSettlingIsNotPublishedAsSpeed() {
         let transfer = Self.key(0)
         var estimator = DownloadAggregateRateEstimator()
-        estimator.setActiveTransfers([transfer])
-        estimator.resetAfterWake()
+        estimator.setActiveTransfers([transfer], at: Self.time(0))
+        estimator.resetAfterWake(at: Self.time(0))
         for (seconds, bytes) in [(0.0, 0), (1.0, 100), (2.0, 200), (3.0, 300)] {
             estimator.sample(transfer, bytes: bytes, at: Self.time(seconds))
             #expect(estimator.rate(at: Self.time(seconds)) == nil, "settling at t=\(seconds)")

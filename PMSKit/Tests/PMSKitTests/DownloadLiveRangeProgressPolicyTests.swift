@@ -210,7 +210,7 @@ struct DownloadLiveRangeProgressPolicyTests {
     private func boundaryRates(_ megabytes: [Int], awaiting: [Int: Int]) -> [Double?] {
         let key = DownloadAttemptKey(ratingKey: "a", attemptID: .init(rawValue: "attempt-a")!)
         var estimator = DownloadAggregateRateEstimator()
-        estimator.setActiveTransfers([key])
+        estimator.setActiveTransfers([key], at: Date(timeIntervalSinceReferenceDate: 0))
         var previous: Int?
         return megabytes.enumerated().map { second, mb in
             let now = Date(timeIntervalSinceReferenceDate: Double(second))

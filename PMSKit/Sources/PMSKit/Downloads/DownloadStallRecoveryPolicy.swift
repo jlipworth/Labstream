@@ -10,7 +10,8 @@ public enum DownloadStallRecoveryPolicy {
     public static let defaultForwardOnlyStallTimeout: TimeInterval = 90
 
     /// Bound automatic restarts per visible row. Forward-only streams restart from byte 0, so repeated
-    /// restarts would waste server CPU/network and can mask a real outage. Manual retry remains.
+    /// restarts would waste server CPU/network and can mask a real outage. Past the cap the next stall
+    /// fails the row (`shouldFailForwardOnlyStream`); manual retry remains.
     public static let defaultMaxAutomaticRestarts = 2
 
     /// Only forward-only MediaBrowser streams should be auto-restarted. Static byte-range downloads
@@ -38,6 +39,23 @@ public enum DownloadStallRecoveryPolicy {
         guard active,
               isForwardOnlyMediaBrowserStream(record),
               restartAttempts < maxRestartAttempts,
+              let lastForwardProgressAt else { return false }
+        return now.timeIntervalSince(lastForwardProgressAt) >= stallTimeout
+    }
+
+    /// #497 (TLA+ Status-S5): the stall verdict once the automatic restarts are spent. The row would
+    /// otherwise stay `downloading` at zero bytes for ever and, as a silent member of the batch, hold
+    /// "Updating speed…" up for the rows that move. It fails as stalled and waits for a user Retry.
+    public static func shouldFailForwardOnlyStream(record: DownloadRecord,
+                                                   active: Bool,
+                                                   lastForwardProgressAt: Date?,
+                                                   now: Date,
+                                                   restartAttempts: Int,
+                                                   stallTimeout: TimeInterval = defaultForwardOnlyStallTimeout,
+                                                   maxRestartAttempts: Int = defaultMaxAutomaticRestarts) -> Bool {
+        guard active,
+              isForwardOnlyMediaBrowserStream(record),
+              restartAttempts >= maxRestartAttempts,
               let lastForwardProgressAt else { return false }
         return now.timeIntervalSince(lastForwardProgressAt) >= stallTimeout
     }

@@ -101,11 +101,39 @@ struct DownloadForwardOnlyStallTrackerTests {
         tracker.remove("jellyfin:1")
         tracker.seedRestartAttempts("jellyfin:1", attempts: 2)
 
-        // Third wedge: the cap binds — no further automatic restart.
+        // Third wedge: the cap binds — no further automatic restart. The stall still gets a
+        // verdict (#497): the row fails and waits for the user.
         _ = tracker.detectRestarts(records: [record()], now: now) { _ in true }
         now = now.addingTimeInterval(120)
-        #expect(tracker.detectRestarts(records: [record()], now: now) { _ in true }.isEmpty)
+        let capped = tracker.detectRestarts(records: [record()], now: now) { _ in true }
+        #expect(capped.count == 1)
+        #expect(capped.first?.verdict == .fail)
+        #expect(capped.first?.attempt == 2)
         #expect(tracker.restartAttemptCount(for: "jellyfin:1") == 2)
+        // Reported once: the refreshes before the failure lands do not repeat it.
+        #expect(tracker.detectRestarts(records: [record()], now: now.addingTimeInterval(15)) { _ in true }.isEmpty)
+    }
+
+    @Test("Past the cap a stall fails the row only after the stall timeout, and progress restores the budget (#497)")
+    func cappedStallFailsAfterTimeout() {
+        var tracker = DownloadForwardOnlyStallTracker()
+        let start = Date(timeIntervalSince1970: 1_000)
+        tracker.seedRestartAttempts("jellyfin:1", attempts: 2)
+        _ = tracker.detectRestarts(records: [record()], now: start) { _ in true }
+        #expect(tracker.detectRestarts(records: [record()], now: start.addingTimeInterval(60)) { _ in true }.isEmpty)
+        // An inactive row (no job, no tracked task) is not judged.
+        #expect(tracker.detectRestarts(records: [record()], now: start.addingTimeInterval(95)) { _ in false }.isEmpty)
+        // Forward progress resets the budget: the next stall is a restart again, not a failure.
+        _ = tracker.detectRestarts(records: [record(bytes: 20_000)], now: start.addingTimeInterval(100)) { _ in true }
+        #expect(tracker.restartAttemptCount(for: "jellyfin:1") == 0)
+        let next = tracker.detectRestarts(records: [record(bytes: 20_000)], now: start.addingTimeInterval(200)) { _ in true }
+        #expect(next.map(\.verdict) == [.restart])
+        #expect(DownloadStallRecoveryPolicy.shouldFailForwardOnlyStream(
+            record: record(), active: true, lastForwardProgressAt: start, now: start.addingTimeInterval(90),
+            restartAttempts: 2))
+        #expect(!DownloadStallRecoveryPolicy.shouldFailForwardOnlyStream(
+            record: record(), active: true, lastForwardProgressAt: start, now: start.addingTimeInterval(90),
+            restartAttempts: 1))
     }
 
     @Test("Removed and terminal rows prune tracker state")

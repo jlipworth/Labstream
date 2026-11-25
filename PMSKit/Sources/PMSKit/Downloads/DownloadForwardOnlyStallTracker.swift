@@ -10,15 +10,27 @@ public struct DownloadForwardOnlyStallObservation: Equatable {
     }
 }
 
+/// What the stall check decided for a wedged forward-only stream.
+public enum DownloadForwardOnlyStallVerdict: Equatable, Sendable {
+    /// Fail the attempt and restart the stream from byte 0 through admission.
+    case restart
+    /// #497: the automatic restarts are spent. Fail the row as stalled and leave it for a user Retry.
+    case fail
+}
+
 public struct DownloadForwardOnlyStallRestart {
     public let record: DownloadRecord
     public let stalledFor: TimeInterval
+    /// The restart's attempt number; for `.fail`, the restarts already spent.
     public let attempt: Int
+    public let verdict: DownloadForwardOnlyStallVerdict
 
-    public init(record: DownloadRecord, stalledFor: TimeInterval, attempt: Int) {
+    public init(record: DownloadRecord, stalledFor: TimeInterval, attempt: Int,
+                verdict: DownloadForwardOnlyStallVerdict = .restart) {
         self.record = record
         self.stalledFor = stalledFor
         self.attempt = attempt
+        self.verdict = verdict
     }
 }
 
@@ -87,6 +99,22 @@ public struct DownloadForwardOnlyStallTracker {
                     record: record,
                     stalledFor: now.timeIntervalSince(observation.lastForwardProgressAt),
                     attempt: nextAttempt))
+                observation.lastForwardProgressAt = now
+                observation.bytes = record.bytes
+            } else if DownloadStallRecoveryPolicy.shouldFailForwardOnlyStream(
+                record: record,
+                active: isActive(record.ratingKey),
+                lastForwardProgressAt: observation.lastForwardProgressAt,
+                now: now,
+                restartAttempts: attempts
+            ) {
+                // #497: past the cap a stall still gets a verdict. The clock restarts so the
+                // refreshes before the failure lands do not report it again.
+                restarts.append(DownloadForwardOnlyStallRestart(
+                    record: record,
+                    stalledFor: now.timeIntervalSince(observation.lastForwardProgressAt),
+                    attempt: attempts,
+                    verdict: .fail))
                 observation.lastForwardProgressAt = now
                 observation.bytes = record.bytes
             }

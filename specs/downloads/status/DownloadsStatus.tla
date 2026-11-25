@@ -95,12 +95,15 @@ CONSTANTS
     Mutant,             \* "none", or one deliberately injected bug (see Mutants)
     FixPu33,            \* a row waiting for admission says so (pu-33)
     FixB09,             \* progress never promotes a paused row (B09)
-    SilentCountsAsZero,             \* PROPOSED (S1): a transfer silent for callbackGap in an
-                                    \* awake process counts as zero instead of hiding the total
-    WatchdogCoversTransfers,        \* PROPOSED (S2): the refresh loop runs while any row transfers
+    SilentCountsAsZero,             \* FIX S1 (#487, in the code: TRUE): a transfer silent for
+                                    \* callbackGap in an awake process counts as zero instead of
+                                    \* hiding the total; at least one transfer must contribute
+    WatchdogCoversTransfers,        \* FIX S2 (#488, in the code: TRUE): the refresh loop runs
+                                    \* while any row transfers
     ForwardFirstCallbackRebaseline, \* PROPOSED (S4): a forward-only row re-baselines on its first
                                     \* callback after foreground, as a static row does
-    StallCapFails                   \* PROPOSED (S5): a stall past the restart cap fails the row
+    StallCapFails                   \* FIX S5 (#497, in the code: TRUE): a stall past the restart
+                                    \* cap fails the row
 
 \* One protection removed at a time.  noGapReset and noGrace have no config: see README.md.
 \*   partialSum      #379: the top speed is the sum of whichever estimates exist
@@ -637,7 +640,8 @@ Refresh ==
            t1 == [r \in Rows |-> kept(r) /\ aggTaint[r]]
            \* rate(at:).  Two observations, settled, and the last one inside the window.
            contributes(r) == a1[r] = "window" /\ g1[r] = "fresh"
-           \* PROPOSED (S1): silent for callbackGap in an awake process counts as zero.
+           \* FIX S1 (#487): silent for callbackGap in an awake process counts as zero
+           \* (DownloadAggregateRateEstimator.isSilent).
            zero(r) == SilentCountsAsZero /\ g1[r] = "stale"
            \* "duration >= minimumWindow": the contributing windows share 0.5 s.
            shared == \A r \in active : contributes(r) => o1[r]
@@ -647,8 +651,13 @@ Refresh ==
                     [] Mutant = "quietOmitted" ->
                           /\ shared /\ \E r \in active : contributes(r)
                           /\ \A r \in active : contributes(r) \/ g1[r] # "fresh"
-                    [] Mutant = "noOverlap" -> \A r \in active : contributes(r) \/ zero(r)
-                    [] OTHER -> shared /\ \A r \in active : contributes(r) \/ zero(r)
+                    [] Mutant = "noOverlap" ->
+                          /\ \A r \in active : contributes(r) \/ zero(r)
+                          /\ \E r \in active : contributes(r)
+                    \* "guard !contributing.isEmpty": an all-silent batch has no answer.  Without
+                    \* SilentCountsAsZero the conjunct is implied by the one before it.
+                    [] OTHER -> /\ shared /\ \A r \in active : contributes(r) \/ zero(r)
+                                /\ \E r \in active : contributes(r)
            sample == [r \in Rows |-> RowSample(r)]
        IN /\ aggActive' = active
           /\ agg' = a1 /\ aggAge' = g1 /\ aggOvl' = o1 /\ aggTaint' = t1
@@ -690,9 +699,10 @@ WatchdogTick ==
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepProcess /\ KeepManager
 
 \* detectForwardOnlyStreamStalls and restartStalledForwardOnlyStream.  Only forward-only streams
-\* have a stall verdict, and only while the tracker's restart budget lasts: the stalled attempt
-\* fails and a retry is requested, which goes through admission.  At the cap
-\* shouldRestartForwardOnlyStream answers no and nothing else looks at the row.
+\* have a stall verdict.  While the tracker's restart budget lasts the stalled attempt fails and
+\* a retry is requested, which goes through admission.  At the cap shouldRestartForwardOnlyStream
+\* answers no; with StallCapFails (the code since #497) shouldFailForwardOnlyStream answers yes
+\* and the row fails for the user to retry, and without it nothing else looks at the row.
 StallDetect(r) ==
     /\ Observing /\ ~recovering
     /\ watchdog
@@ -707,7 +717,8 @@ StallDetect(r) ==
                 THEN /\ IsApplied(again)
                      /\ row' = Upd(row, r, again.state)
                      /\ stalls' = Upd(stalls, r, stalls[r] + 1)
-                \* PROPOSED (S5): past the cap the row fails and waits for the user.
+                \* FIX S5 (#497): past the cap the row fails and waits for the user
+                \* (failStalledForwardOnlyStreamAsync: no admission request).
                 ELSE row' = Upd(row, r, t.state) /\ UNCHANGED stalls
     /\ task' = Upd(task, r, "none")
     /\ jobs' = jobs \ {r}

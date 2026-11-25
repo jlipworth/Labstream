@@ -6,9 +6,12 @@ across headset sleep and wake, pause and resume, staggered callbacks after a wak
 and process death. `DownloadsStatusPhase.tla` is its helper: the phase rule as a function and as a
 table that the Swift tests read.
 
-It has seven findings on the current code (S1 to S7 below). S1, S2, S5, S6 and S7 are pinned as
-known issues in `PMSKit/Tests/PMSKitTests/DownloadsFormalModelStatusTests.swift`; S3 and S4 have no
-pure decision to pin and are recorded as probable.
+It found seven findings (S1 to S7 below). S1, S2 and S5 are fixed (on `specs/downloads-tla`,
+pending merge): the code now has the model's `SilentCountsAsZero`, `WatchdogCoversTransfers` and
+`StallCapFails`, every config sets them to TRUE, and each fix has a `Faithful-S<n>-off` config
+that switches it off and must find the old violation. Their pins in
+`PMSKit/Tests/PMSKitTests/DownloadsFormalModelStatusTests.swift` now pass. S6 and S7 are pinned as
+known issues there; S3 and S4 have no pure decision to pin and are recorded as probable.
 
 ## What is modelled
 
@@ -17,7 +20,7 @@ pure decision to pin and are recorded as probable.
 | Aggregate speed | `DownloadAggregateRateEstimator`, `OfflineDownloadAggregateStats` | Per transfer: the stage its evidence has reached (`none`, `settling`, `settled`, `window`), how old its last callback is (`aggAge`: under 3.5 s, 3.5 s to `callbackGap`, longer), and whether that callback lies 0.5 s past the batch's newest baseline (`aggOvl`, `ovlRipe`). `Refresh` publishes a number, "Updating speed…" or nothing. |
 | Row speed | `DownloadRateEstimator` and its owner code in `DownloadManager.refreshRecords` | The stage (`none`, `baseline`, `window`, `decaying`), the 4 s foreground grace, the first-callback rebaseline and its suppression. |
 | Refresh loop | `DownloadManager.updateDownloadWatchdog`, `DownloadWatchdogPolicy` | `refreshPending` (a callback or a store change scheduled one) and `watchdog` (the loop runs). |
-| Stall verdict | `DownloadStallRecoveryPolicy`, `DownloadForwardOnlyStallTracker`, `restartStalledForwardOnlyStreamAsync` | `StallDetect` fails a stalled forward-only attempt and requests a retry, `GrantRetry` and `StartTask` restart it from byte 0, and `stalls` counts restarts up to `MaxStallRestarts`. Forward progress resets the count. Static-range rows have no stall verdict. |
+| Stall verdict | `DownloadStallRecoveryPolicy`, `DownloadForwardOnlyStallTracker`, `restartStalledForwardOnlyStreamAsync` | `StallDetect` fails a stalled forward-only attempt and requests a retry, `GrantRetry` and `StartTask` restart it from byte 0, and `stalls` counts restarts up to `MaxStallRestarts`. Forward progress resets the count. Past the cap (`StallCapFails`, #497) the stall fails the row with no retry request. Static-range rows have no stall verdict. |
 | Bytes | `DownloadStore.submitProgress`, `DownloadLiveRangeProgressPolicy`, `DownloadManager.displayBytes` | Three copies. `disk` is the index file. `rec` is the store's live row: a forward-only progress sample changes it at once and reaches `disk` only with a persistence ticket (a status change, or the 1 s cadence). `live` is the in-memory optimistic watermark of a static-range row. `pubBytes` is what the last refresh put on screen. A process death keeps `disk` only. |
 | Segment boundary | `DownloadLiveRangeProgressPolicy.rateSampleBytes`, the range callback in `BackgroundDownloadSession` | `SegmentFinish` puts a finished segment's body in claim debt (`debt`), `AppendLands` moves the checkpoint. A callback during the debt reports a lower train total; the hold makes that invisible to the estimator. |
 | Phase and caption | `DownloadRowStatusCaptionPolicy`, `DownloadProgressDisplay.isTransferFinalizing`, `DownloadManager.publishedRowPhase`, `DownloadJobSnapshot`, `OfflineSidebarStatusPolicy`, `DownloadHealthSnapshotPolicy` | `PhaseOf` over the lifecycle, zero bytes, `progress >= 1`, `isActive` (`activeJobs` holds the key, or the row downloads), the route and `isBackendConfigured`. `jobs` is `activeJobs`; `backendOn` is the backend session. |
@@ -92,58 +95,70 @@ mutation that dropped quiet members from the sum passed.
 
 Run with `TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/status`. The
 figures are from that command on a 14-core Mac with other checks running; the default tier takes
-about 13 minutes in all, and the three deep configs about 86 minutes.
+about 19 minutes in all, and the three deep configs about 86 minutes.
 
 | Config | Expect | Distinct states | Seconds |
 | --- | --- | ---: | ---: |
-| `Current-Backend` | pass | 225,336 | 6 |
-| `Current-Mixed` | pass | 3,021,944 | 142 |
-| `Current-OneForward` | pass | 723,186 | 17 |
-| `Current-OneStatic` | pass | 333,165 | 8 |
-| `Current-Planned` | pass | 73,864 | 4 |
-| `Current-TwoStatic` | pass | 1,306,832 | 65 |
-| `Liveness-Flow` | pass | 116,964 | 36 |
-| `Liveness-FlowOneForward` | pass | 27,824 | 5 |
-| `Liveness-FlowOneStatic` | pass | 38,703 | 6 |
-| `Liveness-FlowStall` | pass | 101,234 | 36 |
-| `Liveness-Settle` | pass | 110,277 | 18 |
-| `Liveness-Static` | pass | 140,869 | 20 |
-| `Faithful-B09-off` | violation `PhaseNoGhostWork` | 54 | 1 |
+| `Current-Backend` | pass | 245,746 | 7 |
+| `Current-Mixed` | pass | 3,074,439 | 153 |
+| `Current-OneForward` | pass | 723,271 | 20 |
+| `Current-OneStatic` | pass | 556,054 | 15 |
+| `Current-Planned` | pass | 104,963 | 6 |
+| `Current-TwoStatic` | pass | 1,415,698 | 70 |
+| `Faithful-B09-off` | violation `PhaseNoGhostWork` | 59 | 1 |
+| `Faithful-S1-off` | violation `UpdatingResolves` (reported as `TEMPORAL`) | 183,687 | 60 |
+| `Faithful-S2-off` | violation `SpeedSettlesAfterStall` (reported as `TEMPORAL`) | 19,274 | 4 |
+| `Faithful-S5-off-Flow` | violation `UpdatingResolves` (reported as `TEMPORAL`) | 66,773 | 20 |
+| `Faithful-S5-off` | violation `ForwardStallGetsVerdict` (reported as `TEMPORAL`) | 251,898 | 65 |
 | `Faithful-pu33-off` | violation `WaitingReadsAsWaiting` | initial state | 0 |
-| `Mutant-I224-NoSettling` | violation `NoInflatedAggregate` | 1,362 | 1 |
-| `Mutant-I224-NoWakeReset` | violation `NoInflatedAggregate` | 5,848 | 0 |
-| `Mutant-I379-NoOverlap` | violation `NoUnsharedWindow` | 249 | 0 |
-| `Mutant-I379-PartialSum` | violation `NoPartialSum` | 2,918 | 1 |
-| `Mutant-I379-QuietOmitted` | violation `NoPartialSum` | 27,677 | 2 |
-| `Mutant-I416-SegmentNoHold` | violation `NoSpuriousReset` | 132 | 0 |
-| `Finding-S1-SilentMemberHidesSpeed` | violation `UpdatingResolves` (reported as `TEMPORAL`) | 151,651 | 48 |
-| `Finding-S2-StaleRowSpeed` | violation `SpeedSettlesAfterStall` (reported as `TEMPORAL`) | 19,641 | 3 |
-| `Finding-S3-RelaunchDip` | violation `RelaunchKeepsBytes` | 1,206 | 1 |
-| `Finding-S3-RelaunchDipForward` | violation `RelaunchKeepsBytes` | 1,722 | 1 |
-| `Finding-S4-LateCallbackInflatesRow` | violation `NoInflatedRowRate` | 1,313 | 1 |
-| `Finding-S5-StallCapHidesSpeed` | violation `UpdatingResolves` (reported as `TEMPORAL`) | 66,743 | 20 |
-| `Finding-S5-StallCapNoVerdict` | violation `ForwardStallGetsVerdict` (reported as `TEMPORAL`) | 266,115 | 38 |
-| `Finding-S6-SlowMemberFlapsSpeed` | violation `EventuallyStable` (reported as `TEMPORAL`) | 44,743 | 17 |
-| `Finding-S7-LateBacklogInflatesRow` | violation `NoInflatedRowRate` | 1,156 | 1 |
-| `Finding-S7-LateBacklogInflatesTotal` | violation `NoInflatedAggregate` | 2,806 | 1 |
-| `Proposed-LivenessFlow` | pass | 186,071 | 64 |
-| `Proposed-LivenessSettle` | pass | 246,656 | 36 |
-| `Proposed-LivenessStallCap` | pass | 187,703 | 30 |
-| `Proposed-LivenessStallCapFlow` | pass | 86,162 | 29 |
-| `Proposed-Mixed` | pass | 2,364,584 | 109 |
-| `Proposed-OneForward` | pass | 525,071 | 13 |
+| `Finding-S3-RelaunchDip` | violation `RelaunchKeepsBytes` | 1,427 | 1 |
+| `Finding-S3-RelaunchDipForward` | violation `RelaunchKeepsBytes` | 1,694 | 1 |
+| `Finding-S4-LateCallbackInflatesRow` | violation `NoInflatedRowRate` | 1,133 | 1 |
+| `Finding-S6-SlowMemberFlapsSpeed` | violation `EventuallyStable` (reported as `TEMPORAL`) | 46,909 | 35 |
+| `Finding-S7-LateBacklogInflatesRow` | violation `NoInflatedRowRate` | 1,390 | 1 |
+| `Finding-S7-LateBacklogInflatesTotal` | violation `NoInflatedAggregate` | 2,965 | 2 |
+| `Liveness-Flow` | pass | 117,074 | 59 |
+| `Liveness-FlowOneForward` | pass | 27,824 | 9 |
+| `Liveness-FlowOneStatic` | pass | 78,270 | 18 |
+| `Liveness-FlowStall` | pass | 102,070 | 119 |
+| `Liveness-Settle` | pass | 110,277 | 26 |
+| `Liveness-SilentMember` | pass | 184,911 | 100 |
+| `Liveness-StaleRowSettles` | pass | 215,204 | 35 |
+| `Liveness-StallCap` | pass | 266,119 | 43 |
+| `Liveness-StallCapFlow` | pass | 85,744 | 29 |
+| `Liveness-Static` | pass | 163,202 | 25 |
+| `Mutant-I224-NoSettling` | violation `NoInflatedAggregate` | 1,582 | 1 |
+| `Mutant-I224-NoWakeReset` | violation `NoInflatedAggregate` | 6,721 | 1 |
+| `Mutant-I379-NoOverlap` | violation `NoUnsharedWindow` | 309 | 0 |
+| `Mutant-I379-PartialSum` | violation `NoPartialSum` | 3,286 | 1 |
+| `Mutant-I379-QuietOmitted` | violation `NoPartialSum` | 38,789 | 2 |
+| `Mutant-I416-SegmentNoHold` | violation `NoSpuriousReset` | 155 | 1 |
+| `Proposed-Mixed` | pass | 2,274,071 | 106 |
+| `Proposed-OneForward` | pass | 421,090 | 11 |
 | `Deep-LivenessFlow` (deep) | pass | 1,066,742 | 419 |
 | `Deep-Mixed` (deep) | pass | 66,650,051 | 3195 |
 | `Deep-TwoStatic` (deep) | pass | 30,480,049 | 1543 |
 
-The `Current` configs leave out what an open finding violates: none lets a static-range row stall
-silently (S1, S2), none checks `RelaunchKeepsBytes` (S3), `NoInflatedRowRate` is checked only
-where no forward-only row exists (S4), no forward-only row may stall more often than the cap in a
-liveness run (S5), `SlowRows` is empty (S6) and A1 holds (S7). TLC does not name a violated
+The `Current` and `Liveness` configs leave out what an open finding violates: none checks
+`RelaunchKeepsBytes` (S3), `NoInflatedRowRate` is checked only where no forward-only row exists
+(S4), `SlowRows` is empty (S6) and A1 holds (S7). Since the S1, S2 and S5 fixes, static-range rows
+may stall silently in them (`Current-Mixed`, `Current-OneStatic`, `Liveness-FlowOneStatic`,
+`Liveness-SilentMember`, `Liveness-StaleRowSettles`) and a forward-only row may stall past the cap
+(`Liveness-StallCap`, `Liveness-StallCapFlow`). The `Proposed` configs add the S4 fix. TLC does not name a violated
 temporal property, so the liveness findings declare `EXPECT: violation TEMPORAL` and list one
 property each.
 
 ### Faithfulness
+
+The three fixed findings, each switched off on its own finding's bounds (`Faithful-S5-off-Flow`
+switches S1 off too, since either fix clears that trace):
+
+- **S1 off** (`Faithful-S1-off`, violates `UpdatingResolves`). A silent static-range row hides the
+  flowing row's speed for as long as it is silent.
+- **S2 off** (`Faithful-S2-off`, violates `SpeedSettlesAfterStall`). The refresh loop stops and a
+  stalled row keeps its speed.
+- **S5 off** (`Faithful-S5-off`, violates `ForwardStallGetsVerdict`; `Faithful-S5-off-Flow`,
+  violates `UpdatingResolves`). Past the cap a stalled forward-only stream stays `transferring`.
 
 Two historical bugs from `docs/evidence/2026-10-17-downloads-overhaul-bugs-vs-main.md`:
 
@@ -176,17 +191,17 @@ protection alone:
 
 - **`noGapReset`** (#224). With the wake reset in place, every sleep the model has is reset at
   foreground before the callback-gap rule is asked. `Current-OneStatic` and `Current-OneForward`
-  pass with it (333,165 and 723,186 states). The rule is the only protection when neither wake
+  pass with it (333,165 and 723,186 states, before the S1, S2 and S5 fixes). The rule is the only protection when neither wake
   hook runs; the seeded Swift batch test covers that with its unhinted wakes.
 - **`noGrace`** (#224). The first-callback rebaseline starts its own grace, for a static-range row
   and for a forward-only row under the proposed S4 fix. The one violation TLC finds with it
-  (`NoInflatedRowRate`, two long sleeps in a row, 5,463 states on `Current-OneStatic`) rests on
+  (`NoInflatedRowRate`, two long sleeps in a row, 5,463 states on `Current-OneStatic` before the S1, S2 and S5 fixes) rests on
   the taint ghost not knowing how long the second sleep was, so it is not kept. Without the S4
   fix the grace is all a forward-only row has, and S4 is the gap in it.
 
 ## Findings
 
-### S1: a silent transfer hides the batch speed for as long as it is silent (real, medium)
+### S1: a silent transfer hides the batch speed for as long as it is silent (real, medium; fixed)
 
 Issue: #487.
 
@@ -208,11 +223,22 @@ says "Updating speed…" until the silent row moves or leaves.
   on purpose, because a silent member may be about to deliver catch-up bytes. The finding is that
   the hidden state has no end.
 
-Pin: `silentTransferDoesNotHideBatchSpeedForever`. Proposed in the model
-(`SilentCountsAsZero`): a member silent for `callbackGap` in a process that stayed awake counts as
-zero, and its next sample still resets the batch.
+Pin: `silentTransferDoesNotHideBatchSpeedForever`.
 
-### S2: a stalled static-range row keeps showing a speed (real, medium)
+**Fixed** (`SilentCountsAsZero`, `Liveness-SilentMember`; off: `Faithful-S1-off`). In
+`DownloadAggregateRateEstimator`, a member silent for `callbackGap` counts as zero: no callback
+since its last observation, or since the batch's last reset if it has not reported since.
+`resetAfterWake(at:)` and `setActiveTransfers(_:at:)` now take the owner's clock to start that
+second clock, so a wake never turns pre-sleep evidence into a zero (the model's "in a process that
+stayed awake"). Its next sample, a first one included, still resets the batch. At least one member
+must contribute a measured rate, so an all-silent batch still says "Updating speed…" (the model's
+`number` gained the same conjunct, implied without the fix). The trade-off: a transfer that is
+moving but whose first callback after a wake comes more than `callbackGap` late counts as zero until
+it reports, and the batch then shows the others' exact total. The model cannot see this, because a
+flowing row with unreported bytes never goes stale there; the seeded Swift batch test draws first
+callbacks up to 12 s late and checks every such answer against the counted members' true total.
+
+### S2: a stalled static-range row keeps showing a speed (real, medium; fixed)
 
 Issue: #488.
 
@@ -234,8 +260,12 @@ S1) no loop runs at all and the row keeps its full last speed.
 
 The model first assumed the row decays before the aggregate expires. A seeded Swift test of that
 margin failed for 89 of 100 stalls, so the assumption was removed and the test became the pin:
-`stalledStaticRowStopsShowingSpeed`. Proposed in the model (`WatchdogCoversTransfers`): the loop
-runs while any row is transferring.
+`stalledStaticRowStopsShowingSpeed`.
+
+**Fixed** (`WatchdogCoversTransfers`, `Liveness-StaleRowSettles`; off: `Faithful-S2-off`).
+`DownloadWatchdogPolicy.requiresWatchdog` holds for any record whose lifecycle is `transferring`,
+so `updateDownloadWatchdog` keeps the loop running (1 s while the total shows, 15 s otherwise) and
+the next refresh past the row estimator's 6 s `stallTimeout` removes the speed and ETA.
 
 ### S3: after a process death a row shows fewer bytes than before (probable, low)
 
@@ -293,7 +323,7 @@ has reattached.
 forward-only stream survives a sleep long enough, with a first callback later than 4 s, needs a
 device. Proposed in the model (`ForwardFirstCallbackRebaseline`).
 
-### S5: past its two restarts a stalled forward-only stream has no verdict (real, medium)
+### S5: past its two restarts a stalled forward-only stream has no verdict (real, medium; fixed)
 
 Issue #497.
 
@@ -317,9 +347,16 @@ forward-only row, which the stall verdict was thought to rule out. Round 1's mod
   `releaseInFlight` wipes it, so the cap binds.
 
 The cap is deliberate: restarting for ever would restart the encoder from byte 0 every 90 s. What
-is missing is the step after it. Pin: `stalledForwardOnlyStreamGetsVerdictPastTheCap` (an hour at
-zero bytes, 3,405 s after the second restart, with no restart and no failure). Proposed in the
-model (`StallCapFails`): past the cap the row fails with the stall reason and waits for the user.
+is missing is the step after it. Pin: `stalledForwardOnlyStreamGetsVerdictPastTheCap` (it used to
+record an hour at zero bytes, 3,405 s after the second restart, with no restart and no failure).
+
+**Fixed** (`StallCapFails`, `Liveness-StallCap`, `Liveness-StallCapFlow`; off: `Faithful-S5-off`,
+`Faithful-S5-off-Flow`). `DownloadStallRecoveryPolicy.shouldFailForwardOnlyStream` answers yes once
+the restarts are spent and the stall timeout has passed again; the tracker reports it once as a
+`.fail` verdict, and `DownloadManager.failStalledForwardOnlyStreamAsync` cancels the task, applies
+`stallDetected` (failed, reason `stalled`) with a retryable message, releases the in-flight slot
+(which drops the tracker entry, so a user Retry starts with a fresh budget) and requests no
+admission. The pin now finds the failure one stall timeout after the second restart.
 
 ### S6: fresh evidence without a common 0.5 s window hides the total (real, low)
 
@@ -388,17 +425,20 @@ reports a backlog that late needs a device.
 
 ## Swift tests
 
-`DownloadsFormalModelStatusTests` (22 tests; nine of them carry known issues, 11 in all). The
+`DownloadsFormalModelStatusTests` (22 tests; six of them carry known issues, six in all). The
 seeded ones use a fixed-seed SplitMix64 generator.
 
 - Aggregate speed, steady batch across sleeps, staggered and late first callbacks, partial
-  catch-up reports, hinted and unhinted wakes: every answer equals the batch's true total, and a
+  catch-up reports, hinted and unhinted wakes: every answer equals the true total of the transfers
+  it counts (one silent for `callbackGap`, such as a first callback 12 s after a wake, counts as
+  zero, #487), and a
   number returns within 20 s of every transfer flowing. A quarter of the lagging wakes report
   their backlog up to 6 s after the settling window; those answers are the S7 known issue.
 - Aggregate speed with stalls and changing rates: no answer exceeds the sum of the peak rates
   (the same split).
 - Aggregate speed under arbitrary samples, clock steps, byte regressions, resets and membership
-  changes: every answer has settled, fresh, two-observation evidence from every active transfer.
+  changes: every answer has settled, fresh, two-observation evidence from every active transfer
+  not silent for `callbackGap` (#487), and at least one transfer is measured.
 - Row speed: finite, never above the true peak, nil after a backwards sample, inside the
   suppression window and `stallTimeout` into a stall; ETA positive or nil.
 - Row speed: catch-up bytes inflate the rate unless the owner re-baselines on them.
