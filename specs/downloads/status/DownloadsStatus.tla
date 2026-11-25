@@ -161,7 +161,8 @@ VARIABLES
     pubBytes,       \* published: each downloading row's bytes, as of the last refresh
     refreshPending, \* a refreshRecords is scheduled
     watchdog,       \* downloadWatchdogTask is running
-    \* Ghosts: written, never read by a guard.
+    \* Ghosts: written, never read by a guard that models the app.  The one reader is the
+    \* guard of timing assumption A1 in GraceExpire (cuRow).
     aggTaint,       \* the transfer's window had catch-up bytes appended to an older baseline
     cuRow,          \* known bytes gained catch-up bytes since the row estimator last sampled
     baseStale,      \* the row estimator's baseline was sampled while catch-up was outstanding

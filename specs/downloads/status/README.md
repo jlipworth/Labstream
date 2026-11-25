@@ -92,7 +92,7 @@ mutation that dropped quiet members from the sum passed.
 
 Run with `TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/status`. The
 figures are from that command on a 14-core Mac with other checks running; the default tier takes
-about 13 minutes in all.
+about 13 minutes in all, and the three deep configs about 86 minutes.
 
 | Config | Expect | Distinct states | Seconds |
 | --- | --- | ---: | ---: |
@@ -132,6 +132,8 @@ about 13 minutes in all.
 | `Proposed-LivenessStallCapFlow` | pass | 86,162 | 29 |
 | `Proposed-Mixed` | pass | 2,364,584 | 109 |
 | `Proposed-OneForward` | pass | 525,071 | 13 |
+| `Deep-LivenessFlow` (deep) | pass | 1,066,742 | 419 |
+| `Deep-Mixed` (deep) | pass | 66,650,051 | 3195 |
 | `Deep-TwoStatic` (deep) | pass | 30,480,049 | 1543 |
 
 The `Current` configs leave out what an open finding violates: none lets a static-range row stall
