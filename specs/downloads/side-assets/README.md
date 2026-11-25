@@ -71,6 +71,25 @@ selected backend, plus any other backend that owns active work or (S6, #494) a c
 misses an asset, which is what `runLaunchDownloadRecovery` does. Rows in `OtherBackendRows` are on the backend that is not
 selected at the start.
 
+### Source drift and asset identity (#503, #504)
+
+The model used to identify an asset by its recorded path and the presence of its file, and to
+enumerate each row's asset slots from the config, independently of what the row saved. Neither the
+wrong source behind a present file nor an asset missing from the saved inventory could be seen.
+`Drift` (fixed for a run) says how the server's item differs from the saved row:
+
+- `reordered`, `reorderedBare`: Plex reordered the item's media after the download. The initial
+  pass uses the item the transfer starts from; a refresh (`RefreshDone`) looks the downloaded part
+  up in the refreshed item, by index before the #503 fix (`RepairHitsOther`), so a task it starts
+  (`misaddr`) fetches the other part's asset. The ghost `foreign` records which files at their
+  stable paths hold another part's asset; `Correct` is `Have` minus those. With `reorderedBare` the
+  other part advertises nothing, so nothing is fetched.
+- `lateChapters`: the row was saved without chapter thumbnails (`seedChapters`, durable), so the
+  initial pass and the inventory have no chapter images to offer. With `FixSourceInventory` a
+  successful refresh saves the thumbnails and starts the chapter task.
+- `emptyThumb`: the item's primary artwork field is `""` and the next one is valid. Before the fix
+  the selector returned `""`, so the poster is in no inventory (`InInventory`).
+
 ### Delete
 
 `UserDelete` stages the deletion: the store appends a durable intent that lists the paths the row
@@ -102,6 +121,8 @@ where a property needs them. `Mutation` injects one bug for a `Mutant` config.
 | `CachedThisLaunch` | liveness, `FairSpec` | The stronger reading: the asset is cached without a relaunch, as long as repair edges keep coming. |
 | `NoEdgeLost`, `NoEdgeOutsidePass` | invariant | Every repair edge is followed by a pass that scans the row as it is after the edge, or by a note to run one (S5). |
 | `CachedBifIsForChosenPart` | invariant | A cached Plex BIF is the index of the part that was downloaded (S7). |
+| `CachedAssetIsForDownloadedPart` | invariant | Asset identity: no file at a stable path holds an asset of a part other than the one the row downloaded (#503). |
+| `ServedAssetInInventory` | invariant | Source inventory: every asset the server holds for a playable row that is not discovered from the server is in the inventory derived from the saved row, or a fresh launch's refresh adds it there (#504). |
 | `PromotionNotLostToRace` | invariant | No promotion of a live row is dropped because another write to the row came between its snapshot and its confirmation (S8). |
 | `RepairWithinRateLimit` | invariant | Every request, the refresh included, is inside the coordinator's concurrency cap and the per-launch budget (B25). |
 | `ControlsApplyInRequestOrder` | invariant | No park, unpark or cancel takes effect after a later-requested one (B32). |
@@ -127,7 +148,9 @@ the property fails.
 
 `MissingIsDurablyOwed` is the same claim as a state invariant, so a violation shows up without a
 liveness run. It holds when the durable record exists; `NeverForgotten` shows the record leads to a
-cached file.
+cached file. Both count an asset as cached only when it is the downloaded part's own (`Correct`,
+#503), and an asset missing from the saved inventory as owed only through a refresh that learns it
+(#504).
 
 Both are scoped to rows with an attempt ID (`Mutant-UnownedRow` below).
 
@@ -158,6 +181,10 @@ crashes, outages, session changes and pass timeouts are not fair and are capped 
 | `Faithful-F3-finish-off-Chapters` | A body that finishes behind a user pause sends no unpark (before the #474 follow-up): the completed row's chapter images stay parked. | `CachedThisLaunch` |
 | `Faithful-S2-off-Subs`, `-Tiles` | Resume All sends no unpark (before #483): a completed row's late fetch entry stays parked. | `CachedThisLaunch` |
 | `Faithful-S6-off` | Launch hydrates only active-work backends (before #494), so a completed row on another backend stays cold. | `NeverForgotten` |
+| `Faithful-503-off-WrongPartSubs`, `-WrongPartBif` | The Plex repair looks the part up by index (before #503); after a media reorder it caches the other part's subtitle or BIF. | `CachedAssetIsForDownloadedPart` |
+| `Faithful-503-off-SubsNeverFetched` | The same, and the other part has no subtitles: the downloaded part's subtitle is never reached. | `MissingIsDurablyOwed` |
+| `Faithful-504-off-LateChapters` | A refresh does not save chapter thumbnails the row lacked (before #504). | `ServedAssetInInventory` |
+| `Faithful-504-off-EmptyThumb` | The artwork selector returns the empty primary field (before #504). | `ServedAssetInInventory` |
 | `Mutant-NoDiscoveryDispatch` | The refresh never starts the kinds it discovers. | `NeverForgotten` |
 | `Mutant-PayloadsFail` | No asset request ever returns a payload. | `NeverForgotten` |
 | `Mutant-PayloadsFail-ThisLaunch` | The same, against the this-launch property. | `CachedThisLaunch` |
@@ -368,6 +395,47 @@ rare. It is a retry that is missing, not a fence that is wrong.
 
 Not proposed in the model. Pin: `promotionSurvivesAnUnrelatedRowWrite`. Issue #496.
 
+### #503: the Plex repair looks the downloaded part up by index (real, fixed)
+
+Fixed on `specs/downloads-tla`, pending merge. Raised by the round 2 re-review and confirmed in the
+source. A Plex row is downloaded from part A; its subtitle (or BIF) is missing. Plex later reorders
+the item's media so another part sits at A's old index. The completed-row repair refreshed the item
+and took `currentItem.media?[safe: mediaIndex]?.part[safe: partIndex]` for subtitles and
+`selectedPlexBIFPart(from:mediaIndex:partIndex:)` for the BIF, so it fetched the other part's
+subtitle and BIF (`Faithful-503-off-WrongPartSubs`, `-WrongPartBif`), or nothing when that part has
+none (`Faithful-503-off-SubsNeverFetched`), on every launch, although the row persists A's
+`sourcePartID` (`DownloadOfflineMetadataBuilder`). The S7 fix (#495) chose the right index but not
+the right identity. The model could not see it: a file for the wrong source satisfied
+`MissingIsDurablyOwed` and `NeverForgotten`.
+
+The fix (`FixRepairByPartID`): both repairs resolve the part by the persisted `sourcePartID`
+(`DownloadSideAssetPolicy.plexRepairPart`, `selectedPlexBIFPart(...sourcePartID:)`); an ID the
+refreshed item no longer has selects nothing, and only a row that stored no ID falls back to the
+indexes. The initial pass keeps the indexes into the item the transfer starts from.
+`Current-503-RepairByPartID` and `-Bare` pass. Pin: `plexRepairResolvesThePartByItsPersistedID`.
+
+### #504: assets missing from the saved inventory are never fetched (real, fixed)
+
+Fixed on `specs/downloads-tla`, pending merge. Raised by the round 2 re-review and confirmed in the
+source. Two cases:
+
+- **Late chapter thumbnails** (`Faithful-504-off-LateChapters`): the row was saved without chapter
+  thumbnails. `DownloadSideAssetRepairInventory.missingKinds` derives the inventory from the saved
+  chapters, so it never offers `.chapterImages`, and the source refresh that did return thumbnails
+  skipped the chapter cache call because `.chapterImages` was not among the offered kinds. Fix: a
+  successful refresh on any backend calls `adoptRefreshedChapterImages`, which persists the
+  chapters it learns (`DownloadSideAssetPolicy.learnedOfflineChapters`) and fetches their images
+  against the persisted indexes; every later inventory then owes them.
+  `Current-504-LateChapters` passes.
+- **Empty Plex thumb with a valid art** (`Faithful-504-off-EmptyThumb`): `offlinePosterRef`
+  returned `thumb ?? art`, which is `""`; the fetch declined it and the inventory, which asks the
+  same selector, omitted the poster. Fix: the selector skips empty and blank fields. Jellyfin and
+  Emby go through the same selector (their poster fetch already fell back to `art` when the
+  request could not be built, but their inventory did not). `Current-504-EmptyThumb` passes.
+
+The model could not see either: it enumerated asset slots from the config, not from the saved row.
+Pins: `refreshedChapterThumbnailsJoinTheInventory`, `emptyArtworkFieldFallsBack`.
+
 ### Known deferred items the model reproduces
 
 - **st-39, orphan reclamation (#401).** `Finding-st39-CrashOrphanAfterDelete`: the process dies
@@ -455,6 +523,10 @@ and state directories and report wrong results.
 | `Proposed-S5-PassReruns-Stale` | pass | pass | 1,474 | 1 s or less |
 | `Proposed-S5-PassReruns` | pass | pass | 299,686 | 15 s |
 | `Current-S7-BifChosenPart` | pass | pass | 16,441 | 2 s |
+| `Current-503-RepairByPartID` | pass | pass | 128,540 | 34 s |
+| `Current-503-RepairByPartID-Bare` | pass | pass | 17,409 | 5 s |
+| `Current-504-LateChapters` | pass | pass | 6,521 | 2 s |
+| `Current-504-EmptyThumb` | pass | pass | 15,859 | 4 s |
 | `Faithful-B25-off` | violation of `RepairWithinRateLimit` | violated | 131 | 1 s or less |
 | `Faithful-B32-off-PausedFetch` | violation of `PausedRowNotFetching` | violated | 187 | 1 s or less |
 | `Faithful-B32-off` | violation of `ControlsApplyInRequestOrder` | violated | 48 | 1 s or less |
@@ -463,6 +535,11 @@ and state directories and report wrong results.
 | `Faithful-S2-off-Subs` | violation of `CachedThisLaunch` | violated | 5,761 | 2 s |
 | `Faithful-S2-off-Tiles` | violation of `CachedThisLaunch` | violated | 1,262 | 1 s or less |
 | `Faithful-S6-off` | violation of `NeverForgotten` | violated | 518 | 1 s or less |
+| `Faithful-503-off-WrongPartSubs` | violation of `CachedAssetIsForDownloadedPart` | violated | 559 | 1 s or less |
+| `Faithful-503-off-WrongPartBif` | violation of `CachedAssetIsForDownloadedPart` | violated | 575 | 1 s or less |
+| `Faithful-503-off-SubsNeverFetched` | violation of `MissingIsDurablyOwed` | violated | 44 | 1 s or less |
+| `Faithful-504-off-LateChapters` | violation of `ServedAssetInInventory` | violated | 33 | 1 s or less |
+| `Faithful-504-off-EmptyThumb` | violation of `ServedAssetInInventory` | violated | 31 | 1 s or less |
 | `Mutant-DeleteSkipsPublished` | violation of `NoOrphanAfterDelete` | violated | 267 | 1 s or less |
 | `Mutant-NoDiscoveryDispatch` | violation of `NeverForgotten` | violated | 3,861 | 2 s |
 | `Mutant-PayloadsFail-ThisLaunch` | violation of `CachedThisLaunch` | violated | 2,531 | 2 s |
@@ -492,7 +569,9 @@ The `Current-*` configs check every safety property except the ones the findings
 `NoOrphanAfterDelete` is checked only by `Current-Delete`, which has no process death and no
 replacement attempt (st-39); no `Current-*` config allows a refused Resume (S4), records edges
 (S5), uses the three-step promotion outside `Current-Delete` (S8). Only `Current-S7-BifChosenPart`
-downloads a part other than the first (S7, fixed). The `Liveness-Durable-*` configs are the code as it stands with every environment
+downloads a part other than the first (S7, fixed). Only the `Current-503-*` and `Current-504-*`
+configs set a `Drift`; the others keep `Drift = "none"` with both fixes on, where they have no
+effect. The `Liveness-Durable-*` configs are the code as it stands with every environment
 switch on. The `Liveness-ThisLaunch-*` configs leave out the triggers of S1, S2 and S3 and give the
 budget more dispatches than the environment can spend; the S1 and S2 triggers are checked against
 the fixed code by `Current-S1-*` and `Current-S2-*`.
@@ -516,6 +595,8 @@ the fixed code by `Current-S1-*` and `Current-S2-*`.
   same coordinator.
 - A change of side-asset source inside one attempt (Plex optimize hand-off, Convert) and the
   store's source fence. A replacement attempt is modelled.
+- Source drift other than `Drift`'s cases: a part ID that disappears from the server, chapters
+  that change after thumbnails were cached, and a refresh that loses thumbnails the row saved.
 - Staging files and the startup staging inventory. Disk-full writes: a failed write behaves like
   a failed fetch.
 - A recorded file that disappears from disk, and with it the path-lease exclusion between a

@@ -74,6 +74,9 @@
 (*    (BackendSession.matchesPersistedServer).  A session for another      *)
 (*    server or user of the same backend is no session.                    *)
 (*  - The main transfer is the reducer's lifecycle and nothing else.       *)
+(*  - Drift (#503, #504) is how the server's item differs from the saved   *)
+(*    row; it is fixed for the run.  The item the transfer starts from is  *)
+(*    the saved one; any later refresh sees the drifted item.              *)
 (*                                                                         *)
 (* Lifecycle changes only through Reduce (DownloadsReducer.tla); each row  *)
 (* keeps a whole reducer state.                                            *)
@@ -116,6 +119,9 @@ CONSTANTS
     FixPassReruns,        \* PROPOSED (not in the code): a dropped, timed-out or stale repair pass runs again (S5)
     FixHydrateCompleted,  \* launch restores the session of a backend whose completed rows miss assets (S6, #494; in the code)
     FixBifChosenPart,     \* FIXED (#495): the BIF request names the downloaded part (S7); configs with ChosenPartIsFirst ignore it
+    Drift,                \* how the server's item has drifted from the saved row (#503, #504); "none" otherwise
+    FixRepairByPartID,    \* FIXED (#503): the Plex repair resolves the downloaded part by its persisted ID
+    FixSourceInventory,   \* FIXED (#504): a refresh adds chapter thumbs to the saved row; a blank artwork field is skipped
     PayloadWindow,        \* PROPOSED (#394): payloads of one task group fetched but not yet promoted; 0 = no window
     Mutation,             \* an injected bug for a Mutant config; "none" otherwise
     AllowCrash,           \* environment switches: what the user, the transfer and the server may do
@@ -143,6 +149,14 @@ Grouped == {"chapters", "tiles"}
 \*   windowChaptersOnly   the #394 window covers chapter images and not tiles
 \*   confirmUnfenced      a rename that lost its row keeps its file
 Mutations == {"none", "noDiscovery", "payloadsFail", "windowChaptersOnly", "confirmUnfenced"}
+\* Drift of the server's item (#503, #504):
+\*   reordered       Plex reordered the item's media after the download; the part now at the
+\*                   downloaded part's index advertises the discovered kinds the downloaded
+\*                   part has
+\*   reorderedBare   the same, and the part now at that index advertises nothing
+\*   lateChapters    the row was saved before the server had chapter thumbnails
+\*   emptyThumb      the item's primary artwork field is "" and the next one is valid
+Drifts == {"none", "reordered", "reorderedBare", "lateChapters", "emptyThumb"}
 
 ASSUME /\ Kinds \subseteq AllKinds /\ Kinds # {}
        /\ ServerHas \subseteq AllKinds
@@ -152,6 +166,7 @@ ASSUME /\ Kinds \subseteq AllKinds /\ Kinds # {}
        /\ MaxDispatch \in Nat \ {0} /\ MaxPending \in Nat \ {0}
        /\ PayloadLimit \in Nat /\ PayloadWindow \in Nat /\ EnvBudget \in Nat
        /\ Mutation \in Mutations
+       /\ Drift \in Drifts
 
 \* SYMMETRY for safety configs: nothing tells two rows apart, unless
 \* UnownedRows or OtherBackendRows does.
@@ -194,12 +209,19 @@ AsksChosenPart == ChosenPartIsFirst \/ FixBifChosenPart
 BifAdvertised == IF AsksChosenPart THEN "bif" \in ServerHas ELSE BifOnFirstPart
 \* What the item the code looks at advertises for a discovered kind.
 Advertised(k) == IF k = "bif" THEN BifAdvertised ELSE k \in ServerHas
-\* The request, as the code builds it, returns a payload.
-Produces(it) ==
-    CASE it = RefreshItem -> TRUE
-      [] Mutation = "payloadsFail" -> FALSE
-      [] KindOf(it) = "bif" -> BifAdvertised
-      [] OTHER -> KindOf(it) \in ServerHas
+
+\* #503.  The completed-row repair looks the downloaded part up in the
+\* refreshed item: by media and part index before the fix, so after a
+\* reorder it finds another part; by the persisted sourcePartID with
+\* FixRepairByPartID (DownloadSideAssetPolicy.plexRepairPart and
+\* selectedPlexBIFPart(sourcePartID:)).  The initial pass uses the item
+\* the transfer starts from, which is right either way.
+Reordered == Drift \in {"reordered", "reorderedBare"}
+RepairHitsOther == Reordered /\ ~FixRepairByPartID
+\* What the part the repair looks at advertises for a discovered kind.
+RepairAdvertised(k) ==
+    IF RepairHitsOther THEN Drift = "reordered" /\ k \in ServerHas ELSE Advertised(k)
+
 \* The server holds this asset for the source the row downloaded.
 Served(it) == KindOf(it) \in ServerHas
 
@@ -223,6 +245,7 @@ VARIABLES
     recorded,     \* [Rows -> SUBSET AssetItems]    paths recorded in OfflineMetadata
     deleting,     \* [Rows -> BOOLEAN]              a row-deletion intent is pending
     delPaths,     \* [Rows -> SUBSET AssetItems]    the paths that intent lists
+    seedChapters, \* [Rows -> BOOLEAN]              the saved chapters carry thumbnails (#504)
     \* ---- durable: files and defaults (survive Crash) ----
     file,         \* [Rows -> SUBSET AssetItems]    files at their stable paths
     queuePaused,  \* BOOLEAN                        the Pause All gate (UserDefaults)
@@ -249,20 +272,24 @@ VARIABLES
     rerun,        \* BOOLEAN                        FixPassReruns: run the pass again
     stale,        \* [Rows -> SUBSET AssetItems]    promotions whose snapshot is out of date
     zombie,       \* [Rows -> SUBSET AssetItems]    renames in flight for an attempt that lost the row
+    misaddr,      \* [Rows -> SUBSET Discovered]   tasks the repair started on another part (#503)
     \* ---- ghosts (observe only; never read by an action's guard) ----
     sent,         \* [Rows -> [Items -> 0..MaxDispatch+1]]  transports started this launch
     ctlReordered, \* BOOLEAN   a command took effect after a later-requested one
     env,          \* 0..EnvBudget
     owedEdge,     \* SUBSET Rows   TrackEdges: rows an edge arrived for that no pass has scanned since
-    raceDropped   \* BOOLEAN   a promotion of a live row was dropped by a concurrent row mutation
+    raceDropped,  \* BOOLEAN   a promotion of a live row was dropped by a concurrent row mutation
+    foreign       \* [Rows -> SUBSET AssetItems]  files holding another part's asset (#503)
 
 rowVars == <<present, st, attempt, recorded, deleting, delPaths>>
 authVars == <<selected, creds, session>>
 ctlVars == <<parked, cancelled, applied, pending>>
 passVars == <<pass, passRows, passStale, rerun, owedEdge>>
 promoVars == <<stale, zombie, raceDropped>>
+driftVars == <<seedChapters, misaddr, foreign>>
 vars == <<rowVars, file, queuePaused, authVars, serverUp, up, reg, req, ctlVars,
-          budget, pub, earlyOffer, exempt, passVars, promoVars, sent, ctlReordered, env>>
+          budget, pub, earlyOffer, exempt, passVars, promoVars, sent, ctlReordered, env,
+          driftVars>>
 
 Life(r) == st[r].lifecycle
 \* The row exists and no deletion is staged: what every store fence checks.
@@ -273,6 +300,29 @@ Sess(r) == session[BackendOf(r)]
 \* The asset is cached: the file exists and the metadata names it.
 Have(r, it) == it \in recorded[r] /\ it \in file[r]
 Missing(r, k) == {it \in ItemsOf(k) : ~Have(r, it)}
+\* The request, as the code builds it, returns a payload.  A task the
+\* repair started on another part (misaddr) fetches that part's asset.
+Produces(r, it) ==
+    CASE it = RefreshItem -> TRUE
+      [] Mutation = "payloadsFail" -> FALSE
+      [] KindOf(it) \in misaddr[r] -> RepairAdvertised(KindOf(it))
+      [] KindOf(it) = "bif" -> BifAdvertised
+      [] OTHER -> KindOf(it) \in ServerHas
+\* The truth the code cannot see: cached, and the downloaded part's own asset.
+Correct(r, it) == Have(r, it) /\ it \notin foreign[r]
+
+\* #504.  The kind is in the inventory the code derives from the saved row
+\* (and, before the transfer, from the item it starts from).  The poster
+\* needs a non-blank artwork field: before the fix the selector returned
+\* the empty primary field.  Chapter images need saved chapter thumbnails.
+PosterSelected == Drift # "emptyThumb" \/ FixSourceInventory
+InInventory(r, k) ==
+    CASE k = "poster" -> PosterSelected
+      [] k = "chapters" -> seedChapters[r]
+      [] OTHER -> TRUE
+\* A successful refresh adds what it learns to the saved row: chapter
+\* thumbnails (FixSourceInventory, adoptRefreshedChapterImages).
+RefreshLearns(k) == k = "chapters" /\ FixSourceInventory
 IdleReqs == [it \in Items |-> "idle"]
 BothOwners(v) == [o \in Owners |-> v]
 ZeroItems == [it \in Items |-> 0]
@@ -323,7 +373,7 @@ Touch(R) == TouchPass(R) /\ TouchPromo(R)
 -----------------------------------------------------------------------------
 (* Starting work (startIfAbsent, then the task's first fetch entries)      *)
 
-Startable(r, k) == k \notin reg[r] /\ Missing(r, k) # {}
+Startable(r, k) == k \notin reg[r] /\ Missing(r, k) # {} /\ InInventory(r, k)
 
 \* The requests a new task enters at once.
 EnterNow(r, w) ==
@@ -397,11 +447,11 @@ Renaming(r) == {it \in AssetItems : req[r][it] = "renamed"}
 \* trickplay offer is gated by the playlist's budget alone.
 OffersWith(r, b, g) ==
     LET posterOffer ==
-            IF "poster" \in Kinds /\ Missing(r, "poster") # {}
+            IF "poster" \in Kinds /\ InInventory(r, "poster") /\ Missing(r, "poster") # {}
                /\ b[<<"poster", 1>>] < MaxDispatch
                THEN {"poster"} ELSE {}
         chapterOffer ==
-            IF "chapters" \in Kinds
+            IF "chapters" \in Kinds /\ InInventory(r, "chapters")
                /\ \E it \in Missing(r, "chapters") : b[it] < MaxDispatch
                THEN {"chapters"} ELSE {}
         tilesOffer ==
@@ -469,6 +519,9 @@ Init ==
     /\ env = EnvBudget
     /\ owedEdge = {}
     /\ raceDropped = FALSE
+    /\ seedChapters = Const(Rows, Drift # "lateChapters")
+    /\ misaddr = Const(Rows, {})
+    /\ foreign = Const(Rows, {})
 
 -----------------------------------------------------------------------------
 (* The main transfer, abstract                                             *)
@@ -491,7 +544,7 @@ StartTransfer(r) ==
     /\ UNCHANGED <<present, attempt, recorded, deleting, delPaths, file, queuePaused,
                    authVars, serverUp, up, parked, cancelled, budget, pub, earlyOffer,
                    exempt, pass, passRows, rerun, owedEdge, zombie, raceDropped, sent,
-                   ctlReordered, env>>
+                   ctlReordered, env, driftVars>>
 
 BodyFinished(r) ==
     /\ up /\ Live(r) /\ Life(r) = "transferring"
@@ -501,7 +554,7 @@ BodyFinished(r) ==
     /\ UNCHANGED <<present, attempt, recorded, deleting, delPaths, file, queuePaused,
                    authVars, serverUp, up, reg, req, ctlVars, budget, pub, earlyOffer,
                    exempt, pass, passRows, rerun, owedEdge, zombie, raceDropped, sent,
-                   ctlReordered, env>>
+                   ctlReordered, env, driftVars>>
 
 \* F3 (#474).  A forward-only transfer finishes as a user pause lands: the
 \* body is captured and the paused row finalizes (reducer: bodyCaptured).  The
@@ -535,7 +588,7 @@ Finalized(r) ==
     /\ UNCHANGED <<present, attempt, recorded, deleting, delPaths, file, queuePaused,
                    authVars, serverUp, up, reg, req, ctlVars, budget, pub, earlyOffer,
                    exempt, pass, passRows, rerun, owedEdge, zombie, raceDropped, sent,
-                   ctlReordered, env>>
+                   ctlReordered, env, driftVars>>
 
 \* Cancel the row's side-cache tasks and keep its attempt.  A rename already
 \* in flight still runs into the store's confirmation.
@@ -545,6 +598,7 @@ CancelTasks(r) ==
     /\ req' = Upd(req, r, IdleReqs)
     /\ zombie' = Upd(zombie, r, zombie[r] \cup Renaming(r))
     /\ stale' = Upd(stale, r, {})
+    /\ misaddr' = Upd(misaddr, r, {})
 
 \* A failed row is released with .preservingFinalizer: its side-cache tasks
 \* are cancelled, the coordinator owners are not.
@@ -557,7 +611,8 @@ TransferFails(r) ==
     /\ TouchPass({r})
     /\ UNCHANGED <<present, attempt, deleting, delPaths, file, queuePaused, authVars,
                    serverUp, up, parked, cancelled, budget, pub, earlyOffer, exempt,
-                   pass, passRows, rerun, owedEdge, raceDropped, sent, ctlReordered>>
+                   pass, passRows, rerun, owedEdge, raceDropped, sent, ctlReordered,
+                   seedChapters, foreign>>
 
 \* A storage-parked row: paused by the reducer, no command to the coordinator.
 StorageInterrupt(r) ==
@@ -568,7 +623,7 @@ StorageInterrupt(r) ==
     /\ UNCHANGED <<present, attempt, recorded, deleting, delPaths, file, queuePaused,
                    authVars, serverUp, up, reg, req, ctlVars, budget, pub, earlyOffer,
                    exempt, pass, passRows, rerun, owedEdge, zombie, raceDropped, sent,
-                   ctlReordered>>
+                   ctlReordered, driftVars>>
 
 \* releaseInFlight with the default .allCancellable mode for a row that
 \* keeps its attempt: a Plex prep poller that finds no session, for one.
@@ -583,7 +638,8 @@ ReleaseKeepingRow(r) ==
     /\ TouchPass({r})
     /\ UNCHANGED <<present, st, attempt, deleting, delPaths, file, queuePaused, authVars,
                    serverUp, up, parked, cancelled, budget, pub, earlyOffer, exempt,
-                   pass, passRows, rerun, owedEdge, raceDropped, sent, ctlReordered>>
+                   pass, passRows, rerun, owedEdge, raceDropped, sent, ctlReordered,
+                   seedChapters, foreign>>
 
 -----------------------------------------------------------------------------
 (* The user                                                                *)
@@ -602,7 +658,7 @@ UserPause(r) ==
     /\ UNCHANGED <<present, attempt, recorded, deleting, delPaths, file, queuePaused,
                    authVars, serverUp, up, reg, req, parked, cancelled, budget, pub,
                    earlyOffer, exempt, pass, passRows, rerun, owedEdge, zombie,
-                   raceDropped, sent, ctlReordered>>
+                   raceDropped, sent, ctlReordered, driftVars>>
 
 \* pauseQueue: pauses the active rows.  A finalizing or completed row gets
 \* no command.  A pass that is running starts nothing once the gate is set.
@@ -618,7 +674,7 @@ PauseAll ==
     /\ owedEdge' = {}
     /\ UNCHANGED <<present, attempt, recorded, deleting, delPaths, file, authVars,
                    serverUp, up, reg, req, parked, cancelled, budget, pub, earlyOffer,
-                   pass, passRows, rerun, zombie, raceDropped, sent, ctlReordered>>
+                   pass, passRows, rerun, zombie, raceDropped, sent, ctlReordered, driftVars>>
 
 \* resumeQueue: clears the gate.  Paused rows are re-admitted one by one
 \* (the Resume actions below); completed rows get a repair edge
@@ -635,7 +691,7 @@ ResumeAll ==
           ELSE UNCHANGED <<pending, applied>>
     /\ EdgeArrives
     /\ UNCHANGED <<rowVars, file, authVars, serverUp, up, reg, req, parked, cancelled,
-                   budget, pub, earlyOffer, promoVars, sent, ctlReordered>>
+                   budget, pub, earlyOffer, promoVars, sent, ctlReordered, driftVars>>
 
 \* retryRecordAsync continuing the same attempt (a resume blob).  It unparks
 \* first, then restarts the URLSession task and offers every missing asset
@@ -662,7 +718,7 @@ ResumeSameAttempt(r) ==
     /\ Touch({r})
     /\ UNCHANGED <<present, attempt, recorded, deleting, delPaths, file, queuePaused,
                    authVars, serverUp, up, parked, cancelled, budget, pub, earlyOffer,
-                   pass, passRows, rerun, owedEdge, zombie, raceDropped, ctlReordered>>
+                   pass, passRows, rerun, owedEdge, zombie, raceDropped, ctlReordered, driftVars>>
 
 \* The memory of a row whose attempt is replaced or deleted: the registry
 \* key and both coordinator owners belong to the old attempt.  The store's
@@ -679,6 +735,7 @@ ForgetRowMemory(r) ==
     /\ earlyOffer' = Upd(earlyOffer, r, FALSE)
     /\ zombie' = Upd(zombie, r, zombie[r] \cup Renaming(r))
     /\ stale' = Upd(stale, r, {})
+    /\ misaddr' = Upd(misaddr, r, {})
 
 \* A retry that seeds a replacement attempt.  The cached bundle is fenced to
 \* the old attempt: the store clears the recorded paths and retires those
@@ -695,7 +752,8 @@ ResumeFreshAttempt(r) ==
     /\ ForgetRowMemory(r)
     /\ TouchPass({r})
     /\ UNCHANGED <<present, deleting, delPaths, queuePaused, authVars, serverUp, up,
-                   pass, passRows, rerun, owedEdge, raceDropped, ctlReordered>>
+                   pass, passRows, rerun, owedEdge, raceDropped, ctlReordered,
+                   seedChapters, foreign>>
 
 \* retryRecordAsync unparks before its own guards.  A resume the storage cap
 \* or a missing backend then refuses leaves the row paused and unparked.
@@ -706,7 +764,7 @@ ResumeRefused(r) ==
                             ELSE SetCtl(pending \cup {UnparkCtl(r)}, applied)
     /\ UNCHANGED <<rowVars, file, queuePaused, authVars, serverUp, up, reg, req, parked,
                    cancelled, budget, pub, earlyOffer, exempt, passVars, promoVars, sent,
-                   ctlReordered>>
+                   ctlReordered, driftVars>>
 
 \* delete(record:) submits the row deletion: the store appends a durable
 \* rowDeletion intent that lists the paths the row references (the recorded
@@ -723,7 +781,7 @@ UserDelete(r) ==
     /\ TouchPass({r})
     /\ owedEdge' = owedEdge \ {r}
     /\ UNCHANGED <<present, st, attempt, recorded, file, queuePaused, authVars, serverUp,
-                   up, pass, passRows, rerun, raceDropped, ctlReordered>>
+                   up, pass, passRows, rerun, raceDropped, ctlReordered, seedChapters, foreign>>
 
 \* executeRowDeletion: the artifact worker removes the listed files and then
 \* the row.  A prepared intent is replayed after a relaunch.
@@ -737,16 +795,18 @@ DeleteFinish(r) ==
     /\ recorded' = Upd(recorded, r, {})
     /\ UNCHANGED <<attempt, queuePaused, authVars, serverUp, up, reg, req, ctlVars,
                    budget, pub, earlyOffer, exempt, passVars, promoVars, sent,
-                   ctlReordered, env>>
+                   ctlReordered, env, driftVars>>
 
 \* The same item is downloaded again under a new attempt.
 UserAdd(r) ==
     /\ up /\ ~present[r] /\ attempt[r] < MaxAttempt /\ Spend
     /\ present' = Upd(present, r, TRUE)
     /\ attempt' = Upd(attempt, r, attempt[r] + 1)
+    \* The new row is saved from the item as the server has it now.
+    /\ seedChapters' = Upd(seedChapters, r, TRUE)
     /\ UNCHANGED <<st, recorded, deleting, delPaths, file, queuePaused, authVars,
                    serverUp, up, reg, req, ctlVars, budget, pub, earlyOffer, exempt,
-                   passVars, promoVars, sent, ctlReordered>>
+                   passVars, promoVars, sent, ctlReordered, misaddr, foreign>>
 
 -----------------------------------------------------------------------------
 (* Passes that offer work                                                  *)
@@ -763,7 +823,7 @@ EarlyPoster(r) ==
     /\ req' = Upd(req, r, ReqAfterStart(r, {"poster"}))
     /\ SetCtl(pending \cup EntryCtls(r, Entering(r, {"poster"}), FALSE, 0), applied)
     /\ UNCHANGED <<rowVars, file, queuePaused, authVars, serverUp, up, parked, cancelled,
-                   budget, pub, exempt, passVars, promoVars, sent, ctlReordered, env>>
+                   budget, pub, exempt, passVars, promoVars, sent, ctlReordered, env, driftVars>>
 
 \* A foreground edge ("scene_active").  It is not a step when it would
 \* change nothing.  While a pass runs it is dropped: the code keeps no note
@@ -776,7 +836,7 @@ Edge ==
              \/ FixPassReruns /\ ~rerun
     /\ EdgeArrives
     /\ UNCHANGED <<rowVars, file, queuePaused, authVars, serverUp, up, reg, req, ctlVars,
-                   budget, pub, earlyOffer, exempt, promoVars, sent, ctlReordered, env>>
+                   budget, pub, earlyOffer, exempt, promoVars, sent, ctlReordered, env, driftVars>>
 
 \* The inventory worker returns and the pass dispatches.  A row whose
 \* generation moved, that left the playable states or that is being deleted
@@ -796,7 +856,7 @@ PassApply ==
           /\ owedEdge' = owedEdge \ scanned
     /\ pass' = "idle" /\ passRows' = {} /\ passStale' = {}
     /\ UNCHANGED <<rowVars, file, queuePaused, authVars, serverUp, up, parked, cancelled,
-                   budget, pub, earlyOffer, exempt, promoVars, ctlReordered, env>>
+                   budget, pub, earlyOffer, exempt, promoVars, ctlReordered, env, driftVars>>
 
 \* The worker misses its 30 s deadline: the pass ends and starts nothing.
 PassTimeout ==
@@ -805,7 +865,7 @@ PassTimeout ==
     /\ rerun' = FixPassReruns
     /\ UNCHANGED <<rowVars, file, queuePaused, authVars, serverUp, up, reg, req, ctlVars,
                    budget, pub, earlyOffer, exempt, owedEdge, promoVars, sent,
-                   ctlReordered>>
+                   ctlReordered, driftVars>>
 
 \* PROPOSED (FixPassReruns): the pass that was asked for while one ran, or
 \* that could not scan every row, runs again.
@@ -817,7 +877,7 @@ PassRerun ==
           ELSE UNCHANGED <<pass, passRows, passStale>>
     /\ UNCHANGED <<rowVars, file, queuePaused, authVars, serverUp, up, reg, req, ctlVars,
                    budget, pub, earlyOffer, exempt, owedEdge, promoVars, sent,
-                   ctlReordered, env>>
+                   ctlReordered, env, driftVars>>
 
 -----------------------------------------------------------------------------
 (* The coordinator                                                         *)
@@ -855,7 +915,7 @@ Deliver(d) ==
                                                       ELSE applied)
           /\ ctlReordered' = (ctlReordered \/ (fresh /\ d.ver < applied[r][o]))
     /\ UNCHANGED <<rowVars, file, queuePaused, authVars, serverUp, up, reg, budget, pub,
-                   earlyOffer, exempt, passVars, promoVars, sent, env>>
+                   earlyOffer, exempt, passVars, promoVars, sent, env, driftVars>>
 
 ActiveCount == Cardinality({x \in Rows \X Items : req[x[1]][x[2]] = "inflight"})
 
@@ -880,16 +940,16 @@ Admit(r, it) ==
           ELSE /\ req' = Upd2(req, r, it, "resolved")
                /\ UNCHANGED <<budget, sent>>
     /\ UNCHANGED <<rowVars, file, queuePaused, authVars, serverUp, up, reg, ctlVars, pub,
-                   earlyOffer, exempt, passVars, promoVars, ctlReordered, env>>
+                   earlyOffer, exempt, passVars, promoVars, ctlReordered, env, driftVars>>
 
 \* The transport ends: a payload, or an error (an outage, or an asset the
 \* server does not have).  Either way the dispatch stays charged.
 Respond(r, it) ==
     /\ up /\ req[r][it] = "inflight"
-    /\ req' = Upd2(req, r, it, IF serverUp /\ Produces(it) THEN "ready" ELSE "resolved")
+    /\ req' = Upd2(req, r, it, IF serverUp /\ Produces(r, it) THEN "ready" ELSE "resolved")
     /\ UNCHANGED <<rowVars, file, queuePaused, authVars, serverUp, up, reg, ctlVars,
                    budget, pub, earlyOffer, exempt, passVars, promoVars, sent,
-                   ctlReordered, env>>
+                   ctlReordered, env, driftVars>>
 
 -----------------------------------------------------------------------------
 (* Workers                                                                 *)
@@ -902,6 +962,10 @@ Promotable(r, it) ==
     /\ it # RefreshItem /\ req[r][it] = "ready"
     /\ it = PlaylistItem => TilesDone(r) /\ AnyTile(r)
 
+\* The ghost record of whose asset now sits at the stable path.
+ForeignAfterWrite(r, it) ==
+    IF KindOf(it) \in misaddr[r] THEN foreign[r] \cup {it} ELSE foreign[r] \ {it}
+
 \* prepareSideAsset + promoteSideAsset in one step: the file reaches its
 \* stable path and the store remembers the publication in memory.  The
 \* store refuses a row that is gone or being deleted.
@@ -909,14 +973,15 @@ Promote(r, it) ==
     /\ ~FinePromotion /\ up /\ Promotable(r, it)
     /\ IF Live(r)
           THEN /\ file' = Upd(file, r, file[r] \cup {it})
+               /\ foreign' = Upd(foreign, r, ForeignAfterWrite(r, it))
                /\ pub' = Upd(pub, r, pub[r] \cup {it})
                /\ req' = Upd2(req, r, it, "promoted")
                /\ TouchPass({r})
           ELSE /\ req' = Upd2(req, r, it, "resolved")
-               /\ UNCHANGED <<file, pub, passStale>>
+               /\ UNCHANGED <<file, pub, passStale, foreign>>
     /\ UNCHANGED <<rowVars, queuePaused, authVars, serverUp, up, reg, ctlVars, budget,
                    earlyOffer, exempt, pass, passRows, rerun, owedEdge, promoVars, sent,
-                   ctlReordered, env>>
+                   ctlReordered, env, seedChapters, misaddr>>
 
 \* promoteSideAssetStagingFile, first part: the path lease and the snapshot
 \* of the row's generations.  A lease another promotion of the same path
@@ -928,7 +993,7 @@ PromoteCheck(r, it) ==
     /\ stale' = Upd(stale, r, stale[r] \ {it})
     /\ UNCHANGED <<rowVars, file, queuePaused, authVars, serverUp, up, reg, ctlVars,
                    budget, pub, earlyOffer, exempt, passVars, zombie, raceDropped, sent,
-                   ctlReordered, env>>
+                   ctlReordered, env, driftVars>>
 
 \* Second part: the generation check, then the rename.  Any mutation of the
 \* row since the snapshot ends the promotion; the caller does not retry.
@@ -938,12 +1003,14 @@ PromoteRename(r, it) ==
           THEN /\ req' = Upd2(req, r, it, "resolved")
                /\ stale' = Upd(stale, r, stale[r] \ {it})
                /\ raceDropped' = (raceDropped \/ Live(r))
-               /\ UNCHANGED file
+               /\ UNCHANGED <<file, foreign>>
           ELSE /\ req' = Upd2(req, r, it, "renamed")
                /\ file' = Upd(file, r, file[r] \cup {it})
+               /\ foreign' = Upd(foreign, r, ForeignAfterWrite(r, it))
                /\ UNCHANGED <<stale, raceDropped>>
     /\ UNCHANGED <<rowVars, queuePaused, authVars, serverUp, up, reg, ctlVars, budget,
-                   pub, earlyOffer, exempt, passVars, zombie, sent, ctlReordered, env>>
+                   pub, earlyOffer, exempt, passVars, zombie, sent, ctlReordered, env,
+                   seedChapters, misaddr>>
 
 \* The paths a row still references: recorded, published in memory, or
 \* listed by its pending deletion.
@@ -970,7 +1037,7 @@ PromoteConfirm(r, it) ==
                /\ UNCHANGED <<pub, passStale>>
     /\ UNCHANGED <<rowVars, queuePaused, authVars, serverUp, up, reg, ctlVars, budget,
                    earlyOffer, exempt, pass, passRows, rerun, owedEdge, zombie, sent,
-                   ctlReordered, env>>
+                   ctlReordered, env, driftVars>>
 
 \* The confirmation of a rename whose task was cancelled, or whose attempt
 \* was replaced or deleted: the store finds no owner and removes the file,
@@ -982,7 +1049,7 @@ ZombieConfirm(r, it) ==
                                THEN file[r] ELSE file[r] \ {it})
     /\ UNCHANGED <<rowVars, queuePaused, authVars, serverUp, up, reg, req, ctlVars,
                    budget, pub, earlyOffer, exempt, passVars, stale, raceDropped, sent,
-                   ctlReordered, env>>
+                   ctlReordered, env, driftVars>>
 
 \* The subtitle task fetches its streams one after the other; each is a new
 \* fetch entry.
@@ -996,7 +1063,7 @@ LoopNext(r, i) ==
               applied)
     /\ UNCHANGED <<rowVars, file, queuePaused, authVars, serverUp, up, reg, parked,
                    cancelled, budget, pub, earlyOffer, exempt, passVars, promoVars, sent,
-                   ctlReordered, env>>
+                   ctlReordered, env, driftVars>>
 
 \* The trickplay playlist is parsed: every tile the row does not already
 \* own enters its fetch at once (a task group).
@@ -1013,7 +1080,7 @@ TilesEnter(r) ==
                     applied)
     /\ UNCHANGED <<rowVars, file, queuePaused, authVars, serverUp, up, reg, parked,
                    cancelled, budget, pub, earlyOffer, exempt, passVars, promoVars, sent,
-                   ctlReordered, env>>
+                   ctlReordered, env, driftVars>>
 
 \* No tile was cached or reused: the task ends without a local playlist.
 PlaylistDrop(r) ==
@@ -1022,7 +1089,7 @@ PlaylistDrop(r) ==
     /\ req' = Upd2(req, r, PlaylistItem, "resolved")
     /\ UNCHANGED <<rowVars, file, queuePaused, authVars, serverUp, up, reg, ctlVars,
                    budget, pub, earlyOffer, exempt, passVars, promoVars, sent,
-                   ctlReordered, env>>
+                   ctlReordered, env, driftVars>>
 
 \* The task has nothing left to do.
 TaskDone(r, k) ==
@@ -1041,28 +1108,38 @@ TaskFinish(r, k) ==
              ELSE UNCHANGED <<recorded, passStale, stale>>
     /\ reg' = Upd(reg, r, reg[r] \ {k})
     /\ req' = Upd(req, r, [it \in Items |-> IF KindOf(it) = k THEN "idle" ELSE req[r][it]])
+    /\ misaddr' = Upd(misaddr, r, misaddr[r] \ {k})
     /\ UNCHANGED <<present, st, attempt, deleting, delPaths, file, queuePaused, authVars,
                    serverUp, up, ctlVars, budget, pub, earlyOffer, exempt, pass, passRows,
-                   rerun, owedEdge, zombie, raceDropped, sent, ctlReordered, env>>
+                   rerun, owedEdge, zombie, raceDropped, sent, ctlReordered, env,
+                   seedChapters, foreign>>
 
 \* The refresh ends.  With the current item it starts the discovered kinds
-\* that item advertises, unless the row is failed or paused by then.
+\* the part it looks at advertises, unless the row is failed or paused by
+\* then.  With FixSourceInventory it also saves the chapter thumbnails the
+\* row was saved without, and fetches them (#504).
 RefreshDone(r) ==
     /\ up /\ Live(r) /\ "refresh" \in reg[r]
     /\ req[r][RefreshItem] \in {"ready", "resolved"}
-    /\ LET W == IF /\ req[r][RefreshItem] = "ready" /\ Life(r) \notin {"failed", "paused"}
-                   /\ Mutation # "noDiscovery"
-                   THEN {k \in Kinds \cap Discovered : Startable(r, k) /\ Advertised(k)}
+    /\ LET ok == req[r][RefreshItem] = "ready" /\ Life(r) \notin {"failed", "paused"}
+           learns == /\ ok /\ "chapters" \in Kinds \cap ServerHas /\ ~seedChapters[r]
+                     /\ RefreshLearns("chapters")
+           D == IF ok /\ Mutation # "noDiscovery"
+                   THEN {k \in Kinds \cap Discovered : Startable(r, k) /\ RepairAdvertised(k)}
                    ELSE {}
+           W == D \cup (IF learns /\ "chapters" \notin reg[r] /\ Missing(r, "chapters") # {}
+                           THEN {"chapters"} ELSE {})
            started == [ReqAfterStart(r, W) EXCEPT ![RefreshItem] = "idle"]
-       IN /\ reg' = Upd(reg, r, (reg[r] \ {"refresh"}) \cup W)
+       IN /\ seedChapters' = IF learns THEN Upd(seedChapters, r, TRUE) ELSE seedChapters
+          /\ misaddr' = Upd(misaddr, r, misaddr[r] \cup (IF RepairHitsOther THEN D ELSE {}))
+          /\ reg' = Upd(reg, r, (reg[r] \ {"refresh"}) \cup W)
           /\ req' = Upd(req, r, started)
           /\ SetCtl(pending \cup EntryCtls(r, Entering(r, W),
                                            EntryParks(r, Life(r), exempt[r]), 0),
                     applied)
     /\ UNCHANGED <<rowVars, file, queuePaused, authVars, serverUp, up, parked, cancelled,
                    budget, pub, earlyOffer, exempt, passVars, promoVars, sent,
-                   ctlReordered, env>>
+                   ctlReordered, env, foreign>>
 
 -----------------------------------------------------------------------------
 (* The server, the sessions and the process                                *)
@@ -1070,12 +1147,12 @@ RefreshDone(r) ==
 ServerDown ==
     /\ AllowServerOutage /\ serverUp /\ Spend /\ serverUp' = FALSE
     /\ UNCHANGED <<rowVars, file, queuePaused, authVars, up, reg, req, ctlVars, budget,
-                   pub, earlyOffer, exempt, passVars, promoVars, sent, ctlReordered>>
+                   pub, earlyOffer, exempt, passVars, promoVars, sent, ctlReordered, driftVars>>
 
 ServerUp ==
     /\ ~serverUp /\ Spend /\ serverUp' = TRUE
     /\ UNCHANGED <<rowVars, file, queuePaused, authVars, up, reg, req, ctlVars, budget,
-                   pub, earlyOffer, exempt, passVars, promoVars, sent, ctlReordered>>
+                   pub, earlyOffer, exempt, passVars, promoVars, sent, ctlReordered, driftVars>>
 
 \* Sign-out of one backend, or sign-in to it as another user or on another
 \* server: the rows' own session is gone, in memory and in the keychain.
@@ -1092,7 +1169,7 @@ SessionLost(b) ==
     /\ UNCHANGED <<present, attempt, recorded, deleting, delPaths, file, queuePaused,
                    selected, serverUp, up, reg, req, parked, cancelled, budget, pub,
                    earlyOffer, exempt, pass, passRows, rerun, owedEdge, zombie,
-                   raceDropped, sent, ctlReordered>>
+                   raceDropped, sent, ctlReordered, driftVars>>
 
 \* The user signs back in to the rows' own server and user.  The backend
 \* becomes the selected one, and browse-ready fires a repair edge.
@@ -1103,7 +1180,7 @@ SessionBack(b) ==
     /\ selected' = b
     /\ IF queuePaused THEN UNCHANGED passVars ELSE EdgeArrives
     /\ UNCHANGED <<rowVars, file, queuePaused, serverUp, up, reg, req, ctlVars, budget,
-                   pub, earlyOffer, exempt, promoVars, sent, ctlReordered>>
+                   pub, earlyOffer, exempt, promoVars, sent, ctlReordered, driftVars>>
 
 \* The user selects the other backend: its saved session is restored, and
 \* the switch fires a repair edge ("backend_switched").
@@ -1113,7 +1190,7 @@ SwitchBackend(b) ==
     /\ session' = Upd(session, b, TRUE)
     /\ IF queuePaused THEN UNCHANGED passVars ELSE EdgeArrives
     /\ UNCHANGED <<rowVars, file, queuePaused, creds, serverUp, up, reg, req, ctlVars,
-                   budget, pub, earlyOffer, exempt, promoVars, sent, ctlReordered>>
+                   budget, pub, earlyOffer, exempt, promoVars, sent, ctlReordered, driftVars>>
 
 \* Process death: every in-memory variable returns to its Init value.
 ProcessEnds ==
@@ -1134,8 +1211,9 @@ ProcessEnds ==
     /\ zombie' = Const(Rows, {})
     /\ sent' = Const(Rows, ZeroItems)
     /\ owedEdge' = {}
+    /\ misaddr' = Const(Rows, {})
     /\ UNCHANGED <<rowVars, file, queuePaused, selected, creds, serverUp, ctlReordered,
-                   raceDropped>>
+                   raceDropped, seedChapters, foreign>>
 
 Crash == AllowCrash /\ up /\ Spend /\ ProcessEnds
 
@@ -1157,7 +1235,7 @@ Relaunch ==
     /\ IF queuePaused THEN UNCHANGED passVars ELSE EdgeArrives
     /\ UNCHANGED <<rowVars, file, queuePaused, selected, creds, serverUp, reg, req,
                    ctlVars, budget, pub, earlyOffer, exempt, promoVars, sent,
-                   ctlReordered, env>>
+                   ctlReordered, env, driftVars>>
 
 -----------------------------------------------------------------------------
 EnvironmentNext ==
@@ -1265,6 +1343,9 @@ TypeOK ==
     /\ env \in 0..EnvBudget
     /\ owedEdge \subseteq Rows
     /\ raceDropped \in BOOLEAN
+    /\ seedChapters \in [Rows -> BOOLEAN]
+    /\ misaddr \in [Rows -> SUBSET Discovered]
+    /\ foreign \in [Rows -> SUBSET AssetItems]
 
 \* A request that is not idle belongs to a registered task, a row that does
 \* not exist or is being deleted has no work, and a pass that is not running
@@ -1312,6 +1393,21 @@ NoEdgeOutsidePass == (up /\ pass = "running" /\ ~rerun) => owedEdge \subseteq pa
 \* S7.  A cached BIF is the index of the part that was downloaded.
 CachedBifIsForChosenPart == \A r \in Rows : <<"bif", 1>> \in file[r] => AsksChosenPart
 
+\* #503, asset identity.  No file at a stable path holds an asset of a part
+\* other than the one the row downloaded.  A recorded path and a present
+\* file are not enough: the code cannot tell whose asset it is.
+CachedAssetIsForDownloadedPart == \A r \in Rows : foreign[r] \cap file[r] = {}
+
+\* #504, source inventory.  Every asset the server holds for a playable row
+\* that the code does not discover from the server is in the inventory
+\* derived from the saved row, or a fresh launch's refresh adds it there.
+ServedAssetInInventory ==
+    \A r \in Rows :
+        (Live(r) /\ Owned(r) /\ Life(r) \in Playable)
+        => \A k \in (Kinds \cap ServerHas) \ Discovered :
+              \/ InInventory(r, k)
+              \/ "refresh" \in OffersWith(r, ZeroItems, {}) /\ RefreshLearns(k)
+
 \* S8.  No promotion of a live row is thrown away because another mutation
 \* of the same row came between its snapshot and its confirmation.
 PromotionNotLostToRace == ~raceDropped
@@ -1320,12 +1416,19 @@ PromotionNotLostToRace == ~raceDropped
 \* alone: the row has an attempt ID, the inventory of a fresh launch (an
 \* empty budget, an empty registry) offers the work that fetches the asset,
 \* and that fetch asks for the resource that holds it.
-OfferFor(it) == IF KindOf(it) \in Discovered THEN "refresh" ELSE KindOf(it)
-RetryReaches(it) == KindOf(it) = "bif" => AsksChosenPart
+\* A kind missing from the saved inventory can only come back through a
+\* refresh that learns it (#504); a discovered kind is reached only when
+\* the repair asks the downloaded part (#495, #503).
+OfferFor(r, it) ==
+    IF KindOf(it) \in Discovered \/ ~InInventory(r, KindOf(it)) THEN "refresh" ELSE KindOf(it)
+RetryReaches(r, it) ==
+    /\ KindOf(it) = "bif" => AsksChosenPart
+    /\ KindOf(it) \in Discovered => ~RepairHitsOther
+    /\ ~InInventory(r, KindOf(it)) => RefreshLearns(KindOf(it))
 DurablyOwed(r, it) ==
     /\ Owned(r)
-    /\ OfferFor(it) \in OffersWith(r, ZeroItems, {})
-    /\ RetryReaches(it)
+    /\ OfferFor(r, it) \in OffersWith(r, ZeroItems, {})
+    /\ RetryReaches(r, it)
 
 PlayableRows(S) == {r \in S : Live(r) /\ Life(r) \in Playable}
 OwnedRows == {r \in Rows : Owned(r)}
@@ -1333,12 +1436,12 @@ OwnedRows == {r \in Rows : Owned(r)}
 \* Every asset the server holds for a playable row is cached, or durably owed.
 MissingIsDurablyOwnedIn(S) ==
     \A r \in PlayableRows(S), it \in AssetItems :
-        Served(it) => Have(r, it) \/ DurablyOwed(r, it)
+        Served(it) => Correct(r, it) \/ DurablyOwed(r, it)
 MissingIsDurablyOwed == MissingIsDurablyOwnedIn(OwnedRows)
 MissingIsDurablyOwedAnyRow == MissingIsDurablyOwnedIn(Rows)
 
 AllServedCachedIn(S) ==
-    \A r \in PlayableRows(S), it \in AssetItems : Served(it) => Have(r, it)
+    \A r \in PlayableRows(S), it \in AssetItems : Served(it) => Correct(r, it)
 
 \* Nothing durable or outside the process stands in the way of a fetch: the
 \* server answers, the queue is not paused, and every row's own server and

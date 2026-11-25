@@ -621,8 +621,13 @@ Recovery also:
   [Server cleanup](#server-cleanup));
 - inventories and repairs missing posters, subtitles, chapters, Plex/Emby BIF, and Jellyfin
   trick-play playlists/tiles for completed rows without re-downloading playable media. The Plex
-  BIF, like the subtitles, comes from the part the row downloaded (`mediaIndex`/`partIndex`), not
-  the media's first part. Work runs
+  BIF and subtitles come from the part the row downloaded, not the media's first part. The repair
+  resolves that part in the refreshed item by the persisted `sourcePartID`, so a later reorder of
+  the item's media cannot hand it another version's assets; an ID the item no longer has selects
+  nothing, and only rows that stored no ID fall back to `mediaIndex`/`partIndex` (#503). A
+  successful source refresh also saves chapter thumbnails the row was saved without and fetches
+  them, so later inventories owe them; the poster selector skips an empty or blank artwork field
+  and uses the next valid one (#504). Work runs
   off-main, validates image/BIF/text payloads before promotion, and batches metadata publication.
   Retry authority is exact attempt + source + resource kind and is charged only when an eligible
   waiter actually admits transport; coalesced cancellation or a stale waiter hands authority to the
@@ -949,7 +954,11 @@ Findings SideAssets-S1 to S8; the model also reproduces the deferred st-39 and #
 trickplay tiles too). `NeverForgotten` holds on the code as it stands for every kind with every
 environment switch on, including the triggers of S3 and S5, so each of those lasts one launch; it
 fails for S7. S1, S2 and S6 are fixed in the code (each keeps a `Faithful-*-off` config that
-fails with its fix switched off). Not covered: request pacing, coalesced waiters, a
+fails with its fix switched off). The round 2 re-review added asset identity and source drift
+(`Drift`): `CachedAssetIsForDownloadedPart` says no cached file belongs to another part (#503),
+and `ServedAssetInInventory` says an asset the server holds is in the inventory derived from the
+saved row or a refresh adds it (#504); both are fixed, with `Faithful-503-off-*` and
+`Faithful-504-off-*` configs. Not covered: request pacing, coalesced waiters, a
 source-identity change inside one attempt, a recorded file that disappears from disk, a task
 cancelled mid-promotion, an offline launch.
 
@@ -1154,6 +1163,8 @@ then a plain regression test and its `Finding-*` config a `Faithful-*-off` one.
 | SideAssets-S6 | A completed row on a backend that is not selected gets no session at launch, so no launch repairs its side assets until the user switches backend. | real, medium; fixed on specs/downloads-tla, pending merge | #494 |
 | SideAssets-S7 | The Plex BIF is selected from the media's first part, not the downloaded part: never requested when only the downloaded part has one, the wrong index cached when the first part has one. Fixed on `specs/downloads-tla`, pending merge: the initial pass and the completed-row repair select `media[mediaIndex].part[partIndex]`. | real, medium; fixed | #495 |
 | SideAssets-S8 | A side-asset promotion gives up on any concurrent write to its row and nothing retries. | real, low | #496 |
+| SideAssets-503 | The Plex completed-row repair looks the downloaded part up by media/part index, so after Plex reorders the item's media it fetches another version's subtitle and BIF, or none, on every launch. | real; fixed on specs/downloads-tla, pending merge | #503 |
+| SideAssets-504 | Assets missing from the saved row are never fetched: chapter thumbnails the server gained later, and a poster when Plex's `thumb` is `""` with a valid `art`. | real; fixed on specs/downloads-tla, pending merge | #504 |
 | st-39 | A side-asset file renamed but not yet recorded is left on disk by Delete. | real, known | #401 |
 | #394 | Fetched chapter-image and trickplay-tile payloads wait in memory behind one-at-a-time preparation. | real, known | #394 |
 | Storage-S1 | An automatic requeue erases a storage-full park, so the row is redriven once without measuring free space. The reachable order is a redelivered body whose own append fails with ENOSPC before the launch enumeration. | real | #486 |
