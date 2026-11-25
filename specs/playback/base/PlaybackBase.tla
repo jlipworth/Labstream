@@ -31,8 +31,18 @@
 (*                                                                         *)
 (*  4. Constants.  Controllers (a set: one member by default, two in a     *)
 (*     Deep-BackToBack config sharing the server), SessionIds,             *)
-(*     MaxGeneration and RecreateCountsAgainstServer are declared here     *)
-(*     and every config assigns them.  Each fix or ordering under test is  *)
+(*     MaxGeneration, RecreateCountsAgainstServer and IdsNeverShared are   *)
+(*     declared here and every config assigns them: that line per config   *)
+(*     is the cost of keeping both in one place.                           *)
+(*     IdsNeverShared says whether two controllers can hold one session    *)
+(*     id.  TRUE for Plex: the id is minted by the client, once per        *)
+(*     controller (PlaybackController.sessionID).  For Jellyfin and Emby   *)
+(*     the server mints the id and can return one it has used before,      *)
+(*     which is why RemoteStreamLifecyclePolicy.priorSessionStopDecision   *)
+(*     exists; whether it does so across two controllers is not            *)
+(*     established.  A MediaBrowser config with two controllers chooses    *)
+(*     the value and states its evidence in its comment line; FALSE is     *)
+(*     the choice that hides nothing.  Each fix or ordering under test is  *)
 (*     a BOOLEAN constant; TRUE is the shipping behaviour, so Faithful     *)
 (*     and Mutant configs only flip constants.                             *)
 (*                                                                         *)
@@ -71,13 +81,8 @@
 (*                            still has a running job does not replace     *)
 (*                            that job; both run until something stops     *)
 (*                            them (the Plex pile-up of #27).              *)
-(*                            A session id belongs to the controller that  *)
-(*                            first used it.  Plex ids are minted by the   *)
-(*                            client, one per controller; Jellyfin and     *)
-(*                            Emby ids are minted by the server for one    *)
-(*                            negotiation.  So StartJob is disabled for    *)
-(*                            an id another controller has used, and two   *)
-(*                            controllers never share an id.               *)
+(*                            With IdsNeverShared, it is disabled for an   *)
+(*                            id another controller has used (4 above).    *)
 (*       SendStopFor(c, s, g) The client puts a stop on the wire: a Plex   *)
 (*                            transcode stop, or a MediaBrowser            *)
 (*                            active-encoding cleanup.  g is the           *)
@@ -87,11 +92,14 @@
 (*       ServerAck(s)         The server applies one stop for s and the    *)
 (*                            client hears the acknowledgement.  A stop    *)
 (*                            names a session id only, whatever job the    *)
-(*                            client meant.  The model lets it end either  *)
-(*                            every running job under the id or only the   *)
-(*                            newest: which one a backend does was not     *)
-(*                            established, and a client that keeps one     *)
-(*                            job per id cannot tell.                      *)
+(*                            client meant.  When several jobs run under   *)
+(*                            the id, the model lets it end any non-empty  *)
+(*                            set of them: which ones a backend ends was   *)
+(*                            not established.  So an acknowledged stop    *)
+(*                            ends the job the client meant only if no     *)
+(*                            other job runs under that id, and a client   *)
+(*                            cannot know that: a job whose stop was lost  *)
+(*                            or that the server recreated still runs.     *)
 (*       ServerFail(s)        One stop for s ends without an               *)
 (*                            acknowledgement: lost on the way (the jobs   *)
 (*                            run on), or applied with the answer lost.    *)
@@ -137,16 +145,20 @@ CONSTANTS
     Controllers,    \* PlaybackController instances that share the server
     SessionIds,     \* session ids the server keys encoding jobs by
     MaxGeneration,  \* bound on every generation counter
-    RecreateCountsAgainstServer
+    RecreateCountsAgainstServer,
         \* TRUE: a job the server recreated is the server's, not the
         \* client's (the judgement the design uses).  FALSE counts it as
         \* client-owned; Base-Mutant-RecreateCountsAgainstClient shows
         \* that judgement violates OneEncoder.
+    IdsNeverShared
+        \* TRUE: a session id belongs to the controller that first used it
+        \* (contract, 4).  FALSE lets a second controller start under it.
 
 ASSUME /\ IsFiniteSet(Controllers) /\ Controllers # {}
        /\ IsFiniteSet(SessionIds) /\ SessionIds # {}
        /\ MaxGeneration \in Nat \ {0}
        /\ RecreateCountsAgainstServer \in BOOLEAN
+       /\ IdsNeverShared \in BOOLEAN
 
 VARIABLES
     server,    \* remote: server[s][g], incarnation g of session id s
@@ -232,8 +244,13 @@ InFlight(s) == {r \in stopReqs : r.sid = s /\ r.status = "inFlight"}
 \* They are started in order, so the count is the newest.
 Started(s) == {g \in Incarnations : server[s][g].state # "none"}
 Latest(s) == Cardinality(Started(s))
-\* The controller the id belongs to.
+\* The controller that first used the id.
 IdOwner(s) == server[s][1].owner
+\* Every job under an id has one owner.  Holds by construction with
+\* IdsNeverShared; Base-Mutant-SharedId shows it fail without.
+OneOwnerPerId ==
+    \A s \in SessionIds, g \in Incarnations :
+        server[s][g].owner \in {NoController, IdOwner(s)}
 
 \* c sent a stop meant for the newest job under s.
 SentStop(c, s) == SentStopFor(c, s, Latest(s))
@@ -252,9 +269,11 @@ Owned(c) ==
         /\ ~StopFailedFor(c, j[1], j[2])}
 
 \* A stop meant for an older incarnation ended job g of s: the successor
-\* under a reused id.  A stop that also ends an older job is not one.
+\* under a reused id.  A stop that also ends an older job is not one, and
+\* a job the server recreated is judged as it is in Owned.
 WrongKill(s, g) ==
-    server[s][g].endedBy # 0 /\ server[s][g].endedBy < g
+    /\ server[s][g].endedBy # 0 /\ server[s][g].endedBy < g
+    /\ RecreateCountsAgainstServer => ~server[s][g].serverRecreated
 NoWrongKill == \A j \in Jobs : ~WrongKill(j[1], j[2])
 
 -----------------------------------------------------------------------------
@@ -278,7 +297,7 @@ NextIncarnation(s) == Latest(s) + 1
 
 StartJob(c, s) ==
     /\ Latest(s) < MaxGeneration
-    /\ IdOwner(s) \in {NoController, c}
+    /\ IdsNeverShared => IdOwner(s) \in {NoController, c}
     /\ server' = Settled(
            [server EXCEPT ![s][NextIncarnation(s)] =
                [state |-> "encoding", owner |-> c,
@@ -306,12 +325,10 @@ Resolved(r, status) ==
 
 LiveUnder(s) == {g \in Incarnations : server[s][g].state \in LiveStates}
 
-\* What a stop for s may end: every running job under the id, or only the
-\* newest running one (contract, 7).
+\* What a stop for s may end: any non-empty set of the running jobs under
+\* the id (contract, 7).
 StopReach(s) ==
-    IF LiveUnder(s) = {} THEN {{}}
-    ELSE {LiveUnder(s),
-          {CHOOSE g \in LiveUnder(s) : \A h \in LiveUnder(s) : h <= g}}
+    IF LiveUnder(s) = {} THEN {{}} ELSE SUBSET LiveUnder(s) \ {{}}
 
 \* `server` after stop r ended the incarnations in G under s.
 EndedBy(s, G, r) ==

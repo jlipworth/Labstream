@@ -38,20 +38,40 @@ network and outlive every controller, which is how a session comes to be orphane
 
 | Action | Abstracts |
 | --- | --- |
-| `StartJob(c, s)` | a start or negotiate request the server accepted. It adds a job, `server[s][NextIncarnation(s)]`. A start under an id that still has a running job does not replace it: both run (the Plex pile-up of #27). Disabled for an id another controller has used |
+| `StartJob(c, s)` | a start or negotiate request the server accepted. It adds a job, `server[s][NextIncarnation(s)]`. A start under an id that still has a running job does not replace it: both run (the Plex pile-up of #27). With `IdsNeverShared`, disabled for an id another controller has used |
 | `SendStopFor(c, s, g)` | the client puts a stop on the wire, meant for the incarnation `g` it stored when it started the job. "Receives a stop" means this step |
-| `ServerAck(s)` | the server applies one stop for `s` and the client hears the acknowledgement. A stop names only a session id: it ends either every running job under the id or only the newest |
+| `ServerAck(s)` | the server applies one stop for `s` and the client hears the acknowledgement. A stop names only a session id: it ends any non-empty set of the jobs running under it |
 | `ServerFail(s)` | a stop ends unacknowledged: lost (the jobs run on) or applied with the answer lost |
 | `ServerDelay` | a stop becomes `late`: a bounded client wait may give up. It can still be applied or fail |
 | `ServerRecreate(s)` | the server restarts a stopped job from a request it had already accepted (Jellyfin, 2026-09-17 audit), at most once per job |
 
 The encoder process, the server ending a job by itself and requests other than start and stop
-are not modelled. Which jobs a stop ends when several run under one id was not established for
-any backend, so the model allows both answers; a client that keeps one job per id cannot tell.
+are not modelled.
 
-Session ids are never shared between controllers. Plex ids are minted by the client, one per
-controller; Jellyfin and Emby ids are minted by the server for one negotiation. `StartJob`
-enforces this, so a two-controller config needs no partition of `SessionIds`.
+Which jobs a stop ends when several run under one id was not established for any backend, so
+the model allows every non-empty choice. An acknowledged stop therefore ends the job the client
+meant only if no other job runs under that id, and a client cannot know that: a job whose stop
+was lost, or that the server recreated, still runs there. `Base-Mutant-ReusedId` is that trace.
+A module whose backend reuses a session id (Plex always does) should expect `OneEncoder` and
+`NoWrongKill` to report it, and must then decide from the backend's real behaviour whether it
+is a finding or the abstraction.
+
+## Constants
+
+Every config assigns all five; that is the cost of declaring them once.
+
+| Constant | Meaning |
+| --- | --- |
+| `Controllers`, `SessionIds`, `MaxGeneration` | the controllers sharing the server, the session ids, the bound on every generation and incarnation counter |
+| `RecreateCountsAgainstServer` | `TRUE` everywhere except the mutant that shows why: a server-recreated job is not the client's |
+| `IdsNeverShared` | `TRUE`: a session id belongs to the controller that first used it |
+
+`IdsNeverShared` is `TRUE` for Plex, whose id is minted by the client once per controller
+(`PlaybackController.sessionID`). Jellyfin and Emby mint the id on the server and can return one
+already used, which is why `RemoteStreamLifecyclePolicy.priorSessionStopDecision` exists.
+Whether that happens across two controllers is not established, so a two-controller
+MediaBrowser config chooses the value and states its evidence in its comment line; `FALSE`
+hides nothing. With one controller the constant has no effect.
 
 ## What a guard may read
 
@@ -77,69 +97,79 @@ For properties only.
 - `SentStop(c, s)`: the client sent a stop meant for the newest job under `s`.
 - `OneEncoder`: `Owned(c)` has at most one member, or two while `jellyfinWindow[c]`.
 - `NoWrongKill`: no stop meant for an older incarnation ended a newer job (`endedBy`). A stop
-  that also ends an older job under the id is not a wrong kill.
+  that also ends an older job under the id is not a wrong kill, and a server-recreated job is
+  left out as it is in `Owned`.
+- `OneOwnerPerId`: every job under a session id has one owner. True by construction with
+  `IdsNeverShared`.
 - `PendingStopsJoined(c)`: `waitForPendingStopRequests` would return now. A module may guard
   on this one: it reads the controller's tickets and what the client heard.
-
-`RecreateCountsAgainstServer` is `TRUE` in every config except the mutant that shows why.
 
 ## Configs and results
 
 2026-11-25, tla2tools v1.7.4, `TLC_WORKERS=auto TLC_HEAP=4g`. All run `PlaybackBaseSmoke`.
-Unless noted: one controller, two session ids, `MaxGeneration = 2`, three stop requests.
+Unless noted: one controller, two session ids, `MaxGeneration = 2`, three stop requests,
+`IdsNeverShared = TRUE`.
 
 | Config | Expect | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
-| `Base-Current-Smoke` | pass | pass | 10,391,494 | 34 s |
+| `Base-Current-Smoke` | pass | pass | 963,454 | 5 s |
 | `Base-Current-TwoControllers` | pass | pass | 158,699 | 1 s |
 | `Base-Mutant-RecreateCountsAgainstClient` | `OneEncoder` violated | violated | stops at first error | 1 s |
 | `Base-Mutant-StartUnderLiveId` | `OneEncoder` violated | violated | stops at first error | 1 s |
+| `Base-Mutant-ReusedId` | `OneEncoder` violated | violated | stops at first error | 1 s |
 | `Base-Mutant-WindowNotFlagged` | `OneEncoder` violated | violated | stops at first error | 1 s |
 | `Base-Mutant-StartBeforeStopResolves` | `NoWrongKill` violated | violated | stops at first error | 1 s |
+| `Base-Mutant-SharedId` | `OneOwnerPerId` violated | violated | stops at first error | 1 s |
 | `Base-Mutant-CleanupNotTicketed` | `JoinCoversCleanup` violated | violated | stops at first error | 1 s |
 
 The two `Current` configs check `TypeOK`, `OneEncoder`, `NoWrongKill`, `JoinCoversCleanup` and
 `OneOwnerPerId`. `Base-Current-TwoControllers` uses two controllers, `MaxGeneration = 1` and
-one stop request. `OneOwnerPerId` has no mutant: it restates the owner guard inside `StartJob`,
-which no constant turns off.
+one stop request.
 
 - **RecreateCountsAgainstClient** (5 steps): start, stop, acknowledged, start the other session,
   the server recreates the first. Counted as the client's, that is two owned jobs.
 - **StartUnderLiveId** (2 steps, one session id): start, then start again under the same id
   with no stop. Both jobs run.
+- **ReusedId** (8 steps): start under `s1`; its stop is lost and the job runs on; start again
+  under `s1`; send that job's stop; replace it under `s2`; the stop is acknowledged but ends
+  only the first job; the window closes on two owned jobs.
 - **WindowNotFlagged**: the client replaces before cleaning up without opening the window.
 - **StartBeforeStopResolves** (4 steps): start, stop, start again under the same id, and the
   stop lands on the new job.
+- **SharedId** (two controllers, `IdsNeverShared = FALSE`, `MaxGeneration = 2`): the second
+  controller starts under an id the first used.
 - **CleanupNotTicketed**: a stop is sent with no ticket, so the join returns while it is in
   flight.
 
 ### Every server action is taken
 
 `PlaybackBaseSmoke` defines witnesses: each is the negation of a state only one server action,
-or one branch of it, reaches. Checked as an invariant on the `Base-Current-Smoke` constants,
-each is violated. No config lists them; to repeat the check, copy the config, replace its
-`INVARIANTS` with one witness and run TLC.
+or one branch of it, reaches. Checked as an invariant, each is violated. No config lists them;
+to repeat the check, copy the named config, replace its `INVARIANTS` with one witness and run
+TLC.
 
-| Witness | Shows |
-| --- | --- |
-| `NeverAcked` | `ServerAck` |
-| `NeverFailedLost`, `NeverFailedApplied` | both branches of `ServerFail` |
-| `NeverLate`, `NeverLateThenAcked` | `ServerDelay`, and an acknowledgement after it |
-| `NeverRecreated` | `ServerRecreate` |
-| `NeverInWindow` | the window flag is opened |
-| `NeverTwoUnderOneId`, `NeverEndsNewestOnly` | two jobs run under one id, and a stop ends only the newest |
+| Witness | Constants of | Shows |
+| --- | --- | --- |
+| `NeverAcked` | `Base-Current-Smoke` | `ServerAck` |
+| `NeverFailedLost`, `NeverFailedApplied` | `Base-Current-Smoke` | both branches of `ServerFail` |
+| `NeverLate`, `NeverLateThenAcked` | `Base-Current-Smoke` | `ServerDelay`, and an acknowledgement after it |
+| `NeverRecreated` | `Base-Current-Smoke` | `ServerRecreate` |
+| `NeverInWindow` | `Base-Current-Smoke` | the window flag is opened |
+| `NeverTwoUnderOneId` | `Base-Mutant-ReusedId` | two jobs run under one id |
+| `NeverEndsNewestOnly`, `NeverEndsOlderOnly` | `Base-Mutant-ReusedId` | a stop ends only the newest job, and a stop meant for the newest ends only an older one |
+
+The last three need a client that reuses an id, which the `Current` client does not.
 
 ## The toy client's rules
 
 `PlaybackBaseSmoke` follows the guard rule: it keeps `started[c]`, the jobs it started with the
-incarnation each start gave it, and decides from that and from its stops. Three rules keep the
-judgements true. TLC found the second: the first smoke run failed without it.
+incarnation each start gave it, and decides from that and from its stops. Two rules keep the
+judgements true:
 
 1. Start only when holding no job: every job started has a stop that was acknowledged or failed.
-2. Reuse a session id only when none of its own stops for that id is in flight. Holding nothing
-   is not enough: of two stops sent for one job, the first can end it while the second is
-   still on the wire, and the second then ends the job started next under the id.
-3. Send a stop only for the newest job started under an id. A stop meant for an older one
-   names the same id and ends the successor.
+2. Never start twice under one session id.
 
-A module whose backend reuses session ids should expect `NoWrongKill` to see the last two.
+`SmokeReusesIds` replaces the second rule with the most careful reuse the client can manage: no
+stop of its own for the id in flight, and stops only for the newest job it started under the
+id. TLC showed each of those is needed (without the first, the second of two stops sent for one
+job ends the job started next), and `Base-Mutant-ReusedId` shows they are still not enough.

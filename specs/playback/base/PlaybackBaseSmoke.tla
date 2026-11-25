@@ -9,13 +9,16 @@
 (* The toy client follows the guard rule of the contract: it decides from  *)
 (* `started` (the jobs it started, with the incarnation each start gave    *)
 (* it) and from what it heard of its stops, never from the server's state  *)
-(* or from Owned.  It keeps three rules.  It starts a job only when it     *)
+(* or from Owned.  It keeps two rules.  It starts a job only when it       *)
 (* holds none: every job it started has a stop that was acknowledged or    *)
-(* failed.  It reuses a session id only when none of its stops for that    *)
-(* id is in flight; this is not implied by the first rule, because of two  *)
-(* stops sent for one job the first can end it while the second is still   *)
-(* on the wire.  And it sends a stop only for the newest job it started    *)
-(* under an id, because a stop names the id and would end the successor.   *)
+(* failed.  And it never starts twice under one session id.  An            *)
+(* acknowledged stop ends the job it was meant for only when no other job  *)
+(* runs under that id, and the client cannot know that: an earlier job     *)
+(* whose stop was lost, or that the server recreated, still runs there.    *)
+(* SmokeReusesIds relaxes the second rule to the most careful reuse the    *)
+(* client can manage (no stop of its own for the id in flight, and stops   *)
+(* only for the newest job it started under the id); the Mutant config     *)
+(* that sets it shows OneEncoder fail all the same.                        *)
 (* With SmokeReplaces the client may also replace first and clean up       *)
 (* after, as Jellyfin does, inside the window flag.  Every piece of        *)
 (* cleanup it starts gets a ticket in pendingStops.  Each rule has a       *)
@@ -25,13 +28,14 @@ EXTENDS PlaybackControllerOps, TLC
 
 CONSTANTS
     MaxStopSends,       \* stop requests each controller may send
-    SmokeWaitsForStop,  \* TRUE: the first two rules above
+    SmokeWaitsForStop,  \* TRUE: the two rules above
+    SmokeReusesIds,     \* TRUE: careful reuse of an id replaces rule two
     SmokeReplaces,      \* TRUE: the replace-then-clean-up order is allowed
     SmokeFlagsWindow,   \* TRUE: a replacement opens jellyfinWindow
     SmokeTicketsCleanup \* TRUE: cleanup is recorded in pendingStops
 
 ASSUME /\ MaxStopSends \in Nat
-       /\ {SmokeWaitsForStop, SmokeReplaces, SmokeFlagsWindow,
+       /\ {SmokeWaitsForStop, SmokeReusesIds, SmokeReplaces, SmokeFlagsWindow,
            SmokeTicketsCleanup} \subseteq BOOLEAN
 
 VARIABLE started  \* in memory: started[c], the jobs c started
@@ -47,6 +51,11 @@ Init ==
 Holding(c) ==
     {j \in started[c] :
         ~StopAckedFor(c, j[1], j[2]) /\ ~StopFailedFor(c, j[1], j[2])}
+
+\* c may start under s as far as reuse of the id goes.
+MayUse(c, s) ==
+    IF SmokeReusesIds THEN InFlightFrom(c, s) = {}
+    ELSE \A j \in started[c] : j[1] # s
 
 \* The newest incarnation c started under s, 0 for none.
 NewestStarted(c, s) ==
@@ -71,7 +80,7 @@ ProxyTicket(c) ==
 SmokeStart(c, s) ==
     /\ gen[c] < MaxGeneration
     /\ ~jellyfinWindow[c]
-    /\ SmokeWaitsForStop => Holding(c) = {} /\ InFlightFrom(c, s) = {}
+    /\ SmokeWaitsForStop => Holding(c) = {} /\ MayUse(c, s)
     /\ StartJob(c, s)
     /\ started' = Upd(started, c, started[c] \cup {<<s, NextIncarnation(s)>>})
     /\ gen' = Upd(gen, c, gen[c] + 1)
@@ -129,7 +138,7 @@ SmokeReplace(c, s) ==
     /\ ~jellyfinWindow[c]
     /\ Cardinality(Holding(c)) = 1
     /\ \A j \in Holding(c) : j[1] # s
-    /\ InFlightFrom(c, s) = {}
+    /\ MayUse(c, s)
     /\ StartJob(c, s)
     /\ started' = Upd(started, c, started[c] \cup {<<s, NextIncarnation(s)>>})
     /\ jellyfinWindow' = Upd(jellyfinWindow, c, SmokeFlagsWindow)
@@ -189,12 +198,6 @@ JoinCoversCleanup ==
             /\ UnslottedListeners(c) = {}
             /\ unwinding[c] = {}
 
-\* A session id is never shared: every job under it has one owner
-\* (StartJob's owner guard).
-OneOwnerPerId ==
-    \A s \in SessionIds, g \in Incarnations :
-        server[s][g].owner \in {NoController, IdOwner(s)}
-
 \* Reachability witnesses: each is the negation of a state that shows one
 \* server action, or one branch of it, was taken.  Checked as invariants
 \* they must be violated (see README.md); no config lists them.
@@ -211,10 +214,15 @@ NeverLate == \A r \in stopReqs : ~r.late
 NeverLateThenAcked == \A r \in stopReqs : ~(r.late /\ r.status = "acked")
 NeverRecreated == \A j \in Jobs : ~server[j[1]][j[2]].serverRecreated
 NeverInWindow == \A c \in Controllers : ~jellyfinWindow[c]
-\* Two jobs run under one id, and a stop ends only the newest of them.
+\* Two jobs run under one id; a stop ends only the newest of them; a stop
+\* meant for the newest ends only an older one.
 NeverTwoUnderOneId == \A s \in SessionIds : Cardinality(LiveUnder(s)) < 2
 NeverEndsNewestOnly ==
     \A s \in SessionIds, g \in Incarnations :
         ~(server[s][g].state \in LiveStates
           /\ \E h \in Incarnations : h > g /\ server[s][h].endedBy = h)
+NeverEndsOlderOnly ==
+    \A s \in SessionIds, g \in Incarnations, h \in Incarnations :
+        ~(g < h /\ server[s][g].endedBy = h
+          /\ server[s][h].state \in LiveStates /\ server[s][h].endedBy = 0)
 =============================================================================
