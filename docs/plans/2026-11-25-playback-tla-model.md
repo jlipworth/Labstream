@@ -191,3 +191,172 @@ pinning tests.
 - Hermetic PMSKit tests, and app tests for any pinned finding.
 - Strict MkDocs build, `scripts/check-doc-links.py`, `scripts/check-docs-mermaid.py` and
   `scripts/ci-hygiene.sh` after doc changes.
+
+## Phase 1 implementation plan
+
+> **For agentic workers:** use superpowers:subagent-driven-development. Every spec-authoring
+> task (1 to 6) is implemented by a **Fable 5.2** agent (Agent tool, `model: fable`); a fresh
+> reviewer checks each task before the next dependent one starts. Steps use `- [ ]`.
+
+**Goal:** TLA+ models of playback restart and cleanup that check the current design, see the
+two historical bugs, and turn each of the five suspects into a filed finding or a recorded
+refutation.
+
+**Architecture:** a new area `specs/playback/` on the existing runner. `base/` holds the
+shared vocabulary (abstract server, controller state and steps as operators); `restart/` is
+the backend-agnostic controller core; `plex/`, `emby/` and `jellyfin/` each model one
+replacement order over `base/`; `proxy/` models the PMSKit proxy's request handlers.
+
+**Tech stack:** TLA+ with the tla2tools version pinned in `scripts/check-tla-specs.sh`, TLC,
+Swift Testing `withKnownIssue` pins.
+
+**Spec:** the sections above.
+
+### Global constraints
+
+- Layout, config kinds, `\* SPEC:` / `\* EXPECT:` / `\* TIER: deep` headers and naming follow
+  `specs/README.md` exactly; `Liveness` configs never use `SYMMETRY`.
+- Every model module carries `\* MODELS:` lines for each Swift file whose behaviour it
+  encodes; `python3 scripts/check-tla-drift.py --list` must show them.
+- Each fix or ordering under test is a `BOOLEAN` constant, `TRUE` = shipping behaviour, so
+  `Faithful-*-off` and `Mutant-*` configs only flip constants.
+- Every safety property has a `Mutant-*` config that violates it (anti-goal: a check that
+  cannot fail).
+- Default-tier configs finish in under 5 minutes each at `TLC_WORKERS=auto`; larger bounds go
+  in `Deep-*` configs.
+- Each module defines `Controllers` as a constant set; default configs use one controller,
+  `Deep-BackToBack` configs two sharing the server.
+- Phase 1 changes no production Swift behaviour. A test-only seam is allowed when a pin cannot
+  otherwise reach the code; it must be internal and behaviour-preserving, and then the
+  affected-target smoke from `CLAUDE.md` applies.
+- Public repo: no hostnames, tokens, titles or local paths in specs, READMEs or issues.
+- One `scripts/check-tla-specs.sh` run per module folder at a time; parallel tasks touch only
+  their own folder. `specs/README.md` and canonical docs change only in task 9.
+
+### Review focus
+
+Conditions the design implies but no property names directly; each is pinned by a config in
+the owning task:
+
+1. A cancelled task that has already passed its last generation check keeps running to
+   completion (task 2, `Current-CancelPastCheck`).
+2. Old and new sessions share a session id (tasks 3 and 5, `Current-ReusedId`).
+3. A stop acknowledgement arrives after the client's bounded wait gave up (tasks 3 and 4,
+   `Current-LateAck`).
+4. Close while a consent choice is showing (task 4, `Current-CloseAtConsent`).
+5. Retry while the previous Retry's cleanup is still pending (task 2, `Current-RetryRetry`).
+
+### Task 1: area base
+
+**Files:** create `specs/playback/base/PlaybackBase.tla`, `PlaybackControllerOps.tla`,
+`README.md`, `specs/playback/base/Base-Current-Smoke.cfg` (with a tiny smoke spec module if
+needed).
+
+**Produces:** constants `Controllers`, `SessionIds`, `MaxGeneration`; the server record
+`server[s]` with `state \in {"none","encoding","stopRequested","stopped"}`, `owner`, `gen`;
+nondeterministic server actions `ServerAck(s)`, `ServerFail(s)`, `ServerDelay`,
+`ServerRecreate(s)` (a job recreated from an already accepted request, flagged
+`serverRecreated`); controller variables `gen[c]`, `itemGen[c]`, `item[c]`
+(`"none"|"attached"|"detached"`), `task[c]` (current) and `unwinding[c]` (cancelled, still
+running), `seekHold[c]`, `budget[c]`, `paused[c]`, `proxy[c]`, `pendingStops[c]`; helper
+operators `Owned(c)`, `SentStop(c, s)`. Contract comment at the top, as in
+`DownloadsBase.tla`, stating which state is in-memory and what each action abstracts.
+
+- [ ] Write the modules and the smoke config (`EXPECT: pass`) that exercises every server
+      action.
+- [ ] Add a `Base-Mutant-RecreateCountsAgainstClient.cfg` showing that judging
+      `serverRecreated` jobs as client-owned violates `OneEncoder`; `EXPECT: violation OneEncoder`.
+- [ ] Run `scripts/check-tla-specs.sh specs/playback/base`; every config matches its header.
+- [ ] Commit.
+
+### Task 2: controller core (`restart/`)
+
+**Files:** `specs/playback/restart/PlaybackRestart.tla`, configs, `README.md` (model-to-Swift
+table with `PlaybackController.swift` function names, bounds, properties, results, traces).
+
+**MODELS:** `PlaybackController.swift`, `PlaybackRestartIntent.swift`,
+`PlaybackPositionModels.swift`, `PMSKit/.../Transcode/SeekRestartBudget.swift`,
+`PMSKit/.../Transcode/FinalTargetRebuildPolicy.swift`.
+
+**Consumes:** task 1. **Produces:** properties `GenerationFencing`, `SeekHoldFencing`,
+`BoundedRestarts` (temporal), `PauseIntent`, `DetachBeforeStop`, `ProxyOwnership`,
+`NoOrphans`; actions `UserSeek`, `UserQuality`, `Retry`, `Close`, `Fail`, `StallWatchdog`,
+`StartupDeadline`, `AbrSwitch`, `SeekComplete`, `ProxyStandUp` (split at the
+`await oldProxy.stop` yield), with backend ordering abstracted to "stop then replace".
+
+- [ ] `Current-Core.cfg`, `Current-CancelPastCheck.cfg`, `Current-RetryRetry.cfg`,
+      `Liveness-Core.cfg` (`EXPECT: pass` unless a suspect reproduces).
+- [ ] `Faithful-DetachBeforeStop-off.cfg`: `EXPECT: violation DetachBeforeStop`.
+- [ ] One `Mutant-*` per remaining property.
+- [ ] Suspect 1 (proxy installed after cleanup) and suspect 4 (`stop()` does not join the
+      cancelled `playbackTask`; rejected MediaBrowser cleanup not joined): if reproduced,
+      `Finding-ProxyAfterCleanup.cfg` / `Finding-StopNoJoin.cfg` with the violated property in
+      `EXPECT:` and the shortest trace in the README; if refuted, the reason in the README.
+- [ ] Run `scripts/check-tla-specs.sh specs/playback/restart`; all match.
+- [ ] Commit.
+
+### Tasks 3 to 5: backend replacement orders (parallel after task 2)
+
+Each: `specs/playback/<backend>/Playback<Backend>.tla`, configs, `README.md`; extends task 1's
+operators; adds properties `OneEncoder` and `StopNeverKillsSuccessor`; includes a
+`Deep-BackToBack.cfg` (`TIER: deep`, two controllers).
+
+- **Task 3, `plex/`.** MODELS `PlaybackController.swift` (`stopPreviousTranscode`,
+  `sendTranscodeStop`, `startStreaming`). Configs `Current-InPlace`, `Current-ReusedId`,
+  `Current-LateAck`, `Liveness-InPlace`, mutants. Suspect 2: `Finding-LateStopKillsReplacement`
+  or refutation.
+- **Task 4, `emby/`.** MODELS `PlaybackController.swift`, `EmbyReopenStopBarrier.swift`.
+  Configs `Current-Reopen`, `Current-LateAck`, `Current-CloseAtConsent`, `Liveness-Reopen`;
+  `Faithful-EmbyOverlap-off` (`EXPECT: violation OneEncoder`); invariant `BarrierPreconditions`
+  for the two `precondition`s; consent-boundary rejection never attaches.
+- **Task 5, `jellyfin/`.** MODELS `PlaybackController.swift`
+  (`scheduleDeferredRemoteSessionStop`), `PMSKit/.../Jellyfin/JellyfinPlayback.swift`. Configs
+  `Current-Reopen`, `Current-ReusedId`, `Liveness-Reopen`; `Faithful-JellyfinReusedIdStop-off`
+  (`EXPECT: violation StopNeverKillsSuccessor`); `ServerRecreate` enabled and not judged against
+  the client. Suspect 3: `Finding-DeferredStopUnfenced` or refutation.
+
+For each: run `scripts/check-tla-specs.sh specs/playback/<backend>` and
+`scripts/check-tla-specs.sh --deep specs/playback/<backend>/Deep-BackToBack.cfg`; commit.
+
+### Task 6: proxy request handlers (`proxy/`, parallel with 3 to 5)
+
+MODELS `PMSKit/.../MediaSession/MediaSessionProxy.swift`, `LoopbackOrigin.swift`,
+`UpstreamConnection.swift`. Variables: listener state, in-flight handlers, upstream fetches,
+rotate generation. Properties `NoFetchAfterStop`, `StaleStopIgnored`. Suspect 5:
+`Finding-HandlerOutlivesListener` or refutation; a stop during `standUpLoopback`'s await is
+modelled. Run the folder; commit.
+
+### Task 7: triage and pins (lead)
+
+- [ ] For each `Finding-*`, re-read the Swift path and confirm the trace is reachable; drop or
+      fix the model if not.
+- [ ] File one issue per confirmed finding, in the style of #472 to #504 (title names the
+      user-visible effect and the finding id).
+- [ ] Pin each confirmed finding with a `withKnownIssue` test naming the issue:
+      `PMSKit/Tests/PMSKitTests/PlaybackFormalModelFindingsTests.swift` for PMSKit code,
+      `LabstreamTests/PlaybackFormalModelFindingsTests.swift` for controller code. Run
+      `swift test --package-path PMSKit --no-parallel --skip 'Live.*ProbeTests'`, and the
+      `LabstreamMobile` `LabstreamTests` plan on this worktree's iPhone simulator under the
+      lease rules if app tests were added.
+- [ ] Commit.
+
+### Task 8: independent review
+
+- [ ] A fresh reviewer (not the authoring agents) reads every module against the Swift and
+      reports abstractions that hide races, missing `MODELS:` lines and properties weaker than
+      their prose.
+- [ ] Re-check each claim in Swift and TLC; strengthen models; every strengthened check gets a
+      `Mutant-*` that used to slip past. Record the round in this plan.
+- [ ] Commit.
+
+### Task 9: docs, results and PR
+
+- [ ] `specs/README.md`: add `playback/` to the layout. `docs/PLAYBACK-ARCHITECTURE.md`: a short
+      "Formal model (TLA+)" section linking `specs/playback/` and this plan.
+- [ ] Record the full results table (each config, result, states, time) and findings here.
+- [ ] Run `scripts/check-tla-specs.sh specs/playback`, `--deep` for the deep configs,
+      `python3 scripts/check-tla-drift.py`, the strict MkDocs build, `uv run python
+      scripts/check-doc-links.py --site-dir site`, `uv run python scripts/check-docs-mermaid.py`
+      and `scripts/ci-hygiene.sh`.
+- [ ] Push, open the PR with unresolved gates listed, inspect CI to completion. Do not merge
+      without approval.
