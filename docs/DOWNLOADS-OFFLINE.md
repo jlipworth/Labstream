@@ -175,7 +175,14 @@ attempt's callbacks discards the old batch window. Each attempt's first callback
 new watermark, with four seconds of baseline replacement to exclude buffered catch-up bytes
 (#224), before the shared window can produce a total. Staggered callbacks are interpolated
 inside their observed overlap, never extrapolated or silently omitted. Observed quiet intervals
-contribute zero; a silent attempt makes the total unavailable once the common window expires.
+contribute zero; a silent attempt makes the total unavailable once the common window expires,
+until it has been silent for the six-second callback gap in a process that kept observing (no
+callback since its last one, or since the last reset if it has not reported since). From then it
+counts as zero, so one stuck transfer cannot hide a healthy batch's speed (#487), and its next
+callback resets the batch like any other late watermark. A batch in which every attempt is silent
+has no total. The refresh loop keeps running while any row is transferring (every second while a
+total shows, every 15 s otherwise), so a row that stalls silently loses its speed and ETA at the
+next refresh past its six-second stall timeout (#488).
 A dip in a Range attempt's reported bytes resets its window only when bodies that finished but are
 not yet appended cannot explain the whole dip, so the total survives 512 MiB segment boundaries
 (#416; `DownloadLiveRangeProgressPolicy`). All measurement state is memory-only.
@@ -648,7 +655,10 @@ instead of turning unknown side assets or reservations into false zeroes.
 
 Every download start goes through one admission window (`DownloadAdmissionPolicy`, driven by
 `DownloadAdmissionCoordinator`): single taps, season rows, Resume All, a row's Resume or Retry,
-automatic static range resumes and stalled-stream restarts. Settings ▸ Downloads ▸
+automatic static range resumes and stalled-stream restarts. (A Jellyfin or Emby forward-only
+stream with no byte progress for 90 s is restarted from byte 0 at most twice between forward
+bytes; the next stall fails the row as stalled with a retryable reason and no admission request,
+so the user retries it, with a fresh restart budget (#497).) Settings ▸ Downloads ▸
 **Simultaneous downloads** sets the total cap from 1 to 5 (default 3). The static-file lane is
 `max(1, total - 1)` and live-forward streams are capped at 1. Server preparation (Plex optimize or
 Emby Convert) is not a transfer and does not count toward the total (#414): up to 5 server jobs
@@ -1119,11 +1129,11 @@ as the defect is fixed.
 | RangeTrain-R1 | A drain pass run by a held-body removal completion discards its result and strands the train until the self-heal, which a suspended background app does not get. | real | #477 |
 | RangeTrain-R2 | Reconcile fails a static row whose finished body is stashed and queued for append. The fix must observe session-owned work when reconcile decides, not in the live-key snapshot reattach takes (`Finding-R2-SnapshotFixLeavesWindow`). A body still undelivered by the daemon at that moment is lost with any ownership check (`Finding-R2-UndeliveredBodyLost`). | real | #476 |
 | RangeTrain-R4 | After a crash in the middle of an append, a segment finished while the app was dead is held beside the ones the planner started; when the head segment fails once, two held bodies fill the depth of two and the planner never fetches the gap at the checkpoint. | probable, medium, rare | #492 |
-| Status-S1 | A silently stalled transfer hides the batch speed for as long as it is silent. | real | #487 |
-| Status-S2 | A stalled static-range row keeps showing a stale speed and ETA. | real | #488 |
+| Status-S1 | A silently stalled transfer hides the batch speed for as long as it is silent. | real; fixed on specs/downloads-tla, pending merge | #487 |
+| Status-S2 | A stalled static-range row keeps showing a stale speed and ETA. | real; fixed on specs/downloads-tla, pending merge | #488 |
 | Status-S3 | After a process death a row shows fewer bytes than before: a static-range row loses its in-memory optimistic total, a forward-only row the progress samples since its last persistence ticket. | probable | #490 |
 | Status-S4 | A forward-only row's first callback after the foreground grace inflates its speed. | probable; uncertain on a device | #489 |
-| Status-S5 | Past its two automatic restarts a stalled forward-only stream has no verdict; it stays downloading at zero bytes and hides the batch speed. | real, medium | #497 |
+| Status-S5 | Past its two automatic restarts a stalled forward-only stream has no verdict; it stays downloading at zero bytes and hides the batch speed. | real, medium; fixed on specs/downloads-tla, pending merge | #497 |
 | Status-S6 | Fresh evidence without a common 0.5 s window hides the batch speed; a member reporting every 3.5 to 6 s makes it come and go. | real, low | #498 |
 | Status-S7 | A backlog reported after the 4 s settling and grace windows is published as live speed. | probable, low | #499 |
 
