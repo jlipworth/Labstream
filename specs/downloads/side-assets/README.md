@@ -434,7 +434,7 @@ and state directories and report wrong results.
 | `Proposed-S4-UnparkOnAccept` | pass | pass | 608 | 2 s |
 | `Proposed-S5-PassReruns-Stale` | pass | pass | 1,474 | 1 s or less |
 | `Proposed-S5-PassReruns` | pass | pass | 299,686 | 15 s |
-| `Current-S7-BifChosenPart` | pass | pass | 16,441 | 7 s |
+| `Current-S7-BifChosenPart` | pass | pass | 16,441 | 2 s |
 | `Faithful-B25-off` | violation of `RepairWithinRateLimit` | violated | 131 | 1 s or less |
 | `Faithful-B32-off-PausedFetch` | violation of `PausedRowNotFetching` | violated | 187 | 1 s or less |
 | `Faithful-B32-off` | violation of `ControlsApplyInRequestOrder` | violated | 48 | 1 s or less |
@@ -458,8 +458,8 @@ and state directories and report wrong results.
 | `Finding-S5-PassTimeoutNoRerun` | violation of `NoEdgeLost` | violated | 65 | 1 s or less |
 | `Finding-S5-StaleRowSkipped` | violation of `NoEdgeLost` | violated | 59 | 1 s or less |
 | `Faithful-S7-off-BifOfChosenPartNeverAsked` | violation of `NeverForgotten` | violated | 11 | 1 s or less |
-| `Faithful-S7-off-BifOfChosenPartNotOwed` | violation of `MissingIsDurablyOwed` | violated | 36 | 1 s or less |
-| `Faithful-S7-off-WrongPartBifCached` | violation of `CachedBifIsForChosenPart` | violated | 124 | 1 s or less |
+| `Faithful-S7-off-BifOfChosenPartNotOwed` | violation of `MissingIsDurablyOwed` | violated | 46 | 1 s or less |
+| `Faithful-S7-off-WrongPartBifCached` | violation of `CachedBifIsForChosenPart` | violated | 164 | 1 s or less |
 | `Finding-S8-PromotionLostToRowMutation` | violation of `PromotionNotLostToRace` | violated | 124 | 1 s or less |
 | `Finding-st39-CrashOrphanAfterDelete` | violation of `NoOrphanAfterDelete` | violated | 811 | 1 s or less |
 | `Finding-st39-ReplacedAttemptOrphan` | violation of `NoOrphanAfterDelete` | violated | 962 | 1 s or less |
