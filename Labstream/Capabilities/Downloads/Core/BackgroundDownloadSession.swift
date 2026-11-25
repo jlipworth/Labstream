@@ -380,6 +380,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         var bodyBytesWritten: Int
         let remainderReason: String?
         let creationContext: String
+        /// Resume-watermark rebase latched on this task's first progress callback (#502): how its
+        /// counter relates to `resumeDisplayBytes` is fixed for the task's life. Nil until then.
+        var resumeDisplayRebase: Int?
 
         var ratingKey: String { attemptKey.ratingKey }
         var attemptID: DownloadAttemptID { attemptKey.attemptID }
@@ -397,6 +400,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                           responseStatus: responseStatus,
                           bodyBytesWritten: bodyBytesWritten,
                           remainderReason: remainderReason, creationContext: creationContext)
+                .withResumeDisplayRebase(resumeDisplayRebase)
+        }
+
+        func withResumeDisplayRebase(_ rebase: Int?) -> RangeTransfer {
+            var copy = self
+            copy.resumeDisplayRebase = rebase
+            return copy
         }
 
         init(ratingKey: String, attemptID: DownloadAttemptID, request: URLRequest?,
@@ -413,6 +423,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             self.bodyBytesWritten = bodyBytesWritten
             self.remainderReason = remainderReason
             self.creationContext = creationContext
+            self.resumeDisplayRebase = nil
         }
     }
 
@@ -3773,10 +3784,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             rangeResumeDisplayBytes = entry.map { rangeEntry in
                 let taskBytes = rangeEntry.baseOffset
                     + max(rangeEntry.bodyBytesWritten, Int(max(task.countOfBytesReceived, 0)))
+                // Reuse the rebase this task latched on its first callback (#502); a task paused
+                // before any callback latches from this sample.
+                var rebase = rangeEntry.resumeDisplayRebase
                 return DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
                     taskBytes: taskBytes,
                     baseOffset: rangeEntry.baseOffset,
-                    resumeDisplayBytes: store.resumeDisplayBytes(for: key)
+                    resumeDisplayBytes: store.resumeDisplayBytes(for: key),
+                    latchedRebase: &rebase
                 )
             }
         }
@@ -4158,11 +4173,23 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // the single-segment case `durableBytes == rangeEntry.baseOffset` for the task's whole
             // life, so this is byte-for-byte the same rebase as before; for a segment train it
             // generalizes the same way — the base is whatever is already durable across the row.
+            //
+            // #502: whether this task counts from a fresh baseline or cumulatively is latched on its
+            // first callback and reused, so a fresh count crossing the watermark does not drop the
+            // published total from `watermark + delta` back to `taskBytes`.
             let resumeWatermark = store.resumeDisplayBytes(for: rangeEntry.attemptKey)
+            var resumeRebase = lock.withLock { rangeInflight[downloadTask.taskIdentifier]?.resumeDisplayRebase }
             var displayTotal = DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
                 taskBytes: aggregatedLiveBytes,
                 baseOffset: durableBytes,
-                resumeDisplayBytes: resumeWatermark)
+                resumeDisplayBytes: resumeWatermark,
+                latchedRebase: &resumeRebase)
+            lock.withLock {
+                if var live = rangeInflight[downloadTask.taskIdentifier], live.resumeDisplayRebase == nil {
+                    live.resumeDisplayRebase = resumeRebase
+                    rangeInflight[downloadTask.taskIdentifier] = live
+                }
+            }
             if let resumeWatermark, displayTotal != aggregatedLiveBytes {
                 lock.lock()
                 let firstRebase = loggedRangeBlobResumeDisplayRebaseKeys

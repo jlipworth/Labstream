@@ -166,32 +166,75 @@ struct DownloadLiveRangeProgressPolicyTests {
         #expect(sampleAfterAppend.bytes == 1_850)
     }
 
+    /// A resumed task's first callback (its rebase is latched from this sample).
+    private func firstResumedSample(taskBytes: Int, baseOffset: Int, resumeDisplayBytes: Int?) -> Int {
+        var rebase: Int?
+        return DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+            taskBytes: taskBytes, baseOffset: baseOffset, resumeDisplayBytes: resumeDisplayBytes,
+            latchedRebase: &rebase)
+    }
+
     @Test("Resume display watermark rebases fresh-baseline counts without double-counting the base offset")
     func resumedTaskDisplayBytes() {
         // Fresh-baseline report: taskBytes = baseOffset + bytes THIS task instance received.
         // The watermark already covers baseOffset + the blob temp, so only the fresh delta is added.
-        #expect(DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+        #expect(firstResumedSample(
             taskBytes: 100_002_000,
             baseOffset: 100_000_000,
             resumeDisplayBytes: 150_000_000) == 150_002_000)
         // A report with no fresh bytes yet holds at the watermark instead of inflating past it.
-        #expect(DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+        #expect(firstResumedSample(
             taskBytes: 100_000_000,
             baseOffset: 100_000_000,
             resumeDisplayBytes: 150_000_000) == 150_000_000)
         // Cumulative reports at/above the watermark are already authoritative.
-        #expect(DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+        #expect(firstResumedSample(
             taskBytes: 250_000_000,
             baseOffset: 100_000_000,
             resumeDisplayBytes: 200_000_000) == 250_000_000)
-        #expect(DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+        #expect(firstResumedSample(
             taskBytes: 0,
             baseOffset: 100_000_000,
             resumeDisplayBytes: 200_000_000) == 200_000_000)
-        #expect(DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+        #expect(firstResumedSample(
             taskBytes: 2_000,
             baseOffset: 0,
             resumeDisplayBytes: nil) == 2_000)
+    }
+
+    @Test("#502: a fresh-baseline count crossing the resume watermark never moves bytes backwards")
+    func resumedTaskCrossingWatermarkStaysMonotonic() {
+        // Durable base 100, watermark 150 (base + 50 temp bytes the blob still owns). The resumed
+        // task reports from its own baseline: per-task counts 49 then 50 are true totals 199, 200.
+        var rebase: Int?
+        let published = [0, 1, 49, 50, 51, 99, 100, 150].map { count in
+            DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+                taskBytes: 100 + count, baseOffset: 100, resumeDisplayBytes: 150,
+                latchedRebase: &rebase)
+        }
+        #expect(published == [150, 151, 199, 200, 201, 249, 250, 300])
+        #expect(zip(published, published.dropFirst()).allSatisfy { $0 <= $1 })
+    }
+
+    @Test("#502: a cumulative count latches no rebase and is never inflated past the true bytes")
+    func resumedTaskCumulativeCountIsAuthoritative() {
+        // The resumed task reports cumulatively: its first count already includes the blob's 50.
+        var rebase: Int?
+        let published = [50, 51, 99, 100].map { count in
+            DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+                taskBytes: 100 + count, baseOffset: 100, resumeDisplayBytes: 150,
+                latchedRebase: &rebase)
+        }
+        #expect(rebase == 0)
+        #expect(published == [150, 151, 199, 200])
+        // A late first callback from a fresh baseline (count already past the blob) is latched as
+        // cumulative: it undercounts by the blob but stays monotonic and never exceeds the truth.
+        var late: Int?
+        let lateCounts = [60, 61].map { count in
+            DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+                taskBytes: 100 + count, baseOffset: 100, resumeDisplayBytes: 150, latchedRebase: &late)
+        }
+        #expect(lateCounts == [160, 161])
     }
 
     @Test("Optimistic range coverage cannot claim 100 percent before the file is durable")

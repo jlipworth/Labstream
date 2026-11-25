@@ -617,6 +617,67 @@ struct DownloadsFormalModelStatusTests {
         #expect(answerAfterBoundary(hold: true, awaitingAppend: 0) == nil)
     }
 
+    /// #502 (`status/Current-ResumeBlob.cfg`; the fix switched off: `status/Faithful-502-off.cfg`).
+    /// A task resumed from an open-ended remainder's blob counts from its own baseline or
+    /// cumulatively; the model's `Callback` normalizes against the watermark with the rebase the
+    /// task latched on its first callback. Judged per sample, the reviewer's records (base 100,
+    /// watermark 150, counts 49 then 50) published 199 then 150: the row froze behind its running
+    /// max and the estimator, seeing a fall with no append debt, dropped the batch speed.
+    @Test("#502: a resumed task's published bytes never fall, never pass the true bytes, keep the speed")
+    func resumedTaskPublishedBytesAreMonotoneAndHonest() throws {
+        let session = try #require(Self.repositoryText(
+            "Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift"))
+        #expect(session.components(separatedBy: "latchedRebase: &").count - 1 == 2,
+                "the range callback and the pause path must both normalize with the task's latched rebase")
+
+        // The reviewer's records, then on to the estimator as the session hands them over.
+        let key = Self.key(0)
+        var estimator = DownloadAggregateRateEstimator()
+        estimator.setActiveTransfers([key])
+        var rebase: Int?
+        var previousRate: Int?
+        var published: [Int] = []
+        var speedAfterCrossing: Double?
+        for count in 0...99 {
+            let shown = DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+                taskBytes: 100 + count, baseOffset: 100, resumeDisplayBytes: 150, latchedRebase: &rebase)
+            let rate = DownloadLiveRangeProgressPolicy.rateSampleBytes(
+                reportedBytes: shown, previous: previousRate, bytesAwaitingAppend: 0)
+            previousRate = rate
+            published.append(shown)
+            let now = Self.time(Double(count) * 0.25)
+            estimator.sample(key, bytes: rate, at: now)
+            if count == 51 { speedAfterCrossing = estimator.rate(at: now) }
+        }
+        #expect(published[49] == 199 && published[50] == 200 && published.last == 249)
+        #expect(zip(published, published.dropFirst()).allSatisfy { $0 < $1 })
+        #expect(speedAfterCrossing != nil,
+                "a resumed task crossing its watermark must not cost the batch its speed")
+
+        // Seeded: either counter, any first-callback lateness, any base and blob.
+        for seed in UInt64(5_201)...5_400 {
+            var rng = Seeded(seed)
+            let base = rng.int(0...1_000_000)
+            let blob = rng.int(1...1_000_000)
+            let watermark = base + blob
+            let fresh = rng.chance(0.5)
+            var count = fresh ? rng.int(0...(2 * blob)) : blob + rng.int(0...1_000)
+            var latched: Int?
+            var last = 0
+            for _ in 0..<200 {
+                let truth = fresh ? watermark + count : base + count
+                let shown = DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+                    taskBytes: base + count, baseOffset: base, resumeDisplayBytes: watermark,
+                    latchedRebase: &latched)
+                #expect(shown >= last, "seed \(seed): the published bytes went backwards")
+                #expect(shown <= truth, "seed \(seed): the published bytes passed the true bytes")
+                #expect(shown >= watermark, "seed \(seed): a resumed task showed less than its watermark")
+                last = shown
+                count += rng.int(0...50_000)
+            }
+        }
+    }
+
     /// The model's `Callback` for a forward-only row: `disk' \in {disk, rec'}`.
     @Test("Bytes: a progress sample between persistence tickets changes the live row only")
     func throttledProgressHasNoPersistenceTicket() throws {
