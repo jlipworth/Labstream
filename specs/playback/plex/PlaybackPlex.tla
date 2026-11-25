@@ -211,9 +211,6 @@ Init ==
 -----------------------------------------------------------------------------
 (* Reading the controller                                                  *)
 
-Tasks(c) ==
-    unwinding[c] \cup (IF task[c] = NoTask THEN {} ELSE {task[c]})
-
 Detached(c) == IF item[c] = "attached" THEN "detached" ELSE item[c]
 
 \* The incarnation a stop sent now is recorded as aimed at.  A Plex stop
@@ -247,8 +244,11 @@ StopWaitOver(c, id) ==
 \* gave up, or the task was cancelled.  Either way the task group cancels
 \* the request (group.cancelAll, or structured cancellation), and
 \* PlexClient.send maps that to CancellationError.
+\* With FixStartAfterOwnStops the stop is a tracked request that nothing
+\* cancels, so its answer is one the client hears.
 AbandonedStop(c, t) ==
     IF t # NoTask /\ t.pc = "awaitStop" /\ WaitsForPreviousStop
+       /\ ~FixStartAfterOwnStops
        /\ \E r \in StopReq(c, t.stop) : r.status = "inFlight"
     THEN {t.stop} ELSE {}
 

@@ -14,7 +14,7 @@ The model reproduces both halves of suspect 2, finds two more ways for a stale s
 replacement, and judges suspect 4's late start for Plex. Each has a `Finding-*` config and a
 trace below. None has been reproduced in the app or against a server. Two results depend on
 what PMS does with a stop when several jobs run under one session id, which the repository does
-not establish; they are listed under [What PMS does](#what-pms-does).
+not establish; they are conditional findings, listed under [What PMS does](#what-pms-does).
 
 ## What is modelled
 
@@ -85,6 +85,10 @@ failed", so a pass of `OneEncoder` is sound. The base's `NoWrongKill` is checked
 - **The awaits between the stop and the start request** (stream selection, the decision
   request) are folded into `TaskIssuesStart`. A task cancelled there has sent its stop and no
   start, which a task cancelled in `awaitStop` after its answer also reaches.
+- **The adaptive-bitrate restart** (`PlaybackRestartIntent.adaptiveBitrate`, from the stall
+  watchdog and healthy-playback upshift) is not a separate action. It enters `beginStreaming`
+  exactly as `UserQuality` does and differs only in not being a user action, so it is covered
+  by `UserQuality`'s steps but counted against `MaxUserActions`.
 - **The consent boundary** is left out. `requestVideoTranscodeConsent` calls
   `stopPreviousTranscode` too, with the same bounded wait, before it shows the choice.
 - **Which request starts a transcoder.** On a cold session `start.m3u8` alone does not; the
@@ -137,11 +141,13 @@ What depends on them:
   acknowledged in time, no two jobs ever run under the id. `Current-ReusedId`,
   `Current-LateAck`, `Deep-BackToBack` and `Proposed-StartAfterOwnStops` need `TRUE`: once a
   stop is lost and the job runs on beside its replacement, only a stop that ends both keeps one
-  encoder. `Mutant-StopEndsOnlySome` is `Current-ReusedId` with `FALSE`: a job outlives an
-  acknowledged final stop, and `OneEncoder` fails too. If PMS ends only one job per stop, that is
-  a finding and no ordering of the client's requests under one session id repairs it.
-- **`WarmStartJoinsJob`.** Every config uses `TRUE` except `Mutant-WarmStartAddsJob`, where the
-  startup-deadline retry runs two transcoders by design. If PMS adds a job, that is a finding.
+  encoder. `Finding-StopEndsOnlySome` is `Current-ReusedId` with `FALSE`, the setting that
+  assumes nothing: a job outlives an acknowledged final stop, and `OneEncoder` fails too. It is
+  a conditional finding: a defect of the current design unless PMS ends every job under the id,
+  and then no ordering of the client's requests under one session id repairs it.
+- **`WarmStartJoinsJob`.** Every config uses `TRUE` except `Finding-WarmStartAddsJob`, where the
+  startup-deadline retry runs two transcoders by design. It is a conditional finding: a defect
+  unless PMS serves that request from the running job.
 - **`CancelledStopCanLand`.** The kill half of suspect 2 needs `TRUE`. The pile-up half does not
   depend on it, nor on `StopEndsAllUnderId`. `Finding-FinalStopKillsReplacement` needs none of
   the three.
@@ -185,8 +191,8 @@ off, `StopEndsAllUnderId = FALSE`, `WarmStartJoinsJob = TRUE`.
 | Config | Expect | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
 | `Current-InPlace` | pass | pass | 2,801,859 | 11 s |
-| `Current-ReusedId` | pass | pass | 1,262,840 | 6 s |
-| `Current-LateAck` | pass | pass | 20,963,959 | 66 s |
+| `Current-ReusedId` | pass | pass (given `StopEndsAllUnderId`) | 1,262,840 | 6 s |
+| `Current-LateAck` | pass | pass (given `StopEndsAllUnderId`) | 20,963,959 | 66 s |
 | `Liveness-InPlace` | pass | pass | 55,830 | 5 s |
 | `Liveness-BoundedWait` | pass | pass | 19,153 | 2 s |
 | `Faithful-StopPrevious-off` | `OneEncoder` violated | violated | stops at first error | 1 s |
@@ -196,8 +202,6 @@ off, `StopEndsAllUnderId = FALSE`, `WarmStartJoinsJob = TRUE`.
 | `Mutant-RetrySkipsJoin` | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Mutant-CloseSkipsFinalStop` | `NoOrphans` violated | violated | stops at first error | 1 s |
 | `Mutant-UnboundedStopWait` | `RestartSettles` (temporal) violated | violated | stops at first error | 1 s |
-| `Mutant-StopEndsOnlySome` | `CleanAfterAckedClose` violated | violated | stops at first error | 1 s |
-| `Mutant-WarmStartAddsJob` | `OneEncoder` violated | violated | stops at first error | 1 s |
 | `Finding-LateStopKillsReplacement` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-LateStopKillsReplacement-CancelledWait` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-LateStopPilesUp` | `OneEncoder` violated | violated | stops at first error | 1 s |
@@ -205,9 +209,11 @@ off, `StopEndsAllUnderId = FALSE`, `WarmStartJoinsJob = TRUE`.
 | `Finding-RestartAfterFailureSkipsFinalStop` | `NoOrphans` violated | violated | stops at first error | 1 s |
 | `Finding-LateStartOutlivesStop` | `CleanAfterAckedClose` violated | violated | stops at first error | 1 s |
 | `Finding-LateStartPilesUp` | `OneEncoder` violated | violated | stops at first error | 1 s |
-| `Proposed-StartAfterOwnStops` | pass | pass | 8,517,592 | 27 s |
-| `Proposed-Liveness` | pass | pass | 41,803 | 4 s |
-| `Deep-BackToBack` (deep) | pass | pass | 224,250,625 | 18 min 51 s |
+| `Finding-StopEndsOnlySome` (conditional on PMS) | `CleanAfterAckedClose` violated | violated | stops at first error | 1 s |
+| `Finding-WarmStartAddsJob` (conditional on PMS) | `OneEncoder` violated | violated | stops at first error | 1 s |
+| `Proposed-StartAfterOwnStops` | pass | pass (given `StopEndsAllUnderId`) | 7,085,050 | 23 s |
+| `Proposed-Liveness` | pass | pass (given `StopEndsAllUnderId`) | 37,971 | 4 s |
+| `Deep-BackToBack` (deep) | pass | pass (given `StopEndsAllUnderId`) | 224,250,625 | 18 min 51 s |
 
 - `Current-InPlace`: three user actions, `MaxGeneration = 21`. Every stop is acknowledged within
   the wait, a cancelled request reaches nobody and requests are served in order. It checks
@@ -247,12 +253,21 @@ cancelled wait. `RestartFromFailure` and `LateStarts` are off in every `Current`
 | `Mutant-RetrySkipsJoin` | `RetryJoinsPendingStops` | `LiveStopNeverKillsSuccessor` | Fail, Retry: the failure's detached stop is still unanswered when the restart starts its job, and ends it. |
 | `Mutant-CloseSkipsFinalStop` | `CloseSendsFinalStop` | `NoOrphans` | Close with a job running and no stop. |
 | `Mutant-UnboundedStopWait` | `BoundedStopWait` | `RestartSettles` | A restart waits for ever on a stop that is never answered. |
-| `Mutant-StopEndsOnlySome` | `StopEndsAllUnderId` | `CleanAfterAckedClose` | A stop is lost, the replacement starts beside the old job, and Close's acknowledged stop ends one of the two. |
-| `Mutant-WarmStartAddsJob` | `WarmStartJoinsJob` | `OneEncoder` | The startup-deadline retry's request starts a second job. |
 
 `OneEncoder`, `StopNeverKillsSuccessor`, `LiveStopNeverKillsSuccessor`, `NoOrphans` and
 `CleanAfterAckedClose` are violated by the code as it stands; their `Finding` configs also show
-they can fail, and `Proposed-StartAfterOwnStops` that they can hold. `NoWrongKill`'s mutant is
+they can fail, and `Proposed-StartAfterOwnStops` that they can hold. `CleanAfterAckedClose` has
+no mutant of its own: `Finding-LateStartOutlivesStop` and `Finding-StopEndsOnlySome` are its
+failing runs.
+
+Two `Finding` configs flip a server assumption and no client code. Each is the current design
+against a server the repository does not rule out:
+
+| Config | Server assumption | Violates | Trace |
+| --- | --- | --- | --- |
+| `Finding-StopEndsOnlySome` | `StopEndsAllUnderId = FALSE` | `CleanAfterAckedClose` (and `OneEncoder`) | A stop is lost, the replacement starts beside the old job, and Close's acknowledged stop ends one of the two. |
+| `Finding-WarmStartAddsJob` | `WarmStartJoinsJob = FALSE` | `OneEncoder` | The startup-deadline retry's request starts a second job. |
+ `NoWrongKill`'s mutant is
 `Base-Mutant-StartBeforeStopResolves`. `CloseCleansUp` has no failing run.
 
 ### Every branch is taken
@@ -301,7 +316,7 @@ model.
 
 Whether PMS applies a request whose connection the client reset is not established. It needs
 the request to have left the device and the answer to take over two seconds: a server slow to
-answer, not a dead link.
+answer, or bytes already on a lossy link that arrive late, not a dead link.
 
 ### Suspect 2 with no timeout: the stop of a cancelled restart (`Finding-LateStopKillsReplacement-CancelledWait`)
 
@@ -339,7 +354,7 @@ served out of order.
 This is the state #27 exists to prevent ("so superseded jobs can't pile up and OOM the server",
 2761). If PMS ends every job under the id per stop, the next acknowledged stop (the next
 restart's, or Close's) ends both, so the pile-up lasts until then. If it ends only some, the
-extra job can outlive Close (`Mutant-StopEndsOnlySome`).
+extra job can outlive Close (`Finding-StopEndsOnlySome`).
 
 ### New: a restart from a failure races the failure's own stop (`Finding-FinalStopKillsReplacement`)
 
@@ -393,13 +408,16 @@ overtaken start's job beside the replacement's.
 
 - `FixStartAfterOwnStops`: no start request goes out while a stop of this controller's is
   unanswered. That is one rule for all four stale-stop routes: the wait that gave up, the stop
-  of a cancelled restart, the failure's detached stop, and Retry's existing join. The wait is no
+  of a cancelled restart, the failure's detached stop, and Retry's existing join. A client
+  cannot hear the fate of a request it cancelled, so the fix also means the stop is a tracked
+  request that neither the two-second bound nor a cancelled task cancels (`AbandonedStop` is
+  empty with the fix on). The wait is no
   longer bounded by two seconds, so it leans on the request's own timeout (5 s on the recovery
   client that Retry switches to, 60 s otherwise); `Mutant-UnboundedStopWait` is what it costs if
   a stop is never answered at all.
 - `FixRestartResetsStopLatch`, from the restart core.
 
-With both, every property holds in full under late, cancelled and lost stops and restarts from a
+With both, every property holds in full under late and lost stops and restarts from a
 failure, given `StopEndsAllUnderId`. The late start is not addressed (`LateStarts` is off
 there); the restart core's `FixJoinCancelledTasks` does not help it either, since the stop has
 already gone when the start lands.
