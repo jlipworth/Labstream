@@ -2276,7 +2276,9 @@ public final class DownloadManager {
         let interruptedStaticKeys = store.interruptedStaticByteRangeKeys()
 
         // B.13: same snapshot rule as launch — rows created while `getAllTasks` runs are skipped.
-        let snapshotRatingKeys = store.allRatingKeys
+        // Admission is open here, so forward-only rows a granted start may own are skipped too
+        // (Admission-A1, #475): relaunch would requeue one whose task does not exist yet.
+        let snapshotRatingKeys = store.allRatingKeys.subtracting(forwardOnlyRowsAdmissionMayOwn())
         session.reattach { [weak self, store] liveKeys in
             let submission = store.submitReconcile(liveRatingKeys: liveKeys, snapshotRatingKeys: snapshotRatingKeys)
             Task { @MainActor in

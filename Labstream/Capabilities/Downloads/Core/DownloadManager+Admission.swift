@@ -15,6 +15,20 @@ extension DownloadManager {
             && record.admissionIntent == .retryRequested
     }
 
+    /// Forward-only rows a granted start may own while admission is open: a supervised start, or
+    /// a waiting row the pump may grant before reconcile reads it. Relaunch requeues an admitted
+    /// forward-only row with no task (Admission-A1, #475), which is right at startup, where no
+    /// start runs yet; foreground reconcile leaves these rows to `finishAdmittedStart` instead.
+    func forwardOnlyRowsAdmissionMayOwn() -> Set<String> {
+        store.allRatingKeys.filter { ratingKey in
+            guard let record = store.record(for: ratingKey),
+                  record.metadata?.resolvedResumeMode(ratingKey: ratingKey) == .liveForwardOnly else {
+                return false
+            }
+            return admission.supervised[ratingKey] != nil || isWaitingForAdmission(record)
+        }
+    }
+
     func admissionLane(for record: DownloadRecord) -> DownloadAdmissionLane {
         guard let metadata = record.metadata else { return .staticFile }
         return DownloadAdmissionPolicy.lane(
