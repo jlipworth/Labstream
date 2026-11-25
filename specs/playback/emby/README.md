@@ -132,8 +132,10 @@ What depends on them:
 
 - **`IdReuse`.** With one controller and every stop answered within its timeout,
   `Current-Reopen` passes with `"live"`: the old job is stopped before the negotiation, so
-  whichever id comes back names nothing else. Once a stop can time out, the pass needs `"never"`
-  (`Current-LateAck`), and `Finding-LateStopKillsReusedId` is the same run with `"stopped"`.
+  whichever id comes back names nothing else. Once a stop can time out, every property but
+  `StopNeverKillsSuccessor` still holds under any id reuse (`Current-LateAckLive`, `"live"`);
+  `StopNeverKillsSuccessor` needs `"never"` (`Current-LateAck`, and `Current-LateAckConsent`
+  with consent on), and `Finding-LateStopKillsReusedId` is the same run with `"stopped"`.
 - **`IdsNeverShared`.** `Deep-BackToBack` takes `FALSE`. There is no evidence for `TRUE`: the
   server mints the id, and the stop names the device and the id, with the same device for both
   controllers. With `FALSE` and `"stopped"` a second playback can be given an id the first one's
@@ -234,6 +236,8 @@ failure and failing stops on, consent and late stops off, `IdReuse = "live"`,
 | --- | --- | --- | --- | --- |
 | `Current-Reopen` | pass | pass | 930,715 | 6 s |
 | `Current-LateAck` | pass | pass (given `IdReuse = "never"`) | 861,167 | 4 s |
+| `Current-LateAckLive` | pass | pass (`StopNeverKillsSuccessor` not checked) | 2,376,179 | 10 s |
+| `Current-LateAckConsent` | pass | pass (given `IdReuse = "never"`) | 787,928 | 5 s |
 | `Current-CloseAtConsent` | pass | pass | 3,033,765 | 13 s |
 | `Liveness-Reopen` | pass | pass | 37,338 | 5 s |
 | `Liveness-BoundedWait` | pass | pass | 787,928 | 106 s |
@@ -249,6 +253,7 @@ failure and failing stops on, consent and late stops off, `IdReuse = "live"`,
 | `Mutant-ConsentIgnoresAck` | `ConsentBoundary` violated | violated | stops at first error | 1 s |
 | `Mutant-ConsentAttachesNegotiated` | `ConsentBoundary` violated | violated | stops at first error | 1 s |
 | `Mutant-UnboundedStopWait` | `ReopenSettles` (temporal) violated | violated | stops at first error | 1 s |
+| `Mutant-CloseUnboundedStopWait` | `CloseCleansUp` (temporal) violated | violated | stops at first error | 4 s |
 | `Finding-StopNoJoin` | `JoinCoversCleanup` violated | violated | stops at first error | 1 s |
 | `Finding-LateStopKillsReusedId` (conditional on Emby) | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-BackToBackStaleStop` (conditional on Emby) | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
@@ -260,12 +265,16 @@ failure and failing stops on, consent and late stops off, `IdReuse = "live"`,
 - `Current-Reopen`: three user actions, four session ids, `MaxGeneration = 15`. It checks
   `TypeOK`, `OneEncoder`, `NoEncoderWhileUnconfirmed`, `StopNeverKillsSuccessor`,
   `BarrierPreconditions`, `NoAuthorityAtPrepare`, `DetachedWhileStopping`, `ConsentBoundary`,
-  `NoOrphans` and `GenerationsSuffice`, and so do the other `Current` configs,
-  `Proposed-CloseJoinsTask` and `Deep-BackToBack`.
+  `NoOrphans` and `GenerationsSuffice`, and so do the other `Current` configs (but for one in
+  `Current-LateAckLive`), `Proposed-CloseJoinsTask` and `Deep-BackToBack`.
 - `Current-LateAck` (review focus 3): `StopsCanBeLate` and `IdReuse = "never"`. A stop times out,
   the reopen fails with LS-PB-008, the stop is retried, and the first request is acknowledged
   afterwards (witness `NeverLateAck`). With three user actions the run is 44,996,159 states and
-  285 s, and passes; the config keeps two.
+  285 s, and passes; the config keeps two. `Current-LateAckLive`: the same run with
+  `IdReuse = "live"`, checking every `Current` invariant except `StopNeverKillsSuccessor`, which
+  `Finding-LateStopKillsReusedId` shows failing under reuse. `Current-LateAckConsent`: late stops
+  with consent, `Liveness-BoundedWait`'s constants with `MaxGeneration = 12` under `Spec`, one
+  user action, `IdReuse = "never"`, every `Current` invariant.
 - `Current-CloseAtConsent` (review focus 4): `ConsentPossible`, `MaxGeneration = 15`.
 - `Liveness-Reopen`: consent, one user action, `MaxGeneration = 11`, under `FairSpec`:
   `ReopenSettles` and `CloseCleansUp`. `Liveness-BoundedWait`: the same with late stops and
@@ -282,8 +291,9 @@ How the `Current` configs are scoped around the findings. `Finding-StopNoJoin` n
 from the environment, so `JoinCoversCleanup` is left to its `Finding` and `Proposed` configs and
 the `Current` configs keep the behaviour. The three conditional findings each need one server
 assumption, and each `Current` or `Deep` config that would otherwise reach one states the
-assumption it takes instead: `IdReuse = "never"` in `Current-LateAck`, `StopsCanFail = FALSE` in
-`Deep-BackToBack`, `AbandonedNegotiateCanLand = FALSE` everywhere.
+assumption it takes instead: `IdReuse = "never"` in `Current-LateAck` and
+`Current-LateAckConsent` (`Current-LateAckLive` drops the one property instead),
+`StopsCanFail = FALSE` in `Deep-BackToBack`, `AbandonedNegotiateCanLand = FALSE` everywhere.
 
 ### Faithfulness and mutants
 
@@ -301,13 +311,15 @@ assumption it takes instead: `IdReuse = "never"` in `Current-LateAck`, `StopsCan
 | `Mutant-ConsentIgnoresAck` | `ConsentRequiresAck` | `ConsentBoundary` | The old session's stop fails and the choice shows all the same. |
 | `Mutant-ConsentAttachesNegotiated` | `ConsentRejectsNegotiated` | `ConsentBoundary` | A reopen's result needs consent; the choice shows over the attached result. |
 | `Mutant-UnboundedStopWait` | `StopTimesOut` | `ReopenSettles` | A reopen waits for ever on a stop that is never answered. |
+| `Mutant-CloseUnboundedStopWait` | `StopTimesOut` | `CloseCleansUp` | `Liveness-BoundedWait`'s run: a reopen's stop is never answered, the user closes the player, and the cleanup Close joins never ends. |
 
 `StopNeverKillsSuccessor`, `NoOrphans` and `JoinCoversCleanup` also fail on the code as it
 stands, in the `Finding` configs. `OneEncoder`'s failing run is the `Faithful` config.
 `NoAuthorityAtPrepare` and `GenerationsSuffice` are checks on the model, not on the code: the
 first fails with `Mutant-NoTransactionTail`'s constants, the second with any `Current` config and
-a smaller `MaxGeneration`. `CloseCleansUp` has no failing run of its own; it fails with
-`Mutant-UnboundedStopWait`'s constants.
+a smaller `MaxGeneration`. `Mutant-CloseUnboundedStopWait` keeps consent on, as
+`Liveness-BoundedWait` does: with `ConsentPossible = FALSE` a cancelled first start has no step
+in the model, so `CloseCleansUp` fails for that reason, and the liveness configs all take consent.
 
 ### Every branch is taken
 
