@@ -327,6 +327,51 @@ exit "${status:-13}"
             result = self.outcome("Finding-Named", "\\* EXPECT: violation Different\n" + text)
             self.assert_failed(result, f"got: {name};")
 
+    # --- The outcome kind and the property are compared separately (review of PR #505) ---
+
+    def test_a_crash_never_matches_an_expectation_spelled_broken(self):
+        # The reviewer's scenario: a simulated JVM out-of-memory kill, exit 137, used to satisfy
+        # `EXPECT: violation BROKEN` because a broken run's RESULT was the word BROKEN.
+        crash = ("INVARIANT Safe\n\\* FAKE-OUT: java.lang.OutOfMemoryError: Java heap space\n"
+                 "\\* FAKE-EXIT: 137\n\\* FAKE-FINISH: no\n")
+        for word in ("BROKEN", "broken"):
+            result = self.outcome("Finding-Reserved", f"\\* EXPECT: violation {word}\n" + crash)
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn(f"EXPECT names the reserved word {word} as a property", result.stderr)
+            self.assertNotIn("all checks passed", result.stdout)
+
+    def test_a_clean_run_never_matches_an_expectation_spelled_pass(self):
+        # `EXPECT: violation pass` used to accept a run that found no violation at all.
+        clean = "INVARIANT Safe\n\\* FAKE-OUT: Model checking completed. No error has been found.\n\\* FAKE-EXIT: 0\n"
+        for word in ("pass", "PASS", "violation"):
+            result = self.outcome("Finding-Reserved", f"\\* EXPECT: violation {word}\n" + clean)
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn(f"EXPECT names the reserved word {word} as a property", result.stderr)
+            self.assertNotIn("all checks passed", result.stdout)
+
+    def test_a_named_temporal_property_may_not_be_a_reserved_word(self):
+        result = self.outcome("Finding-Reserved", "\\* EXPECT: violation TEMPORAL BROKEN\nPROPERTY BROKEN\n")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("EXPECT names the reserved word BROKEN as a property", result.stderr)
+
+    def test_a_property_named_like_an_outcome_is_compared_by_kind(self):
+        # `Broken` is an ordinary TLA+ name. A crash is still not its violation, and its real
+        # violation is accepted.
+        crash = ("INVARIANT Broken\n\\* FAKE-OUT: java.lang.OutOfMemoryError: Java heap space\n"
+                 "\\* FAKE-EXIT: 137\n\\* FAKE-FINISH: no\n")
+        self.assert_failed(self.outcome("Finding-Kind", "\\* EXPECT: violation Broken\n" + crash),
+                           "got: TLC crashed (exit 137)")
+        violated = "INVARIANT Broken\n\\* FAKE-OUT: Error: Invariant Broken is violated.\n\\* FAKE-EXIT: 12\n"
+        result = self.outcome("Finding-Kind", "\\* EXPECT: violation Broken\n" + violated)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("got: Broken;", result.stdout)
+
+    def test_a_crash_never_passes_a_pass_expectation(self):
+        crash = ("INVARIANT Safe\n\\* FAKE-OUT: java.lang.OutOfMemoryError: Java heap space\n"
+                 "\\* FAKE-EXIT: 137\n\\* FAKE-FINISH: no\n")
+        self.assert_failed(self.outcome("Current-Crash", "\\* EXPECT: pass\n" + crash),
+                           "got: TLC crashed (exit 137)")
+
     def test_a_pass_needs_status_zero_the_banner_and_a_finish(self):
         good = "\\* EXPECT: pass\n\\* FAKE-OUT: Model checking completed. No error has been found.\n"
         result = self.outcome("Current-Good", good + "\\* FAKE-EXIT: 0\n")

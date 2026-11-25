@@ -315,11 +315,15 @@ run_tlc() {
   rm -rf "$meta"
 }
 
-# What a finished TLC run established, from its exit status ($2) AND its log ($1). Sets RESULT to
-#   pass                 exit 0, the "No error has been found" line, no error line
-#   <Name>               exactly that invariant or action property violated
-#   TEMPORAL | DEADLOCK  a liveness violation, a deadlock
-#   BROKEN               anything else: RESULT_WHY says what. Never a pass, never a violation.
+# What a finished TLC run established, from its exit status ($2) AND its log ($1). Sets the typed
+# RESULT_KIND and, for a violation, the property in RESULT:
+#   pass       (RESULT=pass)       exit 0, the "No error has been found" line, no error line
+#   violation  (RESULT=<Name>)     exactly that invariant or action property violated, or
+#              (RESULT=TEMPORAL | DEADLOCK) a liveness violation, a deadlock
+#   broken     (RESULT=BROKEN)     anything else: RESULT_WHY says what. Never a pass, never a
+#                                  violation, and never what a config expects.
+# Callers compare RESULT_KIND first and the property only for a violation, so no property name
+# (not even one spelled "pass" or "BROKEN") can stand for another kind of outcome.
 # TLC's exit statuses (tlc2.output.EC.ExitStatus): 0 success, 11 deadlock, 12 safety (invariant)
 # violation, 13 liveness violation, which TLC 1.7 also uses for an action property; everything
 # else (75-77 evaluation failures, 150-153 parse/config errors, 255 an internal error, 137 a
@@ -328,6 +332,7 @@ run_tlc() {
 classify_tlc() {
   local log="$1" status="$2" banners count stray
   RESULT=BROKEN
+  RESULT_KIND=broken
   RESULT_WHY=""
   if grep -Eq 'java\.lang\.[A-Za-z]*(Error|Exception)|Exception in thread|TLC threw an unexpected exception' "$log"; then
     RESULT_WHY="TLC crashed (exit $status): $(grep -Eom1 'java\.lang\.[A-Za-z]*(Error|Exception)|Exception in thread|TLC threw an unexpected exception' "$log")"
@@ -354,6 +359,7 @@ classify_tlc() {
   if [[ "$status" -eq 0 ]]; then
     if [[ "$count" -eq 0 ]] && grep -q 'Model checking completed. No error has been found.' "$log"; then
       RESULT=pass
+      RESULT_KIND=pass
     else
       RESULT_WHY="TLC exited 0 without a clean \"No error has been found\""
     fi
@@ -364,7 +370,9 @@ classify_tlc() {
     return
   fi
   case "${banners%% *}:$status" in
-    invariant:12|action:12|action:13|temporal:13|deadlock:11) RESULT="${banners#* }" ;;
+    invariant:12|action:12|action:13|temporal:13|deadlock:11)
+      RESULT="${banners#* }"
+      RESULT_KIND=violation ;;
     *) RESULT_WHY="TLC exit $status does not match its banner (${banners#* })" ;;
   esac
 }
@@ -404,23 +412,36 @@ while IFS= read -r cfg; do
   expect="$(cfg_header "$cfg" EXPECT)"
   expect="${expect:-pass}"
   properties="$(cfg_properties "$cfg")"
-  # wanted: what the (first) run must establish. named: the temporal property EXPECT names.
+  # wanted_kind: pass or violation. wanted: the violated property (TEMPORAL for liveness),
+  # empty for a pass. named: the temporal property EXPECT names.
   named=""
+  wanted=""
   case "$expect" in
-    pass) wanted=pass ;;
-    "violation TEMPORAL") wanted=TEMPORAL ;;
+    pass) wanted_kind=pass ;;
+    "violation TEMPORAL") wanted_kind=violation; wanted=TEMPORAL ;;
     "violation TEMPORAL "*)
+      wanted_kind=violation
       wanted=TEMPORAL
       named="${expect#violation TEMPORAL }"
       [[ "$named" =~ ^[A-Za-z0-9_]+$ && " $properties " == *" $named "* ]] \
         || die "$cfg: EXPECT names $named, which is not in the config's PROPERTY list ($properties)"
       ;;
     "violation "*)
+      wanted_kind=violation
       wanted="${expect#violation }"
       [[ "$wanted" =~ ^[A-Za-z0-9_]+$ ]] || die "$cfg: unrecognized EXPECT header: $expect"
       ;;
     *) die "$cfg: unrecognized EXPECT header: $expect" ;;
   esac
+  # The outcome words are not property names: `violation BROKEN` would otherwise accept a crash.
+  if [[ -n "$wanted" ]]; then
+    for reserved in $wanted $named; do
+      case "$reserved" in
+        pass|PASS|broken|BROKEN|violation)
+          die "$cfg: EXPECT names the reserved word $reserved as a property: $expect" ;;
+      esac
+    done
+  fi
   if grep -Fxq -- "$(config_module "$cfg")" <<<"$FAILED_MODULES"; then
     SUMMARY+=("FAIL  tlc    ${cfg#"$ROOT"/}  [expect: $expect; not run: $spec.tla does not parse]")
     FAILURES=$((FAILURES + 1))
@@ -454,10 +475,10 @@ while IFS= read -r cfg; do
   fi
   classify_tlc "$log" "$TLC_STATUS"
   states="$(sed -n 's/^\([0-9][0-9]*\) states generated, \([0-9][0-9]*\) distinct states found.*/\2 distinct/p' "$log" | tail -n 1)"
-  case "$RESULT" in
-    pass) got="no violation" ;;
-    BROKEN) got="$RESULT_WHY" ;;
-    TEMPORAL)
+  case "$RESULT_KIND:$RESULT" in
+    pass:*) got="no violation" ;;
+    broken:*) got="$RESULT_WHY" ;;
+    violation:TEMPORAL)
       # TLC does not say which temporal property failed; the PROPERTY list of the run does.
       if [[ -n "$named" ]]; then got="TEMPORAL ($named)"
       elif [[ -n "$properties" ]]; then got="TEMPORAL ($properties)"
@@ -465,14 +486,18 @@ while IFS= read -r cfg; do
     *) got="$RESULT" ;;
   esac
   outcome="FAIL"
-  if [[ "$RESULT" == "$wanted" ]]; then outcome="ok"; fi
+  # A broken run never matches; a violation matches only the expected property.
+  if [[ "$RESULT_KIND" == "$wanted_kind" ]] \
+      && { [[ "$wanted_kind" == pass ]] || [[ "$RESULT" == "$wanted" ]]; }; then
+    outcome="ok"
+  fi
   if [[ "$outcome" == ok && -n "$others" ]]; then
     rest_log="$out/tlc.others.log"
     run_tlc "$out/without-$named.cfg" "$rest_log"
     classify_tlc "$rest_log" "$TLC_STATUS"
-    case "$RESULT" in
+    case "$RESULT_KIND" in
       pass) got+="; the others hold (${others// /, })" ;;
-      BROKEN) outcome="FAIL"; got+="; checking the others (${others// /, }): $RESULT_WHY" ;;
+      broken) outcome="FAIL"; got+="; checking the others (${others// /, }): $RESULT_WHY" ;;
       *) outcome="FAIL"; got+="; also violated among the others (${others// /, }): $RESULT" ;;
     esac
   fi

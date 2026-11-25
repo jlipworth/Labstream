@@ -55,7 +55,10 @@ Commands and limitations: [workflow status and review evidence](../docs/DEVELOPM
   header; the script exits 1 on a parse error or when a run ends differently, and prints the
   counterexample. It fails a config unless TLC's exit status, banner and clean finish agree with
   its `EXPECT` header, so a crash or a truncated log after the expected banner is a failure for
-  `violation` configs too. A violated liveness property is `TEMPORAL` (TLC does not name it); a
+  `violation` configs too. The run's outcome kind (pass, violation, broken) and the violated
+  property are compared separately, so a broken run never matches any `EXPECT`, and the outcome
+  words (`pass`, `BROKEN`, `broken`, `violation`) are rejected as property names (exit 2). A
+  violated liveness property is `TEMPORAL` (TLC does not name it); a
   liveness expectation over several properties names the failing one
   (`violation TEMPORAL <Property>`) and is checked in two runs. Run one instance per worktree at
   a time: two runs share the `build/tla/` log folders and report wrong results. A config with `\* TIER: deep` is skipped unless `--deep` (run everything),
