@@ -61,6 +61,13 @@ extension DownloadManager {
             defer { self.completedSideAssetInventoryWorker = nil }
             guard let inventories = await work.observe(deadline: .after(30)),
                   !Task.isCancelled, !self.isQueuePaused else { return }
+            // #494: after Resume All, restore the sessions this inventory owes before dispatching.
+            // Launch skipped them under Pause All; this reuses the pass's observation.
+            if self.completedSideAssetHydrationOwed {
+                self.completedSideAssetHydrationOwed = false
+                await self.hydrateBackendsOwingSideAssets(Self.backendsOwingSideAssets(inventories))
+                guard !Task.isCancelled, !self.isQueuePaused else { return }
+            }
             self.completedSideAssetInventories = [:]
             for inventory in inventories {
                 let key = inventory.key
@@ -88,9 +95,14 @@ extension DownloadManager {
     /// row's own backend session and does nothing to obtain one; without it a completed row on a
     /// backend that is not selected would never be repaired at launch. The observation runs on a
     /// store worker; a timeout hydrates nothing extra and the pass itself still runs.
+    ///
+    /// Under Pause All the launch repair pass dispatches nothing, so nothing is owed yet: no file
+    /// is scanned and no inactive session (with its network discovery) is restored. Resume All
+    /// hydrates them instead (`completedSideAssetHydrationOwed`).
     func backendsOwingCompletedSideAssets(
         deadline: DownloadStoreDeadline = .after(30)
     ) async -> Set<DownloadBackendKind> {
+        guard !isQueuePaused else { return [] }
         let candidates = records.filter(\.isComplete)
         guard !candidates.isEmpty else { return [] }
         let work = DownloadStoreWork { [store] in
@@ -100,8 +112,27 @@ extension DownloadManager {
                 return DownloadJobSnapshot(record: record).backend
             }
         }
-        guard let backends = await work.observe(deadline: deadline) else { return [] }
+        guard let backends = await work.observe(deadline: deadline), !isQueuePaused else { return [] }
         return Set(backends)
+    }
+
+    /// The backends of observed completed rows that miss a side asset.
+    nonisolated static func backendsOwingSideAssets(
+        _ inventories: [CompletedSideAssetInventory]
+    ) -> Set<DownloadBackendKind> {
+        Set(inventories.lazy.filter { !$0.missing.isEmpty }
+            .map { DownloadJobSnapshot(record: $0.record).backend })
+    }
+
+    /// Restore the saved session of each owed backend that is not selected and has none yet,
+    /// exactly like launch recovery does for side assets (#494).
+    func hydrateBackendsOwingSideAssets(_ backends: Set<DownloadBackendKind>) async {
+        guard let hydrate = completedSideAssetSessionHydrator else { return }
+        for backend in backends.sorted(by: { $0.rawValue < $1.rawValue })
+        where backend != appModel.activeBackend && appModel.backendSession(for: backend) == nil {
+            guard !Task.isCancelled, !isQueuePaused else { return }
+            await hydrate(backend)
+        }
     }
 
     /// Reuse the pass inventory when still current. Other cache entry points perform their
@@ -204,10 +235,10 @@ extension DownloadManager {
                                       partIndex: partIndex, sourcePartID: sourcePartID,
                                       server: server, token: token)
                 }
-                if kinds?.contains(.chapterImages) != false {
-                    self.cacheChapterImages(for: attemptKey, item: currentItem, backend: .plex,
-                                            server: server, token: token)
-                }
+                // Chapter images are fetched only against the saved chapter list (above) and the
+                // list `adoptRefreshedChapterImages` accepts and persists (below), never against
+                // the raw refreshed list: its indexes need not match the saved ones, and a worker
+                // started from it could publish one chapter's image under another's index.
                 if kinds?.contains(.textSubtitles) != false,
                    let part = DownloadSideAssetPolicy.plexRepairPart(
                     from: currentItem, mediaIndex: mediaIndex, partIndex: partIndex,

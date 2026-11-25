@@ -638,10 +638,16 @@ Recovery also:
   BIF and subtitles come from the part the row downloaded, not the media's first part. The repair
   resolves that part in the refreshed item by the persisted `sourcePartID`, so a later reorder of
   the item's media cannot hand it another version's assets; an ID the item no longer has selects
-  nothing, and only rows that stored no ID fall back to `mediaIndex`/`partIndex` (#503). A
-  successful source refresh also saves chapter thumbnails the row was saved without and fetches
-  them, so later inventories owe them; the poster selector skips an empty or blank artwork field
-  and uses the next valid one (#504). Work runs
+  nothing, and only rows that stored no ID fall back to `mediaIndex`/`partIndex`, which must
+  both still resolve (the BIF never falls back to the first media) (#503). A successful source
+  refresh also teaches the row chapter thumbnails it was saved without, so later inventories owe
+  them. The saved chapter list stays the row's timeline: only a saved chapter that matches a
+  refreshed one (same index and start, or the one refreshed chapter starting within a second)
+  gains its thumbnail, and titles, times and indexes never change. A row saved with no chapters
+  adopts the refreshed list whole, titles and times included even without thumbnails. Chapter
+  images are fetched only against that saved, persisted list, never the raw refreshed one, whose
+  indexes can differ. The poster selector skips an empty or blank artwork field and uses the
+  next valid one (#504). Work runs
   off-main, validates image/BIF/text payloads before promotion, and batches metadata publication.
   Retry authority is exact attempt + source + resource kind and is charged only when an eligible
   waiter actually admits transport; coalesced cancellation or a stale waiter hands authority to the
@@ -650,7 +656,9 @@ Recovery also:
   including a same-path replacement, advances the side-asset generation so byte accounting and
   storage-cap snapshots cannot retain stale cache values. The repair needs the row's own backend
   session, so launch also restores the saved session of a backend that is not selected when one
-  of its completed rows misses a side asset (#494);
+  of its completed rows misses a side asset (#494). While Pause All holds the queue the launch pass
+  dispatches nothing, so launch restores no session for side assets alone (no file scan, no
+  network discovery); Resume All's repair pass restores them from its own inventory first;
 - keeps completed media available without requiring the source server to be reachable;
 - keeps a failed Emby Convert row's server job when Retry would resume it: the launch and
   backend-switch cleanup sweep cancels Convert jobs only for completed, deleted or abandoned rows,

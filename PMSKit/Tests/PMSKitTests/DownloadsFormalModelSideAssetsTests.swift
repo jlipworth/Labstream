@@ -181,6 +181,18 @@ struct DownloadsFormalModelSideAssetsTests {
         #expect(owing.contains("records.filter(\\.isComplete)"))
         #expect(owing.contains("CompletedSideAssetInventory.observe(record: record, store: store)"))
         #expect(owing.contains("!inventory.missing.isEmpty"))
+
+        // #494 review (`side-assets/Current-494-PausedLaunchNoHydration`;
+        // `Faithful-494-off-PausedLaunchHydrates`): under Pause All launch restores no session that
+        // only side assets need, and Resume All's pass hydrates them from its own inventory.
+        #expect(owing.contains("guard !isQueuePaused else { return [] }"))
+        let resumeQueue = try #require(Self.appSource(
+            from: "    public func resumeQueue() {", to: "\n    /// Auth restore", in: Self.managerPath))
+        #expect(resumeQueue.contains("completedSideAssetHydrationOwed = true"))
+        let pass = try #require(Self.appSource(
+            from: "    func rehydrateMissingOptionalSideAssetsForCompletedRows(",
+            to: "\n    /// #494 (TLA+ S6)", in: Self.sideCachePath))
+        #expect(pass.contains("await self.hydrateBackendsOwingSideAssets(Self.backendsOwingSideAssets(inventories))"))
     }
 
     /// S7 (#495, fixed). A Plex download transfers the part the user chose (`part[partIndex]`).
@@ -305,6 +317,11 @@ struct DownloadsFormalModelSideAssetsTests {
         #expect(helper.contains("$0.chapters = learned"), "the learned chapters are persisted")
         #expect(helper.contains("cacheChapterImages(for: attemptKey, item: persisted.makeMediaItem()"),
                 "the images are fetched against the persisted chapter indexes")
+        // No refresh fetches chapter images from the raw refreshed list, whose indexes need not
+        // match the saved ones.
+        #expect(!Self.appSource(from: "    func rehydrateMissingOptionalSideAssets(record:",
+                                to: "\n    /// #504: a successful source refresh", in: Self.sideCachePath)!
+            .contains("cacheChapterImages(for: attemptKey, item: currentItem"))
     }
 
     /// #504 case 2 (fixed). A Plex movie with `thumb == ""` and a valid `art`: the artwork

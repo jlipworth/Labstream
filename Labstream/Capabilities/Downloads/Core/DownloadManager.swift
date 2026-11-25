@@ -295,6 +295,13 @@ public final class DownloadManager {
     /// observes a single value and row bodies stay manager-free.
     @ObservationIgnored var completedSideAssetInventoryWorker: Task<Void, Never>?
     @ObservationIgnored var completedSideAssetInventories: [DownloadAttemptKey: CompletedSideAssetInventory] = [:]
+    /// #494: restores the saved session of a backend that is not selected, for the completed-row
+    /// repair (the app shell wires `AuthManager.hydrateSavedSessionForDownloads`). Launch skips
+    /// side-asset-only hydration while Pause All holds the queue; Resume All asks for it instead.
+    @ObservationIgnored var completedSideAssetSessionHydrator: (@MainActor (DownloadBackendKind) async -> Void)?
+    /// Set by Resume All: the next completed-row pass hydrates the backends its inventory owes
+    /// before dispatching, from the same observation, so the files are scanned once.
+    @ObservationIgnored var completedSideAssetHydrationOwed = false
     @ObservationIgnored var resumePresenceEvidence: [DownloadStore.ResumePresenceIdentity: Bool] = [:]
     @ObservationIgnored var resumePresenceWorkers: [DownloadStore.ResumePresenceIdentity: Task<Void, Never>] = [:]
     var offlineLibrarySnapshot: OfflineLibrarySnapshot = .empty
@@ -2203,6 +2210,9 @@ public final class DownloadManager {
             guard let key = attemptKey(for: record) else { continue }
             setOptionalSideAssetHydrationParked(false, for: key)
         }
+        // #494: launch skipped hydrating the backends that only completed rows' side assets
+        // need while the queue was paused; the pass below hydrates them from its own inventory.
+        completedSideAssetHydrationOwed = true
         rehydrateMissingOptionalSideAssetsForCompletedRows(reason: "queue_resumed")
         resumePendingServerPrepDownloads()
         resumePendingStaticRangeDownloads()

@@ -68,7 +68,8 @@ was downloaded from (`BackendSession.matchesPersistedServer`). A session for ano
 user of the same backend is no session, so `SessionLost` also stands for signing in as someone
 else. `creds` is the saved session and `session` its in-memory copy. `Relaunch` hydrates the
 selected backend, plus any other backend that owns active work or (S6, #494) a completed row that
-misses an asset, which is what `runLaunchDownloadRecovery` does. Rows in `OtherBackendRows` are on the backend that is not
+misses an asset, which is what `runLaunchDownloadRecovery` does. With `FixPausedHydration` a launch
+under Pause All skips the side-asset-only backends and `ResumeAll` hydrates them instead. Rows in `OtherBackendRows` are on the backend that is not
 selected at the start.
 
 ### Source drift and asset identity (#503, #504)
@@ -129,6 +130,7 @@ where a property needs them. `Mutation` injects one bug for a `Mutant` config.
 | `PausedRowNotFetching` | invariant | Once every command for a user-paused row has landed, none of its parked payloads is on the network. The poster is exempt by design. |
 | `NoOrphanAfterDelete` | invariant | A deleted row leaves no side-asset file, once every rename in flight has met the store's fence. |
 | `PayloadsBounded` | invariant | At most `PayloadLimit` payloads of one task group (chapter images, trickplay tiles) wait in memory for preparation (#394). |
+| `PausedLaunchHydratesNoSideAssetBackend` | action property | A launch under Pause All restores only the selected session and those of backends with active work, none for side assets alone (#494 review). |
 | `WorkIsRegistered`, `TypeOK` | invariant | Model sanity. |
 
 ### What "never forgotten" means
@@ -181,6 +183,7 @@ crashes, outages, session changes and pass timeouts are not fair and are capped 
 | `Faithful-F3-finish-off-Chapters` | A body that finishes behind a user pause sends no unpark (before the #474 follow-up): the completed row's chapter images stay parked. | `CachedThisLaunch` |
 | `Faithful-S2-off-Subs`, `-Tiles` | Resume All sends no unpark (before #483): a completed row's late fetch entry stays parked. | `CachedThisLaunch` |
 | `Faithful-S6-off` | Launch hydrates only active-work backends (before #494), so a completed row on another backend stays cold. | `NeverForgotten` |
+| `Faithful-494-off-PausedLaunchHydrates` | A launch under Pause All still restores a session that only side assets need (before the #494 review fix). | `PausedLaunchHydratesNoSideAssetBackend` |
 | `Faithful-503-off-WrongPartSubs`, `-WrongPartBif` | The Plex repair looks the part up by index (before #503); after a media reorder it caches the other part's subtitle or BIF. | `CachedAssetIsForDownloadedPart` |
 | `Faithful-503-off-SubsNeverFetched` | The same, and the other part has no subtitles: the downloaded part's subtitle is never reached. | `MissingIsDurablyOwed` |
 | `Faithful-504-off-LateChapters` | A refresh does not save chapter thumbnails the row lacked (before #504). | `ServedAssetInInventory` |
@@ -353,6 +356,16 @@ assumes. `Current-S6-HydrateCompleted` (was `Proposed-S6-HydrateCompleted`) pass
 
 Pin: `launchHydratesBackendsOfCompletedRowsMissingAssets` (no longer a known issue). Issue #494.
 
+PR #505 review follow-up (fixed on `specs/downloads-tla`, pending merge): every completed Plex row
+owes a subtitle refresh, so launch scanned the files and restored the inactive session, with its
+network discovery, even under Pause All, when the launch pass dispatches nothing.
+`FixPausedHydration` (`TRUE` in every config but the faithful one): `backendsOwingCompletedSideAssets`
+returns nothing while the queue is paused, and Resume All sets `completedSideAssetHydrationOwed`, so
+its repair pass hydrates the owed backends from the inventory it already observed before it
+dispatches. `PausedLaunchHydratesNoSideAssetBackend` (an action property on `Relaunch`) holds in
+`Current-494-PausedLaunchNoHydration`, with `NeverForgotten`; `Faithful-494-off-PausedLaunchHydrates`
+violates it. Test: `LabstreamTests/SideAssetRefreshReviewTests.pauseAllDefersSideAssetHydrationToResumeAll`.
+
 ### S7: the Plex BIF is taken from the first part, not the downloaded one (real, fixed)
 
 Fixed on `specs/downloads-tla`, pending merge (#495). The configs below are now
@@ -414,6 +427,11 @@ refreshed item no longer has selects nothing, and only a row that stored no ID f
 indexes. The initial pass keeps the indexes into the item the transfer starts from.
 `Current-503-RepairByPartID` and `-Bare` pass. Pin: `plexRepairResolvesThePartByItsPersistedID`.
 
+Review follow-up: a legacy row (no ID) whose saved media index no longer exists used to get
+`media[0]`'s BIF, while the subtitle repair declined. `selectedPlexBIFPart` now goes through
+`plexRepairPart` in every case, so both indexes must resolve (`legacyBIFRepairMatchesSubtitleRepair`).
+The model's `FixRepairByPartID` already assumed this.
+
 ### #504: assets missing from the saved inventory are never fetched (real, fixed)
 
 Fixed on `specs/downloads-tla`, pending merge. Raised by the round 2 re-review and confirmed in the
@@ -435,6 +453,22 @@ source. Two cases:
 
 The model could not see either: it enumerated asset slots from the config, not from the saved row.
 Pins: `refreshedChapterThumbnailsJoinTheInventory`, `emptyArtworkFieldFallsBack`.
+
+PR #505 review follow-up (fixed on `specs/downloads-tla`, pending merge), outside the model's
+abstraction (it counts chapter images per row and has no chapter titles, times or index mapping):
+
+- `learnedOfflineChapters` replaced a saved list that had no thumbnails with any refreshed list
+  that had one, so a rescan could swap two named chapters for one differently timed one in a
+  downloaded movie. A non-empty saved list is now kept; only its chapters that match a refreshed
+  chapter (same index and start, or the one refreshed chapter starting within
+  `chapterStartMatchTolerance`) gain a thumbnail. An empty saved list adopts the refreshed list
+  whole, even without thumbnails (titles and times without images). Tests:
+  `learnedChaptersKeepTheSavedTimeline`, `emptySavedListAdoptsChaptersWithoutThumbnails`.
+- The Plex refresh also started a chapter worker from the raw refreshed list. When the saved-list
+  worker had exited after a failed fetch, that worker could publish one chapter's image under
+  another saved chapter's index. Chapter images are now fetched only from the saved list and the
+  list `adoptRefreshedChapterImages` persists. Test:
+  `LabstreamTests/SideAssetRefreshReviewTests.plexRefreshNeverPublishesARawListChapterUnderASavedIndex`.
 
 ### Known deferred items the model reproduces
 
@@ -527,6 +561,7 @@ and state directories and report wrong results.
 | `Current-503-RepairByPartID-Bare` | pass | pass | 17,409 | 5 s |
 | `Current-504-LateChapters` | pass | pass | 6,521 | 2 s |
 | `Current-504-EmptyThumb` | pass | pass | 15,859 | 4 s |
+| `Current-494-PausedLaunchNoHydration` | pass | pass | 27,175 | 6 s |
 | `Faithful-B25-off` | violation of `RepairWithinRateLimit` | violated | 131 | 1 s or less |
 | `Faithful-B32-off-PausedFetch` | violation of `PausedRowNotFetching` | violated | 187 | 1 s or less |
 | `Faithful-B32-off` | violation of `ControlsApplyInRequestOrder` | violated | 48 | 1 s or less |
@@ -540,6 +575,7 @@ and state directories and report wrong results.
 | `Faithful-503-off-SubsNeverFetched` | violation of `MissingIsDurablyOwed` | violated | 44 | 1 s or less |
 | `Faithful-504-off-LateChapters` | violation of `ServedAssetInInventory` | violated | 33 | 1 s or less |
 | `Faithful-504-off-EmptyThumb` | violation of `ServedAssetInInventory` | violated | 31 | 1 s or less |
+| `Faithful-494-off-PausedLaunchHydrates` | violation of `PausedLaunchHydratesNoSideAssetBackend` | violated | 3,700 | 1 s or less |
 | `Mutant-DeleteSkipsPublished` | violation of `NoOrphanAfterDelete` | violated | 267 | 1 s or less |
 | `Mutant-NoDiscoveryDispatch` | violation of `NeverForgotten` | violated | 3,861 | 2 s |
 | `Mutant-PayloadsFail-ThisLaunch` | violation of `CachedThisLaunch` | violated | 2,531 | 2 s |

@@ -269,7 +269,8 @@ struct ContentView: View {
         let cleanupBackends = await downloadManager.pendingCleanupBackends()
         guard !Task.isCancelled else { return }
         // #494 (TLA+ S6): the launch repair pass below needs each completed row's own backend
-        // session, or a row on a backend that is not selected is never repaired.
+        // session, or a row on a backend that is not selected is never repaired. Under Pause All
+        // it returns nothing without scanning (the pass dispatches nothing); Resume All hydrates.
         let sideAssetBackends = await downloadManager.backendsOwingCompletedSideAssets()
         guard !Task.isCancelled else { return }
         let inactiveDownloadBackends = Set(

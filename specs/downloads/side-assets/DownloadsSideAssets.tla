@@ -118,6 +118,7 @@ CONSTANTS
     FixUnparkOnAccept,    \* PROPOSED (not in the code): Resume unparks only once the resume is accepted (S4)
     FixPassReruns,        \* PROPOSED (not in the code): a dropped, timed-out or stale repair pass runs again (S5)
     FixHydrateCompleted,  \* launch restores the session of a backend whose completed rows miss assets (S6, #494; in the code)
+    FixPausedHydration,   \* FIXED (#494 review): under Pause All launch restores no side-asset-only session; Resume All does
     FixBifChosenPart,     \* FIXED (#495): the BIF request names the downloaded part (S7); configs with ChosenPartIsFirst ignore it
     Drift,                \* how the server's item has drifted from the saved row (#503, #504); "none" otherwise
     FixRepairByPartID,    \* FIXED (#503): the Plex repair resolves the downloaded part by its persisted ID
@@ -467,6 +468,13 @@ RepairOffers(r) == OffersWith(r, budget[r], reg[r])
 
 \* The rows a pass observes: complete or unverified, with an attempt ID.
 Candidates == {r \in Rows : Live(r) /\ Owned(r) /\ Life(r) \in Playable}
+\* A backend owed for side assets alone: with FixHydrateCompleted (#494,
+\* backendsOwingCompletedSideAssets) it has a completed row that misses a
+\* side asset.
+OwedForSideAssets(b) ==
+    /\ FixHydrateCompleted
+    /\ \E r \in Candidates : BackendOf(r) = b /\ OffersWith(r, ZeroItems, {}) # {}
+
 \* A pass started now would start something.
 EdgeUseful == \E r \in Candidates : Sess(r) /\ RepairOffers(r) # {}
 
@@ -679,10 +687,17 @@ PauseAll ==
 \* resumeQueue: clears the gate.  Paused rows are re-admitted one by one
 \* (the Resume actions below); completed rows get a repair edge
 \* ("queue_resumed").  With FixResumeAllUnparks (#483) every live row that is
-\* not paused is unparked; without it (before the fix) nothing is.
+\* not paused is unparked; without it (before the fix) nothing is.  With
+\* FixPausedHydration the repair pass first restores the saved session of
+\* each backend that is not selected and is owed for side assets
+\* (completedSideAssetHydrationOwed), the hydration launch skipped.
 ResumeAll ==
     /\ up /\ queuePaused /\ Spend
     /\ queuePaused' = FALSE
+    /\ session' = IF FixPausedHydration
+                     THEN [b \in Backends |->
+                             session[b] \/ (b # selected /\ creds[b] /\ OwedForSideAssets(b))]
+                     ELSE session
     /\ exempt' = Const(Rows, FALSE)
     /\ IF FixResumeAllUnparks
           THEN LET hit == {r \in Rows : Live(r) /\ Life(r) # "paused"}
@@ -690,7 +705,7 @@ ResumeAll ==
                   /\ SetCtl(pending \cup {UnparkCtl(r) : r \in hit}, applied)
           ELSE UNCHANGED <<pending, applied>>
     /\ EdgeArrives
-    /\ UNCHANGED <<rowVars, file, authVars, serverUp, up, reg, req, parked, cancelled,
+    /\ UNCHANGED <<rowVars, file, selected, creds, serverUp, up, reg, req, parked, cancelled,
                    budget, pub, earlyOffer, promoVars, sent, ctlReordered, driftVars>>
 
 \* retryRecordAsync continuing the same attempt (a resume blob).  It unparks
@@ -1219,15 +1234,16 @@ Crash == AllowCrash /\ up /\ Spend /\ ProcessEnds
 
 \* runLaunchDownloadRecovery restores the selected backend, then hydrates
 \* the other backends that own active work (pending server cleanup is
-\* DownloadsCleanup's) and, with FixHydrateCompleted (#494,
-\* backendsOwingCompletedSideAssets), those with a completed row that misses
-\* a side asset, then fires the launch repair edge.
+\* DownloadsCleanup's) and those owed for side assets, then fires the
+\* launch repair edge.  With FixPausedHydration a backend owed for side
+\* assets alone is not hydrated while Pause All holds the queue: the launch
+\* pass dispatches nothing then, and Resume All hydrates it.
 HydratedAtLaunch(b) ==
     /\ creds[b]
     /\ \/ b = selected
        \/ \E r \in Rows : BackendOf(r) = b /\ Live(r) /\ Life(r) \in ActiveWork
-       \/ /\ FixHydrateCompleted
-          /\ \E r \in Candidates : BackendOf(r) = b /\ OffersWith(r, ZeroItems, {}) # {}
+       \/ /\ ~(FixPausedHydration /\ queuePaused)
+          /\ OwedForSideAssets(b)
 
 Relaunch ==
     /\ ~up /\ up' = TRUE
@@ -1461,6 +1477,17 @@ NeverForgottenAnyRow == Quiet ~> (AllServedCachedIn(Rows) \/ ~Quiet)
 
 \* The same, and the process stays alive with every session hydrated.
 Calm == up /\ Quiet /\ \A r \in Rows : present[r] => Sess(r)
+
+\* #494 review: a launch under Pause All restores only the sessions it needs
+\* for something other than side assets (the selected backend, a backend
+\* with active work).  Restoring an inactive session runs network
+\* discovery, and the launch pass dispatches nothing while the queue is
+\* paused.  An action property: checked on the Relaunch step.
+PausedLaunchHydratesNoSideAssetBackend ==
+    [][(~up /\ up' /\ queuePaused) =>
+         \A b \in Backends : session'[b] =>
+             \/ b = selected
+             \/ \E r \in Rows : BackendOf(r) = b /\ Live(r) /\ Life(r) \in ActiveWork]_vars
 
 \* The stronger reading, checked under FairSpec: an asset the server holds
 \* is cached without a relaunch, as long as repair edges keep coming.
