@@ -22,12 +22,19 @@ swift test --package-path PMSKit --no-parallel --filter DownloadsFormalModelAdmi
 | Transfer | `TransferCompletes`, `TransferFails` | one task per row; `DownloadsSessionCore` models the detail |
 | Backend | `OutageBegins`, `OutageEnds` | a refresh or session that is unavailable |
 | Crash | `Crash`, `Relaunch`, `Recover` | process death; `reconcileOnWorker` (`relaunchObserved`), then `admission.recoveryComplete` |
+| Foreground | `ForegroundBegins`, `ForegroundReconciles` | `recoverStaticRangeTransfersAfterForeground`: the snapshot (`reconcileRowObservations`, `forwardOnlyRowsAdmissionMayOwn`), then `reconcileOnWorker` with it after the task listing; `DownloadReconcileSnapshotPolicy` |
 
 Durable state: the row (`st`, `started`), the Pause All gate and the simultaneous-downloads
 setting (`queuePaused`, `cap`, in UserDefaults), the URLSession task the app tracks (`live`) and
 a paused row's task whose cancel has not landed (`cancelling`). In memory: supervision (`sup`, `phase`), request backoff
 (`backoff`, `deferrals`), pause exemptions (`exempt`), the scheduled pass (`pumpFlag`, `lastSig`)
-and the wake timer (`timerArmed`). `Crash` resets every in-memory variable.
+and the wake timer (`timerArmed`), and an open foreground reconcile (`fgOn`, `fgRows`,
+`touched`). `Crash` resets every in-memory variable.
+
+Foreground reconcile exists only with `ForegroundReconcile = TRUE` (the two `Current-Foreground*`
+configs and `Faithful-A1-off-StaleSnapshot`); the other configs keep their state counts. The
+model has no mutation generations: `touched` records the rows written since the snapshot, which
+is what a changed generation means.
 
 A row waits as `planned` (first start) or as paused or failed with `retryRequested`. It occupies
 a lane while it is supervised or while an active lifecycle has a task behind it.
@@ -80,6 +87,7 @@ interchangeable, so safety runs use `SYMMETRY RowSymmetry`.
 | `PauseKeepsFirstStart` | action | a pause that parks a waiting first start keeps `seasonPlanned` (injected mutation) |
 | `OutageDefersFirstStart` | action | during an outage a first start never fails its row (B67) |
 | `RelaunchKeepsUnstartedRow` | action | recovery never fails a forward-only row without start evidence (A1, #475) |
+| `ForegroundKeepsSupervisedStart` | action | foreground reconcile never rewrites a forward-only row whose start is supervised (review of A1) |
 | `WaitingRowIsServed` | liveness | a waiting row outside Pause All eventually stops waiting |
 | `SupervisedStartEnds` | liveness | every supervised start ends |
 
@@ -106,6 +114,9 @@ proceeds and an outage ends, and that the user, crashes and faults take a bounde
 | `Faithful-B67-off` | `OutageDefersFirstStart` | an outage fails a first start |
 | `Mutant-NoBackoffWake` | `TEMPORAL` | without the wake timer a deferred row waits forever (`WaitingRowIsServed`, the one property it checks; the script reports any liveness violation as `TEMPORAL`) |
 | `Faithful-A1-off` | `RelaunchKeepsUnstartedRow` | relaunch fails a granted forward-only row cut before its task existed, or a paused first start (A1 before #475) |
+| `Current-Foreground` | pass | one forward-only row with foreground reconcile at any time; every safety property and `ForegroundKeepsSupervisedStart` (10,096 states, 1 s) |
+| `Current-ForegroundMixed` | pass | a forward-only and a static row with foreground reconcile, four environment steps; `RelaunchKeepsUnstartedRow` and `ForegroundKeepsSupervisedStart` (600,188 states, 26 s) |
+| `Faithful-A1-off-StaleSnapshot` | `ForegroundKeepsSupervisedStart` | foreground reconcile trusts its snapshot's exclusion: a row resumed during the task listing is requeued under its supervised start |
 | `Deep-ThreeRows` | pass (deep) | the three-row run with four environment steps (2,685,087 states, 108 s at 4 workers) |
 | `Deep-CapLowered` | pass (deep) | three rows, the setting switched between 3 and 1 (5,813,009 states, 3.5 min at 4 workers) |
 
@@ -146,8 +157,40 @@ the Current and Deep runs that have a forward-only row, and
 
 The same rule would be wrong while a granted start is still running: an admitted row whose task
 does not exist yet would go back to `planned` under it. Startup reconcile runs before admission
-opens (`NothingGrantedBeforeRecovery`); foreground reconcile, which this model does not have,
-skips forward-only rows that are supervised or waiting (`forwardOnlyRowsAdmissionMayOwn`).
+opens (`NothingGrantedBeforeRecovery`); foreground reconcile skips forward-only rows that are
+supervised or waiting (`forwardOnlyRowsAdmissionMayOwn`).
+
+**The exclusion expired before reconcile used it (review of the fix).** Foreground reconcile
+chooses its rows, then lists the tasks, then decides, and it read each row's state at the last
+step. `Faithful-A1-off-StaleSnapshot` (7 states):
+
+1. A forward-only row is paused with no retry request, so it is not waiting and not supervised.
+   The foreground snapshot includes it.
+2. While `getAllTasks` runs the user resumes it. The pump grants it and the start makes it
+   `admitted`; its task does not exist yet.
+3. Reconcile reads the row as it is now, finds an admitted forward-only row with no task, and
+   sends it back to `planned` with `seasonPlanned` while its start is supervised.
+
+Two fixes were possible. Restricting the requeue to startup would need the reducer to know
+whether admission is open, and it would leave the stale row to the older decision for the same
+facts, a network failure. The fix taken is on the snapshot: it carries each row's attempt and
+mutation generation, read before the exclusion is computed, and reconcile judges a row only
+while both still match (`DownloadReconcileSnapshotPolicy`, `FixReconcileSkipsChanged`). That
+covers every decision reconcile can make and every route, not the one requeue: a row that
+changed after the snapshot was changed by something that knows more than the snapshot does (a
+start, a pause, a callback). The generation is compared, not the lifecycle, so a row that left a
+state and returned to it is skipped too. The cost is that a row written during the listing for
+an unrelated reason waits for the next foreground pass. Startup reconcile passes no
+observations and judges every row, as before.
+
+Tests: `DownloadRecoveryRaceReviewTests.foregroundSnapshotRule` and
+`LabstreamTests/DownloadRecoveryRaceTests.foregroundReconcileSkipsARowResumedDuringTheListing`
+(the store's reconcile, with the Resume applied between the snapshot and the decision).
+
+Not covered by the fix or by `ForegroundKeepsSupervisedStart`: a static row. Foreground
+reconcile judges a static row whose granted start is still supervised when the row has not
+changed since the snapshot (`forwardOnlyRowsAdmissionMayOwn` leaves out forward-only rows only).
+`Current-ForegroundMixed` therefore checks the forward-only guarantee alone.
 
 ## Not covered
 
@@ -164,6 +207,6 @@ skips forward-only rows that are supervised or waiting (`forwardOnlyRowsAdmissio
 - Static range recovery (`launch_interrupted` auto-resume, pending-resume markers, manual resume
   during Pause All) and the season commit gate (`seasonPlanCommitsInFlight`).
 - New rows added while the model runs, and Delete.
-- Foreground reconcile (`recoverStaticRangeTransfersAfterForeground`) and its exclusion of
-  forward-only rows a granted start may own.
+- Foreground reconcile's task listing and the session's answer to "do you own work for this
+  row": `ForegroundReconciles` uses the same facts as `Recover`.
 - The storage cap at admission (B24), which `DownloadsStorage` owns.

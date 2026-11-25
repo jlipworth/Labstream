@@ -132,6 +132,7 @@ a finding on this lane. The whole-file loss on this lane is R2 below.
 | `Faithful-R2-off` | `ReconcileKeepsQueuedBody` violated | violated | stops at first error | 1 s |
 | `Faithful-R2-off-SnapshotOnly` | `ReconcileKeepsQueuedBody` violated | violated | stops at first error | 1 s |
 | `Faithful-R3-off` | `PauseKeepsFinishedSegment` violated | violated | stops at first error | < 1 s |
+| `Faithful-R3-off-Progress` | `PauseKeepsFinishedSegment` violated | violated | stops at first error | < 1 s |
 | `Finding-R2-UndeliveredBodyLost` | `ReconcileKeepsUndeliveredBody` violated | violated | stops at first error | 1 s |
 | `Finding-R4-HeldBodiesStarveHead` | `TrainNeverWedged` violated | violated | stops at first error | 2 s |
 | `Deep-RetryRestart` (deep) | pass | pass | 237,009 | 4 s |
@@ -139,6 +140,8 @@ a finding on this lane. The whole-file loss on this lane is R2 below.
 
 The `Current-*`, `Deep-*` and `Proposed-MidAppend` configs also check `ReconcileKeepsQueuedBody`,
 `ReconcileNeverFailsOwnedWork` and `PauseKeepsFinishedSegment` since the R2 and R3 fixes.
+`HaltedProgress` is enabled only with `FixProgressKeepsFinished = FALSE`, so the state counts
+above did not change when it was added.
 
 ### Faithfulness and mutants
 
@@ -161,6 +164,8 @@ The `Current-*`, `Deep-*` and `Proposed-MidAppend` configs also check `Reconcile
   traces are under R2 below.
 - **R3 off** (`Faithful-R3-off`: the pause sweep supersedes a finished task). The trace is under
   R3 below.
+- **R3 off, progress** (`Faithful-R3-off-Progress`: the sweep keeps a finished task, a progress
+  callback under the halt still supersedes it). The trace is under R3 below.
 - **Mutant-NoAlignment** and **Mutant-NoEpochCheck** are injected bugs, not historical ones. The
   train epoch and the offset checks have no entry in the B00 to B87 table.
 - **Mutant-OffsetEqualityPlan** (`IntervalAwarePlan = FALSE`, `SegBytes = 2`): the planner judges
@@ -272,7 +277,8 @@ test of the policy and of the three call sites.
 ### R3: a pause supersedes a segment that has already finished
 
 Broadens #474 (F3) to the static lane. Fixed with it on `specs/downloads-tla`, pending merge
-(`FixPauseKeepsFinished = TRUE` in every config but `Faithful-R3-off`).
+(`FixPauseKeepsFinished = TRUE` in every config but `Faithful-R3-off`;
+`FixProgressKeepsFinished = TRUE` in every config but `Faithful-R3-off-Progress`).
 
 Trace (`Faithful-R3-off`, the code before the fix; the session model has the same one as
 `session/Faithful-F3-off-Static`):
@@ -302,12 +308,30 @@ fallback.
 Fix (`FixPauseKeepsFinished`): the sweep leaves a finished task tracked, so its finish callback
 takes the finished-body path. `pauseRangeTask` asks
 `StaticRangeFinishedBodyPolicy.pauseSweepDisposition`: finished means URLSession reports the task
-completed, or every byte its response declared has arrived. If that is judged early, the next
-progress callback under the halt cancels the task, as it always did. The fix rests on the same
+completed, or every byte its response declared has arrived. The fix rests on the same
 unexecuted step as the finding (that the listing holds a finished task), so the verdict stays
 probable until an app-target or device run.
 `DownloadsFormalModelRangeTrainTests.pauseKeepsAFinishedSegment` is now a regression test.
 Recorded on #474.
+
+**The progress callback (review of the fix).** The sweep was half of it. The progress handler
+(`urlSession(_:downloadTask:didWriteData:...)`) dropped the tracking of any task of a halted
+attempt, marked it superseded and cancelled it. The last progress of a finished task can run
+after the pause installed its halt and before the finish callback, with every declared byte
+received. That dropped the body the same way, whether the pause's listing had not run yet or had
+already chosen to leave the task tracked. `HaltedProgress` is that step, and
+`Faithful-R3-off-Progress` is its trace: pause, the segment finishes in the daemon, the sweep
+leaves it, the progress callback supersedes it, the finish is ignored.
+
+Fix (`FixProgressKeepsFinished`): the handler asks
+`StaticRangeFinishedBodyPolicy.haltedProgressDisposition`, the sweep's question, with the larger
+of the callback's totals and the task's own counters. Under a pause halt a finished task stays
+tracked and is not cancelled. A task that is still transferring, and any task under a cancel
+halt, is superseded and cancelled as before. Tests:
+`DownloadRecoveryRaceReviewTests.haltedProgressKeepsAFinishedTask` (the decision) and
+`LabstreamTests/DownloadRecoveryRaceTests.finalProgressBetweenPauseAndFinishKeepsTheBody` (the
+delegate, with a real task whose whole body has arrived and whose final progress is delivered
+between the pause and the finish).
 
 ### R4: held bodies fill the depth and starve the gap at the checkpoint
 

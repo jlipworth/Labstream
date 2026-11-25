@@ -16,6 +16,9 @@
 (*   Backend      OutageBegins, OutageEnds                                 *)
 (*   Crash        Crash drops every in-memory variable; Relaunch restarts; *)
 (*                Recover is startup reconcile, after which admission opens*)
+(*   Foreground   ForegroundBegins takes the snapshot foreground reconcile *)
+(*                covers; ForegroundReconciles is the reconcile that runs  *)
+(*                after its task listing, while admission is open          *)
 (*                                                                         *)
 (* Durable state survives Crash; in-memory state does not.  See the        *)
 (* VARIABLES block.  Each fix under test is a BOOLEAN constant: TRUE is    *)
@@ -66,6 +69,7 @@
 \* MODELS: PMSKit/Sources/PMSKit/Downloads/DownloadAdmissionPolicy.swift
 \* MODELS: PMSKit/Sources/PMSKit/Downloads/DownloadQueueToolbarPolicy.swift
 \* MODELS: PMSKit/Sources/PMSKit/Downloads/DownloadPausePolicy.swift
+\* MODELS: PMSKit/Sources/PMSKit/Downloads/DownloadReconcileSnapshotPolicy.swift
 EXTENDS DownloadsReducer, TLC
 
 CONSTANTS
@@ -88,6 +92,13 @@ CONSTANTS
     FixRelaunchKeepsUnstarted,
                         \* A1 (#475): relaunch never fails a forward-only row with no task,
                         \* body or checkpoint; a granted one waits again (FALSE: Faithful-A1-off)
+    ForegroundReconcile,
+                        \* allow reconcile while the process stays alive and admission is
+                        \* open (recoverStaticRangeTransfersAfterForeground)
+    FixReconcileSkipsChanged,
+                        \* review of #475: foreground reconcile carries each row's attempt
+                        \* and mutation generation from its snapshot and leaves a row that
+                        \* changed since (DownloadReconcileSnapshotPolicy)
     BoundEnvironment,   \* TRUE: at most EnvBudget user/crash/fault steps (liveness runs)
     EnvBudget
 
@@ -97,7 +108,8 @@ ASSUME /\ ForwardRows \subseteq Rows
        /\ {AsyncCancel, MutantStaleCap, MutantPauseErasesIntent} \subseteq BOOLEAN
        /\ MaxDeferrals \in Nat
        /\ {FixB63, FixB65, FixB66, FixB67, WakeAfterBackoff,
-           FixRelaunchKeepsUnstarted, BoundEnvironment} \subseteq BOOLEAN
+           FixRelaunchKeepsUnstarted, ForegroundReconcile, FixReconcileSkipsChanged,
+           BoundEnvironment} \subseteq BOOLEAN
        /\ EnvBudget \in Nat
 
 StaticRows == Rows \ ForwardRows
@@ -128,6 +140,10 @@ VARIABLES
     pumpFlag,    \* BOOLEAN: an admission pass is scheduled
     lastSig,     \* the occupancy signature the last refresh saw
     timerArmed,  \* BOOLEAN: the backoff wake timer is set
+    fgOn,        \* BOOLEAN: a foreground reconcile took its snapshot and has not run yet
+    fgRows,      \* SUBSET Rows: the rows that snapshot covers
+    touched,     \* SUBSET Rows: rows written since the snapshot (their mutation generation
+                 \*   moved; the model has no generations, so it records the writes)
     \* Ghost (read by properties only)
     held,        \* SUBSET Rows: rows whose last user word was Pause
     capHigh,     \* the highest value the setting has had
@@ -136,7 +152,8 @@ VARIABLES
 durableVars == <<st, started, queuePaused, cap, live, cancelling>>
 memVars     == <<recovered, sup, phase, backoff, deferrals, exempt, pumpFlag, lastSig,
                  timerArmed>>
-vars        == <<durableVars, outage, up, memVars, held, capHigh, budget>>
+fgVars      == <<fgOn, fgRows, touched>>
+vars        == <<durableVars, outage, up, memVars, fgVars, held, capHigh, budget>>
 
 -----------------------------------------------------------------------------
 (* Helpers                                                                 *)
@@ -213,6 +230,12 @@ PausedSt(r) ==
     ELSE IF s.lifecycle \in Active THEN Apply(s, EvPause("user"))
     ELSE s
 
+\* Every step but the foreground pair's own: a row written while a foreground
+\* snapshot is open is no longer the row the snapshot saw.
+FgTrack ==
+    /\ UNCHANGED <<fgOn, fgRows>>
+    /\ touched' = IF fgOn THEN touched \cup {r \in Rows : st'[r] # st[r]} ELSE {}
+
 \* The user or a fault takes a step; liveness runs bound how many.
 Spend == IF BoundEnvironment THEN budget > 0 /\ budget' = budget - 1
                              ELSE UNCHANGED budget
@@ -240,6 +263,7 @@ TypeOK ==
     /\ exempt \subseteq Rows
     /\ pumpFlag \in BOOLEAN
     /\ timerArmed \in BOOLEAN
+    /\ fgOn \in BOOLEAN /\ fgRows \subseteq Rows /\ touched \subseteq Rows
     /\ held \subseteq Rows
     /\ budget \in 0..EnvBudget
 
@@ -263,6 +287,7 @@ Init ==
     /\ pumpFlag = TRUE
     /\ lastSig = <<{}, {}>>
     /\ timerArmed = FALSE
+    /\ fgOn = FALSE /\ fgRows = {} /\ touched = {}
     /\ held = {}
     /\ budget = IF BoundEnvironment THEN EnvBudget ELSE 0
 
@@ -283,6 +308,7 @@ UserPause(r) ==
     /\ held' = held \cup {r}
     /\ UNCHANGED <<started, queuePaused, cap, outage, up, recovered, pumpFlag, lastSig,
                    timerArmed, capHigh>>
+    /\ FgTrack
 
 \* admissionHasRoom, for a row the user acts on.
 HasRoom(r, isExempt) ==
@@ -313,6 +339,7 @@ UserResume(r) ==
            /\ UNCHANGED <<sup, phase, backoff, deferrals>>
     /\ UNCHANGED <<started, queuePaused, cap, live, cancelling, outage, up, recovered,
                    lastSig, timerArmed, capHigh>>
+    /\ FgTrack
 
 \* DownloadQueueToolbarPolicy.action
 HasActiveWork == \E r \in Rows : st[r].lifecycle \in Active \cup {"planned"}
@@ -334,6 +361,7 @@ PauseAll ==
     /\ held' = held \cup {r \in Rows : Pausable(r)}
     /\ UNCHANGED <<started, cap, outage, up, recovered, pumpFlag, lastSig, timerArmed,
                    capHigh>>
+    /\ FgTrack
 
 \* resumeQueue: every parked row asks for a lane (B63), then one admission pass.
 ResumeAll ==
@@ -358,6 +386,7 @@ ResumeAll ==
            /\ UNCHANGED <<st, pumpFlag>>
     /\ UNCHANGED <<started, cap, live, cancelling, outage, up, recovered, backoff,
                    deferrals, lastSig, timerArmed, capHigh>>
+    /\ FgTrack
 
 -----------------------------------------------------------------------------
 (* Coordinator                                                             *)
@@ -381,6 +410,7 @@ PumpPass(G) ==
            /\ timerArmed' = (WakeAfterBackoff /\ \E r \in Rows : backoff[r])
     /\ UNCHANGED <<durableVars, outage, up, recovered, backoff, deferrals, exempt, held, capHigh,
                    budget>>
+    /\ FgTrack
 
 Pump == \E G \in SUBSET Rows : PumpPass(G)
 
@@ -391,6 +421,7 @@ BackoffElapsed(r) ==
     /\ pumpFlag' = TRUE
     /\ UNCHANGED <<durableVars, outage, up, recovered, sup, phase, deferrals, exempt,
                    lastSig, timerArmed, held, capHigh, budget>>
+    /\ FgTrack
 
 -----------------------------------------------------------------------------
 (* Start supervisor                                                        *)
@@ -413,6 +444,7 @@ StartApply(r) ==
                                        THEN "starting" ELSE "returned")
     /\ UNCHANGED <<started, queuePaused, cap, live, cancelling, outage, up, recovered, sup, backoff,
                    deferrals, exempt, pumpFlag, lastSig, timerArmed, held, capHigh, budget>>
+    /\ FgTrack
 
 \* Negotiation succeeded and the transfer task exists.
 StartSucceeds(r) ==
@@ -425,6 +457,7 @@ StartSucceeds(r) ==
     /\ phase' = Upd(phase, r, "returned")
     /\ UNCHANGED <<queuePaused, cap, cancelling, outage, up, recovered, sup, backoff, deferrals, exempt,
                    pumpFlag, lastSig, timerArmed, held, capHigh, budget>>
+    /\ FgTrack
 
 \* The backend is unreachable: the start returns before any work exists
 \* (startPlannedRecord's refresh outage).
@@ -437,6 +470,7 @@ StartNoWork(r) ==
     /\ phase' = Upd(phase, r, "returned")
     /\ UNCHANGED <<started, queuePaused, cap, live, cancelling, outage, up, recovered, sup, backoff,
                    deferrals, exempt, pumpFlag, lastSig, timerArmed, held, capHigh, budget>>
+    /\ FgTrack
 
 \* A reachable backend refuses the start: transiently (network) or for good
 \* (sourceMissing).
@@ -446,6 +480,7 @@ StartFails(r, reason) ==
     /\ phase' = Upd(phase, r, "returned")
     /\ UNCHANGED <<started, queuePaused, cap, live, cancelling, outage, up, recovered, sup, backoff,
                    deferrals, exempt, pumpFlag, lastSig, timerArmed, held, capHigh>>
+    /\ FgTrack
 
 \* finishAdmittedStart: what the row looks like once the start's work returned.
 \* "defer" records a deferral (backoff); "clear" forgets the request.
@@ -494,6 +529,7 @@ Finish(r) ==
     /\ pumpFlag' = TRUE
     /\ UNCHANGED <<started, queuePaused, cap, live, cancelling, outage, up, recovered, exempt, lastSig,
                    timerArmed, held, capHigh, budget>>
+    /\ FgTrack
 
 -----------------------------------------------------------------------------
 (* Transfer and backend                                                    *)
@@ -509,6 +545,7 @@ TransferCompletes(r) ==
     /\ live' = Upd(live, r, FALSE)
     /\ UNCHANGED <<started, queuePaused, cap, cancelling, outage, up, memVars, held,
                    capHigh, budget>>
+    /\ FgTrack
 
 TransferFails(r) ==
     /\ up /\ live[r] /\ st[r].lifecycle = "transferring" /\ Spend
@@ -516,6 +553,7 @@ TransferFails(r) ==
     /\ live' = Upd(live, r, FALSE)
     /\ UNCHANGED <<started, queuePaused, cap, cancelling, outage, up, memVars, held,
                    capHigh>>
+    /\ FgTrack
 
 \* The user changes the simultaneous-downloads setting.  The coordinator
 \* observes the preference and only wakes admission: running work,
@@ -527,6 +565,7 @@ SetCap(n) ==
     /\ pumpFlag' = TRUE
     /\ UNCHANGED <<st, started, queuePaused, live, cancelling, outage, up, recovered, sup,
                    phase, backoff, deferrals, exempt, lastSig, timerArmed, held>>
+    /\ FgTrack
 
 \* The daemon ends a paused row's task (the getAllTasks completion's cancel).
 CancelLands(r) ==
@@ -534,16 +573,19 @@ CancelLands(r) ==
     /\ cancelling' = cancelling \ {r}
     /\ UNCHANGED <<st, started, queuePaused, cap, live, outage, up, memVars, held, capHigh,
                    budget>>
+    /\ FgTrack
 
 OutageBegins ==
     /\ ~outage /\ Spend
     /\ outage' = TRUE
     /\ UNCHANGED <<durableVars, up, memVars, held, capHigh>>
+    /\ FgTrack
 
 OutageEnds ==
     /\ outage
     /\ outage' = FALSE
     /\ UNCHANGED <<durableVars, up, memVars, held, capHigh, budget>>
+    /\ FgTrack
 
 -----------------------------------------------------------------------------
 (* Crash and relaunch                                                      *)
@@ -558,12 +600,14 @@ Crash ==
     /\ pumpFlag' = FALSE
     /\ lastSig' = <<{}, {}>>
     /\ timerArmed' = FALSE
+    /\ fgOn' = FALSE /\ fgRows' = {} /\ touched' = {}
     /\ UNCHANGED <<durableVars, outage, held, capHigh>>
 
 Relaunch ==
     /\ ~up
     /\ up' = TRUE
     /\ UNCHANGED <<durableVars, outage, memVars, held, capHigh, budget>>
+    /\ FgTrack
 
 \* DownloadStore.observeLifecycleFacts, as far as this model has the facts.
 RelaunchFacts(r) ==
@@ -592,6 +636,34 @@ Recover ==
     /\ pumpFlag' = TRUE
     /\ UNCHANGED <<started, queuePaused, cap, live, cancelling, outage, up, sup, phase, backoff, deferrals,
                    exempt, lastSig, timerArmed, held, capHigh, budget>>
+    /\ FgTrack
+
+\* recoverStaticRangeTransfersAfterForeground, up to its task listing: the
+\* rows this reconcile will cover.  Admission is open, so forward-only rows a
+\* granted start may own are left out (forwardOnlyRowsAdmissionMayOwn): a
+\* supervised start, or a waiting row the pump may grant.  Each row's attempt
+\* and mutation generation are read in the same step (`touched` starts empty).
+ForegroundBegins ==
+    /\ ForegroundReconcile /\ up /\ recovered /\ ~fgOn /\ Spend
+    /\ fgOn' = TRUE
+    /\ fgRows' = Rows \ {r \in ForwardRows : sup[r] # "none" \/ Waiting(r)}
+    /\ touched' = {}
+    /\ UNCHANGED <<durableVars, outage, up, memVars, held, capHigh>>
+
+\* The reconcile that follows the listing (reconcileOnWorker with the
+\* snapshot's observations).  The exclusion above is as old as the snapshot:
+\* a paused row the user resumes during the listing is granted and
+\* `admitted` before its task exists.  Reconcile used to read that newer row
+\* and requeue it under its supervised start.  Now it judges a row only
+\* while the row is the one the snapshot saw.
+ForegroundReconciles ==
+    /\ up /\ fgOn
+    /\ st' = [r \in Rows |->
+                IF r \in fgRows /\ (FixReconcileSkipsChanged => r \notin touched)
+                   THEN RecoveredSt(r) ELSE st[r]]
+    /\ fgOn' = FALSE /\ fgRows' = {} /\ touched' = {}
+    /\ UNCHANGED <<started, queuePaused, cap, live, cancelling, outage, up, memVars, held,
+                   capHigh, budget>>
 
 -----------------------------------------------------------------------------
 Next ==
@@ -599,6 +671,7 @@ Next ==
     \/ OutageBegins \/ OutageEnds
     \/ \E n \in CapChoices : SetCap(n)
     \/ Crash \/ Relaunch \/ Recover
+    \/ ForegroundBegins \/ ForegroundReconciles
     \/ \E r \in Rows :
           \/ UserPause(r) \/ UserResume(r)
           \/ CancelLands(r)
@@ -613,6 +686,7 @@ Spec == Init /\ [][Next]_vars
 \* timers fire, started work proceeds, and an outage ends.
 Fairness ==
     /\ WF_vars(Relaunch) /\ WF_vars(Recover) /\ WF_vars(Pump) /\ WF_vars(OutageEnds)
+    /\ WF_vars(ForegroundReconciles)
     /\ \A r \in Rows :
           /\ WF_vars(BackoffElapsed(r)) /\ WF_vars(CancelLands(r))
           /\ WF_vars(StartApply(r)) /\ WF_vars(StartSucceeds(r))
@@ -723,6 +797,15 @@ RelaunchKeepsUnstartedRow ==
           /\ ~recovered /\ recovered' /\ ~started[r] /\ ~live[r]
           /\ st[r].lifecycle \in {"admitted", "paused"}
           => st'[r].lifecycle # "failed"]_vars
+
+\* Review of A1 (#475): foreground reconcile never rewrites the row of a
+\* supervised start.  It runs while admission is open, so a forward-only row
+\* it would requeue may have a granted start behind it whose task does not
+\* exist yet.  Faithful-A1-off-StaleSnapshot restores the reconcile that
+\* trusted its snapshot's exclusion.
+ForegroundKeepsSupervisedStart ==
+    [][\A r \in ForwardRows :
+          fgOn /\ ~fgOn' /\ up' /\ sup[r] # "none" => st'[r] = st[r]]_vars
 
 -----------------------------------------------------------------------------
 (* Liveness (FairSpec)                                                     *)

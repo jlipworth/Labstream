@@ -12,7 +12,7 @@
 (*   Session    delegate callbacks carrying the attempt that started the   *)
 (*              task: TransferStarted, TransferProgress,                   *)
 (*              DidFinishDownloading, DidCompleteWithError, RangeIO,       *)
-(*              RebuildFires, StallDetected, PauseSweep                    *)
+(*              RebuildFires, StallDetected, PauseSweep, HaltedProgress    *)
 (*   Finalizer  BodyAtWorking, FinalizeOutcome, FinalizeOutcomeReplayed,   *)
 (*              PublishBody, PromotionCommitted, PromotionAbandoned        *)
 (*   Sweeper    the stash sweep inside Reattach; CleanupRuns for Delete    *)
@@ -37,7 +37,9 @@
 (*    held out-of-order bodies are not modelled.                           *)
 (*  - A queued delegate-to-IO hop and its stash claim are one variable     *)
 (*    (`ioq`): the claim is taken when the hop is queued and released      *)
-(*    when it ends.                                                        *)
+(*    when it ends.  DownloadsCapturePublication opens that hop up for a   *)
+(*    forward-only body: the claim before the capture, two publications   *)
+(*    of one body, and a publication that waits for the working path.     *)
 (*  - Index persistence is atomic per action; the persistence writer and   *)
 (*    path leases are not modelled.  The one place where the code moves a  *)
 (*    file before the row that explains it is durable (a failing           *)
@@ -79,6 +81,9 @@ CONSTANTS
     FixPauseKeepsBody,  \* F3 (#474): a pause never drops a finished body, on either lane
                         \* (ForwardOnlyFinishedBodyPolicy.publication, the reducer's relaunch
                         \* of a paused row, StaticRangeFinishedBodyPolicy.pauseSweepDisposition)
+    FixProgressKeepsFinished, \* review of #474: a progress callback under a pause halt
+                        \* leaves a finished task tracked too
+                        \* (StaticRangeFinishedBodyPolicy.haltedProgressDisposition)
     FixVerdictBeforeRename, \* PROPOSED (not in the code): a failing truncation verdict is
                         \* durable before its body leaves the working path (F4)
     ForegroundReattach, \* allow reattach + reconcile while the process stays alive
@@ -607,6 +612,25 @@ PauseSweep(r) ==
     /\ UNCHANGED <<rowVars, fileVars, up, ioq, halt, rebuild, fin, recon, liveSnap,
                    bodyDone, staleEffect, budget>>
 
+\* urlSession(_:downloadTask:didWriteData:...) for a static task of a halted
+\* attempt: the handler drops the task's tracking, marks it superseded and
+\* cancels it.  For a running task that is PauseSweep's step.  The last
+\* progress of a task that has already finished can be delivered here too:
+\* after the pause installed its halt and before the finish callback, and
+\* before or after PauseSweep.  Superseding it made the finish callback
+\* ignore the body, which undid the F3 fix in the sweep.  Now the handler
+\* asks the sweep's question (haltedProgressDisposition) and leaves a
+\* finished task tracked.  With the fix this step changes nothing, so it
+\* exists only with the fix off.
+HaltedProgress(r, a) ==
+    /\ ~FixProgressKeepsFinished
+    /\ up /\ ~Forward(r) /\ halt[r] = "pause"
+    /\ a \in tracked[r] /\ task[r][a] = "finished"
+    /\ tracked' = Upd(tracked, r, tracked[r] \ {a})
+    /\ superseded' = Upd(superseded, r, superseded[r] \cup {a})
+    /\ UNCHANGED <<rowVars, fileVars, task, up, ioq, halt, rebuild, fin, recon, liveSnap,
+                   bodyDone, staleEffect, budget>>
+
 \* A fresh attempt: new attempt ID, new (empty) working path.
 \* reducer: retry(.freshAttempt).  The replacement attempt does not inherit
 \* `bodyCondemned` (DownloadAttemptHistory.inherited).
@@ -891,6 +915,7 @@ AppStep(r) ==
     \/ \E a \in Attempts :
           \/ TransferProgress(r, a) \/ DidFinishDownloading(r, a)
           \/ DidCompleteWithError(r, a) \/ RangeIO(r, a)
+          \/ HaltedProgress(r, a)
 
 UserStep(r) == UserPause(r) \/ UserResume(r) \/ UserRetry(r) \/ UserDelete(r)
 

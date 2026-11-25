@@ -24,7 +24,8 @@
 (*   Range IO   one serial queue: Apply (applyFinishedRangeBody),          *)
 (*              ResourceChanged, HoldManifested, RetireDone                *)
 (*   Finalizer  FinalizeOutcome                                            *)
-(*   User       UserPause (+ PauseSweep), UserResume, UserRetry            *)
+(*   User       UserPause (+ PauseSweep, HaltedProgress), UserResume,      *)
+(*              UserRetry                                                  *)
 (*   Recovery   Reattach (restore of held bodies, adoption, both sweeps),  *)
 (*              RelaunchObserved, AutoResume, StaleRowHeal                 *)
 (*   Crash      Crash, CrashMidAppend, Relaunch                            *)
@@ -102,6 +103,9 @@ CONSTANTS
     FixPauseKeepsFinished, \* R3 (#474): the pause sweep leaves a finished segment task
                         \* tracked, so its body is written behind the pause
                         \* (StaticRangeFinishedBodyPolicy.pauseSweepDisposition)
+    FixProgressKeepsFinished, \* review of #474: a progress callback under a pause halt
+                        \* leaves a finished task tracked too
+                        \* (StaticRangeFinishedBodyPolicy.haltedProgressDisposition)
     AllowFailure,       \* a transport error may be terminal instead of retried
     ForegroundReattach, \* allow reattach + reconcile while the process stays alive
     WakeWindsDown,      \* a background wake may end before a continuation refills the train
@@ -616,6 +620,26 @@ PauseSweep(r) ==
     /\ UNCHANGED <<rowVars, fileVars, up, ioq, staleq, renamed, held, retire, halt, plan, fin,
                    recon, liveSnap, envVars, ghosts>>
 
+\* urlSession(_:downloadTask:didWriteData:...) for a task of a halted attempt.
+\* The handler drops the task's tracking, marks it superseded and cancels it.
+\* For a task that is still transferring that is what PauseSweep does.  The
+\* last progress of a task that has already finished can also be delivered
+\* here: after the pause installed its halt and before the finish callback,
+\* and before or after the pause's task listing ran.  Superseding it made the
+\* finish callback ignore the body, exactly what R3 fixed in the listing.
+\* Now the handler asks the same question as the listing and leaves a finished
+\* task tracked (FixProgressKeepsFinished).  With the fix this step changes
+\* nothing, so it exists only with the fix off.
+HaltedProgress(r) ==
+    /\ ~FixProgressKeepsFinished
+    /\ up /\ halt[r] = "pause"
+    /\ \E b \in tracked[r] :
+          /\ task[r][b] = "finished"
+          /\ task' = [task EXCEPT ![r][b] = "none"]
+          /\ tracked' = Upd(tracked, r, tracked[r] \ {b})
+    /\ UNCHANGED <<rowVars, fileVars, up, ioq, staleq, renamed, held, retire, halt, plan, fin,
+                   recon, liveSnap, envVars, ghosts>>
+
 \* reducer: retry(.staticCheckpoint): same attempt, same checkpoint, same
 \* held bodies.  B00: DownloadRetryPolicy.shouldPromotePausedStaticPartial
 \* measures the attempt working partial.  Before B00 it measured the
@@ -823,7 +847,7 @@ StaleRowHeal(r) ==
 -----------------------------------------------------------------------------
 
 AppStep(r) ==
-    \/ Plan(r) \/ FinalizeOutcome(r) \/ PauseSweep(r)
+    \/ Plan(r) \/ FinalizeOutcome(r) \/ PauseSweep(r) \/ HaltedProgress(r)
     \/ Reattach(r) \/ RelaunchObserved(r) \/ AutoResume(r) \/ StaleRowHeal(r)
     \/ \E b \in Bodies :
           \/ DidFinishDownloading(r, b) \/ DidCompleteWithError(r, b)

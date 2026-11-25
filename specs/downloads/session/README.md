@@ -19,6 +19,7 @@ swift test --package-path PMSKit --no-parallel --filter DownloadsFormalModelFind
 | `DownloadsSessionCore` | The model. |
 | `DownloadsSessionRowMap` | The two operators that store a reducer state as a row and rebuild it (`SessionStored`, `SessionRow`). `Row` and `ApplyRow` in the model are these. |
 | `DownloadsSessionRowMapCheck` | Checks that mapping against the generated reducer table. |
+| `DownloadsCapturePublication` | The publication of one finished forward-only body, which the model above treats as one queued hop: the claim, the capture, the working path's lease, and the publications that compete or wait. Configs `CapturePublication-*`. |
 
 The session keeps five fields of a reducer state. `SessionRowMapCheck-Current-RowMap` checks, for
 every table state, every event the session sends and every fact record, that reducing the real
@@ -60,7 +61,8 @@ about field names.
 
 Fixed on `specs/downloads-tla`, pending merge (#472, #474). `DurableCapture` and
 `FixPauseKeepsBody` are the shipping behaviour and are `TRUE` in every config except the three
-`Faithful-F*-off` ones.
+`Faithful-F*-off` ones (`FixProgressKeepsFinished`, from the review below, in every config
+except `Faithful-F3-off-Progress`).
 
 - **`DurableCapture` (F1).** `DidFinishDownloading` puts a forward-only body at the attempt's
   capture path and records `bodyCaptured`, so the row is `finalizing` before the queued
@@ -89,6 +91,93 @@ Fixed on `specs/downloads-tla`, pending merge (#472, #474). `DurableCapture` and
   static row.
 - `Proposed-F3-PauseKeepsBody` is removed. `Proposed-Forward` and `Proposed-Static` now differ
   from `Current-*` by the F4 proposal only.
+
+## The review of the F1 and F3 fixes
+
+An independent review of the fixes found three orderings they had left open. All three are
+fixed on `specs/downloads-tla`, pending merge.
+
+### A progress callback under a pause undid the static pause fix (#474)
+
+`PauseSweep` leaves a finished task tracked. The progress handler did not: under any halt it
+dropped the task's tracking, marked it superseded and cancelled it, and the last progress of a
+finished task can run between the pause and the finish callback. `HaltedProgress` is that step;
+`Faithful-F3-off-Progress` (`FixProgressKeepsFinished = FALSE`) is the trace. The handler now
+asks `StaticRangeFinishedBodyPolicy.haltedProgressDisposition`. The range-train notes have the
+detail (R3).
+
+### Two publications of one captured body deleted it (#472)
+
+`DownloadsCapturePublication`, `CapturePublication-Faithful-Duplicate-off`:
+
+1. A forward-only transfer finishes. The delegate moves the body to the attempt's capture path.
+2. Launch recovery runs before the delegate's next line. It finds a body at the capture path
+   that nothing claims, claims it and queues a publication.
+3. The delegate writes its claim over that one and queues a second publication.
+4. The first publication takes the working path's lease, moves the body there and requests
+   finalization.
+5. The second takes the lease, clears the working path, finds no capture to move and fails the
+   row. The only copy of the body is gone.
+
+Fix, in two halves:
+
+- `FixClaimBeforeCapture`. The delegate claims the body's publication before it moves the body
+  to the capture path (`ForwardOnlyPublicationLedger.claim`, keyed by that path). Recovery then
+  cannot claim it. If the claim fails, a publication of this attempt's body already exists (a
+  body a dead process captured, taken by recovery) and the finish is a second delivery: its temp
+  file is dropped and the capture is left alone. `CapturePublication-Faithful-ClaimFirst-off`
+  shows two publications without it (`OnePublication`).
+- `FixIdempotentPublication`. A publication that holds the lease asks
+  `ForwardOnlyFinishedBodyPolicy.publicationStep` before it touches the working path: no body at
+  the capture path and a body at the working path is `alreadyPublished`, and it does nothing.
+
+### A lease wait that ran out stranded the body (#472)
+
+`CapturePublication-Faithful-ParkedRetry-off`: the working path is leased by someone else past
+the publication's deadline. The publication left with its claim and nothing queued. A lease
+release woke only the static lane's health refills, and every later recovery pass saw the claim
+and reported success, so the row stayed `finalizing` until the next launch (`ClaimHasOwner`).
+
+Fix (`FixParkedRetry`): the publication is parked in the ledger with what it needs to run again,
+and the claim belongs to that retry. Three things run it: the release of a lease on the working
+path (`resumeParkedOpaquePublications`), a recovery pass that asks for the same body, and a timer
+(`parkedOpaquePublicationBackstop`, 5 s), because other reservations of a path end without a
+lease release. A publication that is run again never waits: it publishes if the path is free and
+parks again if it is not.
+
+- `RecheckBeforePark`: the timeout's completion tries the lease once more before it parks. A
+  lease released between the wait's last poll and the park has already sent its wake;
+  `CapturePublication-Mutant-MissedWake` (no recheck, no timer) never publishes.
+  `CapturePublication-Liveness-Finish` and `-Redelivery` pass with the recheck and no timer,
+  `CapturePublication-Liveness-BackstopOnly` with the timer and no recheck.
+
+Not changed here: the static lane's whole-file replacement (`applyFinishedRangeBody`,
+`.replaceWhole`) has the same `case .busy, .timedOut: break` after its own lease wait, and keeps
+its claim with nothing queued. Its row is still active and its body is a `tmp/` stash, so the
+consequence is different; it was not part of this review and is not modelled.
+
+Tests: `PMSKit/Tests/PMSKitTests/DownloadRecoveryRaceReviewTests.swift` (the ledger, the
+publication step, with competing claimers and a wake racing a park) and
+`LabstreamTests/DownloadRecoveryRaceTests.swift` (the session: recovery arriving inside the
+delegate's capture, two queued publications of one body, and a real lease held past the
+deadline, woken by its release, by a recovery pass and by the timer).
+
+| Config | Expect | Result | Distinct states | Time |
+| --- | --- | --- | --- | --- |
+| `CapturePublication-Current-Finish` | pass | pass | 174 | < 1 s |
+| `CapturePublication-Current-Relaunch` | pass | pass | 134 | < 1 s |
+| `CapturePublication-Current-Redelivery` | pass | pass | 326 | < 1 s |
+| `CapturePublication-Liveness-Finish` | pass | pass | 113 | < 1 s |
+| `CapturePublication-Liveness-Redelivery` | pass | pass | 183 | < 1 s |
+| `CapturePublication-Liveness-BackstopOnly` | pass | pass | 28 | < 1 s |
+| `CapturePublication-Faithful-Duplicate-off` | `BodyKept` violated | violated | stops at first error | < 1 s |
+| `CapturePublication-Faithful-ClaimFirst-off` | `OnePublication` violated | violated | stops at first error | < 1 s |
+| `CapturePublication-Faithful-ParkedRetry-off` | `ClaimHasOwner` violated | violated | stops at first error | < 1 s |
+| `CapturePublication-Mutant-MissedWake` | `EventuallyPublished` (liveness) violated | violated | stops at first error | < 1 s |
+
+`Start` is how the process life begins: a finish delivered to a live process, a body captured by
+a process that died, or both (the daemon redelivers the finish too). The module has one body and
+no crash; F1 and the capture's durability stay with `DownloadsSessionCore`.
 
 ## Configs and results
 
@@ -119,6 +208,7 @@ Fixed on `specs/downloads-tla`, pending merge (#472, #474). `DurableCapture` and
 | `Faithful-F1-off` | `FinishedBodyNotLost` violated | violated | stops at first error | 1 s |
 | `Faithful-F3-off` | `FinishedBodySurvivesPause` violated | violated | stops at first error | 1 s |
 | `Faithful-F3-off-Static` | `FinishedBodySurvivesPause` violated | violated | stops at first error | 1 s |
+| `Faithful-F3-off-Progress` | `FinishedBodySurvivesPause` violated | violated | stops at first error | 1 s |
 | `Finding-F4-FinalizingRowWithoutBody` | `FinalizingAlwaysHasBody` violated | violated | stops at first error | 1 s |
 | `Finding-F4-VerdictRenameCrash` | `VerdictSurvivesCrash` violated | violated | stops at first error | < 1 s |
 | `Deep-TwoStatic` (deep) | pass | pass | 5,517,342 | 108 s |
