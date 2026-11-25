@@ -53,8 +53,12 @@ Commands and limitations: [workflow status and review evidence](../docs/DEVELOPM
   stub); with no usable JDK it exits 2 with a message and never reports a pass. Each config
   declares `\* SPEC: <module>` and `\* EXPECT: pass` or `\* EXPECT: violation <Property>` in its
   header; the script exits 1 on a parse error or when a run ends differently, and prints the
-  counterexample. A violated liveness property is `TEMPORAL` (TLC does not name it); the summary
-  adds the name from the config's `PROPERTY` list. A config with `\* TIER: deep` is skipped unless `--deep` (run everything),
+  counterexample. It fails a config unless TLC's exit status, banner and clean finish agree with
+  its `EXPECT` header, so a crash or a truncated log after the expected banner is a failure for
+  `violation` configs too. A violated liveness property is `TEMPORAL` (TLC does not name it); a
+  liveness expectation over several properties names the failing one
+  (`violation TEMPORAL <Property>`) and is checked in two runs. Run one instance per worktree at
+  a time: two runs share the `build/tla/` log folders and report wrong results. A config with `\* TIER: deep` is skipped unless `--deep` (run everything),
   `--deep-only`, `TLC_TIER=deep|deep-only`, or the `.cfg` itself is named. `TLC_WORKERS` (default
   `auto`) and `TLC_HEAP` (default `4g`) tune TLC; when several checks share a machine use
   `TLC_WORKERS=2 TLC_HEAP=2g`. The downloads model is described in
@@ -65,11 +69,13 @@ Commands and limitations: [workflow status and review evidence](../docs/DEVELOPM
   modelled file passes when, for every module that models it, some file in that module's folder
   changed in the range (in a shared `base/` folder: the module itself or one of its configs), or
   when every commit that touches the file carries a `Spec-Unaffected: <reason>`
-  trailer. It also fails on a `MODELS:` line that names a missing file. `--list` prints the model
-  map. Exit 2 means the range could not be read (for example `origin/main` is not fetched); that
+  trailer. It reads specs and modelled files from the range's head commit (never the checkout),
+  requires a trailer or a spec change for a merge commit's own edits (git 2.36 or later), and
+  counts a removed or moved config for the module it ran. It also fails on a `MODELS:` line that
+  names a missing file. `--list` prints the model map (from `HEAD`). Exit 2 means the range could not be read (for example `origin/main` is not fetched); that
   is an error, not a pass. It is not part of `ci-hygiene.sh`, which checks the tree as it is and
   runs in clones that have no base branch; CI runs it from `.woodpecker/tla-drift.yml` (pull
-  requests) and `.woodpecker/tla.yml`.
+  requests, measured from the pull request's own target branch) and `.woodpecker/tla.yml`.
 - `testflight-release.py` — preflight, archive, validate, upload, status, `select-build`,
   `distribute` (to an internal TestFlight group via `--group`), `ship` (on-demand archive, validate,
   upload, wait, distribute, then prune), and `prune-archives` for the coordinated App Store targets.
