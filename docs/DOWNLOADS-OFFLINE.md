@@ -860,6 +860,7 @@ as such below and in the plan's "Round 2: independent review" section.
 | `base/DownloadsReducerConformance.tla` | Compares `Reduce` with that table. |
 | `session/DownloadsSessionCore.tla` | The session, finalize and sweep model. It changes lifecycle and history only through `Reduce`. |
 | `session/DownloadsSessionRowMap.tla`, `session/DownloadsSessionRowMapCheck.tla` | How the session model stores a reducer state in five fields, and the check that this mapping commutes with the reducer. |
+| `session/DownloadsCapturePublication.tla` | The publication of one finished forward-only body, which the session model treats as one queued hop: the claim, the capture path, the working path's lease, and the publications that compete or wait (PR #505 review). |
 | `admission/DownloadsAdmission.tla` | The admission window: lanes, waiting rows, the pump, Pause All. |
 | `server-prep/DownloadsServerPrep.tla` | Server preparation: the Plex optimize and Emby Convert runners. |
 | `cleanup/DownloadsCleanup.tla` | Delete, the server-cleanup journal and a full volume. |
@@ -1077,8 +1078,8 @@ The script downloads a pinned `tla2tools.jar` into the gitignored `build/tla/`, 
 SHA-256, parses every module and runs TLC on every `.cfg`, with `base/` on the TLA+ library path
 so a module folder can import the shared modules. Each config's log is kept at
 `build/tla/downloads/<folder>/<config>/tlc.log`. It needs a JDK (Homebrew `openjdk`, or
-`JAVA=`); without one it exits 2 and says so. On a 14-core Mac the default tier (238
-configs) takes about fifteen minutes and the nine deep configs about twenty-seven more. Run
+`JAVA=`); without one it exits 2 and says so. On a 14-core Mac the default tier (261
+configs) takes about sixteen minutes and the nine deep configs about twenty-eight more. Run
 one instance per worktree at a time. A run counts only when TLC's exit status, its banner and a
 clean finish agree, so a crash after an expected violation banner is a failure. Each config
 states what it expects in its header:
@@ -1199,7 +1200,7 @@ then a plain regression test and its `Finding-*` config a `Faithful-*-off` one.
 | #394 | Fetched chapter-image and trickplay-tile payloads wait in memory behind one-at-a-time preparation. | real, known | #394 |
 | Storage-S1 | An automatic requeue erases a storage-full park, so the row is redriven once without measuring free space. The reachable order is a redelivered body whose own append fails with ENOSPC before the launch enumeration. | real | #486 |
 | RangeTrain-R1 | A drain pass run by a held-body removal completion discards its result and strands the train until the self-heal, which a suspended background app does not get. | real | #477 |
-| RangeTrain-R2 | Reconcile fails a static row whose finished body is stashed and queued for append. | fixed on `specs/downloads-tla`, pending merge, for work the session owns: reconcile asks the session when it decides (`Faithful-R2-off`; the live-key snapshot alone is not enough, `Faithful-R2-off-SnapshotOnly`). Open: a body still undelivered by the daemon at that moment is lost with any ownership check (`Finding-R2-UndeliveredBodyLost`). | #476 |
+| RangeTrain-R2 | Reconcile fails a static row whose finished body is stashed and queued for append. | fixed on `specs/downloads-tla`, pending merge, for work the session owns: reconcile asks the session when it decides (`Faithful-R2-off`; the live-key snapshot alone is not enough, `Faithful-R2-off-SnapshotOnly`). Open: a body still undelivered by the daemon at that moment is lost with any ownership check (`Finding-R2-UndeliveredBodyLost`, #506). | #476 |
 | RangeTrain-R4 | After a crash in the middle of an append, a segment finished while the app was dead is held beside the ones the planner started; when the head segment fails once, two held bodies fill the depth of two and the planner never fetches the gap at the checkpoint. | probable, medium, rare | #492 |
 | Status-S1 | A silently stalled transfer hides the batch speed for as long as it is silent. | real; fixed on specs/downloads-tla, pending merge | #487 |
 | Status-S2 | A stalled static-range row keeps showing a stale speed and ETA. | real; fixed on specs/downloads-tla, pending merge. Review of PR #505: the first fix polled every 15 s while a static row transferred, for ever; a one-shot expiry replaces it (`status/Faithful-488-Polling-off`) | #488 |

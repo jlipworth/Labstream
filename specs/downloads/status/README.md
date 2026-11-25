@@ -100,67 +100,61 @@ mutation that dropped quiet members from the sum passed.
 
 ## Configs
 
-Run with `TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/status`. The
-figures are from that command on a 14-core Mac with other checks running; the default tier takes
-about 19 minutes in all. `Deep-Mixed` and `Deep-TwoStatic` were rerun after the S1, S2, S5 and S8
-fixes with `TLC_WORKERS=4` (about 47 minutes for the two). State counts were refreshed on
-2026-11-25 from a full `TLC_WORKERS=auto` run of the branch head (after the #502 fix); the deep
-rows' seconds are from that run, the other seconds from the two-worker runs. The four review-fix
-configs (`Current-Stall*`, `Faithful-488-*`, `Faithful-497-*`, `Faithful-501-*`) were added from a
-two-worker run after the review of PR #505; the review fixes moved the other rows' counts by a
-few percent (for example `Current-OneForward` 2,508,114, `Liveness-StallCap` 505,536). `Deep-Mixed`
-and `Deep-TwoStatic` were rerun after those fixes with `TLC_WORKERS=6` (their rows show that run).
+Every row is from one full `TLC_WORKERS=auto scripts/check-tla-specs.sh --deep specs/` run of the
+branch head on a 14-core Mac (2026-11-25, after the PR #505 review fixes). The status configs took
+278 s of the default tier and 1,290 s of the deep tier. A violated config's count depends on the
+worker schedule; a passing config's does not.
 
 | Config | Expect | Distinct states | Seconds |
 | --- | --- | ---: | ---: |
-| `Current-Backend` | pass | 245,746 | 7 |
-| `Current-Mixed` | pass | 3,347,988 | 147 |
-| `Current-OneForward` | pass | 1,614,535 | 47 |
-| `Current-OneStatic` | pass | 556,054 | 27 |
-| `Current-Planned` | pass | 104,963 | 6 |
-| `Current-ResumeBlob` | pass | 224,161 | 3 |
-| `Current-StallFinishing` | pass | 3,396 | 0 |
+| `Current-Backend` | pass | 245,314 | 2 |
+| `Current-Mixed` | pass | 3,496,136 | 36 |
+| `Current-OneForward` | pass | 2,508,114 | 14 |
+| `Current-OneStatic` | pass | 544,776 | 3 |
+| `Current-Planned` | pass | 103,448 | 3 |
+| `Current-ResumeBlob` | pass | 248,422 | 2 |
+| `Current-StallFinishing` | pass | 3,396 | 1 |
 | `Current-StallReplay` | pass | 8,999 | 1 |
-| `Current-TwoStatic` | pass | 1,415,698 | 84 |
-| `Faithful-488-Polling-off` | violation `SilenceStopsRefreshes` (reported as `TEMPORAL`) | 3,734 | 2 |
-| `Faithful-497-HighWater-off` | violation `StallRestartsCapped` | 4,078 | 1 |
-| `Faithful-501-Commit-off` | violation `NoRestartOfMovingStream` | 1,242 | 0 |
-| `Faithful-501-Finalizing-off` | violation `NoRestartOfMovingStream` | 1,215 | 1 |
-| `Faithful-502-off` | violation `PublishedSampleMonotone` | 3,656 | 1 |
-| `Faithful-B09-off` | violation `PhaseNoGhostWork` | 59 | 1 |
-| `Faithful-S1-off` | violation `UpdatingResolves` (reported as `TEMPORAL`) | 179,960 | 64 |
-| `Faithful-S2-off` | violation `SpeedSettlesAfterStall` (reported as `TEMPORAL`) | 18,477 | 4 |
-| `Faithful-S5-off-Flow` | violation `UpdatingResolves` (reported as `TEMPORAL`) | 66,773 | 21 |
-| `Faithful-S5-off` | violation `ForwardStallGetsVerdict` (reported as `TEMPORAL`) | 392,467 | 64 |
-| `Faithful-S8-off` | violation `NoRestartOfMovingStream` | 721 | 1 |
-| `Faithful-pu33-off` | violation `WaitingReadsAsWaiting` | initial state | 1 |
-| `Finding-S3-RelaunchDip` | violation `RelaunchKeepsBytes` | 1,527 | 1 |
-| `Finding-S3-RelaunchDipForward` | violation `RelaunchKeepsBytes` | 1,920 | 1 |
-| `Finding-S4-LateCallbackInflatesRow` | violation `NoInflatedRowRate` | 1,440 | 1 |
-| `Finding-S6-SlowMemberFlapsSpeed` | violation `EventuallyStable` (reported as `TEMPORAL`) | 46,909 | 21 |
-| `Finding-S7-LateBacklogInflatesRow` | violation `NoInflatedRowRate` | 1,253 | 0 |
-| `Finding-S7-LateBacklogInflatesTotal` | violation `NoInflatedAggregate` | 3,171 | 1 |
-| `Liveness-Flow` | pass | 117,074 | 40 |
-| `Liveness-FlowOneForward` | pass | 35,936 | 6 |
-| `Liveness-FlowOneStatic` | pass | 78,270 | 13 |
-| `Liveness-FlowStall` | pass | 141,514 | 73 |
-| `Liveness-Settle` | pass | 128,465 | 24 |
-| `Liveness-SilentMember` | pass | 184,911 | 101 |
-| `Liveness-StaleRowSettles` | pass | 215,204 | 36 |
-| `Liveness-StallCap` | pass | 392,621 | 68 |
-| `Liveness-StallCapFlow` | pass | 125,188 | 45 |
-| `Liveness-Static` | pass | 163,202 | 27 |
-| `Mutant-I224-NoSettling` | violation `NoInflatedAggregate` | 1,440 | 1 |
-| `Mutant-I224-NoWakeReset` | violation `NoInflatedAggregate` | 6,730 | 1 |
-| `Mutant-I379-NoOverlap` | violation `NoUnsharedWindow` | 302 | 1 |
-| `Mutant-I379-PartialSum` | violation `NoPartialSum` | 3,327 | 1 |
-| `Mutant-I379-QuietOmitted` | violation `NoPartialSum` | 29,336 | 2 |
-| `Mutant-I416-SegmentNoHold` | violation `NoSpuriousReset` | 152 | 0 |
-| `Proposed-Mixed` | pass | 2,547,620 | 110 |
-| `Proposed-OneForward` | pass | 928,761 | 47 |
-| `Deep-LivenessFlow` (deep) | pass | 1,148,455 | 107 |
-| `Deep-Mixed` (deep) | pass | 76,864,337 | 1,382 |
-| `Deep-TwoStatic` (deep) | pass | 34,269,645 | 674 |
+| `Current-TwoStatic` | pass | 1,387,967 | 16 |
+| `Faithful-488-Polling-off` | violation `SilenceStopsRefreshes` (reported as `TEMPORAL`) | 3,734 | 1 |
+| `Faithful-497-HighWater-off` | violation `StallRestartsCapped` | 4,724 | 1 |
+| `Faithful-501-Commit-off` | violation `NoRestartOfMovingStream` | 933 | 1 |
+| `Faithful-501-Finalizing-off` | violation `NoRestartOfMovingStream` | 1,474 | 1 |
+| `Faithful-502-off` | violation `PublishedSampleMonotone` | 3,677 | 1 |
+| `Faithful-B09-off` | violation `PhaseNoGhostWork` | 154 | 1 |
+| `Faithful-S1-off` | violation `UpdatingResolves` (reported as `TEMPORAL`) | 182,695 | 13 |
+| `Faithful-S2-off` | violation `SpeedSettlesAfterStall` (reported as `TEMPORAL`) | 19,641 | 2 |
+| `Faithful-S5-off-Flow` | violation `UpdatingResolves` (reported as `TEMPORAL`) | 48,471 | 4 |
+| `Faithful-S5-off` | violation `ForwardStallGetsVerdict` (reported as `TEMPORAL`) | 504,198 | 18 |
+| `Faithful-S8-off` | violation `NoRestartOfMovingStream` | 667 | 1 |
+| `Faithful-pu33-off` | violation `WaitingReadsAsWaiting` | initial state | 0 |
+| `Finding-S3-RelaunchDip` | violation `RelaunchKeepsBytes` | 2,134 | 0 |
+| `Finding-S3-RelaunchDipForward` | violation `RelaunchKeepsBytes` | 4,033 | 1 |
+| `Finding-S4-LateCallbackInflatesRow` | violation `NoInflatedRowRate` | 1,296 | 1 |
+| `Finding-S6-SlowMemberFlapsSpeed` | violation `EventuallyStable` (reported as `TEMPORAL`) | 46,819 | 5 |
+| `Finding-S7-LateBacklogInflatesRow` | violation `NoInflatedRowRate` | 1,592 | 1 |
+| `Finding-S7-LateBacklogInflatesTotal` | violation `NoInflatedAggregate` | 2,444 | 1 |
+| `Liveness-Flow` | pass | 117,048 | 9 |
+| `Liveness-FlowOneForward` | pass | 39,232 | 2 |
+| `Liveness-FlowOneStatic` | pass | 83,475 | 5 |
+| `Liveness-FlowStall` | pass | 156,764 | 14 |
+| `Liveness-Settle` | pass | 151,572 | 8 |
+| `Liveness-SilentMember` | pass | 183,919 | 16 |
+| `Liveness-StaleRowSettles` | pass | 206,589 | 10 |
+| `Liveness-StallCap` | pass | 505,536 | 23 |
+| `Liveness-StallCapFlow` | pass | 124,796 | 11 |
+| `Liveness-Static` | pass | 159,019 | 8 |
+| `Mutant-I224-NoSettling` | violation `NoInflatedAggregate` | 1,482 | 0 |
+| `Mutant-I224-NoWakeReset` | violation `NoInflatedAggregate` | 7,727 | 1 |
+| `Mutant-I379-NoOverlap` | violation `NoUnsharedWindow` | 471 | 0 |
+| `Mutant-I379-PartialSum` | violation `NoPartialSum` | 3,089 | 1 |
+| `Mutant-I379-QuietOmitted` | violation `NoPartialSum` | 44,264 | 2 |
+| `Mutant-I416-SegmentNoHold` | violation `NoSpuriousReset` | 304 | 1 |
+| `Proposed-Mixed` | pass | 2,623,560 | 27 |
+| `Proposed-OneForward` | pass | 1,577,535 | 9 |
+| `Deep-LivenessFlow` (deep) | pass | 1,164,714 | 111 |
+| `Deep-Mixed` (deep) | pass | 76,864,337 | 800 |
+| `Deep-TwoStatic` (deep) | pass | 34,269,645 | 379 |
 
 The `Current` and `Liveness` configs leave out what an open finding violates: none checks
 `RelaunchKeepsBytes` (S3), `NoInflatedRowRate` is checked only where no forward-only row exists

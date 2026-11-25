@@ -20,11 +20,15 @@ The branch also carries product fixes for sixteen of the thirty-three finding is
 - side assets: SideAssets-S1 (#482), S2 (#483), S6 (#494), S7 (#495), #503 and #504;
 - status: Status-S1 (#487), S2 (#488), S5 (#497), S8 (#501) and #502.
 
-Seventeen stay open, each with an issue: F4 (#491), ServerPrep-S1 (#478) and S2 (#500),
+The review of PR #505 then found twelve defects in those fixes and in the TLC runner; all twelve
+are fixed on the branch too, and the review's follow-ups are #506 to #517
+([PR review round](#pr-review-round)).
+
+Seventeen findings stay open, each with an issue: F4 (#491), ServerPrep-S1 (#478) and S2 (#500),
 Cleanup-C1 (#479), Wake-W1 (#480) and W2 (#481), SideAssets-S3 (#484), S4 (#485), S5 (#493) and
 S8 (#496), Storage-S1 (#486), RangeTrain-R1 (#477) and R4 (#492), Status-S3 (#490), S4 (#489),
 S6 (#498) and S7 (#499). One ordering of #476 also stays open
-(`range-train/Finding-R2-UndeliveredBodyLost`). The models also confirm four known open items
+(`range-train/Finding-R2-UndeliveredBodyLost`, now tracked as #506). The models also confirm four known open items
 (#392, #393, #394 and st-39, #401). What remains is in [Follow-ups](#follow-ups).
 
 **Scope:** model checking of the downloads manager design. Specs live in `specs/downloads/`, one
@@ -130,7 +134,7 @@ finalizing row back to transferring when reattach adopted a task for it. The cod
 that one step left as the pilot wrote it, every passing config has the pilot's exact state count,
 so nothing else changed.
 
-## Results (2026-11-25, branch head after the product fixes, tla2tools v1.7.4, `TLC_WORKERS=auto`, 14 cores)
+## Results (2026-11-25, branch head after the product and review fixes, tla2tools v1.7.4, `TLC_WORKERS=auto`, 14 cores)
 
 | Config | Expectation | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
@@ -410,7 +414,7 @@ and what it leaves out. `docs/DOWNLOADS-OFFLINE.md` summarises each module.
 
 | Item | Module | Scope | Fixed bugs reproduced | Injected mutants | Findings |
 | --- | --- | --- | --- | --- | --- |
-| W0 base | `DownloadsBase`, `DownloadsReducer`, `DownloadsReducerTable` (generated), `DownloadsReducerConformance`; `DownloadsSessionCore` moved onto it, with `DownloadsSessionRowMap` and its check | Reducer as operators; the pilot | B02, B03, B09, B10, B12, replayed outcomes | three wrong relaunch guards in the reducer; two wrong row mappings | F1, F2, F3 (both lanes), F4 |
+| W0 base | `DownloadsBase`, `DownloadsReducer`, `DownloadsReducerTable` (generated), `DownloadsReducerConformance`; `DownloadsSessionCore` moved onto it, with `DownloadsSessionRowMap` and its check; `DownloadsCapturePublication` (PR review round) | Reducer as operators; the pilot | B02, B03, B09, B10, B12, replayed outcomes | three wrong relaunch guards in the reducer; two wrong row mappings | F1, F2, F3 (both lanes), F4 |
 | W1 admission | `DownloadsAdmission` | Lanes and the total, waiting rows, the pump, supervised starts, Pause All, backoff, a cap changed at run time, the Emby reuse handoff, a late cancel | B63, B65, B66, B67 | no backoff wake; pause erases the first-start intent; stale cap | Admission-A1 |
 | W2 server prep | `DownloadsServerPrep` | Plex optimize and Emby Convert: create or adopt, poll, hand off, cancel, the 24-hour render deadline, the wait for a static slot | B28, B35, B37, B47 | unchecked hand-off; the static slot never returns | ServerPrep-S1, ServerPrep-S2 |
 | W3 cleanup and Delete | `DownloadsCleanup` | Deletion barrier, artifact worker in sorted unlink order, cleanup journal and runner, a full volume with a sized reserve, failed unlinks and directory sync, power loss | B18, B28, B44 | B27 preemption without a fence (stable name sorts first); reserve too small; a retried Delete needs a fresh write | Cleanup-C1; confirms B27, B30 |
@@ -423,40 +427,44 @@ and what it leaves out. `docs/DOWNLOADS-OFFLINE.md` summarises each module.
 W8 was added to the program after the plan was first written; it has no row in the audit's bug
 table for #379, #224 and #416, so those three are mutants.
 
-### Results of the merged run (2026-11-25, branch head, tla2tools v1.7.4, `TLC_WORKERS=auto`, 14 cores)
+### Results of the merged run (2026-11-25, branch head after the PR review round, tla2tools v1.7.4, `TLC_WORKERS=auto`, 14 cores)
 
-`TLC_WORKERS=auto scripts/check-tla-specs.sh --deep specs/` on the branch head, after all the
-product fixes: every module parsed and every config ended as its header expects (exit 0), under
-the rule that TLC's exit status, banner and clean finish must agree. The table sums each
-module's configs; the notes files have the per-config rows. Wall time was 2,500 s for the whole
-run: 238 default-tier configs, 9 deep configs and 17 module parses. After round 2 (before the
-fixes) the same run was 235 configs, 841 s for the default tier and 1,369 s for the deep tier;
-before round 2 it was 153 configs, 335 s and 293 s.
+`TLC_WORKERS=auto scripts/check-tla-specs.sh --deep specs/` on the branch head (13c91c74), after
+the product fixes and the [PR review round](#pr-review-round): every module parsed and every
+config ended as its header expects (exit 0), under the rule that TLC's outcome kind (pass,
+violation, broken), its property, its exit status and a clean finish must agree. The table sums
+each module's configs; the notes files have the per-config rows. Wall time was 2,607 s for the
+whole run: 261 default-tier configs, 9 deep configs and 18 module parses. Before the review round
+it was 247 configs and 2,500 s; after round 2 (before any fix) 235 configs, 841 s for the default
+tier and 1,369 s for the deep tier; before round 2, 153 configs, 335 s and 293 s.
 
 | Module | Configs | Pass | Violated as expected | Deep | Largest state space (config) | Default tier | Deep tier |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `DownloadsSessionCore` | 22 | 10 | 12 | 1 | 5,517,342 (`session/Deep-TwoStatic`) | 39 s | 47 s |
-| `DownloadsReducerConformance` | 5 | 2 | 3 | 0 | 1 (`base/Reducer-Conformance`) | 44 s |  |
+| `DownloadsSessionCore` | 23 | 10 | 13 | 1 | 5,517,342 (`session/Deep-TwoStatic`) | 36 s | 45 s |
+| `DownloadsCapturePublication` | 10 | 6 | 4 | 0 | 326 (`session/CapturePublication-Current-Redelivery`) | 6 s |  |
+| `DownloadsReducerConformance` | 5 | 2 | 3 | 0 | 1 (`base/Reducer-Conformance`) | 42 s |  |
 | `DownloadsSessionRowMapCheck` | 3 | 1 | 2 | 0 | 1 (`session/SessionRowMapCheck-Current-RowMap`) | 15 s |  |
-| `DownloadsAdmission` | 19 | 10 | 9 | 2 | 5,813,009 (`admission/Deep-CapLowered`) | 70 s | 118 s |
-| `DownloadsServerPrep` | 18 | 9 | 9 | 0 | 154,948 (`server-prep/Current-PlexThreePollers`) | 21 s |  |
-| `DownloadsCleanup` | 16 | 7 | 9 | 0 | 1,249,082 (`cleanup/Current-TwoRows`) | 20 s |  |
-| `DownloadsWake` | 13 | 3 | 10 | 0 | 9,290,572 (`wake/Current-Wake`) | 115 s |  |
+| `DownloadsAdmission` | 22 | 12 | 10 | 2 | 5,813,009 (`admission/Deep-CapLowered`) | 78 s | 121 s |
+| `DownloadsServerPrep` | 18 | 9 | 9 | 0 | 154,948 (`server-prep/Current-PlexThreePollers`) | 23 s |  |
+| `DownloadsCleanup` | 16 | 7 | 9 | 0 | 1,249,082 (`cleanup/Current-TwoRows`) | 21 s |  |
+| `DownloadsWake` | 13 | 3 | 10 | 0 | 9,290,572 (`wake/Current-Wake`) | 117 s |  |
 | `DownloadsWakeLaunchGate` | 2 | 1 | 1 | 0 | 112 (`wake/WakeLaunchGate-Current-Gate`) | 1 s |  |
-| `DownloadsSideAssets` | 66 | 32 | 34 | 1 | 21,547,911 (`side-assets/Deep-AllKinds`) | 139 s | 173 s |
-| `DownloadsStorage` | 16 | 7 | 9 | 0 | 833,784 (`storage/Current-ThreeStatic`) | 47 s |  |
-| `DownloadsRangeTrain` | 25 | 11 | 14 | 2 | 2,438,318 (`range-train/Deep-TwoRows`) | 113 s | 32 s |
-| `DownloadsStatus` | 42 | 22 | 20 | 3 | 73,353,389 (`status/Deep-Mixed`) | 250 s | 1,224 s |
-| Total | 247 | 115 | 132 | 9 | | 874 s | 1,594 s |
+| `DownloadsSideAssets` | 68 | 33 | 35 | 1 | 21,547,911 (`side-assets/Deep-AllKinds`) | 143 s | 172 s |
+| `DownloadsStorage` | 16 | 7 | 9 | 0 | 833,784 (`storage/Current-ThreeStatic`) | 49 s |  |
+| `DownloadsRangeTrain` | 26 | 11 | 15 | 2 | 2,438,318 (`range-train/Deep-TwoRows`) | 111 s | 32 s |
+| `DownloadsStatus` | 48 | 24 | 24 | 3 | 76,864,337 (`status/Deep-Mixed`) | 278 s | 1,290 s |
+| Total | 270 | 126 | 144 | 9 | | 920 s | 1,660 s |
 
 The seconds are per-config times summed, so they leave out parsing and JVM start-up. The
 reducer checks explore one state each; their cost is the table comparison. Against round 2, the
-side-assets model gained the S1, S2, S6, S7, #503 and #504 fix and fix-off configs and asset
-identity, which is why `Deep-AllKinds` grew from 16,294,270 states; the status model gained the
-S1, S2, S5, S8 and #502 configs; the session and range-train state spaces shrank with the
-F1, F3 and R2 fixes; and admission and the session model each dropped a `Proposed-*` config whose
-fix is now in every `Current-*` run (`Proposed-A1-RelaunchKeepsUnstartedRow`,
-`Proposed-F3-PauseKeepsBody`).
+side-assets model gained the S1, S2, S6, S7, #503, #504 and paused-hydration fix and fix-off
+configs and asset identity, which is why `Deep-AllKinds` grew from 16,294,270 states; the status
+model gained the S1, S2, S5, S8, #502 and review-round stall configs, and its stall budget and
+rate-expiry timer grew `Deep-Mixed` from 73,353,389; the session and range-train state spaces
+shrank with the F1, F3 and R2 fixes; the review round added `DownloadsCapturePublication` and
+the foreground-reconcile and halted-progress configs; and admission and the session model each
+dropped a `Proposed-*` config whose fix is now in every `Current-*` run
+(`Proposed-A1-RelaunchKeepsUnstartedRow`, `Proposed-F3-PauseKeepsBody`).
 
 ### Findings (all models, after round 2)
 
@@ -494,7 +502,7 @@ decision to call. Full traces and evidence are in the module notes and the issue
 | #394 | Fetched chapter-image and trickplay-tile payloads wait in memory behind one-at-a-time preparation. | real, known; reviewer confirmed | `side-assets/Finding-394-PayloadsBehindPreparation`, `side-assets/Finding-394-TilePayloadsBehindPreparation` | none | #394 |
 | Storage-S1 | An automatic requeue erases a storage-full park, so the row is redriven once without measuring free space. The reachable order is the reviewer's: a redelivered body's own append fails with ENOSPC before the launch enumeration. | real, low; reviewer confirmed by a different ordering | `storage/Finding-S1-RequeueErasesPark` | `automaticRequeueKeepsTheStoragePark` | #486 |
 | RangeTrain-R1 | A drain pass run by a held-body removal completion discards its result, so nothing finalizes the file or tops the train up until the self-heal, which needs the foreground. | real, low; reviewer confirmed | `range-train/Finding-R1-StrandedDrain` | `removalCompletionDrainContinuesTheTrain` | #477 |
-| RangeTrain-R2 | Reconcile fails a static row whose finished body is stashed and queued for append; for a one-segment file that is the whole download. Observing owned work in the reattach snapshot is not enough (`Faithful-R2-off-SnapshotOnly`); a body the daemon has not redelivered yet is lost with any ownership check (`Finding-R2-UndeliveredBodyLost`). | fixed on `specs/downloads-tla`, pending merge, for work the session owns (was real, medium; reviewer confirmed). The undelivered body is still open. | `range-train/Faithful-R2-off`; open: `range-train/Finding-R2-UndeliveredBodyLost` | `reconcileCountsQueuedBodiesAsLiveWork` (regression test) | #476 |
+| RangeTrain-R2 | Reconcile fails a static row whose finished body is stashed and queued for append; for a one-segment file that is the whole download. Observing owned work in the reattach snapshot is not enough (`Faithful-R2-off-SnapshotOnly`); a body the daemon has not redelivered yet is lost with any ownership check (`Finding-R2-UndeliveredBodyLost`). | fixed on `specs/downloads-tla`, pending merge, for work the session owns (was real, medium; reviewer confirmed). The undelivered body is still open (#506). | `range-train/Faithful-R2-off`; open: `range-train/Finding-R2-UndeliveredBodyLost` | `reconcileCountsQueuedBodiesAsLiveWork` (regression test) | #476 |
 | RangeTrain-R4 | After a crash inside an append, a segment finished while the app was dead is held beside the ones the planner started; when the head segment fails once, two held bodies fill the depth of two and the planner never fetches the gap at the checkpoint. | probable, medium, rare | `range-train/Finding-R4-HeldBodiesStarveHead` | `plannerAlwaysFetchesTheHeadGap` | #492 |
 | Status-S1 | A silently stalled transfer hides the batch speed for as long as it is silent. | real, medium; reviewer confirmed; fixed on specs/downloads-tla, pending merge (a transfer silent for the callback gap counts as zero) | `status/Liveness-SilentMember` passes; fix off: `status/Faithful-S1-off` | `silentTransferDoesNotHideBatchSpeedForever` (passes) | #487 |
 | Status-S2 | A stalled static-range row keeps showing a stale speed and ETA, because the refresh loop stops first. | real, medium; reviewer confirmed; fixed on specs/downloads-tla, pending merge (the refresh loop runs while any row transfers) | `status/Liveness-StaleRowSettles` passes; fix off: `status/Faithful-S2-off` | `stalledStaticRowStopsShowingSpeed` (passes) | #488 |
@@ -650,6 +658,85 @@ What the first round got wrong, stated plainly:
 - One review round finding this much is evidence that more remains. Nothing shows the second
   round found everything.
 
+## PR review round
+
+The review of PR #505 (this branch into `main`) found twelve defects in the product fixes and the
+runner. All twelve are fixed on `specs/downloads-tla`, pending merge, each with tests, and each
+modelled one with a config that fails with its fix switched off.
+
+Recovery races in the finished-body and reconcile fixes (59ed76e5; models e5235de3):
+
+1. **#472, two publications of one captured body.** Launch recovery could claim a body at its
+   capture path before the delegate did and queue a publication; the delegate then queued a
+   second, which cleared the working path. The delegate now claims the publication before the
+   move (`ForwardOnlyPublicationLedger`), a second delivery is dropped, and a publication with
+   the body already at the working path does nothing (`ForwardOnlyFinishedBodyPolicy.publicationStep`).
+   New module `session/DownloadsCapturePublication.tla`; `CapturePublication-Faithful-Duplicate-off`,
+   `-ClaimFirst-off`.
+2. **#474, a progress callback under a pause.** The last `didWriteData` of a finished static task
+   could supersede and cancel it after the pause had chosen to keep it. The handler asks the
+   pause sweep's question (`StaticRangeFinishedBodyPolicy.haltedProgressDisposition`);
+   `session/Faithful-F3-off-Progress`, `range-train/Faithful-R3-off-Progress`.
+3. **#472, a lease wait that ran out stranded the capture.** The publication is parked in the
+   ledger and rerun on the working path's lease release, on a recovery pass for the same body,
+   or by a five-second backstop; `CapturePublication-Faithful-ParkedRetry-off`,
+   `CapturePublication-Mutant-MissedWake`.
+4. **#475, the foreground reconcile exclusion expired before reconcile used it.** The foreground
+   snapshot carries each row's attempt and mutation generation, and reconcile judges a row only
+   while both match (`DownloadReconcileSnapshotPolicy`); `admission/Current-Foreground`,
+   `Current-ForegroundMixed` pass and `admission/Faithful-A1-off-StaleSnapshot` fails.
+
+Status and stall (d073d0c2, 222932cb) and the runner (e828551d):
+
+5. **#497, a stream wedged at one offset was restarted forever:** each replacement's replay from
+   byte 0 refilled the restart budget. The tracker keeps the row's byte high-water mark across
+   automatic restarts; only bytes past it, or a user Retry or Resume, refill the budget
+   (`status/Faithful-497-HighWater-off`, `Current-StallReplay`).
+6. **#501, a queued stall verdict acted before the store accepted it.** `DownloadStore.submitStallVerdict`
+   checks the attempt, `transferring` and the observed bytes in one step with the commit, and only
+   then is that attempt's task cancelled (`status/Faithful-501-Commit-off`,
+   `Faithful-501-Finalizing-off`, `Current-StallFinishing`).
+7. **#488, one silent static row kept a 15 s refresh loop alive forever.** The watchdog is back to
+   forward-only and preparing rows; a row that shows a speed or ETA arms one refresh for its
+   stale deadline (`status/Faithful-488-Polling-off`; `SilenceStopsRefreshes`).
+8. **Runner: an expected violation accepted a broken run.** `EXPECT: violation BROKEN` matched a
+   JVM killed by the OOM killer and `EXPECT: violation pass` matched a clean run. The runner now
+   compares a typed outcome (pass, violation, broken) and the property separately, a broken run
+   never matches, and outcome words are rejected as property names
+   (`scripts/tests/test_check_tla_specs.py`).
+
+Side-asset regressions (8d9f23be, 54593542, 13c91c74):
+
+9. **#504, a refresh replaced the saved chapter timeline.** Only a saved chapter that matches a
+   refreshed one gains its thumbnail; titles, times and indexes never change, and an empty saved
+   list adopts the refreshed one whole.
+10. **#503, a legacy row's BIF fell back to `media[0]`.** `selectedPlexBIFPart` selects through
+    `plexRepairPart`, so a row without `sourcePartID` whose saved media index is gone gets no BIF,
+    as the subtitle repair already did.
+11. **#504, chapter images fetched against the raw refreshed list** could publish one chapter's
+    image under another's index. Chapter images are fetched only against the saved, persisted list.
+12. **#494, launch under Pause All hydrated an inactive backend for nothing.** While the queue is
+    paused, `backendsOwingCompletedSideAssets` returns nothing; Resume All's repair pass hydrates
+    the owed backends (`side-assets/Current-494-PausedLaunchNoHydration`,
+    `Faithful-494-off-PausedLaunchHydrates`).
+
+Follow-up issues from the review, all open:
+
+| Issue | Follow-up |
+| --- | --- |
+| #506 | Reconcile fails a static row whose finished segment the daemon has not redelivered yet (the open RangeTrain-R2 ordering of #476). |
+| #507 | Plex rows downloaded before #495 keep a BIF cached from the wrong part. |
+| #508 | Artwork that becomes available after the download is never fetched. |
+| #509 | Launch hydration of an inactive backend for missing side assets can miss its only chance (#494). |
+| #510 | Stall and rate decisions use the wall clock, so a clock change can trigger or postpone a stall. |
+| #511 | A stale batch speed can stay on screen after the last update; row phase and caption use different inputs. |
+| #512 | Strengthen the status and side-assets models to check published values and drop the future-launch fairness assumption. |
+| #513 | Drift guard: an unrelated edit in a shared spec folder counts as updating every module that owns a Swift file. |
+| #514 | Flaky `P7OfflineSubtitleTests.embeddedSelectionInvalidatesPendingSidecarParse` and the `P5SessionTransportTests` consumed-claims test. |
+| #515 | Map changed reducer and policy branches to the app tests that exercise them. |
+| #516 | A static whole-file replacement whose lease wait times out keeps its claim with nothing queued (the static twin of fix 3). |
+| #517 | Foreground reconcile can judge a static row whose granted start is still supervised. |
+
 ## Follow-ups
 
 Fixes are tracked by the issues above. The rest is about the models and their tooling.
@@ -680,8 +767,8 @@ Tooling:
   server preparation (`DownloadManager+Admission.swift`). Decide whether to keep the friction,
   narrow the guard to functions, or move the modelled code into smaller files.
 - Default-tier cost. Round 2 took the default tier from 147 configs and about six minutes to
-  226 and about fourteen on 14 cores; with the fixes it is 238 configs and about fifteen
-  minutes, and the whole run with the deep tier about forty-two. `DownloadsStatus`, `DownloadsRangeTrain`, `DownloadsWake`
+  226 and about fourteen on 14 cores; with the fixes and the review round it is 261 configs
+  and about sixteen minutes, and the whole run with the deep tier about forty-four. `DownloadsStatus`, `DownloadsRangeTrain`, `DownloadsWake`
   and `DownloadsSideAssets` are the slowest. Candidates for the deep tier if that is too long
   for CI: `range-train/Proposed-Liveness-MidAppend`, `wake/Liveness-HandlerCalled`,
   `wake/Current-Wake`, `status/Current-Mixed`. `status/Deep-Mixed` is the heaviest deep config;

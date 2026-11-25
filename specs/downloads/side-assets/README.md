@@ -541,7 +541,7 @@ and state directories and report wrong results.
 | `Current-F3-FinishUnparks-Chapters` | pass | pass | 370 | 1 s |
 | `Current-S2-ResumeAllUnparks-Subs` | pass | pass | 12,228 | 4 s |
 | `Current-S2-ResumeAllUnparks-Tiles` | pass | pass | 8,580 | 5 s |
-| `Current-S6-HydrateCompleted` | pass | pass | 27,162 | 10 s |
+| `Current-S6-HydrateCompleted` | pass | pass | 27,175 | 10 s |
 | `Current-Subs` | pass | pass | 44,023 | 2 s |
 | `Current-Tiles` | pass | pass | 42,107 | 2 s |
 | `Current-TwoBackends` | pass | pass | 124,766 | 6 s |
