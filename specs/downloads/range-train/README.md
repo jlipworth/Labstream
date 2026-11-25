@@ -107,7 +107,7 @@ a finding on this lane. The whole-file loss on this lane is R2 below.
 
 ## Configs and results
 
-2026-11-24, tla2tools v1.7.4, `TLC_WORKERS=2 TLC_HEAP=2g`.
+2026-11-24, tla2tools v1.7.4, `TLC_WORKERS=2 TLC_HEAP=2g` (the `Deep-*` rows after the R2 and R3 fixes, 2026-11-25: `TLC_WORKERS=6 TLC_HEAP=6g`).
 
 | Config | Expect | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
@@ -134,8 +134,8 @@ a finding on this lane. The whole-file loss on this lane is R2 below.
 | `Faithful-R3-off` | `PauseKeepsFinishedSegment` violated | violated | stops at first error | < 1 s |
 | `Finding-R2-UndeliveredBodyLost` | `ReconcileKeepsUndeliveredBody` violated | violated | stops at first error | 1 s |
 | `Finding-R4-HeldBodiesStarveHead` | `TrainNeverWedged` violated | violated | stops at first error | 2 s |
-| `Deep-RetryRestart` (deep) | pass | pass | 269,055 | 11 s |
-| `Deep-TwoRows` (deep) | pass | pass | 3,135,797 | 181 s |
+| `Deep-RetryRestart` (deep) | pass | pass | 237,009 | 4 s |
+| `Deep-TwoRows` (deep) | pass | pass | 2,438,318 | 49 s |
 
 The `Current-*`, `Deep-*` and `Proposed-MidAppend` configs also check `ReconcileKeepsQueuedBody`,
 `ReconcileNeverFailsOwnedWork` and `PauseKeepsFinishedSegment` since the R2 and R3 fixes.

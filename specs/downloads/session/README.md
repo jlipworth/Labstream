@@ -92,7 +92,7 @@ Fixed on `specs/downloads-tla`, pending merge (#472, #474). `DurableCapture` and
 
 ## Configs and results
 
-2026-11-24, tla2tools v1.7.4, `TLC_WORKERS=2 TLC_HEAP=2g` (the rows A1 changed: `TLC_WORKERS=4 TLC_HEAP=4g`).
+2026-11-24, tla2tools v1.7.4, `TLC_WORKERS=2 TLC_HEAP=2g` (the rows A1 changed: `TLC_WORKERS=4 TLC_HEAP=4g`; `Deep-TwoStatic` after the F1 and F3 fixes, 2026-11-25: `TLC_WORKERS=6 TLC_HEAP=6g`).
 
 | Config | Expect | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
@@ -121,7 +121,7 @@ Fixed on `specs/downloads-tla`, pending merge (#472, #474). `DurableCapture` and
 | `Faithful-F3-off-Static` | `FinishedBodySurvivesPause` violated | violated | stops at first error | 1 s |
 | `Finding-F4-FinalizingRowWithoutBody` | `FinalizingAlwaysHasBody` violated | violated | stops at first error | 1 s |
 | `Finding-F4-VerdictRenameCrash` | `VerdictSurvivesCrash` violated | violated | stops at first error | < 1 s |
-| `Deep-TwoStatic` (deep) | pass | pass | 5,710,777 | 367 s |
+| `Deep-TwoStatic` (deep) | pass | pass | 5,517,342 | 108 s |
 
 ## Findings added in the second round
 
