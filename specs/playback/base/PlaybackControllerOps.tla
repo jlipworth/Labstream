@@ -77,7 +77,8 @@ NoProxy == [slot |-> 0, live |-> {}]
 \* What a pending stop task waits for.
 StopKinds == {"serverStop", "proxyStop", "taskJoin"}
 
-\* A stop request: pass NextStopReq(c, s, g) in the step that sends it.
+\* A stop request: pass NextStopReq(c, s, g) in the step that sends it,
+\* with the incarnation g the controller stored when it started the job.
 ServerStopTicket(r) ==
     [kind |-> "serverStop", sid |-> r.sid, gen |-> r.gen, n |-> r.n]
 \* proxy.stop(generation:) for the listener of generation g.
@@ -156,9 +157,10 @@ PendingStopsJoined(c) == \A t \in pendingStops[c] : TicketDone(c, t)
 -----------------------------------------------------------------------------
 (* The shared property                                                     *)
 
-\* At most one encoding session the client still owns per controller, and
-\* two (the prior session and its replacement) inside Jellyfin's
-\* replace-then-clean-up window.
+\* At most one encoding job the client still owns per controller, and two
+\* (the prior job and its replacement) inside Jellyfin's
+\* replace-then-clean-up window.  Two jobs under one reused session id
+\* count as two.
 OneEncoder ==
     \A c \in Controllers :
         Cardinality(Owned(c)) <= IF jellyfinWindow[c] THEN 2 ELSE 1
