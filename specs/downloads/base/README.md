@@ -26,7 +26,8 @@ LABSTREAM_WRITE_REDUCER_TABLE=1 swift test --package-path PMSKit --no-parallel \
 Two lemmas make those two grids the whole reducer. Both are checked on each side:
 
 - **Relaunch is local.** `relaunchObserved` reads only `lifecycle` and `pauseCause` of a state and
-  writes only those and `lastFailure`. So its result for any of the 1,728 states is the relaunch
+  writes only those, `lastFailure` and `admissionIntent` (only ever `seasonPlanned`, for a
+  forward-only row requeued by Admission-A1). So its result for any of the 1,728 states is the relaunch
   grid's result with the other fields carried over. Swift: `relaunchIsLocal`, all 1,728 states on
   all 1,280 facts. TLA+: `RelaunchLocal`, the same 2.2 million cases.
 - **No other event reads the facts.** Swift: `onlyRelaunchReadsFacts`, the 261 states with at

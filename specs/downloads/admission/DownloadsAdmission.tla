@@ -86,8 +86,8 @@ CONSTANTS
     FixB67,             \* a backend outage defers a first start instead of failing it
     WakeAfterBackoff,   \* the pump arms a timer for the earliest backoff (FALSE: Mutant)
     FixRelaunchKeepsUnstarted,
-                        \* PROPOSED (finding A1): relaunch never fails a row that has no
-                        \* start evidence; a granted one waits again
+                        \* A1 (#475): relaunch never fails a forward-only row with no task,
+                        \* body or checkpoint; a granted one waits again (FALSE: Faithful-A1-off)
     BoundEnvironment,   \* TRUE: at most EnvBudget user/crash/fault steps (liveness runs)
     EnvBudget
 
@@ -576,12 +576,12 @@ RecoveredSt(r) ==
     LET s == st[r]
         t == Reduce(s, Ev("relaunchObserved"), RelaunchFacts(r))
     IN
-    \* PROPOSED (finding A1): a row with no start evidence and no task never began.
-    \* A granted one waits again; a paused one stays paused.
-    IF /\ FixRelaunchKeepsUnstarted /\ ~started[r] /\ ~live[r]
+    \* A1 off: relaunch fails a forward-only row with no task, body or checkpoint
+    \* (the reducer before #475).  On, the reducer requeues a granted one and keeps
+    \* a paused one paused.
+    IF /\ ~FixRelaunchKeepsUnstarted /\ r \in ForwardRows /\ ~live[r]
        /\ s.lifecycle \in {"admitted", "paused"}
-       THEN (IF s.lifecycle = "admitted"
-                THEN Apply(s, EvIntent("admissionDeferred", "seasonPlanned")) ELSE s)
+       THEN RRelaunchSet(s, "failed", "none", "network")
     ELSE IF IsApplied(t) THEN t.state ELSE s
 
 \* Startup reconcile (reconcileOnWorker), then admission opens and the pump runs.
@@ -716,8 +716,8 @@ OutageDefersFirstStart ==
           outage /\ sup[r] = "first" /\ phase[r] = "starting"
           => st'[r].lifecycle # "failed"]_vars
 
-\* Finding A1: startup recovery never fails a forward-only row that has no start
-\* evidence.  (The code fails it: checked only by the Finding and Proposed runs.)
+\* A1 (#475): startup recovery never fails a forward-only row that has no start
+\* evidence.  Faithful-A1-off restores the old failure.
 RelaunchKeepsUnstartedRow ==
     [][\A r \in ForwardRows :
           /\ ~recovered /\ recovered' /\ ~started[r] /\ ~live[r]

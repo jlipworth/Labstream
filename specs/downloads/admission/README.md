@@ -79,7 +79,7 @@ interchangeable, so safety runs use `SYMMETRY RowSymmetry`.
 | `UserPauseHolds` | invariant | a row the user paused is not waiting, not being started and has no work until the user resumes it (a pause withdraws a waiting retry) |
 | `PauseKeepsFirstStart` | action | a pause that parks a waiting first start keeps `seasonPlanned` (injected mutation) |
 | `OutageDefersFirstStart` | action | during an outage a first start never fails its row (B67) |
-| `RelaunchKeepsUnstartedRow` | action | recovery never fails a forward-only row without start evidence (finding A1; not in the Current runs) |
+| `RelaunchKeepsUnstartedRow` | action | recovery never fails a forward-only row without start evidence (A1, #475) |
 | `WaitingRowIsServed` | liveness | a waiting row outside Pause All eventually stops waiting |
 | `SupervisedStartEnds` | liveness | every supervised start ends |
 
@@ -93,7 +93,7 @@ proceeds and an outage ends, and that the user, crashes and faults take a bounde
 | `Current-TwoForward` | pass | two forward-only rows compete for one slot |
 | `Current-Mixed` | pass | a forward-only and a static row under a total of one |
 | `Current-ThreeRows` | pass | two forward-only rows and a static row, total two, three environment steps |
-| `Current-CapLowered` | pass | a forward-only and a static row, the setting switched between 2 and 1, cancels that land later (144,909 states, 7 s) |
+| `Current-CapLowered` | pass | a forward-only and a static row, the setting switched between 2 and 1, cancels that land later (143,929 states, 7 s) |
 | `Current-EmbyReuse` | pass | three static rows, one a reused Emby source, total two (1,225,736 states, 78 s) |
 | `Liveness-OneForward`, `-TwoForward` | pass | both liveness properties under `FairSpec` |
 | `Liveness-CapLowered` | pass | two static rows, the setting switched between 3 and 1: occupants over a lowered cap drain and every waiting row is served (114,099 states, 66 s) |
@@ -105,8 +105,7 @@ proceeds and an outage ends, and that the user, crashes and faults take a bounde
 | `Faithful-B66-off` | `NoOrphanQueued` | a start without work forgets its request and stays queued |
 | `Faithful-B67-off` | `OutageDefersFirstStart` | an outage fails a first start |
 | `Mutant-NoBackoffWake` | `TEMPORAL` | without the wake timer a deferred row waits forever (`WaitingRowIsServed`, the one property it checks; the script reports any liveness violation as `TEMPORAL`) |
-| `Finding-A1-RelaunchFailsUnstartedRow` | `RelaunchKeepsUnstartedRow` | finding A1 |
-| `Proposed-A1-RelaunchKeepsUnstartedRow` | pass | the proposed fix, with every safety property |
+| `Faithful-A1-off` | `RelaunchKeepsUnstartedRow` | relaunch fails a granted forward-only row cut before its task existed, or a paused first start (A1 before #475) |
 | `Deep-ThreeRows` | pass (deep) | the three-row run with four environment steps |
 | `Deep-CapLowered` | pass (deep) | three rows, the setting switched between 3 and 1 (5,832,083 states, 6.5 min) |
 
@@ -119,9 +118,9 @@ every parked row with no intent skip the window.
 
 ## Findings
 
-Finding A1 is issue #475.
+Finding A1 is issue #475, fixed on `specs/downloads-tla` (pending merge).
 
-**A1: startup recovery fails a forward-only row that never started.** Two orderings:
+**A1: startup recovery failed a forward-only row that never started.** Two orderings:
 
 1. The pump grants a waiting first start (`admissionGranted`: `planned` to `admitted`, intent
    cleared). The process dies while the start is still refreshing the item, before a transfer
@@ -134,10 +133,21 @@ Finding A1 is issue #475.
 
 The reducer has no fact for "this attempt never started": `DownloadRowFacts` carries route,
 checkpoint, body and task, and `admissionGranted` clears the intent. The static lane hides
-ordering 1 because launch recovery re-drives interrupted static rows. Pinned by
-`DownloadsFormalModelAdmissionTests.relaunchKeepsForwardOnlyRowThatNeverStarted`. The proposed
-fix (`FixRelaunchKeepsUnstarted`) sends a granted row without start evidence back to `planned`
-and leaves a paused one paused.
+ordering 1 because launch recovery re-drives interrupted static rows.
+
+The fix needs no new fact. A forward-only row with no task, body or checkpoint has nothing a
+failure would discard, so `relaunchObserved` sends an `admitted` one back to `planned` with
+`seasonPlanned` (what `admissionDeferred` does in process) and keeps a `paused` one paused, with
+its cause and intent. A row with a task, a body or a checkpoint, and a `transferring` row, keep
+the old decisions. The model takes this from `Reduce`; `FixRelaunchKeepsUnstarted = FALSE`
+(`Faithful-A1-off`) restores the old failure by hand. `RelaunchKeepsUnstartedRow` is checked by
+the Current and Deep runs that have a forward-only row, and
+`DownloadsFormalModelAdmissionTests.relaunchKeepsForwardOnlyRowThatNeverStarted` passes.
+
+The same rule would be wrong while a granted start is still running: an admitted row whose task
+does not exist yet would go back to `planned` under it. Startup reconcile runs before admission
+opens (`NothingGrantedBeforeRecovery`); foreground reconcile, which this model does not have,
+skips forward-only rows that are supervised or waiting (`forwardOnlyRowsAdmissionMayOwn`).
 
 ## Not covered
 
@@ -154,4 +164,6 @@ and leaves a paused one paused.
 - Static range recovery (`launch_interrupted` auto-resume, pending-resume markers, manual resume
   during Pause All) and the season commit gate (`seasonPlanCommitsInFlight`).
 - New rows added while the model runs, and Delete.
+- Foreground reconcile (`recoverStaticRangeTransfersAfterForeground`) and its exclusion of
+  forward-only rows a granted start may own.
 - The storage cap at admission (B24), which `DownloadsStorage` owns.

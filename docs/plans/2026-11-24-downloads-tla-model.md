@@ -381,7 +381,7 @@ decision to call. Full traces and evidence are in the module notes and the issue
 | F3 | A user pause that lands while a forward-only transfer finishes discards the finished body. | real; reviewer confirmed | `session/Finding-F3-PauseDiscardsFinishedBody` | `finishedForwardOnlyBodySurvivesUserPause` | #474 |
 | RangeTrain-R3 (F3 on the static lane) | The pause's task listing supersedes a static segment that has already finished and its finish callback is ignored. One segment on a train, the whole remainder on the open-ended fallback. Raised by the reviewer. | probable; low on a train, medium on the fallback | `range-train/Finding-R3-PauseDropsFinishedSegment`, `session/Finding-F3-PauseSupersedesFinishedSegment` | `pauseKeepsAFinishedSegment` | #474 |
 | F4 | A failing truncation verdict renames the body away before the verdict is durable; a crash in between leaves a finalizing row with no body, which reconcile fails as an internal error, and the strike is lost. Raised by the reviewer. | real, low | `session/Finding-F4-VerdictRenameCrash`, `session/Finding-F4-FinalizingRowWithoutBody` | `truncationVerdictIsDurableBeforeTheBodyMoves` | #491 |
-| Admission-A1 | Startup recovery fails a forward-only row that never started (a granted start cut by a crash, or a first start the user paused). | real, medium; reviewer confirmed | `admission/Finding-A1-RelaunchFailsUnstartedRow` | `relaunchKeepsForwardOnlyRowThatNeverStarted` | #475 |
+| Admission-A1 | Startup recovery fails a forward-only row that never started (a granted start cut by a crash, or a first start the user paused). | real, medium; reviewer confirmed; fixed on specs/downloads-tla, pending merge (relaunch requeues a granted forward-only row with no task, body or checkpoint and keeps a paused one paused; foreground reconcile skips rows a start may own) | `admission/Faithful-A1-off` (was `Finding-A1-RelaunchFailsUnstartedRow`); `RelaunchKeepsUnstartedRow` now in the Current and Deep runs | `relaunchKeepsForwardOnlyRowThatNeverStarted` (passes) | #475 |
 | ServerPrep-S1 | Retry of a failed Plex preparation row abandons its running optimize job with no durable cancel and creates a second job. | real, low to medium; reviewer confirmed | `server-prep/Finding-S1-RetryOrphansRender`, `server-prep/Finding-S1-HandoffLeavesJob` | `retryOfFailedPlexPrepKeepsOrCancelsItsJob` | #478 |
 | ServerPrep-S2 | The 24-hour Plex render deadline is checked before the create decision and its clock starts when the row is seeded, so a row resumed a day later fails as timed out before the server was asked for anything. | probable, low | `server-prep/Finding-S2-TimeoutBeforeCreate` | `renderDeadlineDoesNotPrecedeTheCreate` | #500 |
 | Cleanup-C1 | After a failed intent commit, an explicit artifact recovery re-registers the row deletion with prepared revision 0, and files are unlinked before the intent is durable. | real, low to medium; reviewer confirmed | `cleanup/Finding-C1-UnlinkBeforeDurableIntent` | `rowDeletionUnlinksOnlyAfterDurableIntent` | #479 |
@@ -623,7 +623,10 @@ Pins:
 Reducer and base gaps the models met:
 
 - `DownloadRowFacts` has no fact for "this attempt never started", and `admissionGranted` clears
-  the intent (Admission-A1). A fix needs a reducer or facts change and a regenerated table.
+  the intent (Admission-A1). Fixed without a new fact: a forward-only row with no task, body or
+  checkpoint has nothing a failure would discard, so relaunch requeues an admitted one
+  (`seasonPlanned`) and keeps a paused one paused. Relaunch now also writes `admissionIntent`;
+  `relaunchIsLocal` and `RelaunchLocal` allow it. The table was regenerated.
 - `storagePark` and `transferInterrupted(.storage)` are unreachable: every app storage-full path
   submits `transferFailed(.storage)` (Storage-S1). Wire it or remove it.
 - The app never submits the reducer's `prepHandoff` event. The Plex hand-off is a metadata

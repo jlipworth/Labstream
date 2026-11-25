@@ -22,8 +22,9 @@
 (*    pauseCause, the rest of the history empty) with every fact record    *)
 (*    there is (TableCovers: TableFacts is AllFacts, 1,280 records).       *)
 (*  - RelaunchLocal extends the relaunch grid to every other input state:  *)
-(*    relaunch reads only lifecycle and pauseCause, and writes only those  *)
-(*    and lastFailure.  The Swift test proves the same of the Swift.       *)
+(*    relaunch reads only lifecycle and pauseCause, and writes only those, *)
+(*    lastFailure and admissionIntent (only ever "seasonPlanned").  The    *)
+(*    Swift test proves the same of the Swift.                             *)
 (*  - EventsIgnoreFacts: no other event reads the facts, so one column     *)
 (*    per event is enough.  The Swift test tries the whole fact space.     *)
 (*                                                                         *)
@@ -84,8 +85,8 @@ RelaunchMismatches ==
 RelaunchReads == {"lifecycle", "pauseCause"}
 
 \* The rows where relaunch on a whole state is not relaunch on its
-\* RelaunchReads projection with the other fields carried over (lastFailure:
-\* the one relaunch set, or else the state's own).
+\* RelaunchReads projection with the other fields carried over (lastFailure
+\* and admissionIntent: the one relaunch set, or else the state's own).
 RelaunchLocalFailures ==
     {<<s, f>> \in StateIx \X FactIx :
         LET st == TableStates[s]
@@ -96,7 +97,9 @@ RelaunchLocalFailures ==
                   [st EXCEPT !.lifecycle = core.state.lifecycle,
                              !.pauseCause = core.state.pauseCause,
                              !.lastFailure = IF core.state.lastFailure # "none"
-                                                THEN core.state.lastFailure ELSE @],
+                                                THEN core.state.lastFailure ELSE @,
+                             !.admissionIntent = IF core.state.admissionIntent # "none"
+                                                    THEN core.state.admissionIntent ELSE @],
                   core.effects)}
 
 \* A spread of the fact space in which every value of every fact field occurs.
@@ -150,8 +153,9 @@ Spec == Init /\ [][Next]_report
 \* Reduce returns exactly the generated table.
 TableMatches == report.events = {} /\ report.relaunch = {}
 
-\* Relaunch reads only lifecycle and pauseCause and writes only those and
-\* lastFailure, so the relaunch grid speaks for every input state.
+\* Relaunch reads only lifecycle and pauseCause and writes only those,
+\* lastFailure and admissionIntent, so the relaunch grid speaks for every
+\* input state.
 RelaunchLocal == report.relaunchLocal = {}
 
 \* No event but relaunchObserved reads the facts.

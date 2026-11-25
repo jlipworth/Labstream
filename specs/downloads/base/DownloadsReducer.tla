@@ -207,6 +207,15 @@ RRelaunch(s, f) ==
                 <<"resetBytesToDurableCheckpoint">>)
     ELSE IF L = "paused" /\ f.checkpoint = "resumeBlob" THEN
         Applied(RRelaunchSet(s, "paused", "none", "none"), <<>>)
+    \* A forward-only row with no task, body or checkpoint (Admission-A1, #475):
+    \* a granted start waits for a lane again, a paused row stays paused.
+    ELSE IF /\ f.route = "forwardOnly" /\ f.body = "none"
+            /\ f.checkpoint \in {"none", "partialEmpty"} /\ L = "admitted" THEN
+        Applied([RRelaunchSet(s, "planned", "none", "none")
+                    EXCEPT !.admissionIntent = "seasonPlanned"], <<>>)
+    ELSE IF /\ f.route = "forwardOnly" /\ f.body = "none"
+            /\ f.checkpoint \in {"none", "partialEmpty"} /\ L = "paused" THEN
+        Applied(RRelaunchSet(s, "paused", "none", "none"), <<>>)
     ELSE
         Applied(RRelaunchSet(s, "failed", "none", "network"),
                 <<"deleteWorkingBody", "clearResumeBlob">>)

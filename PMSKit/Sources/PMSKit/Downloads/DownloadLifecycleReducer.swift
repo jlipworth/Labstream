@@ -515,6 +515,17 @@ public enum DownloadLifecycleReducer {
             if lifecycle == .paused, facts.checkpoint == .resumeBlob {
                 return set(.paused)
             }
+            // A forward-only row with no task, body or checkpoint has nothing a failure would
+            // discard (Admission-A1, #475). A granted start cut before its task existed waits for
+            // a lane again, as the same start does in process (`admissionDeferred`); a paused row
+            // stays paused. Reconcile while admission is open skips rows a start may own.
+            if facts.route == .forwardOnly, facts.body == .none, !facts.hasResumableCheckpoint {
+                if lifecycle == .admitted {
+                    next.history.admissionIntent = .seasonPlanned
+                    return set(.planned)
+                }
+                if lifecycle == .paused { return set(.paused) }
+            }
             return set(.failed, [.deleteWorkingBody, .clearResumeBlob], failure: .network)
         }
     }

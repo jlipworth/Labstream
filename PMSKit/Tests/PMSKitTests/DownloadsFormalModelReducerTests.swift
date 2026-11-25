@@ -16,7 +16,8 @@ import Testing
 /// The relaunch grid holds the `relaunchStateCount` states whose histories differ from the empty
 /// one only in `pauseCause`, against all 1,280 facts. `relaunchIsLocal` (here) and `RelaunchLocal`
 /// (in `DownloadsReducerConformance.tla`) prove that relaunch reads nothing else of a history and
-/// writes only `pauseCause` and `lastFailure`, which extends that grid to every other state.
+/// writes only `pauseCause`, `lastFailure` and `admissionIntent` (only ever to `seasonPlanned`),
+/// which extends that grid to every other state.
 ///
 /// The file is checked in:
 ///
@@ -105,11 +106,11 @@ struct DownloadsFormalModelReducerTests {
         #expect(failures.isEmpty, "\(failures.prefix(5))")
     }
 
-    @Test("relaunchObserved reads lifecycle and pauseCause, and writes those and lastFailure")
+    @Test("relaunchObserved reads lifecycle and pauseCause, and writes those, lastFailure and admissionIntent")
     func relaunchIsLocal() {
         // The relaunch grid holds only the states whose history is empty but for pauseCause.
         // For every other state the result is that grid's result with the other fields carried
-        // over; lastFailure is the one relaunch set, or else the state's own.
+        // over; lastFailure and admissionIntent are the ones relaunch set, or else the state's own.
         var failures: [String] = []
         for state in Table.states {
             let core = Table.relaunchCore(state)
@@ -124,6 +125,8 @@ struct DownloadsFormalModelReducerTests {
                 carried.lifecycle = coreNext.lifecycle
                 carried.history.pauseCause = coreNext.history.pauseCause
                 carried.history.lastFailure = coreNext.history.lastFailure ?? state.history.lastFailure
+                carried.history.admissionIntent = coreNext.history.admissionIntent
+                    ?? state.history.admissionIntent
                 if !Table.same(whole, .applied(carried, effects)) {
                     failures.append("\(Table.encode(state)) \(Table.encode(facts))")
                 }

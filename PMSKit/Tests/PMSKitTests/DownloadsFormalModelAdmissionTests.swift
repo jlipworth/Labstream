@@ -191,40 +191,43 @@ struct DownloadsFormalModelAdmissionTests {
         #expect(deferred?.history.admissionIntent == .seasonPlanned)
     }
 
-    /// A1. Startup recovery fails a forward-only row that never started.
+    /// A1 (#475, fixed). Startup recovery used to fail a forward-only row that never started:
     ///
     /// 1. The pump grants a waiting first start (`admissionGranted`: planned to admitted, intent
     ///    cleared). The process dies while the start is still refreshing the item, before any
-    ///    transfer task exists. On relaunch the row has no task, no body and no checkpoint, so
-    ///    `relaunchObserved` fails it with `network` and nothing asks for a lane again. Had the
-    ///    same start ended in process, `finishAdmittedStart` would have sent `admissionDeferred`
-    ///    and the row would wait again (B66, B67).
+    ///    transfer task exists. On relaunch the row has no task, no body and no checkpoint;
+    ///    `relaunchObserved` failed it with `network` and nothing asked for a lane again. In
+    ///    process `finishAdmittedStart` sends `admissionDeferred` and the row waits again (B66,
+    ///    B67); relaunch now does the same.
     /// 2. The user pauses a waiting first start (or taps Pause All on a queue of them). The row
-    ///    is `paused(user)` and keeps `seasonPlanned`. After a relaunch the same rule fails it,
-    ///    so a row the user only paused shows as a network failure.
+    ///    is `paused(user)` and keeps `seasonPlanned`. Relaunch failed it, so a row the user only
+    ///    paused showed as a network failure; it now stays paused with its intent.
     ///
-    /// The static lane hides ordering 1: launch recovery re-drives an interrupted static row.
+    /// The static lane hid ordering 1: launch recovery re-drives an interrupted static row.
+    /// `specs/downloads/admission/Faithful-A1-off.cfg` keeps the old behaviour as a violation.
     @Test("A1: relaunch keeps a forward-only row that never started")
-    func relaunchKeepsForwardOnlyRowThatNeverStarted() {
-        withKnownIssue("TLA+ finding A1 (#475): relaunch fails a forward-only row that never started") {
-            let noWork = DownloadRowFacts(route: .forwardOnly)
+    func relaunchKeepsForwardOnlyRowThatNeverStarted() throws {
+        let noWork = DownloadRowFacts(route: .forwardOnly)
 
-            // Ordering 1: granted, then the process died before any work existed.
-            let granted = try #require(
-                R.reduce(Self.waitingFirstStart(), .admissionGranted, facts: noWork).state)
-            let afterCrash = R.reduce(granted, .relaunchObserved, facts: noWork)
-            #expect(afterCrash.state?.lifecycle != .failed)
-            #expect(afterCrash.state.map { $0.lifecycle == .planned
-                    || $0.history.admissionIntent != nil } == true,
-                    "the row no longer waits for a lane")
+        // Ordering 1: granted, then the process died before any work existed.
+        let granted = try #require(
+            R.reduce(Self.waitingFirstStart(), .admissionGranted, facts: noWork).state)
+        let afterCrash = R.reduce(granted, .relaunchObserved, facts: noWork)
+        #expect(afterCrash.state?.lifecycle != .failed)
+        #expect(afterCrash.state.map { $0.lifecycle == .planned
+                || $0.history.admissionIntent != nil } == true,
+                "the row no longer waits for a lane")
+        #expect(afterCrash.state?.lifecycle == .planned)
+        #expect(afterCrash.state?.history.admissionIntent == .seasonPlanned)
+        #expect(afterCrash.effects.isEmpty)
 
-            // Ordering 2: paused while it waited for its first start.
-            let paused = try #require(
-                R.reduce(Self.waitingFirstStart(), .pause(.user), facts: noWork).state)
-            let pausedAfterCrash = R.reduce(paused, .relaunchObserved, facts: noWork)
-            #expect(pausedAfterCrash.state?.lifecycle == .paused)
-            #expect(pausedAfterCrash.state?.history.pauseCause == .user)
-            #expect(pausedAfterCrash.state?.history.admissionIntent == .seasonPlanned)
-        }
+        // Ordering 2: paused while it waited for its first start.
+        let paused = try #require(
+            R.reduce(Self.waitingFirstStart(), .pause(.user), facts: noWork).state)
+        let pausedAfterCrash = R.reduce(paused, .relaunchObserved, facts: noWork)
+        #expect(pausedAfterCrash.state?.lifecycle == .paused)
+        #expect(pausedAfterCrash.state?.history.pauseCause == .user)
+        #expect(pausedAfterCrash.state?.history.admissionIntent == .seasonPlanned)
+        #expect(pausedAfterCrash.effects.isEmpty)
     }
 }

@@ -605,6 +605,11 @@ Recovery also:
   stopped, because they cannot resume;
 - parks a static row at its durable checkpoint when the system (not the user) cancels its
   background task, and fails a forward-only row as retryable in the same case;
+- puts a forward-only row back in the admission queue when it has no task, no body and no
+  checkpoint: a granted start that the process lost before its task existed waits for a lane
+  again, as it would in process, and a row paused before it ever started stays paused (it used
+  to come back as a network failure; Admission-A1, #475). Foreground reconcile skips
+  forward-only rows a granted start may still own, since admission is open then;
 - fails a Jellyfin download or retry with "version no longer available" when the requested
   MediaSource has disappeared, instead of silently fetching another edition;
 - treats sign-out of a backend as a resumable pause of that backend's active rows. Records
@@ -818,7 +823,9 @@ queued row always has a supervised start behind it, that a user pause withdraws 
 and keeps a first-start intent, that an outage defers a first start, and, under fairness, that
 no waiting row waits forever. Fix-off configs reproduce B63, B65, B66 and B67; B65 off is the
 historical Resume bypass alone (`FirstStartGoesThroughWindow`), and erasing the first-start
-intent on pause is a mutant. Finding Admission-A1. Not covered: the server-preparation lane,
+intent on pause is a mutant. Admission-A1 is fixed: recovery never fails a forward-only row
+without start evidence (`RelaunchKeepsUnstartedRow`), and `Faithful-A1-off` restores the old
+failure. Not covered: the server-preparation lane,
 lane switches, the render handoff (#414), the admission persistence proof, new rows and Delete.
 
 #### Server preparation (`DownloadsServerPrep.tla`)
@@ -1090,7 +1097,7 @@ as the defect is fixed.
 | F2 | Foreground reconcile moves a user-paused row back to transferring from a stale live-task snapshot. | real; fixed on specs/downloads-tla, pending merge | #473 |
 | F3, RangeTrain-R3 | A user pause that lands while a transfer finishes discards the finished body. Forward-only: real. Static range (the pause's task listing supersedes a finished segment; one segment on a train, the whole remainder on the open-ended fallback): probable. | real; probable on the static lane | #474 |
 | F4 | A failing truncation verdict renames the body away before the verdict is durable; a crash in between leaves a finalizing row with no body, which reconcile fails as an internal error, and the strike is lost. | real, low | #491 |
-| Admission-A1 | Startup recovery fails a forward-only row that never started: a granted start cut by a crash, or a first start the user paused. | real | #475 |
+| Admission-A1 | Startup recovery fails a forward-only row that never started: a granted start cut by a crash, or a first start the user paused. | real; fixed on `specs/downloads-tla`, pending merge | #475 |
 | ServerPrep-S1 | Retry of a failed Plex preparation row abandons its running optimize job with no durable cancel and creates a second one. | real | #478 |
 | ServerPrep-S2 | The 24-hour Plex render deadline can fail a preparation row before its create is dispatched. | probable, low | #500 |
 | Cleanup-C1 | After a failed intent commit, an explicit artifact recovery re-registers the row deletion and files are unlinked before the intent is durable. | real | #479 |
