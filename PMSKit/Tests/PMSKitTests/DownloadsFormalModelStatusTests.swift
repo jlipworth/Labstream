@@ -1156,6 +1156,62 @@ struct DownloadsFormalModelStatusTests {
         #expect(steady.allSatisfy { $0.outcome.lastRefresh > 100 })
     }
 
+    /// S8 (fixed; `status/Current-OneForward.cfg` checks `NoRestartOfMovingStream`, fix off:
+    /// `Faithful-S8-off.cfg`). The watchdog's refresh finds a forward-only stream stalled and
+    /// queues a verdict as a manager operation; before it runs, the stream moves again and a
+    /// callback raises the row's bytes. The operation re-read the row and its route but not its
+    /// bytes, so it cancelled the moving stream and restarted it from byte 0. The model's trace:
+    /// StartTask, Stall, StallObserve (bytes 0), Unstall, DaemonWrite, Callback (bytes 1), StallAct.
+    @Test("S8: a queued stall verdict does not cancel a stream that moved again")
+    func queuedStallVerdictRechecksBytes() throws {
+        let manager = "Labstream/Capabilities/Downloads/Core/DownloadManager.swift"
+        let restart = try #require(Self.appFunctionSource(named: "restartStalledForwardOnlyStreamAsync", in: manager))
+        let recheck = try #require(restart.range(of:
+            "DownloadStallRecoveryPolicy.queuedStallVerdictStillWarranted(\n            observed: restart.record, current: current)"))
+        let failBranch = try #require(restart.range(of: "if restart.verdict == .fail {"))
+        let cancel = try #require(restart.range(of: "session.cancel(ratingKey: ratingKey)"))
+        #expect(recheck.lowerBound < failBranch.lowerBound && recheck.lowerBound < cancel.lowerBound,
+                "the recheck must run before either verdict cancels the stream")
+
+        let ratingKey = "jellyfin:item-moving"
+        func row(bytes: Int, attempt: String = "a1", lifecycle: DownloadLifecycle = .transferring,
+                 status: DownloadStatus = .downloading) -> DownloadRecord {
+            DownloadRecord(
+                ratingKey: ratingKey, attemptID: DownloadAttemptID(rawValue: attempt)!, title: "Fixture",
+                localURL: URL(fileURLWithPath: "/tmp/fixture.mp4"),
+                bytes: bytes, status: status,
+                metadata: OfflineMetadata(ratingKey: ratingKey, title: "Fixture", type: "movie",
+                                          backendKind: .jellyfin, downloadLane: .optimize,
+                                          resumeMode: .liveForwardOnly),
+                lifecycle: lifecycle)
+        }
+        typealias P = DownloadStallRecoveryPolicy
+        // StallObserve: the tracker queues a restart from the stalled observation at 1,000 bytes.
+        var tracker = DownloadForwardOnlyStallTracker()
+        let stalled = row(bytes: 1_000)
+        _ = tracker.detectRestarts(records: [stalled], now: Self.time(0), isActive: { _ in true })
+        let queued = try #require(tracker.detectRestarts(
+            records: [stalled], now: Self.time(P.defaultForwardOnlyStallTimeout), isActive: { _ in true }).first)
+        #expect(queued.verdict == .restart)
+        // StallAct with nothing in between: still stalled, the restart goes ahead.
+        #expect(P.queuedStallVerdictStillWarranted(observed: queued.record, current: row(bytes: 1_000)))
+        // Unstall, DaemonWrite, Callback first: the stream is moving again; leave it alone.
+        #expect(!P.queuedStallVerdictStillWarranted(observed: queued.record, current: row(bytes: 1_001)))
+        // A different attempt, or a row that left `downloading`: not this verdict's business.
+        #expect(!P.queuedStallVerdictStillWarranted(observed: queued.record, current: row(bytes: 0, attempt: "a2")))
+        #expect(!P.queuedStallVerdictStillWarranted(
+            observed: queued.record, current: row(bytes: 1_000, lifecycle: .paused, status: .paused)))
+
+        // The same holds for the `.fail` verdict past the cap (#497).
+        var capped = DownloadForwardOnlyStallTracker()
+        capped.seedRestartAttempts(ratingKey, attempts: P.defaultMaxAutomaticRestarts)
+        _ = capped.detectRestarts(records: [stalled], now: Self.time(0), isActive: { _ in true })
+        let failing = try #require(capped.detectRestarts(
+            records: [stalled], now: Self.time(P.defaultForwardOnlyStallTimeout), isActive: { _ in true }).first)
+        #expect(failing.verdict == .fail)
+        #expect(!P.queuedStallVerdictStillWarranted(observed: failing.record, current: row(bytes: 4_096)))
+    }
+
     /// S5 (#497, fixed; `status/Liveness-StallCap.cfg`, `Liveness-StallCapFlow.cfg`, fix off:
     /// `Faithful-S5-off.cfg`, `Faithful-S5-off-Flow.cfg`). The stall tracker restarts a wedged
     /// forward-only stream twice. If neither restart moved a byte, `shouldRestartForwardOnlyStream`
@@ -1176,11 +1232,11 @@ struct DownloadsFormalModelStatusTests {
             && restart.contains("forwardOnlyStallTracker.seedRestartAttempts(ratingKey, attempts: restart.attempt)")
             && restart.contains("requestAdmission(for: failed, origin: .automatic)")
             && restart.contains("if restart.verdict == .fail {"),
-                "the stall restart path changed: re-derive StallDetect in DownloadsStatus.tla and this harness from it")
+                "the stall restart path changed: re-derive StallObserve and StallAct in DownloadsStatus.tla and this harness from it")
         let fail = try #require(Self.appFunctionSource(named: "failStalledForwardOnlyStreamAsync", in: manager))
         #expect(fail.contains("applyLifecycleEvent(.stallDetected") && fail.contains("releaseInFlight(for: key)")
             && fail.contains("lastError[ratingKey] = .transferFailed(") && !fail.contains("requestAdmission"),
-                "the capped stall path changed: re-derive StallDetect's StallCapFails arm from it")
+                "the capped stall path changed: re-derive StallAct's StallCapFails arm from it")
 
         let ratingKey = "jellyfin:item-stalled"
         let record = DownloadRecord(

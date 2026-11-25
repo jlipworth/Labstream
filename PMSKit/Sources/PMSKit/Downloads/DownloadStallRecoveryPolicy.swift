@@ -59,4 +59,16 @@ public enum DownloadStallRecoveryPolicy {
               let lastForwardProgressAt else { return false }
         return now.timeIntervalSince(lastForwardProgressAt) >= stallTimeout
     }
+
+    /// TLA+ Status-S8: whether a queued stall verdict may still act. The verdict is decided in
+    /// `refreshRecords` but runs later as a manager operation, and delegate callbacks keep moving
+    /// the row in between. It acts only on the same attempt, still a forward-only stream, whose
+    /// bytes have not moved since the observation that queued it; otherwise it would cancel a
+    /// stream that is moving again (and, for a restart, start it over from byte 0).
+    public static func queuedStallVerdictStillWarranted(observed: DownloadRecord,
+                                                        current: DownloadRecord) -> Bool {
+        guard isForwardOnlyMediaBrowserStream(current),
+              current.attemptID == observed.attemptID else { return false }
+        return current.bytes <= observed.bytes
+    }
 }

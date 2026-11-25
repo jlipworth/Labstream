@@ -6,9 +6,9 @@ across headset sleep and wake, pause and resume, staggered callbacks after a wak
 and process death. `DownloadsStatusPhase.tla` is its helper: the phase rule as a function and as a
 table that the Swift tests read.
 
-It found seven findings (S1 to S7 below). S1, S2 and S5 are fixed (on `specs/downloads-tla`,
-pending merge): the code now has the model's `SilentCountsAsZero`, `WatchdogCoversTransfers` and
-`StallCapFails`, every config sets them to TRUE, and each fix has a `Faithful-S<n>-off` config
+It found eight findings (S1 to S8 below). S1, S2, S5 and S8 are fixed (on `specs/downloads-tla`,
+pending merge): the code now has the model's `SilentCountsAsZero`, `WatchdogCoversTransfers`,
+`StallCapFails` and `FixStallRecheck`, every config sets them to TRUE, and each fix has a `Faithful-S<n>-off` config
 that switches it off and must find the old violation. Their pins in
 `PMSKit/Tests/PMSKitTests/DownloadsFormalModelStatusTests.swift` now pass. S6 and S7 are pinned as
 known issues there; S3 and S4 have no pure decision to pin and are recorded as probable.
@@ -20,7 +20,7 @@ known issues there; S3 and S4 have no pure decision to pin and are recorded as p
 | Aggregate speed | `DownloadAggregateRateEstimator`, `OfflineDownloadAggregateStats` | Per transfer: the stage its evidence has reached (`none`, `settling`, `settled`, `window`), how old its last callback is (`aggAge`: under 3.5 s, 3.5 s to `callbackGap`, longer), and whether that callback lies 0.5 s past the batch's newest baseline (`aggOvl`, `ovlRipe`). `Refresh` publishes a number, "Updating speed…" or nothing. |
 | Row speed | `DownloadRateEstimator` and its owner code in `DownloadManager.refreshRecords` | The stage (`none`, `baseline`, `window`, `decaying`), the 4 s foreground grace, the first-callback rebaseline and its suppression. |
 | Refresh loop | `DownloadManager.updateDownloadWatchdog`, `DownloadWatchdogPolicy` | `refreshPending` (a callback or a store change scheduled one) and `watchdog` (the loop runs). |
-| Stall verdict | `DownloadStallRecoveryPolicy`, `DownloadForwardOnlyStallTracker`, `restartStalledForwardOnlyStreamAsync` | `StallDetect` fails a stalled forward-only attempt and requests a retry, `GrantRetry` and `StartTask` restart it from byte 0, and `stalls` counts restarts up to `MaxStallRestarts`. Forward progress resets the count. Past the cap (`StallCapFails`, #497) the stall fails the row with no retry request. Static-range rows have no stall verdict. |
+| Stall verdict | `DownloadStallRecoveryPolicy`, `DownloadForwardOnlyStallTracker`, `restartStalledForwardOnlyStreamAsync` | `StallObserve` and `StallAct` fail a stalled forward-only attempt and requests a retry, `GrantRetry` and `StartTask` restart it from byte 0, and `stalls` counts restarts up to `MaxStallRestarts`. Forward progress resets the count. Past the cap (`StallCapFails`, #497) the stall fails the row with no retry request. Detection and the verdict are two steps: `StallObserve` queues it with the bytes it saw (`stallQ`), `StallAct` runs it later and, with `FixStallRecheck` (S8), only if the bytes have not moved. Static-range rows have no stall verdict. |
 | Bytes | `DownloadStore.submitProgress`, `DownloadLiveRangeProgressPolicy`, `DownloadManager.displayBytes` | Three copies. `disk` is the index file. `rec` is the store's live row: a forward-only progress sample changes it at once and reaches `disk` only with a persistence ticket (a status change, or the 1 s cadence). `live` is the in-memory optimistic watermark of a static-range row. `pubBytes` is what the last refresh put on screen. A process death keeps `disk` only. |
 | Segment boundary | `DownloadLiveRangeProgressPolicy.rateSampleBytes`, the range callback in `BackgroundDownloadSession` | `SegmentFinish` puts a finished segment's body in claim debt (`debt`), `AppendLands` moves the checkpoint. A callback during the debt reports a lower train total; the hold makes that invisible to the estimator. |
 | Phase and caption | `DownloadRowStatusCaptionPolicy`, `DownloadProgressDisplay.isTransferFinalizing`, `DownloadManager.publishedRowPhase`, `DownloadJobSnapshot`, `OfflineSidebarStatusPolicy`, `DownloadHealthSnapshotPolicy` | `PhaseOf` over the lifecycle, zero bytes, `progress >= 1`, `isActive` (`activeJobs` holds the key, or the row downloads), the route and `isBackendConfigured`. `jobs` is `activeJobs`; `backendOn` is the backend session. |
@@ -95,46 +95,48 @@ mutation that dropped quiet members from the sum passed.
 
 Run with `TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/status`. The
 figures are from that command on a 14-core Mac with other checks running; the default tier takes
-about 19 minutes in all, and the three deep configs about 86 minutes.
+about 19 minutes in all. The deep figures below predate the S1, S2, S5 and S8 fixes (not rerun
+in phase A); the three deep configs took about 86 minutes.
 
 | Config | Expect | Distinct states | Seconds |
 | --- | --- | ---: | ---: |
 | `Current-Backend` | pass | 245,746 | 7 |
-| `Current-Mixed` | pass | 3,074,439 | 153 |
-| `Current-OneForward` | pass | 723,271 | 20 |
-| `Current-OneStatic` | pass | 556,054 | 15 |
+| `Current-Mixed` | pass | 3,107,916 | 147 |
+| `Current-OneForward` | pass | 1,614,058 | 47 |
+| `Current-OneStatic` | pass | 556,054 | 27 |
 | `Current-Planned` | pass | 104,963 | 6 |
-| `Current-TwoStatic` | pass | 1,415,698 | 70 |
+| `Current-TwoStatic` | pass | 1,415,698 | 84 |
 | `Faithful-B09-off` | violation `PhaseNoGhostWork` | 59 | 1 |
-| `Faithful-S1-off` | violation `UpdatingResolves` (reported as `TEMPORAL`) | 183,687 | 60 |
-| `Faithful-S2-off` | violation `SpeedSettlesAfterStall` (reported as `TEMPORAL`) | 19,274 | 4 |
-| `Faithful-S5-off-Flow` | violation `UpdatingResolves` (reported as `TEMPORAL`) | 66,773 | 20 |
-| `Faithful-S5-off` | violation `ForwardStallGetsVerdict` (reported as `TEMPORAL`) | 251,898 | 65 |
-| `Faithful-pu33-off` | violation `WaitingReadsAsWaiting` | initial state | 0 |
-| `Finding-S3-RelaunchDip` | violation `RelaunchKeepsBytes` | 1,427 | 1 |
-| `Finding-S3-RelaunchDipForward` | violation `RelaunchKeepsBytes` | 1,694 | 1 |
-| `Finding-S4-LateCallbackInflatesRow` | violation `NoInflatedRowRate` | 1,133 | 1 |
-| `Finding-S6-SlowMemberFlapsSpeed` | violation `EventuallyStable` (reported as `TEMPORAL`) | 46,909 | 35 |
-| `Finding-S7-LateBacklogInflatesRow` | violation `NoInflatedRowRate` | 1,390 | 1 |
-| `Finding-S7-LateBacklogInflatesTotal` | violation `NoInflatedAggregate` | 2,965 | 2 |
-| `Liveness-Flow` | pass | 117,074 | 59 |
-| `Liveness-FlowOneForward` | pass | 27,824 | 9 |
-| `Liveness-FlowOneStatic` | pass | 78,270 | 18 |
-| `Liveness-FlowStall` | pass | 102,070 | 119 |
-| `Liveness-Settle` | pass | 110,277 | 26 |
-| `Liveness-SilentMember` | pass | 184,911 | 100 |
-| `Liveness-StaleRowSettles` | pass | 215,204 | 35 |
-| `Liveness-StallCap` | pass | 266,119 | 43 |
-| `Liveness-StallCapFlow` | pass | 85,744 | 29 |
-| `Liveness-Static` | pass | 163,202 | 25 |
-| `Mutant-I224-NoSettling` | violation `NoInflatedAggregate` | 1,582 | 1 |
-| `Mutant-I224-NoWakeReset` | violation `NoInflatedAggregate` | 6,721 | 1 |
-| `Mutant-I379-NoOverlap` | violation `NoUnsharedWindow` | 309 | 0 |
-| `Mutant-I379-PartialSum` | violation `NoPartialSum` | 3,286 | 1 |
-| `Mutant-I379-QuietOmitted` | violation `NoPartialSum` | 38,789 | 2 |
-| `Mutant-I416-SegmentNoHold` | violation `NoSpuriousReset` | 155 | 1 |
-| `Proposed-Mixed` | pass | 2,274,071 | 106 |
-| `Proposed-OneForward` | pass | 421,090 | 11 |
+| `Faithful-S1-off` | violation `UpdatingResolves` (reported as `TEMPORAL`) | 179,960 | 64 |
+| `Faithful-S2-off` | violation `SpeedSettlesAfterStall` (reported as `TEMPORAL`) | 18,477 | 4 |
+| `Faithful-S5-off-Flow` | violation `UpdatingResolves` (reported as `TEMPORAL`) | 66,773 | 21 |
+| `Faithful-S5-off` | violation `ForwardStallGetsVerdict` (reported as `TEMPORAL`) | 392,467 | 64 |
+| `Faithful-S8-off` | violation `NoRestartOfMovingStream` | 721 | 1 |
+| `Faithful-pu33-off` | violation `WaitingReadsAsWaiting` | initial state | 1 |
+| `Finding-S3-RelaunchDip` | violation `RelaunchKeepsBytes` | 1,527 | 1 |
+| `Finding-S3-RelaunchDipForward` | violation `RelaunchKeepsBytes` | 1,920 | 1 |
+| `Finding-S4-LateCallbackInflatesRow` | violation `NoInflatedRowRate` | 1,440 | 1 |
+| `Finding-S6-SlowMemberFlapsSpeed` | violation `EventuallyStable` (reported as `TEMPORAL`) | 46,909 | 21 |
+| `Finding-S7-LateBacklogInflatesRow` | violation `NoInflatedRowRate` | 1,253 | 0 |
+| `Finding-S7-LateBacklogInflatesTotal` | violation `NoInflatedAggregate` | 3,171 | 1 |
+| `Liveness-Flow` | pass | 117,074 | 40 |
+| `Liveness-FlowOneForward` | pass | 35,911 | 6 |
+| `Liveness-FlowOneStatic` | pass | 78,270 | 13 |
+| `Liveness-FlowStall` | pass | 141,514 | 73 |
+| `Liveness-Settle` | pass | 128,418 | 24 |
+| `Liveness-SilentMember` | pass | 184,911 | 101 |
+| `Liveness-StaleRowSettles` | pass | 215,204 | 36 |
+| `Liveness-StallCap` | pass | 392,477 | 68 |
+| `Liveness-StallCapFlow` | pass | 125,188 | 45 |
+| `Liveness-Static` | pass | 163,202 | 27 |
+| `Mutant-I224-NoSettling` | violation `NoInflatedAggregate` | 1,440 | 1 |
+| `Mutant-I224-NoWakeReset` | violation `NoInflatedAggregate` | 6,730 | 1 |
+| `Mutant-I379-NoOverlap` | violation `NoUnsharedWindow` | 302 | 1 |
+| `Mutant-I379-PartialSum` | violation `NoPartialSum` | 3,327 | 1 |
+| `Mutant-I379-QuietOmitted` | violation `NoPartialSum` | 29,336 | 2 |
+| `Mutant-I416-SegmentNoHold` | violation `NoSpuriousReset` | 152 | 0 |
+| `Proposed-Mixed` | pass | 2,307,548 | 110 |
+| `Proposed-OneForward` | pass | 928,153 | 47 |
 | `Deep-LivenessFlow` (deep) | pass | 1,066,742 | 419 |
 | `Deep-Mixed` (deep) | pass | 66,650,051 | 3195 |
 | `Deep-TwoStatic` (deep) | pass | 30,480,049 | 1543 |
@@ -159,6 +161,8 @@ switches S1 off too, since either fix clears that trace):
   stalled row keeps its speed.
 - **S5 off** (`Faithful-S5-off`, violates `ForwardStallGetsVerdict`; `Faithful-S5-off-Flow`,
   violates `UpdatingResolves`). Past the cap a stalled forward-only stream stays `transferring`.
+- **S8 off** (`Faithful-S8-off`, violates `NoRestartOfMovingStream`). A queued stall verdict
+  cancels a stream that moved again before the verdict ran.
 
 Two historical bugs from `docs/evidence/2026-10-17-downloads-overhaul-bugs-vs-main.md`:
 
@@ -327,8 +331,8 @@ device. Proposed in the model (`ForwardFirstCallbackRebaseline`).
 
 Issue #497.
 
-Trace (`Finding-S5-StallCapNoVerdict`): the stream starts and stalls with no bytes; `StallDetect`
-fails the attempt and requests a retry; admission grants it and it starts again from byte 0; it
+Trace (`Finding-S5-StallCapNoVerdict`, now `Faithful-S5-off`): the stream starts and stalls with
+no bytes; `StallObserve` and `StallAct` fail the attempt and requests a retry; admission grants it and it starts again from byte 0; it
 stalls again and is restarted a second time; it stalls a third time. Now
 `shouldRestartForwardOnlyStream` answers no, a restart is the only verdict the tracker has, and
 nothing else looks at the row. It stays `transferring` with a task that delivers nothing. The
@@ -409,6 +413,29 @@ that outlast the settling window (the worst answer is 10.7 times the true total)
 cannot tell a late backlog from a burst, so a fix belongs to the owner. Whether URLSession ever
 reports a backlog that late needs a device.
 
+### S8: a queued stall restart cancels a stream that is moving again (real, low; fixed)
+
+Raised by the independent reviewer (rated probable), confirmed in the Swift. No issue number yet.
+
+`refreshRecords` asks the tracker for stall verdicts and hands each to
+`restartStalledForwardOnlyStream`, which enqueues a manager operation. The operation re-read the
+row and checked its route, but never compared its bytes with the observation that triggered the
+verdict. A forward-only progress callback changes the store's live row at once
+(`submitProgress`), so if the stream moved again in between, the operation cancelled a moving
+stream and restarted it from byte 0 (or, past the cap, failed it). Round 2's `StallDetect` was one
+action guarded by `~flow`, so the model could not reach this.
+
+Trace (`Faithful-S8-off`): StartTask, Refresh, Stall, StallObserve (bytes 0), Unstall,
+DaemonWrite, Callback (bytes 1), StallAct cancels the stream.
+
+**Fixed** (`FixStallRecheck`; `NoRestartOfMovingStream` in `Current-OneForward`,
+`Current-Mixed` and the other safety configs). `DownloadStallRecoveryPolicy.
+queuedStallVerdictStillWarranted` holds only for the same attempt, still a forward-only stream,
+with bytes no higher than observed; the operation checks it before either verdict and otherwise
+drops the verdict (diagnostic `downloads.forward_stream_stall_verdict_skipped`). The tracker
+needs no change: the next refresh sees the forward bytes and resets the restart budget. Pin:
+`queuedStallVerdictRechecksBytes`.
+
 ## Modelling artefacts, fixed in the model
 
 - **A refresh held across pause, sleep, wake and resume.** A scheduled refresh could be delayed
@@ -425,7 +452,7 @@ reports a backlog that late needs a device.
 
 ## Swift tests
 
-`DownloadsFormalModelStatusTests` (22 tests; six of them carry known issues, six in all). The
+`DownloadsFormalModelStatusTests` (23 tests; six of them carry known issues, six in all). The
 seeded ones use a fixed-seed SplitMix64 generator.
 
 - Aggregate speed, steady batch across sleeps, staggered and late first callbacks, partial

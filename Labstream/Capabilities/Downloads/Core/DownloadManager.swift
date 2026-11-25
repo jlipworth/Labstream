@@ -4992,8 +4992,22 @@ public final class DownloadManager {
         let ratingKey = restart.record.ratingKey
         guard let current = store.record(for: ratingKey),
               let key = attemptKey(for: current),
-              !store.isDeletionPending(for: key),
-              DownloadStallRecoveryPolicy.isForwardOnlyMediaBrowserStream(current) else { return }
+              !store.isDeletionPending(for: key) else { return }
+        // TLA+ Status-S8: the verdict was queued from an earlier observation and callbacks may
+        // have moved the row since. Never cancel a stream that is moving again, nor act on a
+        // different attempt.
+        guard DownloadStallRecoveryPolicy.queuedStallVerdictStillWarranted(
+            observed: restart.record, current: current) else {
+            if DownloadStallRecoveryPolicy.isForwardOnlyMediaBrowserStream(current) {
+                recordDownloadDiagnostic("downloads.forward_stream_stall_verdict_skipped", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "observed_bytes": .bytes(restart.record.bytes),
+                    "bytes": .bytes(current.bytes),
+                    "same_attempt": .bool(current.attemptID == restart.record.attemptID),
+                ])
+            }
+            return
+        }
         let backend = DownloadJobSnapshot(record: current).backend
         if restart.verdict == .fail {
             await failStalledForwardOnlyStreamAsync(restart, current: current, key: key, backend: backend)

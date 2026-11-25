@@ -658,7 +658,9 @@ Every download start goes through one admission window (`DownloadAdmissionPolicy
 automatic static range resumes and stalled-stream restarts. (A Jellyfin or Emby forward-only
 stream with no byte progress for 90 s is restarted from byte 0 at most twice between forward
 bytes; the next stall fails the row as stalled with a retryable reason and no admission request,
-so the user retries it, with a fresh restart budget (#497).) Settings ▸ Downloads ▸
+so the user retries it, with a fresh restart budget (#497). A queued stall verdict acts only if
+the row is still the same attempt and its bytes have not moved since the stall was seen.)
+Settings ▸ Downloads ▸
 **Simultaneous downloads** sets the total cap from 1 to 5 (default 3). The static-file lane is
 `max(1, total - 1)` and live-forward streams are capped at 1. Server preparation (Plex optimize or
 Emby Convert) is not a transfer and does not count toward the total (#414): up to 5 server jobs
@@ -1136,6 +1138,7 @@ as the defect is fixed.
 | Status-S5 | Past its two automatic restarts a stalled forward-only stream has no verdict; it stays downloading at zero bytes and hides the batch speed. | real, medium; fixed on specs/downloads-tla, pending merge | #497 |
 | Status-S6 | Fresh evidence without a common 0.5 s window hides the batch speed; a member reporting every 3.5 to 6 s makes it come and go. | real, low | #498 |
 | Status-S7 | A backlog reported after the 4 s settling and grace windows is published as live speed. | probable, low | #499 |
+| Status-S8 | A queued forward-only stall verdict re-read the row but not its bytes, so a stream that moved again before the queued operation ran was cancelled and restarted from byte 0. | real, low; fixed on specs/downloads-tla, pending merge | none yet |
 
 Wake-W1, Wake-W2, SideAssets-S3, SideAssets-S4, Status-S3, Status-S4, st-39 and #394 have a
 `Finding-*` config and no behavioural Swift pin: the decision is app-target code or a product
