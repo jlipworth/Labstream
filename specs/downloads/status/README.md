@@ -95,8 +95,9 @@ mutation that dropped quiet members from the sum passed.
 
 Run with `TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/status`. The
 figures are from that command on a 14-core Mac with other checks running; the default tier takes
-about 19 minutes in all. The deep figures below predate the S1, S2, S5 and S8 fixes (not rerun
-in phase A); the three deep configs took about 86 minutes.
+about 19 minutes in all. `Deep-Mixed` and `Deep-TwoStatic` were rerun after the S1, S2, S5 and S8
+fixes with `TLC_WORKERS=4` (about 47 minutes for the two); the `Deep-LivenessFlow` figure predates
+those fixes.
 
 | Config | Expect | Distinct states | Seconds |
 | --- | --- | ---: | ---: |
@@ -138,8 +139,8 @@ in phase A); the three deep configs took about 86 minutes.
 | `Proposed-Mixed` | pass | 2,307,548 | 110 |
 | `Proposed-OneForward` | pass | 928,153 | 47 |
 | `Deep-LivenessFlow` (deep) | pass | 1,066,742 | 419 |
-| `Deep-Mixed` (deep) | pass | 66,650,051 | 3195 |
-| `Deep-TwoStatic` (deep) | pass | 30,480,049 | 1543 |
+| `Deep-Mixed` (deep) | pass | 73,353,389 | 1852 |
+| `Deep-TwoStatic` (deep) | pass | 34,252,117 | 945 |
 
 The `Current` and `Liveness` configs leave out what an open finding violates: none checks
 `RelaunchKeepsBytes` (S3), `NoInflatedRowRate` is checked only where no forward-only row exists
