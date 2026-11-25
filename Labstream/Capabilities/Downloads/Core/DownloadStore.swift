@@ -5377,6 +5377,28 @@ final class DownloadStore: @unchecked Sendable {
         return submitLifecycleEventLocked(event, for: key, facts: facts)
     }
 
+    /// Review of PR #505 (#501 follow-up): conditionally accept a queued forward-only stall
+    /// verdict. Only the exact attempt the verdict observed, still `.transferring` (a finished body
+    /// is `.finalizing`, which also shows as `.downloading`), with bytes that have not moved past
+    /// `observedBytes` may fail as stalled. The check and the `stallDetected` commit run in one hold
+    /// of the store lock, so neither a body that finished nor a delegate callback that advanced the
+    /// bytes after the manager's read can slip between them. The caller cancels the attempt's task
+    /// and records its error only after `.accepted`; a rejected verdict changes nothing.
+    func submitStallVerdict(for key: DownloadAttemptKey, observedBytes: Int) -> LifecycleEventSubmission {
+        lock.lock()
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
+              !Self.hasPendingRowDeletion(row) else {
+            lock.unlock()
+            return .staleOrMissing
+        }
+        guard DownloadStallRecoveryPolicy.stallVerdictMayCommit(
+            lifecycle: row.lifecycle, bytes: row.bytes, observedBytes: observedBytes) else {
+            lock.unlock()
+            return .rejected(.illegal)
+        }
+        return submitLifecycleEventLocked(.stallDetected, for: key, facts: DownloadRowFacts(route: .forwardOnly))
+    }
+
     private func submitLifecycleEventLocked(_ event: DownloadLifecycleEvent, for key: DownloadAttemptKey,
                                             facts: DownloadRowFacts) -> LifecycleEventSubmission {
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {

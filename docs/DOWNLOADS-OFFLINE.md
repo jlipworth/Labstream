@@ -216,9 +216,11 @@ until it has been silent for the six-second callback gap in a process that kept 
 callback since its last one, or since the last reset if it has not reported since). From then it
 counts as zero, so one stuck transfer cannot hide a healthy batch's speed (#487), and its next
 callback resets the batch like any other late watermark. A batch in which every attempt is silent
-has no total. The refresh loop keeps running while any row is transferring (every second while a
-total shows, every 15 s otherwise), so a row that stalls silently loses its speed and ETA at the
-next refresh past its six-second stall timeout (#488).
+has no total. The refresh loop runs every second while a total shows, and every 15 s while a
+forward-only stream or server preparation needs polling. A row that shows a speed or ETA also arms
+one refresh for the moment its estimator's six-second stall timeout runs out, so a row that stalls
+silently loses its speed and ETA then (#488), and a row that stays silent costs that one refresh,
+not a library rebuild every 15 s for as long as it transfers.
 A dip in a Range attempt's reported bytes resets its window only when bodies that finished but are
 not yet appended cannot explain the whole dip, so the total survives 512 MiB segment boundaries
 (#416; `DownloadLiveRangeProgressPolicy`). All measurement state is memory-only.
@@ -703,10 +705,14 @@ instead of turning unknown side assets or reservations into false zeroes.
 Every download start goes through one admission window (`DownloadAdmissionPolicy`, driven by
 `DownloadAdmissionCoordinator`): single taps, season rows, Resume All, a row's Resume or Retry,
 automatic static range resumes and stalled-stream restarts. (A Jellyfin or Emby forward-only
-stream with no byte progress for 90 s is restarted from byte 0 at most twice between forward
-bytes; the next stall fails the row as stalled with a retryable reason and no admission request,
-so the user retries it, with a fresh restart budget (#497). A queued stall verdict acts only if
-the row is still the same attempt and its bytes have not moved since the stall was seen.)
+stream with no byte progress for 90 s is restarted from byte 0 at most twice before a replacement
+passes the most bytes any earlier attempt reached: bytes a replacement replays up to that
+high-water mark do not give the budget back. The next stall fails the row as stalled with a
+retryable reason and no admission request, so the user retries it, and a user Retry or Resume
+restores the full restart budget (#497). A queued stall verdict acts only through the store, which
+accepts it for the same attempt while it is still transferring and its bytes have not moved, in
+one step with the commit; only then is that attempt's task cancelled, so a body that finished or
+bytes that moved meanwhile leave the stream and its error alone (#501).)
 Settings ▸ Downloads ▸
 **Simultaneous downloads** sets the total cap from 1 to 5 (default 3). The static-file lane is
 `max(1, total - 1)` and live-forward streams are capped at 1. Server preparation (Plex optimize or
@@ -1188,13 +1194,13 @@ then a plain regression test and its `Finding-*` config a `Faithful-*-off` one.
 | RangeTrain-R2 | Reconcile fails a static row whose finished body is stashed and queued for append. | fixed on `specs/downloads-tla`, pending merge, for work the session owns: reconcile asks the session when it decides (`Faithful-R2-off`; the live-key snapshot alone is not enough, `Faithful-R2-off-SnapshotOnly`). Open: a body still undelivered by the daemon at that moment is lost with any ownership check (`Finding-R2-UndeliveredBodyLost`). | #476 |
 | RangeTrain-R4 | After a crash in the middle of an append, a segment finished while the app was dead is held beside the ones the planner started; when the head segment fails once, two held bodies fill the depth of two and the planner never fetches the gap at the checkpoint. | probable, medium, rare | #492 |
 | Status-S1 | A silently stalled transfer hides the batch speed for as long as it is silent. | real; fixed on specs/downloads-tla, pending merge | #487 |
-| Status-S2 | A stalled static-range row keeps showing a stale speed and ETA. | real; fixed on specs/downloads-tla, pending merge | #488 |
+| Status-S2 | A stalled static-range row keeps showing a stale speed and ETA. | real; fixed on specs/downloads-tla, pending merge. Review of PR #505: the first fix polled every 15 s while a static row transferred, for ever; a one-shot expiry replaces it (`status/Faithful-488-Polling-off`) | #488 |
 | Status-S3 | After a process death a row shows fewer bytes than before: a static-range row loses its in-memory optimistic total, a forward-only row the progress samples since its last persistence ticket. | probable | #490 |
 | Status-S4 | A forward-only row's first callback after the foreground grace inflates its speed. | probable; uncertain on a device | #489 |
-| Status-S5 | Past its two automatic restarts a stalled forward-only stream has no verdict; it stays downloading at zero bytes and hides the batch speed. | real, medium; fixed on specs/downloads-tla, pending merge | #497 |
+| Status-S5 | Past its two automatic restarts a stalled forward-only stream has no verdict; it stays downloading at zero bytes and hides the batch speed. | real, medium; fixed on specs/downloads-tla, pending merge. Review of PR #505: replayed bytes refilled the budget, so a stream that wedged at the same offset restarted for ever; the budget now refills only past the high-water mark (`status/Faithful-497-HighWater-off`) | #497 |
 | Status-S6 | Fresh evidence without a common 0.5 s window hides the batch speed; a member reporting every 3.5 to 6 s makes it come and go. | real, low | #498 |
 | Status-S7 | A backlog reported after the 4 s settling and grace windows is published as live speed. | probable, low | #499 |
-| Status-S8 | A queued forward-only stall verdict re-read the row but not its bytes, so a stream that moved again before the queued operation ran was cancelled and restarted from byte 0. | real, low; fixed on specs/downloads-tla, pending merge | #501 |
+| Status-S8 | A queued forward-only stall verdict re-read the row but not its bytes, so a stream that moved again before the queued operation ran was cancelled and restarted from byte 0. | real, low; fixed on specs/downloads-tla, pending merge. Review of PR #505: a finished (`finalizing`) body, or bytes moved after the read, were still cancelled before the reducer rejected the verdict; the store now commits it conditionally before any cancel (`status/Faithful-501-Commit-off`, `Faithful-501-Finalizing-off`) | #501 |
 | Status-502 | After a static-range resume from a blob, the published bytes went backwards: per-sample normalization against the watermark let a fresh count fall below a cumulative one, freezing the row and resetting the batch speed. | real, medium; fixed on specs/downloads-tla, pending merge (`status/Faithful-502-off`) | #502 |
 
 Wake-W1, Wake-W2, SideAssets-S3, SideAssets-S4, Status-S3, Status-S4, st-39 and #394 have a

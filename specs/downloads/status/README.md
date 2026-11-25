@@ -21,8 +21,8 @@ Findings.
 | --- | --- | --- |
 | Aggregate speed | `DownloadAggregateRateEstimator`, `OfflineDownloadAggregateStats` | Per transfer: the stage its evidence has reached (`none`, `settling`, `settled`, `window`), how old its last callback is (`aggAge`: under 3.5 s, 3.5 s to `callbackGap`, longer), and whether that callback lies 0.5 s past the batch's newest baseline (`aggOvl`, `ovlRipe`). `Refresh` publishes a number, "Updating speed…" or nothing. |
 | Row speed | `DownloadRateEstimator` and its owner code in `DownloadManager.refreshRecords` | The stage (`none`, `baseline`, `window`, `decaying`), the 4 s foreground grace, the first-callback rebaseline and its suppression. |
-| Refresh loop | `DownloadManager.updateDownloadWatchdog`, `DownloadWatchdogPolicy` | `refreshPending` (a callback or a store change scheduled one) and `watchdog` (the loop runs). |
-| Stall verdict | `DownloadStallRecoveryPolicy`, `DownloadForwardOnlyStallTracker`, `restartStalledForwardOnlyStreamAsync` | `StallObserve` and `StallAct` fail a stalled forward-only attempt and requests a retry, `GrantRetry` and `StartTask` restart it from byte 0, and `stalls` counts restarts up to `MaxStallRestarts`. Forward progress resets the count. Past the cap (`StallCapFails`, #497) the stall fails the row with no retry request. Detection and the verdict are two steps: `StallObserve` queues it with the bytes it saw (`stallQ`), `StallAct` runs it later and, with `FixStallRecheck` (S8), only if the bytes have not moved. Static-range rows have no stall verdict. |
+| Refresh loop | `DownloadManager.updateDownloadWatchdog`, `DownloadManager.scheduleRateEvidenceExpiry`, `DownloadWatchdogPolicy` | `refreshPending` (a callback or a store change scheduled one) and `watchdog` (the loop runs, or a one-shot rate expiry is armed: `ExpiryArmed`, `FixRateExpiry`). |
+| Stall verdict | `DownloadStallRecoveryPolicy`, `DownloadForwardOnlyStallTracker`, `restartStalledForwardOnlyStreamAsync` | `StallObserve` and `StallAct` fail a stalled forward-only attempt and requests a retry, `GrantRetry` and `StartTask` restart it from byte 0, and `stalls` counts restarts up to `MaxStallRestarts`. Bytes past the row's high-water mark reset the count (`FixStallHighWater`; replayed bytes do not). Past the cap (`StallCapFails`, #497) the stall fails the row with no retry request. Detection and the verdict are two steps: `StallObserve` queues it with the bytes it saw (`stallQ`), `StallAct` runs it later and, with `FixStallRecheck` (S8), only if the bytes have not moved; with `FixStallCommit` that check, the lifecycle and the commit are one step, before the cancel (off: `StallCheck` reads first). Static-range rows have no stall verdict. |
 | Bytes | `DownloadStore.submitProgress`, `DownloadLiveRangeProgressPolicy`, `DownloadManager.displayBytes` | Three copies. `disk` is the index file. `rec` is the store's live row: a forward-only progress sample changes it at once and reaches `disk` only with a persistence ticket (a status change, or the 1 s cadence). `live` is the in-memory optimistic watermark of a static-range row. `pubBytes` is what the last refresh put on screen. A process death keeps `disk` only. |
 | Resumed remainder (#502) | `DownloadLiveRangeProgressPolicy.displayBytesForResumedTask`, the range callback and the pause path in `BackgroundDownloadSession` | Only for rows in `ResumeBlobRows`, a definition that is empty unless a config overrides it. `res` holds the resume watermark (`wm`), the task's reported count above the checkpoint (`cnt`), the blob bytes that count leaves out (`off`), the rebase the session latched on the task's first callback, and the sample it last published (`pub`). `Pause` keeps the task's bytes as the blob and the larger watermark; `StartTask` resumes from the blob with a fresh or a cumulative counter. `Fix502` switches between the latched rebase and the old per-sample rule. |
 | Segment boundary | `DownloadLiveRangeProgressPolicy.rateSampleBytes`, the range callback in `BackgroundDownloadSession` | `SegmentFinish` puts a finished segment's body in claim debt (`debt`), `AppendLands` moves the checkpoint. A callback during the debt reports a lower train total; the hold makes that invisible to the estimator. |
@@ -74,7 +74,8 @@ configs use 1 or 2 and, where the run would leave the default tier, a subset of 
 | `PhaseBackendHonest` | invariant | "Waiting for <backend>" is said only of a row with no session and no task. |
 | `SidebarHonest`, `HealthHonest` | invariant | The sidebar count and the health snapshot agree with the same notion of work. |
 | `WaitingReadsAsWaiting` | invariant | pu-33. A row waiting for admission reads as waiting. |
-| `StallRestartsCapped` | invariant | The tracker never restarts a stream more often than its cap between two forward bytes. |
+| `StallRestartsCapped` | invariant | The tracker never restarts a stream more often than its cap before a replacement passes the row's byte high-water mark. |
+| `NoRestartOfMovingStream` | invariant | #501. A queued stall verdict never cancels a stream whose bytes moved since it was observed, nor one whose body finished. |
 | `ResumedBytesHonest` | invariant | #502. Neither a resumed task's published sample nor the row's merged total claims bytes the row does not have. |
 | `BytesMonotone` | action | While the process lives and a row stays downloading, its shown bytes never go down unless a reducer effect reset them. |
 | `PublishedSampleMonotone` | action | #502. While the process lives and a resumed task keeps running, the sample the session publishes (to the row and to the aggregate estimator) never goes down. It is judged on that sample, not on `Shown`: the row's running max turns a fall into a freeze on screen, and the estimator still sees the fall. |
@@ -82,6 +83,7 @@ configs use 1 or 2 and, where the run would leave the default tier, a subset of 
 | `UpdatingResolves` | liveness | "Updating speed…" does not stay up for ever while a transferring row's bytes flow. S1 and S5 violate it. |
 | `SpeedSettlesAfterStall` | liveness | After a stall a transferring row stops showing a speed. S2 violates it. |
 | `ForwardStallGetsVerdict` | liveness | A forward-only stream that has stopped moving does not stay `transferring` for ever. S5 violates it. |
+| `SilenceStopsRefreshes` | liveness | Once every row is silent for good, the refresh timer stops (checked without forward-only rows, which are polled by design). The first #488 fix violates it. |
 | `EventuallyStable` | liveness | The published speeds stop appearing and disappearing once interference stops. S6 violates it. |
 
 `BytesMonotone` is narrower than "bytes never go backwards": leaving `downloading` drops the
@@ -103,7 +105,10 @@ figures are from that command on a 14-core Mac with other checks running; the de
 about 19 minutes in all. `Deep-Mixed` and `Deep-TwoStatic` were rerun after the S1, S2, S5 and S8
 fixes with `TLC_WORKERS=4` (about 47 minutes for the two). State counts were refreshed on
 2026-11-25 from a full `TLC_WORKERS=auto` run of the branch head (after the #502 fix); the deep
-rows' seconds are from that run, the other seconds from the two-worker runs.
+rows' seconds are from that run, the other seconds from the two-worker runs. The four review-fix
+configs (`Current-Stall*`, `Faithful-488-*`, `Faithful-497-*`, `Faithful-501-*`) were added from a
+two-worker run after the review of PR #505; the review fixes moved the other rows' counts by a
+few percent (for example `Current-OneForward` 2,508,114, `Liveness-StallCap` 505,536).
 
 | Config | Expect | Distinct states | Seconds |
 | --- | --- | ---: | ---: |
@@ -113,7 +118,13 @@ rows' seconds are from that run, the other seconds from the two-worker runs.
 | `Current-OneStatic` | pass | 556,054 | 27 |
 | `Current-Planned` | pass | 104,963 | 6 |
 | `Current-ResumeBlob` | pass | 224,161 | 3 |
+| `Current-StallFinishing` | pass | 3,396 | 0 |
+| `Current-StallReplay` | pass | 8,999 | 1 |
 | `Current-TwoStatic` | pass | 1,415,698 | 84 |
+| `Faithful-488-Polling-off` | violation `SilenceStopsRefreshes` (reported as `TEMPORAL`) | 3,734 | 2 |
+| `Faithful-497-HighWater-off` | violation `StallRestartsCapped` | 4,078 | 1 |
+| `Faithful-501-Commit-off` | violation `NoRestartOfMovingStream` | 1,242 | 0 |
+| `Faithful-501-Finalizing-off` | violation `NoRestartOfMovingStream` | 1,215 | 1 |
 | `Faithful-502-off` | violation `PublishedSampleMonotone` | 3,656 | 1 |
 | `Faithful-B09-off` | violation `PhaseNoGhostWork` | 59 | 1 |
 | `Faithful-S1-off` | violation `UpdatingResolves` (reported as `TEMPORAL`) | 179,960 | 64 |
@@ -172,6 +183,16 @@ switches S1 off too, since either fix clears that trace):
   violates `UpdatingResolves`). Past the cap a stalled forward-only stream stays `transferring`.
 - **S8 off** (#501, `Faithful-S8-off`, violates `NoRestartOfMovingStream`). A queued stall verdict
   cancels a stream that moved again before the verdict ran.
+
+Three fixes from the review of PR #505, switched off by overriding a definition (`<- Off`):
+
+- **#497 high-water mark off** (`Faithful-497-HighWater-off`, violates `StallRestartsCapped`).
+  Replacements replay the stream to where it wedged, the count resets, and a third restart runs.
+- **#501 conditional commit off** (`Faithful-501-Commit-off`, violates `NoRestartOfMovingStream`:
+  a callback between the read and the cancel; `Faithful-501-Finalizing-off`, the same invariant
+  under the `StallObservedAtLastByte` constraint: a body that finished after the read).
+- **#488 one-shot expiry off** (`Faithful-488-Polling-off`, violates `SilenceStopsRefreshes`). A
+  silent static row keeps the refresh timer running for ever.
 
 Two historical bugs from `docs/evidence/2026-10-17-downloads-overhaul-bugs-vs-main.md`:
 
@@ -288,6 +309,18 @@ margin failed for 89 of 100 stalls, so the assumption was removed and the test b
 so `updateDownloadWatchdog` keeps the loop running (1 s while the total shows, 15 s otherwise) and
 the next refresh past the row estimator's 6 s `stallTimeout` removes the speed and ETA.
 
+**Review of PR #505: no polling for it** (`FixRateExpiry`, `SilenceStopsRefreshes` in
+`Liveness-StaleRowSettles`; off: `Faithful-488-Polling-off`). That fix kept a main-actor
+`refreshRecords()` running every 15 s for as long as one silent static row stayed transferring.
+`requiresWatchdog` is back to forward-only streams and server preparation. Instead
+`DownloadManager.scheduleRateEvidenceExpiry` arms one refresh, after every refresh, for the
+earliest `DownloadRateEstimator.staleDeadline` (last forward byte plus `stallTimeout`) among the rows
+that show a speed or ETA (`DownloadWatchdogPolicy.nextRateEvidenceExpiry`). That refresh removes
+the speed and, with nothing left to expire, arms nothing more. In the model a transferring row
+keeps the timer (`watchdog`) only while its sample still shows a speed (`ExpiryArmed`). Pins:
+`stalledStaticRowStopsShowingSpeed` (bounded refreshes after the last callback, no speed or ETA
+left) and `silentStaticRowRefreshesAreBounded`.
+
 ### S3: after a process death a row shows fewer bytes than before (probable, low)
 
 Issue: #490.
@@ -379,6 +412,16 @@ the restarts are spent and the stall timeout has passed again; the tracker repor
 (which drops the tracker entry, so a user Retry starts with a fresh budget) and requests no
 admission. The pin now finds the failure one stall timeout after the second restart.
 
+**Review of PR #505: replayed bytes are not progress** (`FixStallHighWater`, `StallRestartsCapped`
+in `Current-StallReplay` and `Current-OneForward`; off: `Faithful-497-HighWater-off`). Every
+restart replays the stream from byte 0, and the tracker cleared its count on any byte progress, so
+a stream that reached 1 MiB and wedged there was restarted for ever, every stall attempt 1. The
+tracker now keeps the row's byte high-water mark across automatic restarts (seeded back with the
+count after the restart's teardown) and refills the budget only when a replacement passes it, or
+on a user Retry or Resume (`admitRowAction` calls `refillRestartBudget`). In the model `stalls[r]`
+holds the count `n`, the mark `hwm` and the ghost `spent`, the restarts since the stream last
+passed `hwm`, which `StallRestartsCapped` bounds. Pin: `replayedBytesDoNotRefillTheBudget`.
+
 ### S6: fresh evidence without a common 0.5 s window hides the total (real, low)
 
 Issue #498.
@@ -451,6 +494,20 @@ queuedStallVerdictStillWarranted` holds only for the same attempt, still a forwa
 with bytes no higher than observed; the operation checks it before either verdict and otherwise
 drops the verdict (diagnostic `downloads.forward_stream_stall_verdict_skipped`). The tracker
 needs no change: the next refresh sees the forward bytes and resets the restart budget. Pin:
+`queuedStallVerdictRechecksBytes`.
+
+**Review of PR #505: commit before cancel** (`FixStallCommit`; `NoRestartOfMovingStream` in
+`Current-StallFinishing` and `Current-OneForward`; off: `Faithful-501-Commit-off`,
+`Faithful-501-Finalizing-off`). That check read the row and then cancelled the session work and
+overwrote `lastError` before the reducer saw `stallDetected`. A finished body is `finalizing`,
+which also shows as `downloading`, so it passed the read with its bytes unchanged and had its
+work cancelled; and the delegate could advance the bytes between the read and the cancel.
+`DownloadStore.submitStallVerdict` now checks the exact attempt, `transferring` and the observed
+bytes (`DownloadStallRecoveryPolicy.stallVerdictMayCommit`) under the store lock in the same hold
+as the commit; the manager cancels only that attempt's task (`BackgroundDownloadSession.
+cancel(attemptKey:)`) and sets the error only after it was accepted. Off, the model splits the
+verdict into `StallCheck` (the read) and `StallAct` (cancel, then the reducer). Pins: the store
+tests in `LabstreamTests/DownloadStallVerdictCommitTests.swift` (both races) and
 `queuedStallVerdictRechecksBytes`.
 
 ### #502: a resumed task's published bytes go backwards (real, medium; fixed on `specs/downloads-tla`, pending merge)

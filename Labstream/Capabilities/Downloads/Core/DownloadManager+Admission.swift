@@ -363,6 +363,7 @@ extension DownloadManager {
     /// A user action on a row (Resume, Retry). Granted at once when a lane has room (and, during
     /// Pause All, exempt for that row only); otherwise it waits as a durable request.
     func admitRowAction(_ record: DownloadRecord) {
+        refillForwardOnlyStallBudgetForUserRetry(ratingKey: record.ratingKey)
         let exempt = isQueuePaused
         let lane = admissionLane(for: record)
         if exempt { markRowResumedDuringQueuePause(record.ratingKey) }

@@ -147,6 +147,13 @@ public struct DownloadRateEstimator: Sendable, Equatable {
             : nil
     }
 
+    /// When the readout goes stale: the moment `sample` starts answering `nil` because nothing has
+    /// moved for `stallTimeout`. `nil` before the first sample. The owner schedules one refresh
+    /// for it instead of polling a row whose callbacks stopped (#488 review).
+    public var staleDeadline: Date? {
+        lastForwardTime.map { $0.addingTimeInterval(stallTimeout) }
+    }
+
     /// Estimated seconds remaining given the expected final size, using the most recent windowed
     /// rate. `nil` when there is no rate yet, no expected total, or the estimate is non-finite/≤0.
     ///

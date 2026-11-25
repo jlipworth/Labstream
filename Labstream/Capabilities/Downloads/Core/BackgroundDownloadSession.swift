@@ -3918,6 +3918,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         halt(ratingKey: ratingKey, preserveHeldRangeSegments: false)
     }
 
+    /// Cancel exactly attempt A's tracked transfers, never a replacement attempt of the same key.
+    /// The forward-only stall verdict calls this after the store committed `stallDetected` for A.
+    func cancel(attemptKey: DownloadAttemptKey) {
+        guard store.ownsAttempt(attemptKey) else { return }
+        halt(attemptKey: attemptKey, preserveHeldRangeSegments: false, cancelMarkedTasks: false)
+    }
+
     /// Stop attempt A after destructive deletion was durably deferred. The row and every local
     /// artifact remain recovery authority until its cleanup operations reach the journal, so this
     /// halt differs from ordinary Cancel only by retaining persisted held manifests and bodies.

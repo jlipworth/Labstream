@@ -15,7 +15,8 @@
 (*              DeliverFinish, Finalize                                    *)
 (*   Manager    Refresh (refreshRecords: rebuilds the published snapshot   *)
 (*              and samples every row's rate estimator), WatchdogTick,     *)
-(*              StallObserve, StallAct, GrantRetry, StartTask, Admit,      *)
+(*              StallObserve, StallCheck, StallAct, GrantRetry,            *)
+(*              StartTask, Admit,                                          *)
 (*              StartBlocked,                                              *)
 (*              Reconcile                                                  *)
 (*   Clock      SettleExpire, GraceExpire, OverlapRipen, Expire, GoStale:  *)
@@ -146,6 +147,20 @@ ResumeBlobRows == {}
 Fix502 == TRUE
 Off == FALSE
 
+\* Review of PR #505, three fixes on top of S2, S5 and S8, switched the same way (a config turns
+\* one off with `<- Off`):
+\*   FixStallHighWater  #497: the restart budget refills only when a replacement passes the row's
+\*                      byte high-water mark; replayed bytes are not progress.
+\*   FixStallCommit     #501: the store accepts a stall verdict against the exact attempt, its
+\*                      `transferring` lifecycle and the observed bytes atomically, before any
+\*                      cancel.  Off: the manager checked a read of the row (status `downloading`,
+\*                      bytes) and cancelled before the reducer saw `stallDetected`.
+\*   FixRateExpiry      #488: a transferring static row arms one refresh while it shows a speed,
+\*                      instead of keeping the polling loop alive for as long as it transfers.
+FixStallHighWater == TRUE
+FixStallCommit == TRUE
+FixRateExpiry == TRUE
+
 VARIABLES
     \* Durable or outside the process: survives Crash.
     row,            \* the index row: a whole reducer state
@@ -164,9 +179,12 @@ VARIABLES
     live,           \* liveRangeProgress: a static row's optimistic byte watermark
     debt,           \* a finished segment's body is not yet appended (claim debt, #416)
     jobs,           \* DownloadManager.activeJobs
-    stalls,         \* DownloadForwardOnlyStallTracker.restartAttempts
+    stalls,         \* DownloadForwardOnlyStallTracker per row: `n` restartAttempts, `hwm` the
+                    \* byte high-water mark across automatic restarts; and the ghost `spent`, the
+                    \* restarts since the stream last passed `hwm`
     stallQ,         \* a stall verdict queued for the manager's operation queue: whether one is,
-                    \* the bytes the watchdog observed and whether the verdict is a failure
+                    \* the bytes the watchdog observed, whether the verdict is a failure, and
+                    \* (FixStallCommit off) whether the manager's read already passed it
     aggActive,      \* DownloadAggregateRateEstimator.activeTransfers
     agg,            \* that estimator's stage per transfer
     aggAge,         \* how old the transfer's last observation is
@@ -197,7 +215,8 @@ VARIABLES
     shownAtCrash,   \* what each downloading row had published when the process died
     dipRows,        \* rows reconcile kept as they were, with no callback since, until the
                     \* first refresh after it
-    killedMoving,   \* a queued stall verdict cancelled a stream whose bytes had moved since
+    killedMoving,   \* a queued stall verdict cancelled a stream whose bytes had moved since, or
+                    \* whose body had finished (cancel before the reducer, FixStallCommit off)
     \* #502, per ResumeBlobRows row: `wm` resumeDisplayBytes (durable metadata); `cnt` the bytes
     \* the task reports above the checkpoint and `off` the blob bytes its counter leaves out
     \* (the daemon's, so durable; while paused `cnt` is the blob); `latched` and `rebase` the
@@ -230,7 +249,8 @@ Speeds == {"none", "number"}
 StatusTaskStates == {"none", "running", "finished"}
 
 Larger(a, b) == IF a >= b THEN a ELSE b
-NoStallQueued == [queued |-> FALSE, bytes |-> 0, fail |-> FALSE]
+NoStallQueued == [queued |-> FALSE, bytes |-> 0, fail |-> FALSE, checked |-> FALSE]
+NoStalls == [n |-> 0, hwm |-> 0, spent |-> 0]
 Life(r) == row[r].lifecycle
 
 \* DownloadLifecycle.derivedStatus
@@ -303,10 +323,18 @@ HealthHasWork ==
 \* OfflineSidebarStatusPolicy.presentation's activeCount.
 SidebarActive == {r \in Rows : Status(r) = "downloading"}
 
-\* DownloadWatchdogPolicy.requiresWatchdog (server prep is not modelled).
+\* DownloadWatchdogPolicy.requiresWatchdog: the polling loop (server prep is not modelled).
+\* With FixRateExpiry off, any transferring row kept it running (the first #488 fix).
 WatchRow(r) ==
     \/ r \in ForwardRows /\ Status(r) = "downloading"
-    \/ WatchdogCoversTransfers /\ Life(r) = "transferring"
+    \/ WatchdogCoversTransfers /\ ~FixRateExpiry /\ Life(r) = "transferring"
+
+\* DownloadManager.scheduleRateEvidenceExpiry: a transferring row that still shows a speed after
+\* the refresh's sample `s` arms one refresh for the moment that speed goes stale
+\* (DownloadWatchdogPolicy.nextRateEvidenceExpiry).  The model's one timer, `watchdog`, stands
+\* for both the loop and this one-shot.
+ExpiryArmed(r, s) ==
+    WatchdogCoversTransfers /\ FixRateExpiry /\ Life(r) = "transferring" /\ s.speed = "number"
 
 \* DownloadRowFacts as relaunch reconcile reads them.
 Facts(r) ==
@@ -338,7 +366,7 @@ Init ==
     /\ debt = Const(Rows, FALSE)
     \* An admitted row's start is under way.
     /\ jobs = Rows \ PlannedRows
-    /\ stalls = Const(Rows, 0)
+    /\ stalls = Const(Rows, NoStalls)
     /\ stallQ = Const(Rows, NoStallQueued)
     /\ killedMoving = FALSE
     /\ aggActive = {}
@@ -486,8 +514,14 @@ Callback(r) ==
                      \* row only.
                      /\ IF t.state.lifecycle # Life(r) THEN Persist
                                                        ELSE disk' \in {disk, rec'}
-                     \* Forward progress gives the stall tracker its restart budget back.
-                     /\ stalls' = Upd(stalls, r, 0)
+                     \* Bytes past the high-water mark give the stall tracker its restart
+                     \* budget back; a replacement replaying from byte 0 up to it does not
+                     \* (FixStallHighWater, #497 review; off: any movement did).
+                     /\ LET passed == bumped > stalls[r].hwm
+                        IN stalls' = Upd(stalls, r,
+                              [n |-> IF passed \/ ~FixStallHighWater THEN 0 ELSE stalls[r].n,
+                               hwm |-> Larger(stalls[r].hwm, bumped),
+                               spent |-> IF passed THEN 0 ELSE stalls[r].spent])
                 ELSE /\ live' = Upd(live, r, IF blob THEN Larger(live[r], sample) ELSE bumped)
                      /\ UNCHANGED <<rec, disk, stalls>>
           /\ res' = IF blob
@@ -756,7 +790,7 @@ Refresh ==
           /\ suppress' = [r \in Rows |-> Status(r) = "downloading" /\ suppress[r]]
           /\ grace' = [r \in Rows |-> Status(r) = "downloading" /\ grace[r]]
           /\ fgPending' = [r \in Rows |-> Status(r) = "downloading" /\ fgPending[r]]
-          /\ watchdog' = (number \/ \E r \in Rows : WatchRow(r))
+          /\ watchdog' = (number \/ \E r \in Rows : WatchRow(r) \/ ExpiryArmed(r, sample[r]))
     \* terminalReleaseKeys: a parked or finished row gives up its in-flight slot.
     /\ jobs' = {r \in jobs : Life(r) \notin Terminal \cup {"paused"}}
     /\ refreshPending' = FALSE
@@ -789,44 +823,74 @@ StallObserve(r) ==
     /\ r \in ForwardRows /\ Life(r) = "transferring"
     /\ task[r] = "running" /\ ~flow[r] /\ unrep[r] = "none"
     /\ ~stallQ[r].queued
-    /\ LET restart == stalls[r] < MaxStallRestarts
+    /\ LET restart == stalls[r].n < MaxStallRestarts
        IN /\ restart \/ StallCapFails
-          /\ stallQ' = Upd(stallQ, r, [queued |-> TRUE, bytes |-> rec[r], fail |-> ~restart])
-          /\ stalls' = IF restart THEN Upd(stalls, r, stalls[r] + 1) ELSE stalls
+          /\ stallQ' = Upd(stallQ, r, [queued |-> TRUE, bytes |-> rec[r], fail |-> ~restart,
+                                       checked |-> FALSE])
+          /\ stalls' = IF restart
+                          THEN [stalls EXCEPT ![r].n = @ + 1,
+                                              ![r].spent = IF @ > MaxStallRestarts THEN @ ELSE @ + 1]
+                          ELSE stalls
     /\ NoReset
     /\ UNCHANGED <<row, rec, disk, task, flow, unrep, live, lateCb, refreshPending, watchdog,
                    jobs, debt, killedMoving, dipRows>>
     /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepProcess
     /\ UNCHANGED res
 
+\* FixStallCommit off: the manager's read of the row (restartStalledForwardOnlyStreamAsync before
+\* the review fix).  It passed a row the store still shows `downloading` (a finalizing body
+\* does) whose bytes had not moved, and the operation went on to cancel later; anything can
+\* happen in between.  A row the read rejects drops the verdict.
+StallCheck(r) ==
+    /\ ~FixStallCommit
+    /\ Observing /\ ~recovering
+    /\ stallQ[r].queued /\ ~stallQ[r].checked
+    /\ LET pass == /\ r \in ForwardRows /\ Status(r) = "downloading"
+                   /\ ~FixStallRecheck \/ rec[r] = stallQ[r].bytes
+       IN stallQ' = Upd(stallQ, r, IF pass THEN [stallQ[r] EXCEPT !.checked = TRUE]
+                                           ELSE NoStallQueued)
+    /\ NoReset
+    /\ UNCHANGED <<row, rec, disk, task, flow, unrep, live, lateCb, refreshPending, watchdog,
+                   jobs, stalls, debt, killedMoving, dipRows>>
+    /\ KeepRowRate /\ KeepAgg /\ KeepPublished /\ KeepProcess
+    /\ UNCHANGED res
+
 \* The queued operation runs (restartStalledForwardOnlyStreamAsync, or
 \* failStalledForwardOnlyStreamAsync past the cap).  A callback may have moved the row's bytes
-\* in between.  With FixStallRecheck (DownloadStallRecoveryPolicy.queuedStallVerdictStillWarranted) the
-\* verdict is dropped then; without it the moving stream is cancelled and failed (and, for a
-\* restart, started again from byte 0).  A row that left `transferring` drops it either way:
-\* the reducer rejects stallDetected.
+\* in between, or the body may have finished (`finalizing`).  With FixStallCommit (the code) the
+\* store's submitStallVerdict checks the exact attempt, `transferring` and, with FixStallRecheck,
+\* the observed bytes in the same step as the commit, and the task is cancelled only after it:
+\* otherwise the verdict is dropped and nothing is cancelled.  Without FixStallRecheck the moving
+\* stream is cancelled and failed (and, for a restart, started again from byte 0).
+\* FixStallCommit off: the manager cancels the task once StallCheck passed, then the reducer
+\* rejects stallDetected for a row that left `transferring`.
 StallAct(r) ==
     /\ Observing /\ ~recovering
     /\ stallQ[r].queued
+    /\ FixStallCommit \/ stallQ[r].checked
     /\ LET q == stallQ[r]
            moved == rec[r] # q.bytes
-           go == /\ r \in ForwardRows /\ Life(r) = "transferring"
-                 /\ ~FixStallRecheck \/ ~moved
+           commit == /\ r \in ForwardRows /\ Life(r) = "transferring"
+                     /\ ~FixStallRecheck \/ ~moved
+           cancels == IF FixStallCommit THEN commit ELSE TRUE
            t == Reduce(row[r], Ev("stallDetected"), NoFacts)
            again == Reduce(t.state, EvIntent("admissionRequested", "retryRequested"), NoFacts)
+           applied == r \in ForwardRows /\ Life(r) = "transferring" /\ IsApplied(t)
        IN /\ stallQ' = Upd(stallQ, r, NoStallQueued)
-          /\ IF go
-                THEN /\ IsApplied(t)
-                     /\ IF ~q.fail
-                           THEN IsApplied(again) /\ row' = Upd(row, r, again.state)
-                           \* FIX S5 (#497): past the cap the row fails and waits for the user
-                           \* (failStalledForwardOnlyStreamAsync: no admission request).
-                           ELSE row' = Upd(row, r, t.state)
+          /\ IF cancels
+                THEN /\ IF applied
+                           THEN IF ~q.fail
+                                   THEN IsApplied(again) /\ row' = Upd(row, r, again.state)
+                                   \* FIX S5 (#497): past the cap the row fails and waits for the
+                                   \* user (failStalledForwardOnlyStreamAsync: no admission request).
+                                   ELSE row' = Upd(row, r, t.state)
+                           \* FixStallCommit off: cancelled, then the reducer rejects the event.
+                           ELSE UNCHANGED row
                      /\ task' = Upd(task, r, "none")
                      /\ jobs' = jobs \ {r}
                      /\ PersistSame
                      /\ refreshPending' = TRUE
-                     /\ killedMoving' = (killedMoving \/ moved)
+                     /\ killedMoving' = (killedMoving \/ moved \/ ~applied)
                 ELSE /\ UNCHANGED <<row, task, jobs, disk, refreshPending, killedMoving>>
     /\ NoReset
     /\ UNCHANGED <<rec, flow, unrep, live, lateCb, watchdog, stalls, debt, dipRows>>
@@ -1076,7 +1140,7 @@ Crash ==
     /\ live' = Const(Rows, 0)
     /\ debt' = Const(Rows, FALSE)
     /\ jobs' = {}
-    /\ stalls' = Const(Rows, 0)
+    /\ stalls' = Const(Rows, NoStalls)
     /\ stallQ' = Const(Rows, NoStallQueued)
     /\ aggActive' = {}
     /\ agg' = Const(Rows, "none")
@@ -1147,7 +1211,7 @@ Next ==
           \/ Callback(r) \/ SegmentFinish(r) \/ AppendLands(r) \/ LateCallback(r)
           \/ DeliverFinish(r) \/ Finalize(r)
           \/ Admit(r) \/ GrantRetry(r) \/ StartTask(r) \/ StartBlocked(r)
-          \/ StallObserve(r) \/ StallAct(r)
+          \/ StallObserve(r) \/ StallCheck(r) \/ StallAct(r)
           \/ SettleExpire(r) \/ GraceExpire(r) \/ Expire(r) \/ GoStale(r)
           \/ Pause(r) \/ Resume(r) \/ Stall(r) \/ Unstall(r) \/ DropTask(r)
 
@@ -1165,7 +1229,8 @@ FairSpec ==
           /\ WF_vars(LateCallback(r))
           /\ WF_vars(DeliverFinish(r)) /\ WF_vars(Finalize(r))
           /\ WF_vars(Admit(r)) /\ WF_vars(GrantRetry(r)) /\ WF_vars(StartTask(r))
-          /\ WF_vars(StartBlocked(r)) /\ WF_vars(StallObserve(r)) /\ WF_vars(StallAct(r))
+          /\ WF_vars(StartBlocked(r)) /\ WF_vars(StallObserve(r)) /\ WF_vars(StallCheck(r))
+          /\ WF_vars(StallAct(r))
           /\ WF_vars(SettleExpire(r)) /\ WF_vars(GraceExpire(r))
           /\ WF_vars(Expire(r)) /\ WF_vars(GoStale(r))
 
@@ -1185,8 +1250,8 @@ TypeOK ==
     /\ live \in [Rows -> 0..MaxBytes]
     /\ debt \in [Rows -> BOOLEAN]
     /\ jobs \subseteq Rows
-    /\ stalls \in [Rows -> 0..MaxStallRestarts]
-    /\ stallQ \in [Rows -> [queued : BOOLEAN, bytes : 0..MaxBytes, fail : BOOLEAN]]
+    /\ stalls \in [Rows -> [n : 0..MaxStallRestarts, hwm : 0..MaxBytes, spent : 0..MaxStallRestarts + 1]]
+    /\ stallQ \in [Rows -> [queued : BOOLEAN, bytes : 0..MaxBytes, fail : BOOLEAN, checked : BOOLEAN]]
     /\ killedMoving \in BOOLEAN
     /\ aggActive \subseteq Rows
     /\ agg \in [Rows -> AggStages]
@@ -1256,11 +1321,17 @@ HealthHonest == Showing => (HealthHasWork <=> \E r \in Rows : HasWork(r))
 \* pu-33.  A row waiting for admission reads as waiting.
 WaitingReadsAsWaiting == \A r \in Rows : Waiting(r) => Caption(r) = "waiting"
 
-\* The tracker never restarts a stream more often than its cap between two forward bytes.
-StallRestartsCapped == \A r \in Rows : stalls[r] <= MaxStallRestarts
+\* The tracker never restarts a stream more often than its cap between two forward bytes, and
+\* bytes a replacement replays up to the high-water mark are not forward (#497 review).
+StallRestartsCapped == \A r \in Rows : stalls[r].spent <= MaxStallRestarts
 
-\* A queued stall verdict never cancels a stream whose bytes moved after the stall was observed.
+\* A queued stall verdict never cancels a stream whose bytes moved after the stall was observed,
+\* nor one whose body finished meanwhile (#501 and its review).
 NoRestartOfMovingStream == ~killedMoving
+
+\* A state constraint for Faithful-501-Finalizing-off: only verdicts observed on the stream's last
+\* byte, so no callback can move the bytes afterwards and the finishing race is the only one left.
+StallObservedAtLastByte == \A r \in Rows : stallQ[r].queued => stallQ[r].bytes = MaxBytes
 
 \* #502.  Neither the sample a resumed task publishes nor the row's merged total claims bytes
 \* the row does not have.
@@ -1315,6 +1386,12 @@ ForwardStallGetsVerdict ==
     \A r \in ForwardRows :
         []<>~(/\ Showing /\ Life(r) = "transferring"
               /\ task[r] = "running" /\ ~flow[r] /\ unrep[r] = "none")
+
+\* #488 review.  Once every row has gone silent for good, the refreshes stop: no timer keeps
+\* rebuilding the screen for a row with nothing left to expire.  Forward-only rows are polled
+\* for their stall verdict by design, so only configs without them check this.
+SilenceStopsRefreshes ==
+    <>[](Showing /\ \A r \in Rows : ~Flowing(r) /\ unrep[r] = "none") => <>[]~watchdog
 
 \* The published speeds stop changing once interference stops.  The model sees a speed only
 \* as "a number" or "none", so this is about a figure appearing and disappearing, not about

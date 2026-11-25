@@ -89,7 +89,7 @@ struct DownloadForwardOnlyStallTrackerTests {
         now = now.addingTimeInterval(120)
         #expect(tracker.detectRestarts(records: [record()], now: now) { _ in true }.first?.attempt == 1)
         tracker.remove("jellyfin:1")
-        tracker.seedRestartAttempts("jellyfin:1", attempts: 1)
+        tracker.seedRestartAttempts("jellyfin:1", attempts: 1, highWaterBytes: 10_000)
         // The interim failed-row pass (refreshRecords before retry) keeps the budget.
         _ = tracker.detectRestarts(records: [record(status: .failed)], now: now) { _ in false }
         #expect(tracker.restartAttemptCount(for: "jellyfin:1") == 1)
@@ -99,7 +99,7 @@ struct DownloadForwardOnlyStallTrackerTests {
         now = now.addingTimeInterval(120)
         #expect(tracker.detectRestarts(records: [record()], now: now) { _ in true }.first?.attempt == 2)
         tracker.remove("jellyfin:1")
-        tracker.seedRestartAttempts("jellyfin:1", attempts: 2)
+        tracker.seedRestartAttempts("jellyfin:1", attempts: 2, highWaterBytes: 10_000)
 
         // Third wedge: the cap binds — no further automatic restart. The stall still gets a
         // verdict (#497): the row fails and waits for the user.
@@ -118,7 +118,7 @@ struct DownloadForwardOnlyStallTrackerTests {
     func cappedStallFailsAfterTimeout() {
         var tracker = DownloadForwardOnlyStallTracker()
         let start = Date(timeIntervalSince1970: 1_000)
-        tracker.seedRestartAttempts("jellyfin:1", attempts: 2)
+        tracker.seedRestartAttempts("jellyfin:1", attempts: 2, highWaterBytes: 10_000)
         _ = tracker.detectRestarts(records: [record()], now: start) { _ in true }
         #expect(tracker.detectRestarts(records: [record()], now: start.addingTimeInterval(60)) { _ in true }.isEmpty)
         // An inactive row (no job, no tracked task) is not judged.
@@ -134,6 +134,67 @@ struct DownloadForwardOnlyStallTrackerTests {
         #expect(!DownloadStallRecoveryPolicy.shouldFailForwardOnlyStream(
             record: record(), active: true, lastForwardProgressAt: start, now: start.addingTimeInterval(90),
             restartAttempts: 1))
+    }
+
+    /// Review of PR #505 (#497): drive the manager's restart cycle (verdict, `remove` in the
+    /// teardown, seed back, the replacement replays from byte 0) against a stream that reaches
+    /// 1 MiB and wedges there every time. Before the high-water mark the replayed bytes cleared
+    /// the count, so every stall was attempt 1 and the row restarted for ever.
+    @Test("Replacements that replay up to the old high-water mark do not refill the restart budget")
+    func replayedBytesDoNotRefillTheBudget() {
+        let mib = 1_048_576
+        var tracker = DownloadForwardOnlyStallTracker()
+        var now = Date(timeIntervalSince1970: 1_000)
+        func refresh(bytes: Int, status: DownloadStatus = .downloading) -> [DownloadForwardOnlyStallRestart] {
+            tracker.detectRestarts(records: [record(status: status, bytes: bytes)], now: now) { _ in true }
+        }
+        var verdicts: [(DownloadForwardOnlyStallVerdict, Int)] = []
+        // The first attempt streams to 1 MiB.
+        for bytes in stride(from: 0, through: mib, by: mib / 4) {
+            _ = refresh(bytes: bytes); now = now.addingTimeInterval(15)
+        }
+        for _ in 0..<10 where verdicts.last?.0 != .fail {
+            // Wedged at 1 MiB until the stall timeout passes.
+            var found: [DownloadForwardOnlyStallRestart] = []
+            while found.isEmpty {
+                found = refresh(bytes: mib); now = now.addingTimeInterval(15)
+            }
+            let verdict = found[0]
+            verdicts.append((verdict.verdict, verdict.attempt))
+            #expect(verdict.highWaterBytes == mib)
+            // restartStalledForwardOnlyStreamAsync / failStalledForwardOnlyStreamAsync.
+            let high = tracker.highWaterMark(for: "jellyfin:1") ?? 0
+            tracker.remove("jellyfin:1")
+            guard verdict.verdict == .restart else { break }
+            tracker.seedRestartAttempts("jellyfin:1", attempts: verdict.attempt,
+                                        highWaterBytes: max(verdict.highWaterBytes, high))
+            _ = refresh(bytes: mib, status: .failed)
+            // The replacement replays the stream from byte 0 up to the old high-water mark.
+            for bytes in stride(from: 0, through: mib, by: mib / 4) {
+                _ = refresh(bytes: bytes); now = now.addingTimeInterval(15)
+            }
+            #expect(tracker.restartAttemptCount(for: "jellyfin:1") == verdict.attempt)
+        }
+        #expect(verdicts.map(\.0) == [.restart, .restart, .fail])
+        #expect(verdicts.map(\.1) == [1, 2, 2])
+    }
+
+    @Test("A replacement that passes the high-water mark, or a user Retry, refills the budget")
+    func passingTheHighWaterMarkOrRetryRefills() {
+        var tracker = DownloadForwardOnlyStallTracker()
+        let now = Date(timeIntervalSince1970: 1_000)
+        tracker.seedRestartAttempts("jellyfin:1", attempts: 2, highWaterBytes: 10_000)
+        _ = tracker.detectRestarts(records: [record(bytes: 0)], now: now) { _ in true }
+        _ = tracker.detectRestarts(records: [record(bytes: 10_000)], now: now.addingTimeInterval(1)) { _ in true }
+        #expect(tracker.restartAttemptCount(for: "jellyfin:1") == 2)
+        _ = tracker.detectRestarts(records: [record(bytes: 10_001)], now: now.addingTimeInterval(2)) { _ in true }
+        #expect(tracker.restartAttemptCount(for: "jellyfin:1") == 0)
+        #expect(tracker.highWaterMark(for: "jellyfin:1") == 10_001)
+
+        tracker.seedRestartAttempts("jellyfin:2", attempts: 2, highWaterBytes: 50_000)
+        tracker.refillRestartBudget("jellyfin:2")
+        #expect(tracker.restartAttemptCount(for: "jellyfin:2") == 0)
+        #expect(tracker.highWaterMark(for: "jellyfin:2") == nil)
     }
 
     @Test("Removed and terminal rows prune tracker state")

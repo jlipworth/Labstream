@@ -1093,14 +1093,17 @@ struct DownloadsFormalModelStatusTests {
     }
 
     /// What `refreshRecords` and the watchdog loop leave on screen for one static-range row whose
-    /// callbacks are `callbacks` and then stop. The refresh sources are the two the app has: the
-    /// one-shot a callback schedules, and the watchdog loop, which `updateDownloadWatchdog` runs
-    /// only for forward-only or preparing rows or while the aggregate has an answer.
+    /// callbacks are `callbacks` and then stop. The refresh sources are the three the app has: the
+    /// one-shot a callback schedules, the watchdog loop, which `updateDownloadWatchdog` runs only
+    /// for forward-only or preparing rows or while the aggregate has an answer, and the one-shot
+    /// rate expiry `scheduleRateEvidenceExpiry` arms while a row shows a speed or ETA.
     private struct StallOutcome {
         var rowSpeed: Double?
+        var rowETA: TimeInterval?
         var topAnswer: Double?
         var topAnswerAtLastCallback: Double?
         var lastRefresh = 0.0
+        var refreshesAfterLastCallback = 0
     }
 
     private static func staticRowAfterStall(callbacks: [(time: Double, bytes: Int)],
@@ -1124,8 +1127,9 @@ struct DownloadsFormalModelStatusTests {
         // The snapshot publication that makes the row a member of the batch.
         var scheduled: Double? = 0
         var tick: Double?
+        var expiry: Double?
 
-        while let now = [pending.first?.time, scheduled, tick].compactMap({ $0 }).min(), now <= horizon {
+        while let now = [pending.first?.time, scheduled, tick, expiry].compactMap({ $0 }).min(), now <= horizon {
             if let callback = pending.first, callback.time == now {
                 pending.removeFirst()
                 liveBytes = callback.bytes
@@ -1137,12 +1141,25 @@ struct DownloadsFormalModelStatusTests {
             }
             let fromLoop = tick == now
             if scheduled == now { scheduled = nil }
+            if expiry == now { expiry = nil }
             // refreshRecords: sample the row, publish, then decide whether the loop goes on.
             outcome.lastRefresh = now
+            if pending.isEmpty { outcome.refreshesAfterLastCallback += 1 }
             aggregate.setActiveTransfers([transfer], at: time(now))
             let sampled = row.sample(bytes: liveBytes, at: time(now))
             outcome.rowSpeed = (sampled ?? 0) > 0 ? sampled : nil
+            outcome.rowETA = row.eta(expectedTotal: 100_000_000_000)
             outcome.topAnswer = aggregate.rate(at: time(now))
+            // scheduleRateEvidenceExpiry: one refresh when the shown rate goes stale; an earlier
+            // armed expiry is kept.
+            let deadlines = (outcome.rowSpeed != nil || outcome.rowETA != nil)
+                ? [row.staleDeadline].compactMap { $0 } : []
+            if let next = DownloadWatchdogPolicy.nextRateEvidenceExpiry(staleDeadlines: deadlines, now: time(now)) {
+                let at = next.timeIntervalSince(time(0))
+                if expiry == nil || at < expiry! { expiry = at }
+            } else {
+                expiry = nil
+            }
             // updateDownloadWatchdog. One second of sleep plus what a refresh costs on a busy
             // main thread; 15 s when only the row predicates keep the loop alive.
             if DownloadWatchdogPolicy.requiresWatchdog(records: [record]) || outcome.topAnswer != nil {
@@ -1169,9 +1186,12 @@ struct DownloadsFormalModelStatusTests {
     /// hidden by S1) there is no loop at all and the row keeps its full last speed.
     ///
     /// The loop rule is app code, so the harness mirrors it and the first expectation checks the
-    /// mirror against the source. The fix: `DownloadWatchdogPolicy.requiresWatchdog` now holds for
-    /// any transferring row, so the loop keeps refreshing (every 15 s once the aggregate is hidden)
-    /// and the next refresh past the row estimator's 6 s `stallTimeout` removes the speed.
+    /// mirror against the source. The fix: while a row shows a speed or ETA,
+    /// `scheduleRateEvidenceExpiry` arms one refresh for the moment its estimator's 6 s
+    /// `stallTimeout` runs out (`DownloadRateEstimator.staleDeadline`), and that refresh removes
+    /// the speed. The first fix polled every 15 s for as long as the row stayed transferring,
+    /// which rebuilt the library for ever (#488 review); the silence now costs a bounded number of
+    /// refreshes.
     @Test("S2: a stalled static-range row stops showing a speed")
     func stalledStaticRowStopsShowingSpeed() throws {
         let watchdog = try #require(Self.appFunctionSource(
@@ -1180,6 +1200,14 @@ struct DownloadsFormalModelStatusTests {
         #expect(watchdog.contains("DownloadWatchdogPolicy.requiresWatchdog(records: records)")
             && watchdog.contains("aggregateRateEstimator.rate(at: Date()) != nil"),
                 "updateDownloadWatchdog changed: re-derive the loop rule in staticRowAfterStall from it")
+        let expiry = try #require(Self.appFunctionSource(
+            named: "scheduleRateEvidenceExpiry",
+            in: "Labstream/Capabilities/Downloads/Core/DownloadManager.swift"))
+        #expect(expiry.contains("guard downloadSpeed[key] != nil || downloadETA[key] != nil else { return nil }")
+            && expiry.contains("return estimator.staleDeadline")
+            && expiry.contains("DownloadWatchdogPolicy.nextRateEvidenceExpiry(staleDeadlines: deadlines, now: now)")
+            && expiry.contains("armed <= expiry"),
+                "scheduleRateEvidenceExpiry changed: re-derive the expiry rule in staticRowAfterStall from it")
 
         // 1. Steady state: the top shows a number when the network drops.
         var steady: [(seed: UInt64, outcome: StallOutcome)] = []
@@ -1213,8 +1241,12 @@ struct DownloadsFormalModelStatusTests {
             """)
         #expect(early.rowSpeed == nil,
                 "the row still shows \(Int(early.rowSpeed ?? 0)) B/s; its last refresh was at t=\(early.lastRefresh) s")
-        // The loop keeps running while the row is transferring: the harness refreshed to its horizon.
-        #expect(steady.allSatisfy { $0.outcome.lastRefresh > 100 })
+        #expect(steady.allSatisfy { $0.outcome.rowETA == nil } && early.rowETA == nil)
+        // #488 review: the silence costs a bounded number of refreshes, all within a few seconds
+        // of the last callback, instead of a refresh every 15 s to the horizon.
+        let unbounded = steady.filter { $0.outcome.refreshesAfterLastCallback > 12 }
+        #expect(unbounded.isEmpty, "seed \(unbounded.first?.seed ?? 0) refreshed \(unbounded.first?.outcome.refreshesAfterLastCallback ?? 0) times after its last callback")
+        #expect(steady.allSatisfy { $0.outcome.lastRefresh < 60 } && early.lastRefresh < 60)
     }
 
     /// S8 (#501, fixed; `status/Current-OneForward.cfg` checks `NoRestartOfMovingStream`, fix off:
@@ -1230,9 +1262,15 @@ struct DownloadsFormalModelStatusTests {
         let recheck = try #require(restart.range(of:
             "DownloadStallRecoveryPolicy.queuedStallVerdictStillWarranted(\n            observed: restart.record, current: current)"))
         let failBranch = try #require(restart.range(of: "if restart.verdict == .fail {"))
-        let cancel = try #require(restart.range(of: "session.cancel(ratingKey: ratingKey)"))
+        let commit = try #require(restart.range(of: "store.submitStallVerdict(for: key, observedBytes: restart.record.bytes)"))
+        let cancel = try #require(restart.range(of: "session.cancel(attemptKey: key)"))
         #expect(recheck.lowerBound < failBranch.lowerBound && recheck.lowerBound < cancel.lowerBound,
                 "the recheck must run before either verdict cancels the stream")
+        // Review of PR #505: the store commits the verdict (exact attempt, transferring, bytes)
+        // before the cancel, and the cancel is the exact attempt's. LabstreamTests'
+        // `DownloadStallVerdictCommitTests` drive the store through both races.
+        #expect(commit.lowerBound < cancel.lowerBound && !restart.contains("session.cancel(ratingKey:"),
+                "the stall verdict must commit in the store before it cancels the exact attempt")
 
         let ratingKey = "jellyfin:item-moving"
         func row(bytes: Int, attempt: String = "a1", lifecycle: DownloadLifecycle = .transferring,
@@ -1262,10 +1300,17 @@ struct DownloadsFormalModelStatusTests {
         #expect(!P.queuedStallVerdictStillWarranted(observed: queued.record, current: row(bytes: 0, attempt: "a2")))
         #expect(!P.queuedStallVerdictStillWarranted(
             observed: queued.record, current: row(bytes: 1_000, lifecycle: .paused, status: .paused)))
+        // A finished body is `.finalizing`, which also shows as `.downloading`: not a stall.
+        #expect(!P.queuedStallVerdictStillWarranted(
+            observed: queued.record, current: row(bytes: 1_000, lifecycle: .finalizing)))
+        // The store's commit condition: only a transferring attempt whose bytes did not move.
+        #expect(P.stallVerdictMayCommit(lifecycle: .transferring, bytes: 1_000, observedBytes: 1_000))
+        #expect(!P.stallVerdictMayCommit(lifecycle: .transferring, bytes: 1_001, observedBytes: 1_000))
+        #expect(!P.stallVerdictMayCommit(lifecycle: .finalizing, bytes: 1_000, observedBytes: 1_000))
 
         // The same holds for the `.fail` verdict past the cap (#497).
         var capped = DownloadForwardOnlyStallTracker()
-        capped.seedRestartAttempts(ratingKey, attempts: P.defaultMaxAutomaticRestarts)
+        capped.seedRestartAttempts(ratingKey, attempts: P.defaultMaxAutomaticRestarts, highWaterBytes: 1_000)
         _ = capped.detectRestarts(records: [stalled], now: Self.time(0), isActive: { _ in true })
         let failing = try #require(capped.detectRestarts(
             records: [stalled], now: Self.time(P.defaultForwardOnlyStallTimeout), isActive: { _ in true }).first)
@@ -1289,13 +1334,15 @@ struct DownloadsFormalModelStatusTests {
         let detect = try #require(Self.appFunctionSource(named: "detectForwardOnlyStreamStalls", in: manager))
         let restart = try #require(Self.appFunctionSource(named: "restartStalledForwardOnlyStreamAsync", in: manager))
         #expect(detect.contains("forwardOnlyStallTracker.detectRestarts(")
-            && restart.contains("applyLifecycleEvent(.stallDetected")
-            && restart.contains("forwardOnlyStallTracker.seedRestartAttempts(ratingKey, attempts: restart.attempt)")
+            && restart.contains("store.submitStallVerdict(for: key, observedBytes: restart.record.bytes)")
+            && restart.contains("event: .stallDetected")
+            && restart.contains("forwardOnlyStallTracker.seedRestartAttempts(ratingKey, attempts: restart.attempt, highWaterBytes: highWater)")
             && restart.contains("requestAdmission(for: failed, origin: .automatic)")
             && restart.contains("if restart.verdict == .fail {"),
                 "the stall restart path changed: re-derive StallObserve and StallAct in DownloadsStatus.tla and this harness from it")
         let fail = try #require(Self.appFunctionSource(named: "failStalledForwardOnlyStreamAsync", in: manager))
-        #expect(fail.contains("applyLifecycleEvent(.stallDetected") && fail.contains("releaseInFlight(for: key)")
+        #expect(fail.contains("store.submitStallVerdict(for: key, observedBytes: restart.record.bytes)")
+            && fail.contains("event: .stallDetected") && fail.contains("releaseInFlight(for: key)")
             && fail.contains("lastError[ratingKey] = .transferFailed(") && !fail.contains("requestAdmission"),
                 "the capped stall path changed: re-derive StallAct's StallCapFails arm from it")
 
@@ -1331,7 +1378,7 @@ struct DownloadsFormalModelStatusTests {
                 // the tracker's entry, the count is seeded back, and the row is admitted again
                 // from byte 0.
                 tracker.remove(ratingKey)
-                tracker.seedRestartAttempts(ratingKey, attempts: found.attempt)
+                tracker.seedRestartAttempts(ratingKey, attempts: found.attempt, highWaterBytes: found.highWaterBytes)
             }
             now += DownloadWatchdogPolicy.refreshIntervalSeconds
         }
