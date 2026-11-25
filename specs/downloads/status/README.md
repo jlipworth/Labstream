@@ -146,8 +146,8 @@ those fixes.
 | `Proposed-Mixed` | pass | 2,307,548 | 110 |
 | `Proposed-OneForward` | pass | 928,153 | 47 |
 | `Deep-LivenessFlow` (deep) | pass | 1,066,742 | 419 |
-| `Deep-Mixed` (deep) | pass | 73,353,389 | 1852 |
-| `Deep-TwoStatic` (deep) | pass | 34,252,117 | 945 |
+| `Deep-Mixed` (deep) | pass | 73,353,389 | 1319 |
+| `Deep-TwoStatic` (deep) | pass | 34,252,117 | 662 |
 
 The `Current` and `Liveness` configs leave out what an open finding violates: none checks
 `RelaunchKeepsBytes` (S3), `NoInflatedRowRate` is checked only where no forward-only row exists
