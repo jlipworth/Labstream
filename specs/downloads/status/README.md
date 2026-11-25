@@ -101,14 +101,15 @@ mutation that dropped quiet members from the sum passed.
 Run with `TLC_WORKERS=2 TLC_HEAP=2g scripts/check-tla-specs.sh specs/downloads/status`. The
 figures are from that command on a 14-core Mac with other checks running; the default tier takes
 about 19 minutes in all. `Deep-Mixed` and `Deep-TwoStatic` were rerun after the S1, S2, S5 and S8
-fixes with `TLC_WORKERS=4` (about 47 minutes for the two); the `Deep-LivenessFlow` figure predates
-those fixes.
+fixes with `TLC_WORKERS=4` (about 47 minutes for the two). State counts were refreshed on
+2026-11-25 from a full `TLC_WORKERS=auto` run of the branch head (after the #502 fix); the deep
+rows' seconds are from that run, the other seconds from the two-worker runs.
 
 | Config | Expect | Distinct states | Seconds |
 | --- | --- | ---: | ---: |
 | `Current-Backend` | pass | 245,746 | 7 |
-| `Current-Mixed` | pass | 3,107,916 | 147 |
-| `Current-OneForward` | pass | 1,614,058 | 47 |
+| `Current-Mixed` | pass | 3,347,988 | 147 |
+| `Current-OneForward` | pass | 1,614,535 | 47 |
 | `Current-OneStatic` | pass | 556,054 | 27 |
 | `Current-Planned` | pass | 104,963 | 6 |
 | `Current-ResumeBlob` | pass | 224,161 | 3 |
@@ -128,13 +129,13 @@ those fixes.
 | `Finding-S7-LateBacklogInflatesRow` | violation `NoInflatedRowRate` | 1,253 | 0 |
 | `Finding-S7-LateBacklogInflatesTotal` | violation `NoInflatedAggregate` | 3,171 | 1 |
 | `Liveness-Flow` | pass | 117,074 | 40 |
-| `Liveness-FlowOneForward` | pass | 35,911 | 6 |
+| `Liveness-FlowOneForward` | pass | 35,936 | 6 |
 | `Liveness-FlowOneStatic` | pass | 78,270 | 13 |
 | `Liveness-FlowStall` | pass | 141,514 | 73 |
-| `Liveness-Settle` | pass | 128,418 | 24 |
+| `Liveness-Settle` | pass | 128,465 | 24 |
 | `Liveness-SilentMember` | pass | 184,911 | 101 |
 | `Liveness-StaleRowSettles` | pass | 215,204 | 36 |
-| `Liveness-StallCap` | pass | 392,477 | 68 |
+| `Liveness-StallCap` | pass | 392,621 | 68 |
 | `Liveness-StallCapFlow` | pass | 125,188 | 45 |
 | `Liveness-Static` | pass | 163,202 | 27 |
 | `Mutant-I224-NoSettling` | violation `NoInflatedAggregate` | 1,440 | 1 |
@@ -143,11 +144,11 @@ those fixes.
 | `Mutant-I379-PartialSum` | violation `NoPartialSum` | 3,327 | 1 |
 | `Mutant-I379-QuietOmitted` | violation `NoPartialSum` | 29,336 | 2 |
 | `Mutant-I416-SegmentNoHold` | violation `NoSpuriousReset` | 152 | 0 |
-| `Proposed-Mixed` | pass | 2,307,548 | 110 |
-| `Proposed-OneForward` | pass | 928,153 | 47 |
-| `Deep-LivenessFlow` (deep) | pass | 1,066,742 | 419 |
-| `Deep-Mixed` (deep) | pass | 73,353,389 | 1319 |
-| `Deep-TwoStatic` (deep) | pass | 34,252,117 | 662 |
+| `Proposed-Mixed` | pass | 2,547,620 | 110 |
+| `Proposed-OneForward` | pass | 928,761 | 47 |
+| `Deep-LivenessFlow` (deep) | pass | 1,148,455 | 107 |
+| `Deep-Mixed` (deep) | pass | 73,353,389 | 734 |
+| `Deep-TwoStatic` (deep) | pass | 34,252,117 | 383 |
 
 The `Current` and `Liveness` configs leave out what an open finding violates: none checks
 `RelaunchKeepsBytes` (S3), `NoInflatedRowRate` is checked only where no forward-only row exists
@@ -354,7 +355,7 @@ stalls again and is restarted a second time; it stalls a third time. Now
 nothing else looks at the row. It stays `transferring` with a task that delivers nothing. The
 watchdog keeps refreshing every 15 s and finds the same thing each time.
 
-With a second row (`Finding-S5-StallCapHidesSpeed`) the capped row is a silent member of the
+With a second row (`Finding-S5-StallCapHidesSpeed`, now `Faithful-S5-off-Flow`) the capped row is a silent member of the
 batch, so the top of Downloads says "Updating speed…" while the other row flows. That is S1 for a
 forward-only row, which the stall verdict was thought to rule out. Round 1's model had a fair
 `StallDetect` with no cap, so `Liveness-Flow` passed.

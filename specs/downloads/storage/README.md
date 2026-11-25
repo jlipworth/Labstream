@@ -79,13 +79,13 @@ foreign bytes, a cap of 3 (or Unlimited), headroom 1 (or 0).
 
 `TypeOK` includes `Used <= Disk`: no action writes past the volume.
 
-## Configs (2026-11-24, tla2tools v1.7.4, `TLC_WORKERS=2 TLC_HEAP=2g`)
+## Configs (2026-11-24, tla2tools v1.7.4, `TLC_WORKERS=2 TLC_HEAP=2g`; state counts checked 2026-11-25)
 
 | Config | Expectation | Distinct states | Time |
 | --- | --- | --- | --- |
 | `Current-TwoStatic` (symmetry) | pass | 686,260 | 46 s |
 | `Current-ParkHolds` (symmetry) | pass | 91,162 | 6 s |
-| `Current-Mixed` | pass | 56,651 | 3 s |
+| `Current-Mixed` | pass | 55,473 | 3 s |
 | `Current-Unknown` | pass | 347,166 | 20 s |
 | `Current-Unlimited` (symmetry) | pass | 173,146 | 10 s |
 | `Current-ThreeStatic` (symmetry) | pass | 833,784 | 83 s |

@@ -1,6 +1,6 @@
 # Downloads formal model (TLA+)
 
-**Status (2026-11-24):** the modelling program is done on `specs/downloads-tla`: the pilot (the
+**Status (2026-11-25):** the modelling program is done on `specs/downloads-tla`: the pilot (the
 session, finalize and sweep core with process death), the shared base W0 (the lifecycle reducer
 as shared TLA+ operators, held equal to the Swift by a generated table; a pinned TLC runner with
 a default and a deep tier; a drift guard between modelled Swift files and their specs), and the
@@ -8,15 +8,29 @@ subsystem models W1 to W8, each with fix-off configs that reproduce fixed bugs. 
 followed an independent review of the specs against the Swift: every reviewer claim was
 re-checked in the Swift and in TLC, the models, properties and runner were strengthened, and
 each strengthened check is now shown to fail on the mutation that used to slip past it
-([Round 2](#round-2-independent-review)). Twenty-nine findings are open, each with an issue
-(#472 to #500, one of which also covers RangeTrain-R3); the models also confirm four known open
-items (#392, #393, #394 and st-39). No product code changed. What remains is in
-[Follow-ups](#follow-ups).
+([Round 2](#round-2-independent-review)).
+
+The branch also carries product fixes for sixteen of the thirty-three finding issues (#472 to
+#504), each fixed on `specs/downloads-tla`, pending merge, with its finding config turned into a
+`Faithful-*-off` config that still fails with the fix switched off:
+
+- session and range train: F1 (#472), F2 (#473), F3 and RangeTrain-R3 (#474), RangeTrain-R2 for
+  work the session owns (#476);
+- admission: Admission-A1 (#475);
+- side assets: SideAssets-S1 (#482), S2 (#483), S6 (#494), S7 (#495), #503 and #504;
+- status: Status-S1 (#487), S2 (#488), S5 (#497), S8 (#501) and #502.
+
+Seventeen stay open, each with an issue: F4 (#491), ServerPrep-S1 (#478) and S2 (#500),
+Cleanup-C1 (#479), Wake-W1 (#480) and W2 (#481), SideAssets-S3 (#484), S4 (#485), S5 (#493) and
+S8 (#496), Storage-S1 (#486), RangeTrain-R1 (#477) and R4 (#492), Status-S3 (#490), S4 (#489),
+S6 (#498) and S7 (#499). One ordering of #476 also stays open
+(`range-train/Finding-R2-UndeliveredBodyLost`). The models also confirm four known open items
+(#392, #393, #394 and st-39, #401). What remains is in [Follow-ups](#follow-ups).
 
 **Scope:** model checking of the downloads manager design. Specs live in `specs/downloads/`, one
 folder per module with the shared modules in `base/` (`specs/README.md` has the layout, and
-[Path map](#path-map) the old flat names); the runner is `scripts/check-tla-specs.sh`. This plan owns the modelling program and its findings. It
-does not own fixes: each finding needs its own issue and change.
+[Path map](#path-map) the old flat names); the runner is `scripts/check-tla-specs.sh`. This plan owns the modelling program and its findings. Each
+fix has its own issue and change; the ones carried by this branch are listed in the status above.
 
 **Evidence that motivated it:** the
 [bugs versus main audit](../evidence/2026-10-17-downloads-overhaul-bugs-vs-main.md). Its
@@ -116,23 +130,23 @@ finalizing row back to transferring when reattach adopted a task for it. The cod
 that one step left as the pilot wrote it, every passing config has the pilot's exact state count,
 so nothing else changed.
 
-## Results (2026-11-24, after round 2, tla2tools v1.7.4, `TLC_WORKERS=2 TLC_HEAP=2g`)
+## Results (2026-11-25, branch head after the product fixes, tla2tools v1.7.4, `TLC_WORKERS=auto`, 14 cores)
 
 | Config | Expectation | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
-| `session/Current-Forward` | pass | pass | 5,784 | 1 s |
-| `session/Current-Static` | pass | pass | 97,135 | 3 s |
-| `session/Current-TwoForward` (symmetry) | pass | pass | 200,463 | 7 s |
-| `session/Current-TwoRows` | pass | pass | 2,353,462 | 73 s |
-| `session/Liveness-Forward` | pass | pass | 13,621 | 6 s |
-| `session/Liveness-Static` | pass | pass | 70,570 | 51 s |
-| `session/Proposed-Forward` | pass | pass | 3,129 | < 1 s |
-| `session/Proposed-Static` | pass | pass | 70,841 | 3 s |
-| `session/Proposed-F4-VerdictBeforeRename` | pass | pass | 6,449 | < 1 s |
+| `session/Current-Forward` | pass | pass | 2,951 | 2 s |
+| `session/Current-Static` | pass | pass | 71,357 | 1 s |
+| `session/Current-TwoForward` (symmetry) | pass | pass | 76,119 | 2 s |
+| `session/Current-TwoRows` | pass | pass | 1,186,217 | 9 s |
+| `session/Liveness-Forward` | pass | pass | 8,028 | 2 s |
+| `session/Liveness-Static` | pass | pass | 65,527 | 10 s |
+| `session/Proposed-Forward` | pass | pass | 2,904 | 1 s |
+| `session/Proposed-Static` | pass | pass | 70,841 | 2 s |
+| `session/Proposed-F4-VerdictBeforeRename` | pass | pass | 2,904 | 1 s |
 | `base/Reducer-Conformance` | pass | pass | one state; 298,368 reducer results compared | 24 s |
-| `session/Projection-SessionCore` | pass | pass | one state | 14 s |
-| `session/SessionRowMapCheck-Current-RowMap` | pass | pass | one state | 9 s |
-| `session/Deep-TwoStatic` (deep tier, symmetry) | pass | pass | 7,908,854 | 176 s (4 workers) |
+| `session/Projection-SessionCore` | pass | pass | one state | 13 s |
+| `session/SessionRowMapCheck-Current-RowMap` | pass | pass | one state | 10 s |
+| `session/Deep-TwoStatic` (deep tier, symmetry) | pass | pass | 5,517,342 | 47 s |
 | `session/Faithful-B03-off` | `QueuedBodyNotSwept` violated | violated | stops at first error | < 1 s |
 | `session/Faithful-B10-off` | `WorkingBodyKept` violated | violated | stops at first error | 1 s |
 | `session/Faithful-B12-off` | `StaleCallbackInert` violated | violated | stops at first error | < 1 s |
@@ -149,16 +163,17 @@ so nothing else changed.
 | `session/SessionRowMapCheck-Mutant-RowDropsCondemned`, `-RowDropsCounted` | `RowMapSound` violated | violated | fails at startup | 3 s each |
 
 The `Current-*` configs are the code as it stands and check every property except the ones the
-findings break. With F1 and F3 fixed (see [Fixes](#fixes-f1-f3-rangetrain-r2-and-r3)) every
-session `Current-*` and `Deep-*` config lists `FinishedBodyNotLost` and
-`FinishedBodySurvivesPause`, and their state counts are the ones in
-`specs/downloads/session/README.md`, not the ones above. In the first round the static pause
-check was vacuous, because the model counted a static body as whole only
-once the working file was complete. `session/Current-TwoRows` uses one attempt per row and the
-`complete` verdict only.
+open findings break. Since the F1, F2 and F3 fixes every session `Current-*` and `Deep-*` config
+also lists `FinishedBodyNotLost`, `FinishedBodySurvivesPause` and `UserPauseSticky`, and the
+counts above are smaller than round 2's (`Current-TwoRows` was 2,353,462, `Deep-TwoStatic`
+7,908,854): the durable capture makes a finished forward-only body `finalizing` at once, which
+removes the interleavings in which it waited in a stash. `specs/downloads/session/README.md`
+has the per-config rows. In the first round the static pause check was vacuous, because the
+model counted a static body as whole only once the working file was complete.
+`session/Current-TwoRows` uses one attempt per row and the `complete` verdict only.
 
 State counts before round 2, against the pilot (which ran the same configs with `-workers auto`).
-The round-2 counts are in the table above:
+The current counts are in the table above:
 
 | Config | Pilot | After W0 | Why |
 | --- | --- | --- | --- |
@@ -294,12 +309,13 @@ Correction (round 2): the static lane is not safe either. `writeThenPause` appli
 finish callback runs before the completion of the pause's task listing. When the segment
 finishes in between, `pauseRangeTask` supersedes the task and its finish callback is ignored
 (RangeTrain-R3, probable; `session/Finding-F3-PauseSupersedesFinishedSegment`,
-`range-train/Finding-R3-PauseDropsFinishedSegment`). The first round's `session/Current-Static`
+`range-train/Finding-R3-PauseDropsFinishedSegment`, since the fix `session/Faithful-F3-off-Static`
+and `range-train/Faithful-R3-off`). The first round's `session/Current-Static`
 passed the property vacuously.
 
 Verdict: real. The first ordering needs only a pause near the end of a transfer, with no crash,
 and costs a full re-transcode. The second needs a crash in a short window.
-`session/Proposed-F3-PauseKeepsBody` shows the fix on its own: the queued publication accepts a pause
+`session/Proposed-F3-PauseKeepsBody` (removed with the fix) showed the fix on its own: the queued publication accepts a pause
 halt (and still rejects a cancel), and relaunch finalizes a paused forward-only row whose body
 is at the working path. One window stays open under that fix: a Resume that lands between the
 stash and the working path still starts a fresh attempt. The property allows it, as a fresh
@@ -308,8 +324,8 @@ is then `finalizing` before the user can act.
 
 Pin: `DownloadsFormalModelFindingsTests.finishedForwardOnlyBodySurvivesUserPause`. It pins the
 reducer's relaunch decision and, because the first ordering is decided inline in app code with
-no PMSKit policy to call, the guard in `finishOpaqueBody` as source text. The fix should move
-that decision into a policy and replace the source pin. Issue: #474.
+no PMSKit policy to call, the guard in `finishOpaqueBody` as source text. The fix moved that
+decision into `ForwardOnlyFinishedBodyPolicy.publication`. Issue: #474.
 
 A pin uses `withKnownIssue` while its finding is open: the suite stays green, and the test
 fails as soon as the expectations hold, which is the signal to remove the wrapper and turn the
@@ -407,32 +423,40 @@ and what it leaves out. `docs/DOWNLOADS-OFFLINE.md` summarises each module.
 W8 was added to the program after the plan was first written; it has no row in the audit's bug
 table for #379, #224 and #416, so those three are mutants.
 
-### Results of the merged run after round 2 (2026-11-24, tla2tools v1.7.4, `TLC_WORKERS=auto`, 14 cores)
+### Results of the merged run (2026-11-25, branch head, tla2tools v1.7.4, `TLC_WORKERS=auto`, 14 cores)
 
-Every config ended as its header expects, under the stricter rule that TLC's exit status, banner
-and clean finish must agree. The table sums each module's configs; the notes files have the
-per-config rows, measured at `TLC_WORKERS=2 TLC_HEAP=2g`. Wall time was 841 s for the default
-tier (226 configs and 17 module parses) and 1,369 s for the 9 deep configs. Before round 2 the
-same run was 153 configs, 335 s and 293 s.
+`TLC_WORKERS=auto scripts/check-tla-specs.sh --deep specs/` on the branch head, after all the
+product fixes: every module parsed and every config ended as its header expects (exit 0), under
+the rule that TLC's exit status, banner and clean finish must agree. The table sums each
+module's configs; the notes files have the per-config rows. Wall time was 2,500 s for the whole
+run: 238 default-tier configs, 9 deep configs and 17 module parses. After round 2 (before the
+fixes) the same run was 235 configs, 841 s for the default tier and 1,369 s for the deep tier;
+before round 2 it was 153 configs, 335 s and 293 s.
 
 | Module | Configs | Pass | Violated as expected | Deep | Largest state space (config) | Default tier | Deep tier |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `DownloadsSessionCore` | 23 | 11 | 12 | 1 | 7,908,854 (`session/Deep-TwoStatic`) | 51 s | 58 s |
-| `DownloadsReducerConformance` | 5 | 2 | 3 | 0 | 1 (`base/Reducer-Conformance`) | 41 s |  |
+| `DownloadsSessionCore` | 22 | 10 | 12 | 1 | 5,517,342 (`session/Deep-TwoStatic`) | 39 s | 47 s |
+| `DownloadsReducerConformance` | 5 | 2 | 3 | 0 | 1 (`base/Reducer-Conformance`) | 44 s |  |
 | `DownloadsSessionRowMapCheck` | 3 | 1 | 2 | 0 | 1 (`session/SessionRowMapCheck-Current-RowMap`) | 15 s |  |
-| `DownloadsAdmission` | 20 | 11 | 9 | 2 | 5,832,083 (`admission/Deep-CapLowered`) | 71 s | 120 s |
-| `DownloadsServerPrep` | 18 | 9 | 9 | 0 | 154,948 (`server-prep/Current-PlexThreePollers`) | 20 s |  |
-| `DownloadsCleanup` | 16 | 7 | 9 | 0 | 1,249,082 (`cleanup/Current-TwoRows`) | 22 s |  |
-| `DownloadsWake` | 13 | 3 | 10 | 0 | 9,290,572 (`wake/Current-Wake`) | 114 s |  |
-| `DownloadsWakeLaunchGate` | 2 | 1 | 1 | 0 | 112 (`wake/WakeLaunchGate-Current-Gate`) | 2 s |  |
-| `DownloadsSideAssets` | 55 | 27 | 28 | 1 | 16,294,270 (`side-assets/Deep-AllKinds`) | 102 s | 111 s |
-| `DownloadsStorage` | 16 | 7 | 9 | 0 | 833,784 (`storage/Current-ThreeStatic`) | 48 s |  |
-| `DownloadsRangeTrain` | 25 | 11 | 14 | 2 | 4,182,753 (`range-train/Deep-TwoRows`) | 130 s | 49 s |
-| `DownloadsStatus` | 39 | 21 | 18 | 3 | 66,650,051 (`status/Deep-Mixed`) | 199 s | 1013 s |
-| Total | 235 | 111 | 124 | 9 | | 815 s | 1351 s |
+| `DownloadsAdmission` | 19 | 10 | 9 | 2 | 5,813,009 (`admission/Deep-CapLowered`) | 70 s | 118 s |
+| `DownloadsServerPrep` | 18 | 9 | 9 | 0 | 154,948 (`server-prep/Current-PlexThreePollers`) | 21 s |  |
+| `DownloadsCleanup` | 16 | 7 | 9 | 0 | 1,249,082 (`cleanup/Current-TwoRows`) | 20 s |  |
+| `DownloadsWake` | 13 | 3 | 10 | 0 | 9,290,572 (`wake/Current-Wake`) | 115 s |  |
+| `DownloadsWakeLaunchGate` | 2 | 1 | 1 | 0 | 112 (`wake/WakeLaunchGate-Current-Gate`) | 1 s |  |
+| `DownloadsSideAssets` | 66 | 32 | 34 | 1 | 21,547,911 (`side-assets/Deep-AllKinds`) | 139 s | 173 s |
+| `DownloadsStorage` | 16 | 7 | 9 | 0 | 833,784 (`storage/Current-ThreeStatic`) | 47 s |  |
+| `DownloadsRangeTrain` | 25 | 11 | 14 | 2 | 2,438,318 (`range-train/Deep-TwoRows`) | 113 s | 32 s |
+| `DownloadsStatus` | 42 | 22 | 20 | 3 | 73,353,389 (`status/Deep-Mixed`) | 250 s | 1,224 s |
+| Total | 247 | 115 | 132 | 9 | | 874 s | 1,594 s |
 
 The seconds are per-config times summed, so they leave out parsing and JVM start-up. The
-reducer checks explore one state each; their cost is the table comparison.
+reducer checks explore one state each; their cost is the table comparison. Against round 2, the
+side-assets model gained the S1, S2, S6, S7, #503 and #504 fix and fix-off configs and asset
+identity, which is why `Deep-AllKinds` grew from 16,294,270 states; the status model gained the
+S1, S2, S5, S8 and #502 configs; the session and range-train state spaces shrank with the
+F1, F3 and R2 fixes; and admission and the session model each dropped a `Proposed-*` config whose
+fix is now in every `Current-*` run (`Proposed-A1-RelaunchKeepsUnstartedRow`,
+`Proposed-F3-PauseKeepsBody`).
 
 ### Findings (all models, after round 2)
 
@@ -462,7 +486,7 @@ decision to call. Full traces and evidence are in the module notes and the issue
 | SideAssets-S4 | A refused Resume leaves a user-paused row's side assets unparked. | behaviour confirmed by the reviewer, low; product decision | `side-assets/Finding-S4-RefusedResumeUnparks` | none | #485 |
 | SideAssets-S5 | A completed-row repair pass that is dropped (an edge while one runs, the 30 s timeout, a row whose generation moved) is not run again. Raised by the reviewer. | real, low | `side-assets/Finding-S5-BusyEdgeDropped`, `-PassTimeoutNoRerun`, `-StaleRowSkipped` | `droppedRepairEdgeRunsAgain` | #493 |
 | SideAssets-S6 | A completed row on a backend that is not selected gets no session at launch, so no launch repairs its side assets until the user switches backend. Raised by the reviewer. | real, medium; fixed on specs/downloads-tla, pending merge (launch also hydrates backends of completed rows missing an asset) | `side-assets/Faithful-S6-off` (was `Finding-S6-InactiveBackendStaysCold`); `side-assets/Current-S6-HydrateCompleted` passes | `launchHydratesBackendsOfCompletedRowsMissingAssets` (no longer a known issue) | #494 |
-| SideAssets-S7 | The Plex BIF is selected from the media's first part, not the downloaded part: never requested when only the downloaded part has one, the wrong index cached when the first part has one. Raised by the reviewer; the wrong-index half is from the model. Fixed on `specs/downloads-tla`, pending merge: both call sites pass the part index and `selectedPlexBIFPart` selects `part[partIndex]`. | real, medium; fixed | `side-assets/Current-S7-BifChosenPart` passes; the fix switched off: `Faithful-S7-off-BifOfChosenPartNeverAsked`, `-BifOfChosenPartNotOwed`, `-WrongPartBifCached` | `plexBIFComesFromTheDownloadedPart` (passes) | #495 |
+| SideAssets-S7 | The Plex BIF is selected from the media's first part, not the downloaded part: never requested when only the downloaded part has one, the wrong index cached when the first part has one. Raised by the reviewer; the wrong-index half is from the model. Fixed on `specs/downloads-tla`, pending merge: both call sites pass the part index and `selectedPlexBIFPart` selects `part[partIndex]`. | real, medium; fixed on specs/downloads-tla, pending merge | `side-assets/Current-S7-BifChosenPart` passes; the fix switched off: `Faithful-S7-off-BifOfChosenPartNeverAsked`, `-BifOfChosenPartNotOwed`, `-WrongPartBifCached` | `plexBIFComesFromTheDownloadedPart` (passes) | #495 |
 | SideAssets-S8 | A side-asset promotion gives up on any concurrent write to its row and nothing retries. | real, low | `side-assets/Finding-S8-PromotionLostToRowMutation` | `promotionSurvivesAnUnrelatedRowWrite` | #496 |
 | SideAssets-503 | The Plex completed-row repair looks the downloaded part up by media/part index (subtitles and, despite the S7 fix, the BIF), so after Plex reorders the item's media it fetches another version's assets, or none, on every launch, although the row persists `sourcePartID`. Raised by the round 2 re-review. Fixed on `specs/downloads-tla`, pending merge: both repairs resolve the part by `sourcePartID` and fall back to the indexes only when none is stored. The model gained asset identity (`foreign`, `Correct`). | real, medium; fixed on specs/downloads-tla, pending merge | `side-assets/Current-503-RepairByPartID`, `-Bare` pass; the fix switched off: `Faithful-503-off-WrongPartSubs`, `-WrongPartBif` (`CachedAssetIsForDownloadedPart`), `-SubsNeverFetched` (`MissingIsDurablyOwed`) | `plexRepairResolvesThePartByItsPersistedID` (passes) | #503 |
 | SideAssets-504 | Assets missing from the saved row are never fetched: chapter thumbnails a later refresh has (the inventory is derived from the saved chapters and the refresh skipped the chapter call), and a poster when Plex's `thumb` is `""` with a valid `art` (the selector returned `""`). Raised by the round 2 re-review. Fixed on `specs/downloads-tla`, pending merge: a successful refresh persists learned chapter thumbnails and fetches them; the selector skips blank fields. The model gained a saved inventory (`seedChapters`, `InInventory`). | real, medium; fixed on specs/downloads-tla, pending merge | `side-assets/Current-504-LateChapters`, `Current-504-EmptyThumb` pass; the fix switched off: `Faithful-504-off-LateChapters`, `-EmptyThumb` (`ServedAssetInInventory`) | `refreshedChapterThumbnailsJoinTheInventory`, `emptyArtworkFieldFallsBack` (pass) | #504 |
@@ -491,7 +515,7 @@ Findings that touch each other:
   session when reconcile decides, and must not count session work as live for a paused row.
 - F3 and RangeTrain-R3 are one defect on two lanes; one fix should cover both.
 - SideAssets-S1, S2, S3 and S5 each last one launch; S6 and S7 are the ones a relaunch does not
-  heal. S1, S2 and S6 are fixed on specs/downloads-tla (pending merge).
+  heal. S1, S2, S6, S7, #503 and #504 are fixed on specs/downloads-tla (pending merge).
 - Status-S5 is Status-S1 for a forward-only row past its restart cap. Status-S7 and Status-S4
   both depend on how late URLSession reports a backlog after a wake; one device capture settles
   both.
@@ -656,7 +680,8 @@ Tooling:
   server preparation (`DownloadManager+Admission.swift`). Decide whether to keep the friction,
   narrow the guard to functions, or move the modelled code into smaller files.
 - Default-tier cost. Round 2 took the default tier from 147 configs and about six minutes to
-  226 and about fourteen on 14 cores. `DownloadsStatus`, `DownloadsRangeTrain`, `DownloadsWake`
+  226 and about fourteen on 14 cores; with the fixes it is 238 configs and about fifteen
+  minutes, and the whole run with the deep tier about forty-two. `DownloadsStatus`, `DownloadsRangeTrain`, `DownloadsWake`
   and `DownloadsSideAssets` are the slowest. Candidates for the deep tier if that is too long
   for CI: `range-train/Proposed-Liveness-MidAppend`, `wake/Liveness-HandlerCalled`,
   `wake/Current-Wake`, `status/Current-Mixed`. `status/Deep-Mixed` is the heaviest deep config;

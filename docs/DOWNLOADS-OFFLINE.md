@@ -956,8 +956,8 @@ order (B32), and that a user-paused row's parked payloads stay off the network.
 Findings SideAssets-S1 to S8; the model also reproduces the deferred st-39 and #394 (for
 trickplay tiles too). `NeverForgotten` holds on the code as it stands for every kind with every
 environment switch on, including the triggers of S3 and S5, so each of those lasts one launch; it
-fails for S7. S1, S2 and S6 are fixed in the code (each keeps a `Faithful-*-off` config that
-fails with its fix switched off). The round 2 re-review added asset identity and source drift
+failed for S7 until the #495 fix. S1, S2, S6 and S7 are fixed in the code (each keeps a
+`Faithful-*-off` config that fails with its fix switched off). The round 2 re-review added asset identity and source drift
 (`Drift`): `CachedAssetIsForDownloadedPart` says no cached file belongs to another part (#503),
 and `ServedAssetInInventory` says an asset the server holds is in the inventory derived from the
 saved row or a refresh adds it (#504); both are fixed, with `Faithful-503-off-*` and
@@ -1020,7 +1020,7 @@ go down while a row stays downloading in a live process, and that a task resumed
 publishes bytes that never fall and never pass the true total (#502). The phase rule is a function with a
 288-row table in `DownloadsStatusPhase.tla`; TLC checks the table against the function and
 `DownloadsFormalModelStatusTests` checks `DownloadRowStatusCaptionPolicy.phase` against the
-table. Findings Status-S1 to S7; #502 is fixed. The Swift suite adds seeded property tests and worked examples
+table. Findings Status-S1 to S8 and #502; S1, S2, S5, S8 and #502 are fixed. The Swift suite adds seeded property tests and worked examples
 of the estimators' arithmetic. The callback-gap reset has no TLC mutant: every sleep in the
 model is reset at foreground first, so that rule is exercised only by the seeded Swift test.
 
@@ -1051,8 +1051,8 @@ The script downloads a pinned `tla2tools.jar` into the gitignored `build/tla/`, 
 SHA-256, parses every module and runs TLC on every `.cfg`, with `base/` on the TLA+ library path
 so a module folder can import the shared modules. Each config's log is kept at
 `build/tla/downloads/<folder>/<config>/tlc.log`. It needs a JDK (Homebrew `openjdk`, or
-`JAVA=`); without one it exits 2 and says so. On a 14-core Mac the default tier (226
-configs) takes about fourteen minutes and the nine deep configs about twenty-three more. Run
+`JAVA=`); without one it exits 2 and says so. On a 14-core Mac the default tier (238
+configs) takes about fifteen minutes and the nine deep configs about twenty-seven more. Run
 one instance per worktree at a time. A run counts only when TLC's exit status, its banner and a
 clean finish agree, so a crash after an expected violation banner is a failure. Each config
 states what it expects in its header:
@@ -1165,7 +1165,7 @@ then a plain regression test and its `Finding-*` config a `Faithful-*-off` one.
 | SideAssets-S4 | A refused Resume leaves a user-paused row's side assets unparked. | behaviour confirmed; product decision | #485 |
 | SideAssets-S5 | A completed-row repair pass that is dropped (an edge while one runs, the 30 s timeout, a row whose generation moved) is not run again. | real, low | #493 |
 | SideAssets-S6 | A completed row on a backend that is not selected gets no session at launch, so no launch repairs its side assets until the user switches backend. | real, medium; fixed on specs/downloads-tla, pending merge | #494 |
-| SideAssets-S7 | The Plex BIF is selected from the media's first part, not the downloaded part: never requested when only the downloaded part has one, the wrong index cached when the first part has one. Fixed on `specs/downloads-tla`, pending merge: the initial pass and the completed-row repair select `media[mediaIndex].part[partIndex]`. | real, medium; fixed | #495 |
+| SideAssets-S7 | The Plex BIF is selected from the media's first part, not the downloaded part: never requested when only the downloaded part has one, the wrong index cached when the first part has one. Fixed on `specs/downloads-tla`, pending merge: the initial pass and the completed-row repair select `media[mediaIndex].part[partIndex]`. | real, medium; fixed on specs/downloads-tla, pending merge | #495 |
 | SideAssets-S8 | A side-asset promotion gives up on any concurrent write to its row and nothing retries. | real, low | #496 |
 | SideAssets-503 | The Plex completed-row repair looks the downloaded part up by media/part index, so after Plex reorders the item's media it fetches another version's subtitle and BIF, or none, on every launch. | real; fixed on specs/downloads-tla, pending merge | #503 |
 | SideAssets-504 | Assets missing from the saved row are never fetched: chapter thumbnails the server gained later, and a poster when Plex's `thumb` is `""` with a valid `art`. | real; fixed on specs/downloads-tla, pending merge | #504 |
@@ -1183,6 +1183,7 @@ then a plain regression test and its `Finding-*` config a `Faithful-*-off` one.
 | Status-S6 | Fresh evidence without a common 0.5 s window hides the batch speed; a member reporting every 3.5 to 6 s makes it come and go. | real, low | #498 |
 | Status-S7 | A backlog reported after the 4 s settling and grace windows is published as live speed. | probable, low | #499 |
 | Status-S8 | A queued forward-only stall verdict re-read the row but not its bytes, so a stream that moved again before the queued operation ran was cancelled and restarted from byte 0. | real, low; fixed on specs/downloads-tla, pending merge | #501 |
+| Status-502 | After a static-range resume from a blob, the published bytes went backwards: per-sample normalization against the watermark let a fresh count fall below a cumulative one, freezing the row and resetting the batch speed. | real, medium; fixed on specs/downloads-tla, pending merge (`status/Faithful-502-off`) | #502 |
 
 Wake-W1, Wake-W2, SideAssets-S3, SideAssets-S4, Status-S3, Status-S4, st-39 and #394 have a
 `Finding-*` config and no behavioural Swift pin: the decision is app-target code or a product

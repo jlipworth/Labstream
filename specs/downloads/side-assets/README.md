@@ -202,8 +202,8 @@ attempt IDs are reset as a whole. The mutant shows the properties' scope is load
 
 ## Findings
 
-Each was checked against the Swift before it was recorded. S1, S2 and S6 are fixed on
-specs/downloads-tla (pending merge); the rest are open.
+Each was checked against the Swift before it was recorded. S1, S2, S6, S7, #503 and #504 are
+fixed on specs/downloads-tla (pending merge); S3, S4, S5 and S8 are open.
 
 ### S1: a cancelled poster owner stays cancelled for the launch (real, fixed)
 
