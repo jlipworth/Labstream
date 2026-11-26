@@ -14,12 +14,20 @@ scripts/check-tla-specs.sh --deep specs/playback/jellyfin/Deep-BackToBack.cfg
 
 What the model shows:
 
-- With one controller, no consent, and no second replacement or Retry started while the first
-  one's cleanup is still under way, the order as it stands keeps `OneEncoder`, `NoOrphans` and
-  `StopNeverKillsSuccessor`. Under id reuse that also needs a server that ends a job when it
-  returns that job's id again: the server the same-id skip is written for (`Current-ReusedId`).
-  With quick reopens and Retry, `NoOrphans` and `StopNeverKillsSuccessor` still hold
-  (`Current-QuickReopen`); only `OneEncoder` fails.
+- With one controller, no consent, every stop answered or failed within its request timeout, and
+  no second replacement or Retry started while the first one's cleanup is still under way, the
+  order as it stands keeps `OneEncoder` and `NoOrphans` (`Current-Reopen`), and
+  `StopNeverKillsSuccessor` under id reuse given a server that ends a job when it returns that
+  job's id again: the server the same-id skip is written for (`Current-ReusedId`). With quick
+  reopens and Retry, `NoOrphans` still holds (`Current-QuickReopen`); only `OneEncoder` fails.
+- **A stop that times out defeats Retry's join (new, no server assumption).** `retry()` awaits
+  `waitForPendingStopRequests`, which returns when the failed session's stop request times out.
+  The Retry's replacement then attaches while the failed session's job still runs
+  (`Finding-RetryAfterTimedOutStop`), and under id reuse the timed-out stop, still on the wire,
+  ends the replacement (`Finding-RetryAfterTimedOutStop-ReusedId`, conditional). A quality or
+  track change after the timeout overlaps the same way (the route of
+  `Finding-RestartFromFailureOverlap`, here with no quick reopen). Late stops without failures
+  pass (`Current-LateStops`).
 - The skip of `94a9ca4e` is what keeps a reused id safe: without it the deferred stop ends the
   replacement (`Faithful-JellyfinReusedIdStop-off`).
 - **Suspect 3 is reproduced, conditional on the server.** The deferred stop is unfenced, is not
@@ -34,7 +42,8 @@ What the model shows:
   - `requestVideoTranscodeConsent` sets `session.didStop = true` after its await, with no check, on
     the one session object a reopen may have reloaded meanwhile. The new session is then never
     stopped, and a later consent choice shows over its running encoder
-    (`Finding-ConsentClobbersDidStop`).
+    (`Finding-ConsentClobbersDidStop`). The consent request `handlePlaybackFailure` starts is a
+    second route into it (`Finding-ConsentClobbersDidStop-PlayerFailure`).
   - Jellyfin has no transaction tail. A quick second reopen negotiates while the first one's
     result is still to be rejected and the session before both still runs: three jobs at once
     (`Finding-ThirdEncoder`). Two quick reopens that both attach leave the first two sessions
@@ -76,7 +85,8 @@ are as of commit `abe0feab`; none of the modelled files changed after `0b7f3fcb`
 | `NegotiateFails` | the `catch` of the current task: `surfaceFailure(error)` 5913 |
 | `TaskNeedsConsent`, `InitialNeedsConsent`, `ConsentStopDone` | `prepareRemoteStreamURL` calling `requestVideoTranscodeConsent` (3342, 3359, 3372; 2504 to 2534), split at `await stop()` 2525; `session.didStop = true` 2528; the generation check 2531; `videoTranscodeConsent.generation = generation` 2533 |
 | `InitialRuns` | the task in `beginRemoteStream` (3239 to 3253) |
-| `Approve`, `Decline` | `approveVideoTranscoding` 2536, `declineVideoTranscoding` 2549 |
+| `PlayerNeedsConsent` | the branch of `handlePlaybackFailure` (5058 to 5069) that cancels the task, bumps the generation and starts a task running `requestVideoTranscodeConsent`; that task then takes `InitialNeedsConsent` and `ConsentStopDone`, or returns at its first guard (`InitialRuns`) if it was cancelled first |
+| `Approve`, `Decline` | `approveVideoTranscoding` 2536 (it sets `videoTranscodeApprovedForCurrentItem`, which `PlayerNeedsConsent` reads), `declineVideoTranscoding` 2549 |
 | `Retry`, `RetryProceeds` | `retry()` 2566, `failureRetryTask` with `waitForPendingStopRequests` 2580 and `restartAtCurrentPosition` 2584 |
 | `Close` | `stop()` 1135: the task cancelled and dropped at 1181 to 1182, the detach 1201, `stopRemoteSessionIfNeeded` 1203 |
 | `SurfaceFailure`, `StopsNow` | `surfaceFailure` 5133 (the cancelled task joined at 5155 to 5158, `stopRemoteSessionIfNeeded` 5178); `stopRemoteSessionIfNeeded` 1255 for Jellyfin: `onStopAndWait` as a `pendingStopTasks` entry at 1268 |
@@ -84,6 +94,15 @@ are as of commit `abe0feab`; none of the modelled files changed after `0b7f3fcb`
 | `Accepts` | `RemoteStreamLifecyclePolicy.acceptsReopenResult` and the `guard !Task.isCancelled, generation == playbackGeneration` checks |
 | `Joined` | `waitForPendingStopRequests` (1236) |
 | `ServerResolves`, `ServerRecreates`, `ClockTicks` | Jellyfin applies a `DELETE /Videos/ActiveEncodings` for a device and play-session id (`JellyfinLibrary.activeEncodingStopRequest`), or it ends unacknowledged; the server remakes a stopped job; the request timeout passes for a stop somebody awaits |
+
+The module's `MODELS` lines name, beside `PlaybackController.swift`, `JellyfinPlayback.swift` and
+`RemoteStreamLifecyclePolicy.swift`: `DetailPlaybackLauncher.swift` (the first session and the
+stop closures: `DeferredFires` is `stopActiveEncoding(remote:)`'s extra `Task`),
+`PlaybackSessionSource.swift` (`stopAndWaitIgnoringCancellation`, which `TaskRejects` encodes, and
+the one `MediaBrowserPlaybackSession` object #531 rests on), and
+`PMSKit/Sources/PMSKit/MediaBrowser/MediaBrowserPlaybackPolicy.swift` with
+`MediaBrowserActiveEncodingStopExecutor.swift` (a transport error, a timeout included, ends the
+stop unacknowledged, so the awaiting closure returns: `ReqDone`'s timeout).
 
 A task is `[gen, pc, sid, inc, kind, prior, psid, rq]`: the generation it captured, where it is,
 the session its negotiation returned, whether it is the first start or a reopen, the stop it
@@ -133,10 +152,18 @@ place server steps change controller state (a ghost) beside the base contract's
 ### User timing
 
 `QuickReopen` and `QuickRetry` say whether the user (or an automatic reopen) may start another
-replacement, or tap Retry, while any cleanup is under way (`CleanupUnderway`: the window, any
-stop the controller sent that is unanswered, or a task still awaiting a stop): in practice
-within about two seconds of the last replacement. They are environment assumptions, not client
-guards. The Current configs take `FALSE`, and every finding that needs `TRUE` says so.
+replacement (a reopen or `Approve`), or tap Retry, while cleanup is under way
+(`CleanupUnderway`): a reopen task runs, a deferred stop sleeps, a stop the controller sent is
+unanswered and still inside its request timeout, or a task still awaits a stop. In practice that
+is within about two seconds of the last replacement, or before its stops are answered or time
+out. A stop past its request timeout does not count: the client has stopped waiting for it, and a
+user who taps Retry ten seconds later is not "quick". They are environment assumptions, not
+client guards. The Current configs take `FALSE`, and every finding that needs `TRUE` says so.
+
+An earlier version counted every unanswered stop, a timed-out one included, which stays on the
+wire for good in the model. `QuickRetry = FALSE` then blocked Retry for ever after any timed-out
+stop, far more than the two seconds the assumption stands for, and hid
+`Finding-RetryAfterTimedOutStop`.
 
 ## What Jellyfin does
 
@@ -193,8 +220,10 @@ What depends on them:
 - **`playableRemoteStreamURL`'s awaits** (the copy playlist, the prewarm) are folded into
   `negotiated`. Inside a reopen, `requestVideoTranscodeConsent` returning and
   `stopRejectedRemoteStream` sending its request are one step.
-- **Left out:** the consent request from `handlePlaybackFailure` (5062 to 5067), which goes
-  through the same `requestVideoTranscodeConsent`; direct play, whose stop sends no request;
+- **The consent request from `handlePlaybackFailure`** (`PlayerNeedsConsent`) is taken only with
+  an attached item and no task running, and not once the item's encoding was approved, as Emby's.
+  Its Original-quality condition (`maxVideoBitrateKbps <= 0`) is not modelled.
+- **Left out:** direct play, whose stop sends no request;
   the progress stop (`Sessions/Playing/Stopped`), which is not an encoder stop; a stale auth
   context (phase 3); a cancelled negotiation the server still acts on (Emby's
   `Finding-AbandonedNegotiateOrphans` applies unchanged, and is less likely for Jellyfin given the
@@ -213,7 +242,9 @@ What depends on them:
 - One controller unless noted. `MaxGeneration` bounds `playbackGeneration` and the incarnations
   under one id. `GenerationsSuffice` is checked in every passing safety config: no guard on a
   generation counter ever disables an action. It fails with `MaxGeneration = 11` in
-  `Current-ReopenSmall`, so the bound is tight.
+  `Current-ReopenSmall`, so the bound is tight. The consent configs take `MaxGeneration = 15`:
+  the consent request from a failing item bumps the generation without a user action, and
+  `GenerationsSuffice` fails at 14 in `Current-Consent`.
 - `MaxUserActions` bounds reopens, approvals and Retry taps together. Close, one failure per
   attempt and consent requests are always available.
 - `SessionIds`: with `IdReuse = "never"` each negotiation uses one, so a config has one more id
@@ -224,7 +255,7 @@ What depends on them:
 
 | Property | Kind | Meaning |
 | --- | --- | --- |
-| `OneEncoder` (base) | invariant | At most one job the client still owns, two inside the window. **Violated by the code with a quick second reopen (`Finding-ThirdEncoder`), a quick restart while a failure shows (`Finding-RestartFromFailureOverlap`) and through the consent finding; conditionally by the skip.** |
+| `OneEncoder` (base) | invariant | At most one job the client still owns, two inside the window. **Violated by the code with a quick second reopen (`Finding-ThirdEncoder`), a quick restart while a failure shows (`Finding-RestartFromFailureOverlap`), Retry after a stop that timed out (`Finding-RetryAfterTimedOutStop`) and through the consent finding; conditionally by the skip.** |
 | `OneEncoderWhilePlaying` | invariant | `OneEncoder` in the states where a replacement plays and no task runs. Only `Finding-ThirdEncoder-Attached` checks it, to pin the attached shape. |
 | `StopNeverKillsSuccessor` | invariant | No stop meant for an older job under an id ends a newer one the client still wanted. **Violated by the code if Jellyfin reuses ids (conditional), suspect 3 included.** |
 | `NoOrphans` | invariant | Every live job of the controller's is the playing session, held by a task that will attach or stop it, asleep on a deferred stop, or has had a stop sent; and after Close, or while a failure shows with nothing under way, the playing session has had its stop sent. **Violated by the code (`Finding-ConsentClobbersDidStop`).** |
@@ -250,47 +281,57 @@ shipping value of every behaviour constant.
 
 | Config | Built from | Expect | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- | --- |
-| `Current-ReopenSmall` | — | pass | pass | 43,146 | 2 s |
-| `Current-Reopen` | — | pass | pass | 6,229,375 | 34 s |
+| `Current-ReopenSmall` | — | pass | pass | 43,146 | 1 s |
+| `Current-Reopen` | — | pass | pass | 723,971 | 5 s |
+| `Current-LateStops` | `Current-Reopen` + `StopsCanBeLate` − `EnvFails`, `RestartFromFailure` | pass | pass | 38,913 | 1 s |
 | `Current-ReusedId` | — | pass | pass (given `"latest"` reuse that replaces the job, `StopEndsAllUnderId`) | 233,522 | 2 s |
-| `Current-Consent` | `Current-ReopenSmall` + `ConsentPossible` | pass | pass (no reopen while a task awaits a stop) | 274,791 | 2 s |
+| `Current-Consent` | `Current-ReopenSmall` + `ConsentPossible`, `MaxGeneration = 15` | pass | pass (no reopen while a task awaits a stop) | 2,187,120 | 12 s |
 | `Current-QuickRetry` | `Current-ReopenSmall` + `QuickRetry` | pass | pass | 55,495 | 1 s |
-| `Current-QuickReopen` | `Current-ReopenSmall` + `QuickReopen`, `QuickRetry` | pass | pass (`OneEncoder` not checked) | 97,540 | 1 s |
-| `Liveness-Reopen` | — | pass | pass | 8,553 | 1 s |
-| `Liveness-BoundedWait` | — | pass | pass | 48,807 | 4 s |
+| `Current-QuickReopen` | `Current-ReopenSmall` + `QuickReopen`, `QuickRetry` | pass | pass (`OneEncoder` not checked) | 97,540 | 2 s |
+| `Liveness-Reopen` | — | pass | pass | 33,430 | 4 s |
+| `Liveness-BoundedWait` | — | pass | pass | 271,978 | 21 s |
 | `Faithful-JellyfinReusedIdStop-off` | `Current-ReusedId` − `SkipsReusedIdStop` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Mutant-NoDeferredStop` | `Current-ReopenSmall` − `DefersPriorStop` | `OneEncoder` violated | violated | stops at first error | 1 s |
-| `Mutant-RejectedNotStopped` | `Current-ReopenSmall` − `RejectedIsStopped` | `NoOrphans` violated | violated | stops at first error | 0 s |
+| `Mutant-RejectedNotStopped` | `Current-ReopenSmall` − `RejectedIsStopped` | `NoOrphans` violated | violated | stops at first error | 1 s |
 | `Mutant-CloseSkipsFinalStop` | `Current-ReopenSmall` − `CloseStopsSession` | `NoOrphans` violated | violated | stops at first error | 0 s |
 | `Mutant-RetrySkipsJoin` | `Current-ReusedId` − `RetryJoinsPendingStops` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
-| `Mutant-RetrySkipsJoin-Overlap` | `Current-QuickRetry` − `RetryJoinsPendingStops` | `OneEncoder` violated | violated | stops at first error | 0 s |
+| `Mutant-RetrySkipsJoin-Overlap` | `Current-QuickRetry` − `RetryJoinsPendingStops` | `OneEncoder` violated | violated | stops at first error | 1 s |
 | `Mutant-ConsentSkipsStop` | `Current-Consent` − `ConsentStopsSession` | `ConsentBoundary` violated | violated | stops at first error | 1 s |
 | `Mutant-ConsentAttachesNegotiated` | `Current-Consent` − `ConsentRejectsNegotiated` | `ConsentBoundary` violated | violated | stops at first error | 1 s |
-| `Mutant-WindowStaysOpen` | `Liveness-Reopen` − `WindowEndsWithCleanup` | `WindowCloses` (temporal) violated | violated | stops at first error | 3 s |
+| `Mutant-WindowStaysOpen` | `Liveness-Reopen` − `WindowEndsWithCleanup` | `WindowCloses` (temporal) violated | violated | stops at first error | 7 s |
 | `Mutant-UnboundedStopWait` | `Liveness-BoundedWait` − `StopTimesOut` (only `ReopenSettles` listed) | `ReopenSettles` (temporal) violated | violated | stops at first error | 3 s |
 | `Finding-ThirdEncoder` | `Current-ReopenSmall` + `QuickReopen` | `OneEncoder` violated | violated | stops at first error | 1 s |
 | `Finding-ThirdEncoder-Attached` | `Finding-ThirdEncoder` − `EnvFails`, `RestartFromFailure` | `OneEncoderWhilePlaying` violated | violated | stops at first error | 1 s |
 | `Finding-RestartFromFailureOverlap` | `Current-ReopenSmall` + `QuickReopen`, one user action | `OneEncoder` violated | violated | stops at first error | 1 s |
-| `Finding-ConsentClobbersDidStop` | `Current-Consent` + `QuickReopen` | `NoOrphans` violated | violated | stops at first error | 2 s |
+| `Finding-RetryAfterTimedOutStop` | `Current-ReopenSmall` + `StopsCanBeLate` − `RestartFromFailure` | `OneEncoder` violated | violated | stops at first error | 1 s |
+| `Finding-ConsentClobbersDidStop` | `Current-Consent` + `QuickReopen` | `NoOrphans` violated | violated | stops at first error | 1 s |
+| `Finding-ConsentClobbersDidStop-PlayerFailure` | `Finding-ConsentClobbersDidStop`, route constraint | `NoOrphans` violated | violated | stops at first error | 1 s |
 | `Finding-StopNoJoin` | `Current-ReopenSmall` | `JoinCoversCleanup` violated | violated | stops at first error | 1 s |
 | `Finding-DeferredStopNotJoined` | `Current-ReopenSmall` + `FixCloseJoinsTask` | `JoinCoversCleanup` violated | violated | stops at first error | 1 s |
-| `Finding-DeferredStopUnfenced` (conditional) | `Current-ReusedId` + `"live"`, `QuickReopen`, `RestartFromFailure` − `QuickRetry`, `EnvFails`, route constraint | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
+| `Finding-DeferredStopUnfenced` (conditional) | `Current-ReusedId` + `"live"`, `QuickReopen`, `RestartFromFailure` − `QuickRetry`, `EnvFails`, route constraint | `StopNeverKillsSuccessor` violated | violated | stops at first error | 2 s |
 | `Finding-DeferredStopUnfenced-Retry` (conditional) | `Current-ReusedId` + `"live"`, route constraint | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-RejectedStopKillsReusedId` (conditional) | `Current-ReusedId` + `QuickReopen` − `QuickRetry` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-RejectedStopKillsReusedId-Retry` (conditional) | `Current-ReusedId` + `RestartFromFailure` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-RestartFromFailureStaleStop` (conditional) | `Current-ReusedId` + `RestartFromFailure`, `QuickReopen` − `QuickRetry` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
+| `Finding-RetryAfterTimedOutStop-ReusedId` (conditional) | `Current-ReusedId` + `StopsCanBeLate` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-SameIdSkipLeavesPrior` (conditional) | `Current-ReusedId` − `ReusedIdReplacesJob` | `OneEncoder` violated | violated | stops at first error | 1 s |
-| `Finding-BackToBackStaleStop` (conditional) | two controllers, see the config | `StopNeverKillsSuccessor` violated | violated | stops at first error | 0 s |
+| `Finding-BackToBackStaleStop` (conditional) | two controllers, see the config | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Proposed-CloseJoins` | `Current-ReopenSmall` + both join fixes | pass | pass | 48,176 | 2 s |
-| `Proposed-ConsentStopFenced` | `Finding-ConsentClobbersDidStop` + `FixConsentStopFenced` | pass | pass (`OneEncoder` not checked) | 293,722 | 2 s |
+| `Proposed-ConsentStopFenced` | `Finding-ConsentClobbersDidStop` + `FixConsentStopFenced` | pass | pass (`OneEncoder` not checked) | 2,274,728 | 11 s |
 | `Proposed-TracksDeferredStop` | `Finding-DeferredStopUnfenced-Retry` + `FixTracksDeferredStop`, no constraint | pass | pass (given `StopsCanBeLate = FALSE`) | 270,612 | 2 s |
 | `Deep-BackToBack` (deep) | — | pass | pass (given `IdReuse = "stopped"`) | 122,691,237 | 11 min 34 s |
 
-- `Current-Reopen`: three user actions, four session ids, `MaxGeneration = 15`, late stops. It
-  checks `TypeOK`, `OneEncoder`, `StopNeverKillsSuccessor`, `NoOrphans`, `GenerationsSuffice` and
-  `IdsSuffice`. `Current-ReopenSmall` is its smaller run (two user actions, three ids,
-  `MaxGeneration = 12`, no late stops), committed as the base most other one-controller configs
-  are built from. The "Built from" column names each config's base and the constants it changes
+- `Current-Reopen`: three user actions, four session ids, `MaxGeneration = 15`. It checks
+  `TypeOK`, `OneEncoder`, `NoOrphans`, `GenerationsSuffice` and `IdsSuffice`. Late stops are off:
+  with them `OneEncoder` fails by `Finding-RetryAfterTimedOutStop`'s route or the restart route
+  (8 states: `Fail`, the stop times out, a quality change while the failure shows, the
+  replacement attaches). Before the user-timing gate was corrected the run passed with late
+  stops (6,229,375 states) only because a timed-out stop blocked Retry and restarts for ever.
+  `Current-LateStops` keeps late stops and drops failures. `StopNeverKillsSuccessor` cannot fail
+  without id reuse, so it is listed only in the configs that reuse ids (`Current-ReusedId`, the
+  conditional findings, `Proposed-TracksDeferredStop`, `Deep-BackToBack`).
+  `Current-ReopenSmall` is its smaller run (two user actions, three ids, `MaxGeneration = 12`),
+  committed as the base most other one-controller configs are built from. The "Built from" column names each config's base and the constants it changes
   (+ sets a switch, − clears one); every Mutant and the Faithful config change exactly one.
 - `Current-ReusedId` (review focus 2): `IdReuse = "latest"`, `ReusedIdReplacesJob`,
   `StopEndsAllUnderId`, quick Retry, no restart from a failure. The same-id skip is taken
@@ -298,7 +339,8 @@ shipping value of every behaviour constant.
   (`NeverReplacedById`). `Mutant-RetrySkipsJoin`, `Faithful-JellyfinReusedIdStop-off` and
   `Finding-SameIdSkipLeavesPrior` differ from it in one constant each; the other reuse
   findings differ in the timing and restart constants their routes need, and in `IdReuse`.
-- `Current-Consent`: consent on, every invariant including `ConsentBoundary` and `NoOrphans`.
+- `Current-Consent`: consent on (the first start, a reopen's result and a failing item), every
+  invariant including `ConsentBoundary` and `NoOrphans`.
   The two consent mutants differ from it in one constant, `Finding-ConsentClobbersDidStop` in
   `QuickReopen`, and `Proposed-ConsentStopFenced` is the finding's run with the fix: the clobber
   is reachable there, and `NoOrphans`, `ConsentBoundary` and `StopNeverKillsSuccessor` hold.
@@ -318,8 +360,10 @@ shipping value of every behaviour constant.
   `"latest"` reuse.
 
 Two Finding configs carry `CONSTRAINT NoRejection` (no state with a rejected result is explored),
-so that TLC shows the deferred-stop route rather than the shorter rejected-stop route; the
-constraint is defined in the module and used nowhere else.
+so that TLC shows the deferred-stop route rather than the shorter rejected-stop route, and
+`Finding-ConsentClobbersDidStop-PlayerFailure` carries `CONSTRAINT NoInitialConsent`, so that it
+shows the failing item's consent request rather than the first start's. The constraints are
+defined in the module and used nowhere else.
 
 ### Faithfulness and mutants
 
@@ -345,9 +389,10 @@ Checked as the only invariant, each witness is violated:
 
 | Witness | Constants of |
 | --- | --- |
-| `NeverDeferred`, `NeverDeferredAfterClose`, `NeverRejected`, `NeverRecreated`, `NeverStopFailed`, `NeverRetryWaits`, `NeverWindowTwo`, `NeverTimedOut` | `Current-Reopen` |
+| `NeverDeferred`, `NeverDeferredAfterClose`, `NeverRejected`, `NeverRecreated`, `NeverStopFailed`, `NeverRetryWaits`, `NeverWindowTwo` | `Current-Reopen` |
+| `NeverTimedOut` | `Current-LateStops` |
 | `NeverSkipped`, `NeverReusedId`, `NeverReplacedById`, `NoWrongKill` (the excused wrong kill) | `Current-ReusedId` |
-| `NeverConsentShown` | `Current-Consent` |
+| `NeverConsentShown`, `NeverPlayerConsent` (the consent request from a failing item) | `Current-Consent` |
 | `NeverSharedId` | `Deep-BackToBack` |
 
 No config lists them; to repeat one, copy the named config, replace its `INVARIANTS` with the
@@ -402,6 +447,32 @@ not help: the stop is meant for A and must go out; what is missing is either a c
 outstanding deferred id against the replacement's id, or a server that never returns a running
 session's id.
 
+### A stop that timed out defeats Retry's join (`Finding-RetryAfterTimedOutStop`, `-ReusedId`)
+
+`OneEncoder` is violated in 10 states with `StopsCanBeLate`; no server assumption and no quick
+tap: the Retry comes after the stop timed out.
+
+| Step | Model | Swift |
+| --- | --- | --- |
+| 1, 2 | `Start`, `InitialRuns`: session A plays | `start()`, `beginRemoteStream` 3232 |
+| 3 | `Fail`: A's `onStopAndWait` becomes a `pendingStopTasks` entry | `surfaceFailure` 5133, `stopRemoteSessionIfNeeded` 5178, the entry at 1268 |
+| 4 | `ClockTicks`: the request passes its timeout unanswered; it stays on the wire | `MediaBrowserActiveEncodingStopExecutor.stop` returns `false` on the transport error, so `onStopAndWait` (`DetailPlaybackLauncher.swift` 253 to 255) returns |
+| 5 | `Retry` | `retry()` 2566 |
+| 6 | `RetryProceeds`: the join returns, because the entry's `Task` has finished | `waitForPendingStopRequests` 1236, awaited at 2580; `restartAtCurrentPosition` 2584 |
+| 7 to 9 | `TaskBegins`, `NegotiateLands`, `TaskAttaches`: B attaches | 5839, 5885 to 5890 |
+
+A's job is still running (its stop unanswered) beside B, and A is not a replaced prior, so the
+window does not cover it. The comment at 2578 to 2579 says the join exists so as not to "mint a
+replacement while the failed attempt's exact-session stop is still in flight"; a timed-out
+request is still in flight, and the join cannot tell it from an answered one. Emby blocks this
+case with LS-PB-008 (an unconfirmed stop fails the reopen); Jellyfin has no such check.
+
+Under id reuse (`-ReusedId`, conditional on `"latest"` reuse that replaces the job, as
+`Current-ReusedId`; 10 states): steps 1 to 6 as above (Retry tapped before the timeout, the join
+returning after it), the Retry's negotiation returns A's id, and A's timed-out stop, still on the
+wire, is applied and ends the replacement (`StopNeverKillsSuccessor`). It is not suspect 4's
+missing join (#530): Retry joins here, and the join gives up at the request timeout.
+
 ### Consent marks a reloaded session stopped (`Finding-ConsentClobbersDidStop`)
 
 `NoOrphans` is violated in 9 states. No server assumption; it needs a reopen while a consent
@@ -424,9 +495,16 @@ consent request skips stopping it and shows the choice over its running encoder:
 path is not affected: `beginEmbySessionStop` sets `didStop` before its await (1249).
 `Proposed-ConsentStopFenced` sets it before the await here too, and every property holds.
 
+The consent request `handlePlaybackFailure` starts is a second route
+(`Finding-ConsentClobbersDidStop-PlayerFailure`, 11 states, the first start's consent request
+excluded by `CONSTRAINT NoInitialConsent`): `Start` and the attach, `PlayerNeedsConsent` (the item
+fails on Original, 5058 to 5069), the task stops A and awaits (2525), A's stop is answered, a
+quality change or seek-settle reopen (`QuickReopen`) negotiates and attaches B, and the consent
+task resumes and sets `didStop` on B (2528).
+
 ### A quick second reopen makes a third encoder (`Finding-ThirdEncoder`)
 
-`OneEncoder` is violated in 8 states with `QuickReopen`; no server assumption. `Start` (A),
+`OneEncoder` is violated in 7 states with `QuickReopen`; no server assumption. `Start` (A),
 `Reopen`, its negotiation returns B, `Reopen` again (the first task is cancelled holding B, and
 A, still the installed session, is captured again as priorStop), the second negotiation returns
 C: A, B and C run at once. The variant where the first reopen attaches B first is the same with A
@@ -478,7 +556,7 @@ Each needs `IdReuse = "latest"` (a server that may return the id it minted last)
 - **`Finding-BackToBackStaleStop`** (5 states, two controllers, `IdsNeverShared = FALSE`): the
   first playback is closed and its stop is not awaited (UI teardown is non-blocking); the next
   playback's first negotiation returns the same id, and the stop ends it.
-- **`Finding-SameIdSkipLeavesPrior`** (7 states, `ReusedIdReplacesJob = FALSE`): a reopen comes back
+- **`Finding-SameIdSkipLeavesPrior`** (6 states, `ReusedIdReplacesJob = FALSE`): a reopen comes back
   under the prior's id, the skip sends no stop, and the prior job runs beside the replacement
   until a stop for the id ends both.
 

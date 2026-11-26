@@ -14,9 +14,12 @@ scripts/check-tla-specs.sh --deep specs/playback/emby/Deep-BackToBack.cfg
 
 What the model shows:
 
-- With one controller the order as it stands keeps every property but `JoinCoversCleanup`,
-  whatever id the server returns, as long as every stop is answered within its timeout. Once a
-  stop can time out it needs a server that never returns a used id.
+- With one controller the order as it stands keeps every property but `JoinCoversCleanup`, given a
+  server that never returns a used play-session id (`Current-Reopen`, `Current-LateAck`). With any
+  id returned it also needs a stop that ends every job under the id it names
+  (`StopEndsAllUnderId`, `Current-ReopenLive`): Emby can make a stopped job again (#421), and an
+  acknowledged stop that ends only that job leaves the replacement it meant running. Once a stop
+  can time out, `StopNeverKillsSuccessor` needs a server that never returns a used id.
 - The two `precondition`s in `EmbyReopenStopBarrier.begin` are not reachable. The transaction
   tail is what keeps them so: without it both are reached (`Mutant-NoTransactionTail*`).
 - The 2026-10-04 overlap is visible: `Faithful-EmbyOverlap-off`.
@@ -59,7 +62,13 @@ Each MainActor run between two awaits is one action. Functions are in
 | `InitialAttaches` | the task in `beginRemoteStream` |
 | `ConsentBegins`, `ConsentStopAcked`, `ConsentStopUnconfirmed` | `requestVideoTranscodeConsent`, split at `await barrier.value` |
 | `Accepts` | `RemoteStreamLifecyclePolicy.acceptsReopenResult` (`PMSKit/Sources/PMSKit/RemoteStreamLifecyclePolicy.swift`) and the `guard !Task.isCancelled, generation == playbackGeneration` of the consent request |
-| `ServerResolves`, `ClockTicks` | Emby applies an active-encoding stop, or it ends unacknowledged; the request timeout passes for the stop the barrier awaits |
+| `ServerResolves`, `ServerRecreatesJob`, `ClockTicks` | Emby applies an active-encoding stop (`MediaBrowserActiveEncodingStopExecutor.stop` with `MediaBrowserActiveEncodingStopPolicy.isConfirmedStopped`, `PMSKit/Sources/PMSKit/MediaBrowser/`), or it ends unacknowledged; Emby makes a stopped job again from a media request it had accepted (#421); the request timeout passes for the stop the barrier awaits |
+
+The module's `MODELS` lines also name `DetailPlaybackLauncher.swift` (the first session, the stop
+closures and `requiresActiveEncodingStop`), `PlaybackSessionSource.swift` (the one session object
+whose `didStop` and callbacks every reopen reloads), `EmbyPlayback.swift` (the server-minted id
+that `IdReuse` stands for) and the two `MediaBrowser` files above (which statuses count as
+acknowledged, which `BarrierResolves` encodes).
 
 A task is `[gen, pc, sid, inc, kind, pred, tk]`: the generation it captured, where it is, the
 session its negotiation returned, whether it is the first start, a consent request or a reopen,
@@ -105,7 +114,7 @@ unconfirmed stop. `NoEncoderWhileUnconfirmed` is stated over `Live(c)` instead, 
 
 ## What Emby does
 
-Three server behaviours decide results, and the repository does not settle them. No live server
+Four server behaviours decide results, and the repository does not settle them. No live server
 was queried for this model.
 
 | Evidence in the repository | Says |
@@ -118,6 +127,8 @@ was queried for this model.
 | `docs/evidence/audits/2026-10-04-emby-reopen-session-overlap.md` | Two sessions overlapping on the server is the reproduced failure boundary. An acknowledgement is not proof the worker exited. |
 | `DetailPlaybackLauncher.acceptInitialOpen` ("A successful stale response may already own an encoder"), and `docs/PLAYBACK-ARCHITECTURE.md`, "Emby" | The code treats a PlaybackInfo answer as something that may need a stop. Whether the encoder starts at PlaybackInfo or at the first playlist request is not recorded. |
 | `MediaBrowserRemotePlayback.requiresActiveEncodingStop` (`Labstream/Shared/UI/DetailPlaybackLauncher.swift`) | For Emby the stop is sent only for a server-encoded stream; otherwise the callback answers `true` with no request. |
+| `docs/PLAYBACK-ARCHITECTURE.md` ("Emby can still race two transcodes on one copy session") and #421 | An `init.mp4` request that lands while a seek-gap restart has the job unregistered starts a second writer for the same session: Emby makes a job again from the client's own media request, the mechanism of the Jellyfin audit. |
+| `docs/evidence/audits/2026-09-17-jellyfin-terminal-cleanup.md` ("Server implementation boundary") | Jellyfin 10.11.11's stop ends a snapshot of every matching job. That is Jellyfin's server source; Emby's 4.x server is closed, and nothing in the repository shows what its stop ends when several jobs run under one id. |
 
 So the model was run under each assumption:
 
@@ -126,16 +137,28 @@ So the model was run under each assumption:
 | `IdReuse` | `"never"`: a negotiation returns an id the server has not used. `"stopped"`: also a used id with no job running under it. `"live"`: any id, the setting that assumes nothing |
 | `AbandonedNegotiateCanLand` | `TRUE`: a PlaybackInfo request the client cancelled or gave up on may still be acted on, with nobody to hear the answer. `FALSE`: it never is |
 | `IdsNeverShared` (base) | `TRUE`: an id is never given to a second controller. `FALSE`: it can be |
-| `StopEndsAllUnderId` (base) | `FALSE` in every config: nothing here relies on what a stop does to several jobs under one id |
+| `StopEndsAllUnderId` (base) | `TRUE`: a stop ends every job under its id. `FALSE`: any non-empty set of them, the setting that assumes nothing. `TRUE` only in the configs that reuse ids and say so |
 
 What depends on them:
 
-- **`IdReuse`.** With one controller and every stop answered within its timeout,
-  `Current-Reopen` passes with `"live"`: the old job is stopped before the negotiation, so
-  whichever id comes back names nothing else. Once a stop can time out, every property but
-  `StopNeverKillsSuccessor` still holds under any id reuse (`Current-LateAckLive`, `"live"`);
-  `StopNeverKillsSuccessor` needs `"never"` (`Current-LateAck`, and `Current-LateAckConsent`
-  with consent on), and `Finding-LateStopKillsReusedId` is the same run with `"stopped"`.
+- **`IdReuse` and `StopEndsAllUnderId`, with `ServerRecreate` on.** With one controller and
+  every stop answered within its timeout, `Current-Reopen` passes with `"never"`. With `"live"` or
+  `"stopped"` and `StopEndsAllUnderId = FALSE`, `OneEncoder` fails (16 states, `Current-Reopen`'s
+  constants with `"live"`): A's stop is acknowledged, Emby makes A again, a reopen gets A's id back
+  and is superseded, the rejected result's stop is acknowledged but ends only the remade A, and the
+  next reopen negotiates C beside the rejected result. The client cannot tell: it sent the exact
+  stop and heard it acknowledged. With `StopEndsAllUnderId` the run passes (`Current-ReopenLive`,
+  reduced bounds), and once a stop can time out every property but `StopNeverKillsSuccessor`
+  still holds (`Current-LateAckLive`, one user action). `StopNeverKillsSuccessor` needs `"never"`
+  once a stop can time out (`Finding-LateStopKillsReusedId` is `Current-LateAck` with
+  `"stopped"`), and cannot fail without reuse, so the `"never"` configs do not list it.
+- **Why the `"live"` results are conditional rather than assumed.** The review asked for either
+  `StopEndsAllUnderId = TRUE` on the audit's evidence or a downgrade. The audit read Jellyfin
+  10.11.11's `TranscodeManager`; Emby's 4.x server is closed source, and the two servers diverged
+  long before it. The shared lineage makes "every matching job" plausible for Emby, not
+  established, so the `"live"` and `"stopped"` passes are stated as conditional on it, and the
+  unconditional `Current` claims are the `"never"` runs. A full-bound `"live"` run with
+  `StopEndsAllUnderId` also outgrows the default tier (stopped past 29 million states).
 - **`IdsNeverShared`.** `Deep-BackToBack` takes `FALSE`. There is no evidence for `TRUE`: the
   server mints the id, and the stop names the device and the id, with the same device for both
   controllers. With `FALSE` and `"stopped"` a second playback can be given an id the first one's
@@ -166,8 +189,16 @@ What depends on them:
   `DetailPlaybackLauncher` builds every Emby session with the callback, so neither is modelled.
   For the same reason `guard let operation else { return Task { false } }` in `begin` is not
   reached.
-- **Direct play.** A session that is not server-encoded acknowledges its stop with no request.
-  Every session here has an encoder.
+- **Every session here has an encoder.** A session that is not server-encoded acknowledges its
+  stop with no request: `requiresActiveEncodingStop` is `backend == .jellyfin || usesServerEncoding`
+  (`DetailPlaybackLauncher.swift` 392 to 393), and `stopActiveEncodingNow` returns `true` at 270.
+  That includes a server-generated `DirectStreamUrl`, which `EmbyPlayback.resolveMediaBrowserStream`
+  marks `usesServerEncoding: false` (`EmbyPlayback.swift` 507 to 515). **Unverified,
+  server-dependent gap:** if that URL is a server remux, as it typically is when the source does
+  not support direct play, the barrier reports "acknowledged" with no request and the reopen
+  negotiates while the remux still runs: the 2026-10-04 overlap shape. Whether Emby's direct
+  stream starts a process the active-encoding stop would end is not recorded. No config models it;
+  it needs server evidence before it is a finding.
 - **The progress stop** (`POST /Sessions/Playing/Stopped`, sent by the timeline) is not a stop
   of an encoder and is not modelled.
 - **A stale auth context.** `DetailPlaybackLauncher.reopenStream` stops a result itself and
@@ -176,9 +207,14 @@ What depends on them:
 - **Time.** The request timeout is `ClockTicks`, which can fire for the stop a barrier awaits.
   The ticket then reads as unconfirmed and the request stays on the wire, where the server may
   still apply it.
-- **`ServerRecreate` is not enabled.** Emby restarting an encoder by itself is recorded as a
-  server-side gate (#421) that the client does not trigger; the Jellyfin module owns the
-  recreate question.
+- **`ServerRecreate` is enabled** (`ServerRecreatesJob`) in every safety config and judged against
+  the server, as in Jellyfin. #421 is the same mechanism as the Jellyfin audit: a job made again
+  from the client's own accepted media request. (#421 also tracks Emby 4.10 restarting a mid-file
+  encoder on every request after losing its position; that is not a stopped job made again and is
+  not modelled.) The liveness configs take `ServerRecreates = FALSE`: the step changes only
+  `server`, and under their `"never"` and `"live"` reuse no client step, stop resolution or
+  timeout depends on whether a stopped job runs again, so it adds states and no client behaviour;
+  with it `Liveness-BoundedWait` grew from 107 s past the default tier's five minutes.
 - **Automatic reopens** (the copy fallback, the copy reopen retry, the startup-deadline reopen)
   are `Reopen` steps and count against `MaxUserActions`.
 - **`failureRetryTask`.** `Reopen` and `Approve` clear it, as `restartAtCurrentPosition` does. A
@@ -228,19 +264,20 @@ Liveness is checked under two fairness assumptions. `FairSpec` answers every sto
 
 2026-11-25, tla2tools v1.7.4, `TLC_WORKERS=auto TLC_HEAP=4g` on 30 cores. Unless noted: one
 controller, three session ids, two user actions, `MaxGeneration = 12`, failures, restarts from a
-failure and failing stops on, consent and late stops off, `IdReuse = "live"`,
+failure, failing stops and `ServerRecreates` on, consent and late stops off, `IdReuse = "live"`,
 `AbandonedNegotiateCanLand = FALSE`, `IdsNeverShared = TRUE` (no effect with one controller),
 `StopEndsAllUnderId = FALSE`.
 
 | Config | Expect | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
-| `Current-Reopen` | pass | pass | 1,546,786 | 8 s |
-| `Current-LateAck` | pass | pass (given `IdReuse = "never"`) | 1,525,899 | 7 s |
-| `Current-LateAckLive` | pass | pass (`StopNeverKillsSuccessor` not checked) | 4,198,431 | 17 s |
-| `Current-LateAckConsent` | pass | pass (given `IdReuse = "never"`) | 787,928 | 5 s |
-| `Current-CloseAtConsent` | pass | pass | 3,033,765 | 13 s |
+| `Current-Reopen` | pass | pass (given `IdReuse = "never"`) | 3,170,173 | 18 s |
+| `Current-ReopenLive` | pass | pass (given `StopEndsAllUnderId`) | 518,573 | 3 s |
+| `Current-LateAck` | pass | pass (given `IdReuse = "never"`) | 8,622,467 | 39 s |
+| `Current-LateAckLive` | pass | pass (given `StopEndsAllUnderId`; `StopNeverKillsSuccessor` not checked) | 189,344 | 2 s |
+| `Current-LateAckConsent` | pass | pass (given `IdReuse = "never"`) | 4,045,273 | 20 s |
+| `Current-CloseAtConsent` | pass | pass (given `IdReuse = "never"`) | 7,379,778 | 34 s |
 | `Liveness-Reopen` | pass | pass | 37,338 | 5 s |
-| `Liveness-BoundedWait` | pass | pass | 787,928 | 106 s |
+| `Liveness-BoundedWait` | pass | pass | 787,928 | 107 s |
 | `Faithful-EmbyOverlap-off` | `OneEncoder` violated | violated | stops at first error | 1 s |
 | `Mutant-StopNotAwaited` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Mutant-ProceedsUnconfirmed` | `NoEncoderWhileUnconfirmed` violated | violated | stops at first error | 1 s |
@@ -258,35 +295,45 @@ failure and failing stops on, consent and late stops off, `IdReuse = "live"`,
 | `Finding-LateStopKillsReusedId` (conditional on Emby) | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-BackToBackStaleStop` (conditional on Emby) | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-AbandonedNegotiateOrphans` (conditional on Emby) | `NoOrphans` violated | violated | stops at first error | 1 s |
-| `Proposed-CloseJoinsTask` | pass | pass | 2,982,415 | 14 s |
+| `Proposed-CloseJoinsTask` | pass | pass (given `IdReuse = "never"`) | 7,239,047 | 34 s |
 | `Proposed-Liveness` | pass | pass | 36,667 | 5 s |
-| `Deep-BackToBack` (deep) | pass | pass (given `StopsCanFail = FALSE`) | 82,121,915 | 6 min 38 s |
+| `Deep-BackToBack` (deep) | pass | pass (given `StopsCanFail = FALSE`, `StopEndsAllUnderId`) | 33,143,309 | 3 min 12 s |
 
-- `Current-Reopen`: three user actions, four session ids, `MaxGeneration = 15`. It checks
-  `TypeOK`, `OneEncoder`, `NoEncoderWhileUnconfirmed`, `StopNeverKillsSuccessor`,
+- `Current-Reopen`: three user actions, four session ids, `MaxGeneration = 15`,
+  `IdReuse = "never"`. It checks `TypeOK`, `OneEncoder`, `NoEncoderWhileUnconfirmed`,
   `BarrierPreconditions`, `NoAuthorityAtPrepare`, `DetachedWhileStopping`, `ConsentBoundary`,
-  `NoOrphans` and `GenerationsSuffice`, and so do the other `Current` configs (but for one in
-  `Current-LateAckLive`), `Proposed-CloseJoinsTask` and `Deep-BackToBack`.
+  `NoOrphans` and `GenerationsSuffice`, and so do the other `Current` configs,
+  `Proposed-CloseJoinsTask` and `Deep-BackToBack`. `StopNeverKillsSuccessor` cannot fail
+  without reuse, so it is listed only where ids are reused: `Current-ReopenLive` (`"live"`,
+  `StopEndsAllUnderId`, two user actions, three ids, `MaxGeneration = 12`) and
+  `Deep-BackToBack`. Before `ServerRecreate` was enabled, `Current-Reopen` passed with `"live"`
+  and no stop assumption (1,546,786 states); see [What Emby does](#what-emby-does) for why it no
+  longer can.
 - `Current-LateAck` (review focus 3): `StopsCanBeLate` and `IdReuse = "never"`. A stop times out,
   the reopen fails with LS-PB-008, the stop is retried, and the first request is acknowledged
   afterwards (witness `NeverLateAck`). With three user actions the run was 44,996,159 states and
   285 s, and passed, before the cancelled-first-start fix below (not re-run since); the config
   keeps two. `Current-LateAckLive`: the same run with
-  `IdReuse = "live"`, checking every `Current` invariant except `StopNeverKillsSuccessor`, which
+  `IdReuse = "live"`, `StopEndsAllUnderId` and one user action (with two it outgrows the default
+  tier), checking every `Current` invariant except `StopNeverKillsSuccessor`, which
   `Finding-LateStopKillsReusedId` shows failing under reuse. `Current-LateAckConsent`: late stops
   with consent, `Liveness-BoundedWait`'s constants with `MaxGeneration = 12` under `Spec`, one
   user action, `IdReuse = "never"`, every `Current` invariant.
-- `Current-CloseAtConsent` (review focus 4): `ConsentPossible`, `MaxGeneration = 15`.
+- `Current-CloseAtConsent` (review focus 4): `ConsentPossible`, `MaxGeneration = 15`,
+  `IdReuse = "never"`.
 - `Liveness-Reopen`: consent, one user action, `MaxGeneration = 11`, under `FairSpec`:
   `ReopenSettles` and `CloseCleansUp`. `Liveness-BoundedWait`: the same with late stops and
-  `IdReuse = "never"`, under `ClockFairSpec`.
+  `IdReuse = "never"`, under `ClockFairSpec`. Both, and the liveness mutants and
+  `Proposed-Liveness`, take `ServerRecreates = FALSE` (see the abstractions).
 - `Proposed-CloseJoinsTask`: `Current-CloseAtConsent`'s run with `FixCloseJoinsTask`, checking
   `JoinCoversCleanup` beside the rest. `Proposed-Liveness`: `Liveness-Reopen`'s run with the fix.
 - `Deep-BackToBack`: two controllers, three session ids, one user action each,
-  `MaxGeneration = 12`, consent and failures, no restart from a failure, `IdsNeverShared = FALSE`,
-  `IdReuse = "stopped"`, `StopsCanFail = FALSE`. The second controller is given an id the first
-  one used (witness `NeverSharedId`). `Finding-BackToBackStaleStop` has the same constants with
-  `StopsCanFail = TRUE`.
+  `MaxGeneration = 12`, failures, no consent, no restart from a failure, `IdsNeverShared = FALSE`,
+  `IdReuse = "stopped"`, `StopsCanFail = FALSE`, `StopEndsAllUnderId`. The second controller is
+  given an id the first one used (witness `NeverSharedId`). With `StopEndsAllUnderId = FALSE` it
+  fails `OneEncoder` through a remade job (as `Current-Reopen` with reuse); with consent as well
+  it grew past 146 million states in 16 minutes and was stopped. `Finding-BackToBackStaleStop` is
+  two controllers with consent and `StopsCanFail = TRUE`.
 
 How the `Current` configs are scoped around the findings. `Finding-StopNoJoin` needs nothing
 from the environment, so `JoinCoversCleanup` is left to its `Finding` and `Proposed` configs and
@@ -295,6 +342,8 @@ assumption, and each `Current` or `Deep` config that would otherwise reach one s
 assumption it takes instead: `IdReuse = "never"` in `Current-LateAck` and
 `Current-LateAckConsent` (`Current-LateAckLive` drops the one property instead),
 `StopsCanFail = FALSE` in `Deep-BackToBack`, `AbandonedNegotiateCanLand = FALSE` everywhere.
+`ServerRecreate` adds a fourth: every config that reuses ids takes `StopEndsAllUnderId`, and the
+others take `IdReuse = "never"`.
 
 ### Faithfulness and mutants
 
@@ -335,7 +384,8 @@ only invariant, each is violated:
 
 | Witness | Constants of |
 | --- | --- |
-| `NeverBlocked` (LS-PB-008 showing), `NeverFinalRetry`, `NeverRejected`, `NeverRejectFailed`, `NeverTwoUnwinding`, `NeverJoinedTicket` (a reopen awaits the stop of a rejected session), `NeverReusedId`, `NeverRestartFromFailure`, `NeverRetryWaits`, `NeverStopFailed` | `Current-Reopen` |
+| `NeverBlocked` (LS-PB-008 showing), `NeverFinalRetry`, `NeverRejected`, `NeverRejectFailed`, `NeverTwoUnwinding`, `NeverJoinedTicket` (a reopen awaits the stop of a rejected session), `NeverRestartFromFailure`, `NeverRetryWaits`, `NeverStopFailed`, `NeverRecreated` | `Current-Reopen` |
+| `NeverReusedId` | `Current-ReopenLive` |
 | `NeverTimedOut`, `NeverLateAck` | `Current-LateAck` |
 | `NeverConsentShown`, `NeverConsentWhileRejecting`, `NeverClosedAtConsent`, `NeverClosedAtConsentRejecting` | `Current-CloseAtConsent` |
 
@@ -456,7 +506,7 @@ behind.
   `RestartFromFailure` on and checks `NoOrphans`.
 - **Retry's join.** `retry()` awaits `waitForPendingStopRequests` before it reopens. For Emby
   the barrier and the tail already hold the reopen back: `Current-Reopen` with
-  `RetryJoinsPendingStops = FALSE` passes every property (1,658,875 distinct states). The join
+  `RetryJoinsPendingStops = FALSE` passes every property (5,317,743 distinct states). The join
   is not what keeps the order here, so no mutant is kept for it.
 - **Close while the consent choice shows** (review focus 4). `stop()` clears the consent
   generation, joins a rejected session's stop if one is in flight, and retries a failed one once.
@@ -476,7 +526,8 @@ counts:
 
 - `IdReuse` is how this module lets the server choose the id it mints. `Mintable` offers one
   unused id for all of them, so configs need no symmetry set.
-- A two-controller run with `IdsNeverShared = FALSE` passes here only without failing stops. Any
+- A two-controller run with `IdsNeverShared = FALSE` passes here only without failing stops, and
+  (with `ServerRecreate` on) with `StopEndsAllUnderId`. Any
   stop that can be sent twice for one job, or outlive its wait, reaches whatever the id names
   next.
 - `BarTicket` shows how to keep a `pendingStops` entry whose end is not the request's end.

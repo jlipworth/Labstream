@@ -1,6 +1,8 @@
 ---------------------------- MODULE PlaybackPlex ----------------------------
 \* MODELS: Labstream/Shared/Player/PlaybackController.swift
 \* MODELS: Labstream/Shared/Networking/PlexClient.swift
+\* MODELS: PMSKit/Sources/PMSKit/PlexSessionConfiguration.swift
+\* MODELS: PMSKit/Sources/PMSKit/Transcode/TranscodeRequest.swift
 (***************************************************************************)
 (* The Plex replacement order.  A PlaybackController mints one sessionID   *)
 (* and every transcode it starts runs under it.  An in-place restart       *)
@@ -14,28 +16,37 @@
 (*                                                                         *)
 (* stop() and surfaceFailure send the same stop, detached and unawaited    *)
 (* (sendTranscodeStop), behind the one-shot latch sentTranscodeStop.       *)
+(* That request is a pendingStopTasks entry, which ends when the request   *)
+(* is answered or its URLSession request timeout passes (5 s on the        *)
+(* recovery client Retry switches to); a request that timed out stays on   *)
+(* the wire.                                                               *)
 (*                                                                         *)
 (* Each MainActor run between two awaits is one action.                    *)
 (*                                                                         *)
-(*   User      UserQuality, Retry, Close                                   *)
+(*   User      UserQuality, Retry, Close, Approve, Decline                 *)
 (*   Player    Fail, WarmRetry (the startup-deadline retry, which sends    *)
-(*             no stop)                                                    *)
+(*             no stop), PlayerNeedsConsent (the copy lane fails and the   *)
+(*             rebuild asks for consent to encode)                         *)
 (*   Timers    RetryProceeds (failureRetryTask after                       *)
 (*             waitForPendingStopRequests)                                 *)
 (*   Task      the playbackTask of one start or restart:                   *)
 (*               begin       created, not yet run                          *)
 (*               awaitStop   inside stopPreviousTranscode                  *)
+(*               consentStop inside the stopPreviousTranscode of           *)
+(*                           requestVideoTranscodeConsent                  *)
 (*               negotiate   its start request is on the wire              *)
 (*               negotiated  the server acted on it; the answer is on its  *)
 (*                           way back                                      *)
 (*             A cancelled task returns at its next check.                 *)
 (*   Server    StartLands, ServerResolves (a stop is applied or fails),    *)
-(*             ClockTicks (two seconds pass for a stop someone awaits)     *)
+(*             ClockTicks (two seconds pass for a stop a task awaits, or   *)
+(*             the request timeout for a detached stop)                    *)
 (*                                                                         *)
 (* What the restart core (specs/playback/restart) already covers is left   *)
-(* out: seeks and their budget, pause intent, the loopback proxy, the      *)
-(* consent boundary and attach fencing.  seekHold, budget, paused, proxy   *)
-(* and jellyfinWindow never change here.                                   *)
+(* out: seeks and their budget, pause intent, the loopback proxy and       *)
+(* attach fencing.  The restart core leaves the consent boundary out too;  *)
+(* this module models Plex's (ConsentPossible).  seekHold, budget,         *)
+(* paused, proxy and jellyfinWindow never change here.                     *)
 (***************************************************************************)
 EXTENDS PlaybackControllerOps, TLC
 
@@ -53,6 +64,9 @@ CONSTANTS
     LateStarts,
         \* a start request may be overtaken by a stop sent after it, or
         \* land after its task was cancelled or its item detached
+    ConsentPossible,
+        \* the copy lane may fail on a playing item, and the rebuild ask
+        \* for the user's consent to encode
 
     \* What the server does.  Not established for PMS; see the README.
     CancelledStopCanLand,
@@ -88,6 +102,7 @@ ASSUME /\ MaxUserActions \in Nat
                     CloseSendsFinalStop, FixStartAfterOwnStops,
                     FixRestartResetsStopLatch} :
               b \in BOOLEAN
+       /\ ConsentPossible \in BOOLEAN
 
 VARIABLES
     st,     \* in memory, per controller: what PlaybackController holds
@@ -120,17 +135,22 @@ Seqs == 0..(MaxGeneration - 1)
 StopIds == Incarnations \X Nat
 NoStop == <<0, 0>>
 
-TaskPcs == {"begin", "awaitStop", "negotiate", "negotiated"}
+TaskPcs == {"begin", "awaitStop", "consentStop", "negotiate", "negotiated"}
+\* The places where a task awaits a stop in stopPreviousTranscode.
+StopWaits == {"awaitStop", "consentStop"}
 
 \* A playbackTask.  `gen` is the generation it captured.  `stopping` is
 \* stoppingPreviousTranscode, `warm` marks the startup-deadline retry,
+\* `ask` the copy-lane rebuild that asks for consent instead of starting,
 \* `stop` is the stop it awaits and `seq` its start request.
-PTask(g, stopping, warm) ==
+PTask(g, stopping, warm, ask) ==
     [gen |-> g, pc |-> "begin", sid |-> NoSession, seq |-> 0,
-     stop |-> NoStop, stopping |-> stopping, warm |-> warm]
+     stop |-> NoStop, stopping |-> stopping, warm |-> warm, ask |-> ask]
 
 IsPTask(t) ==
-    /\ DOMAIN t = {"gen", "pc", "sid", "seq", "stop", "stopping", "warm"}
+    /\ DOMAIN t = {"gen", "pc", "sid", "seq", "stop", "stopping", "warm",
+                   "ask"}
+    /\ t.ask \in BOOLEAN
     /\ t.gen \in 1..MaxGeneration
     /\ t.pc \in TaskPcs
     /\ t.sid = NoSession
@@ -140,10 +160,13 @@ IsPTask(t) ==
 
 \* st[c].  `latch` is sentTranscodeStop; `retryGen` the generation
 \* failureRetryTask captured (0 for nil); `warmArmed` is
-\* ~startupDeadlineRetryAttempted.
+\* ~startupDeadlineRetryAttempted; `consent` is
+\* videoTranscodeConsent.generation (0 for nil); `approved` is
+\* videoTranscodeApprovedForCurrentItem.
 StRecords ==
     [life : {"new", "open", "closed"}, failed : BOOLEAN, latch : BOOLEAN,
-     retryGen : Gens, warmArmed : BOOLEAN, userLeft : 0..MaxUserActions]
+     retryGen : Gens, warmArmed : BOOLEAN, userLeft : 0..MaxUserActions,
+     consent : Gens, approved : BOOLEAN]
 
 \* ghost[c].
 \*   issued      start requests sent so far
@@ -198,7 +221,8 @@ Init ==
     /\ st = [c \in Controllers |->
                 [life |-> "new", failed |-> FALSE, latch |-> FALSE,
                  retryGen |-> 0, warmArmed |-> TRUE,
-                 userLeft |-> MaxUserActions]]
+                 userLeft |-> MaxUserActions, consent |-> 0,
+                 approved |-> FALSE]]
     /\ wire = [c \in Controllers |-> {}]
     /\ ghost = [c \in Controllers |->
                    [issued |-> 0, landed |-> 0, itemSeq |-> 0,
@@ -240,6 +264,20 @@ StopWaitOver(c, id) ==
     \/ \A r \in StopReq(c, id) :
           r.status # "inFlight" \/ (BoundedStopWait /\ r.late)
 
+\* A detached stop (a pendingStopTasks entry) ends when its request is
+\* answered or its URLSession request timeout passes: `late` on such a
+\* request is that timeout, and `try?` drops the error.
+DetachedStop(r) == ServerStopTicket(r) \in pendingStops[r.c]
+TimedOut(r) == r.late /\ DetachedStop(r)
+
+\* waitForPendingStopRequests would return now.
+Joined(c) ==
+    \A k \in pendingStops[c] :
+        IF k.kind = "serverStop"
+        THEN \A r \in StopsFor(c, k.sid, k.gen) :
+                r.n = k.n => (r.status # "inFlight" \/ r.late)
+        ELSE TicketDone(c, k)
+
 \* The stop a task awaits when it stops waiting with no answer: the wait
 \* gave up, or the task was cancelled.  Either way the task group cancels
 \* the request (group.cancelAll, or structured cancellation), and
@@ -247,7 +285,7 @@ StopWaitOver(c, id) ==
 \* With FixStartAfterOwnStops the stop is a tracked request that nothing
 \* cancels, so its answer is one the client hears.
 AbandonedStop(c, t) ==
-    IF t # NoTask /\ t.pc = "awaitStop" /\ WaitsForPreviousStop
+    IF t # NoTask /\ t.pc \in StopWaits /\ WaitsForPreviousStop
        /\ ~FixStartAfterOwnStops
        /\ \E r \in StopReq(c, t.stop) : r.status = "inFlight"
     THEN {t.stop} ELSE {}
@@ -264,12 +302,12 @@ WireAfterCancel(c) == IF LateStarts THEN wire[c] ELSE {}
 \* new task.  The item stays attached and nothing is sent: the stop goes
 \* out when the task first runs.  The startup-deadline retry detaches the
 \* item itself before it calls beginStreaming.  The caller sets st.
-RestartCore(c, stopping, warm) ==
+RestartCore(c, stopping, warm, ask) ==
     /\ gen[c] + 2 <= MaxGeneration
     /\ ghost[c].issued + 1 < MaxGeneration
     /\ gen' = Upd(gen, c, gen[c] + 1)
     /\ unwinding' = Upd(unwinding, c, UnwindingAfterCancel(c))
-    /\ task' = Upd(task, c, PTask(gen[c] + 1, stopping, warm))
+    /\ task' = Upd(task, c, PTask(gen[c] + 1, stopping, warm, ask))
     /\ wire' = Upd(wire, c, WireAfterCancel(c))
     /\ item' = Upd(item, c, IF warm THEN Detached(c) ELSE item[c])
     /\ ghost' = [ghost EXCEPT ![c].cancelled = @ \cup AbandonedStop(c, task[c])]
@@ -317,7 +355,7 @@ Start(c) ==
     /\ st[c].life = "new"
     /\ st' = [st EXCEPT ![c].life = "open"]
     /\ gen' = Upd(gen, c, 1)
-    /\ task' = Upd(task, c, PTask(1, FALSE, FALSE))
+    /\ task' = Upd(task, c, PTask(1, FALSE, FALSE, FALSE))
     /\ UNCHANGED <<serverVars, itemGen, item, unwinding, pendingStops,
                    idleVars, wire, ghost>>
 
@@ -329,10 +367,11 @@ UserQuality(c) ==
     /\ st[c].life = "open"
     /\ st[c].userLeft > 0
     /\ st[c].failed => RestartFromFailure
-    /\ RestartCore(c, TRUE, FALSE)
+    /\ RestartCore(c, TRUE, FALSE, FALSE)
     /\ st' = [st EXCEPT
            ![c].userLeft = @ - 1, ![c].retryGen = 0, ![c].warmArmed = TRUE,
-           ![c].latch = IF FixRestartResetsStopLatch THEN FALSE ELSE @]
+           ![c].latch = IF FixRestartResetsStopLatch THEN FALSE ELSE @,
+           ![c].consent = 0]
 
 \* retry(): failureRetryTask, which first joins pendingStopTasks.
 Retry(c) ==
@@ -346,11 +385,13 @@ Retry(c) ==
 \* failureRetryTask after `await waitForPendingStopRequests()`.  A task
 \* that wakes to another generation returns and leaves failureRetryTask
 \* set (the restart core's Finding-RetryWedgedByAttach); that is no step.
+\* The join returns when every detached stop is answered or its request
+\* timed out (Joined).
 RetryProceeds(c) ==
     /\ st[c].retryGen # 0
     /\ st[c].retryGen = gen[c]
-    /\ RetryJoinsPendingStops => PendingStopsJoined(c)
-    /\ RestartCore(c, TRUE, FALSE)
+    /\ RetryJoinsPendingStops => Joined(c)
+    /\ RestartCore(c, TRUE, FALSE, FALSE)
     /\ st' = [st EXCEPT
            ![c].retryGen = 0, ![c].latch = FALSE, ![c].failed = FALSE,
            ![c].warmArmed = TRUE]
@@ -361,7 +402,7 @@ Close(c) ==
     /\ Terminal(c, FALSE, FALSE, CloseSendsFinalStop)
     /\ st' = [st EXCEPT
            ![c].life = "closed", ![c].retryGen = 0,
-           ![c].latch = CloseSendsFinalStop \/ @]
+           ![c].latch = CloseSendsFinalStop \/ @, ![c].consent = 0]
 
 \* The item fails or a watchdog fires: handlePlaybackFailure and the
 \* timeouts that end in surfaceFailure.
@@ -383,8 +424,44 @@ WarmRetry(c) ==
     /\ st[c].warmArmed
     /\ item[c] = "attached"
     /\ task[c] = NoTask
-    /\ RestartCore(c, FALSE, TRUE)
+    /\ RestartCore(c, FALSE, TRUE, FALSE)
     /\ st' = [st EXCEPT ![c].warmArmed = FALSE]
+
+\* handlePlaybackFailure on a failed copy lane (directPlayFallbackArmed):
+\* removeObservers and beginStreaming, whose startStreaming stops the
+\* job, then finds the copy lane failed (suppressDirectPlayProbe) and
+\* calls requestVideoTranscodeConsent instead of starting.  Not once the
+\* user approved encoding for the item; the Original-quality condition
+\* is not modelled.
+PlayerNeedsConsent(c) ==
+    /\ ConsentPossible
+    /\ st[c].life = "open"
+    /\ ~st[c].failed
+    /\ ~st[c].approved
+    /\ st[c].consent = 0
+    /\ item[c] = "attached"
+    /\ task[c] = NoTask
+    /\ RestartCore(c, TRUE, FALSE, TRUE)
+    /\ UNCHANGED st
+
+\* approveVideoTranscoding: beginStreaming, an in-place restart.
+Approve(c) ==
+    /\ st[c].life = "open"
+    /\ st[c].consent # 0 /\ st[c].consent = gen[c]
+    /\ st[c].userLeft > 0
+    /\ RestartCore(c, TRUE, FALSE, FALSE)
+    /\ st' = [st EXCEPT
+           ![c].consent = 0, ![c].approved = TRUE, ![c].userLeft = @ - 1,
+           ![c].retryGen = 0, ![c].warmArmed = TRUE,
+           ![c].latch = IF FixRestartResetsStopLatch THEN FALSE ELSE @]
+
+\* declineVideoTranscoding: surfaceFailure.
+Decline(c) ==
+    /\ st[c].life = "open"
+    /\ st[c].consent # 0 /\ st[c].consent = gen[c]
+    /\ Terminal(c, FALSE, TRUE, TRUE)
+    /\ st' = [st EXCEPT ![c].failed = TRUE, ![c].latch = TRUE,
+                        ![c].consent = 0]
 
 -----------------------------------------------------------------------------
 (* The task                                                                *)
@@ -424,6 +501,7 @@ TaskIssuesStart(c, early) ==
             ELSE item[c]
     IN
     /\ t # NoTask
+    /\ ~t.ask
     /\ \/ t.pc = "begin" /\ ~(t.stopping /\ StopsPreviousFirst)
        \/ t.pc = "awaitStop" /\ StopWaitOver(c, t.stop)
     /\ FixStartAfterOwnStops => InFlightFrom(c, Sid(c)) = {}
@@ -448,6 +526,41 @@ TaskIssuesStart(c, early) ==
                    ![c].cancelled = @ \cup gaveUp]
             /\ UNCHANGED <<gen, itemGen, st>>
     /\ UNCHANGED <<serverVars, unwinding, pendingStops, idleVars>>
+
+\* The copy-lane rebuild's task, past stopPreviousTranscode, its guard
+\* and the detach (#196): the copy lane failed, so startStreaming calls
+\* requestVideoTranscodeConsent, which detaches again and calls
+\* stopPreviousTranscode a second time.  The first stop's result was
+\* discarded; a request the wait gave up on was cancelled.
+TaskAsksConsent(c) ==
+    LET t == task[c] IN
+    /\ t # NoTask
+    /\ t.ask
+    /\ \/ t.pc = "begin" /\ ~(t.stopping /\ StopsPreviousFirst)
+       \/ t.pc = "awaitStop" /\ StopWaitOver(c, t.stop)
+    /\ item' = Upd(item, c, Detached(c))
+    /\ SendStop(c)
+    /\ task' = Upd(task, c,
+           [t EXCEPT !.pc = "consentStop", !.stop = NewStopId(c)])
+    /\ ghost' = [ghost EXCEPT ![c].stopLog = @ \cup {LoggedStop(c)},
+                              ![c].cancelled = @ \cup AbandonedStop(c, t)]
+    /\ UNCHANGED <<gen, itemGen, unwinding, pendingStops, idleVars, st,
+                   wire>>
+
+\* requestVideoTranscodeConsent's stopPreviousTranscode returns, answered
+\* or after two seconds, its result discarded (`try?`).  For Plex
+\* mediaBrowserSession is nil, so the generation check follows and the
+\* choice shows.
+ConsentShows(c) ==
+    LET t == task[c] IN
+    /\ t # NoTask
+    /\ t.pc = "consentStop"
+    /\ StopWaitOver(c, t.stop)
+    /\ task' = Upd(task, c, NoTask)
+    /\ st' = [st EXCEPT ![c].consent = gen[c]]
+    /\ ghost' = [ghost EXCEPT ![c].cancelled = @ \cup AbandonedStop(c, t)]
+    /\ UNCHANGED <<serverVars, gen, itemGen, item, unwinding, pendingStops,
+                   idleVars, wire>>
 
 \* The current task's request fails.  Its catch surfaces the failure,
 \* which does nothing when one is already showing.
@@ -485,7 +598,7 @@ TaskUnwindExit(c, t) ==
                    idleVars, ownVars>>
 
 TaskStep(c) ==
-    \/ TaskSendsStop(c)
+    \/ TaskSendsStop(c) \/ TaskAsksConsent(c) \/ ConsentShows(c)
     \/ TaskIssuesStart(c, FALSE) \/ TaskIssuesStart(c, TRUE)
     \/ TaskAttaches(c)
     \/ \E t \in unwinding[c] : TaskUnwindExit(c, t)
@@ -526,14 +639,18 @@ SentAt(r) ==
     (CHOOSE e \in ghost[r.c].stopLog : e.id = <<r.gen, r.n>>).at
 
 \* A stop is applied, or ends unacknowledged.  A request the client
-\* cancelled is answered to nobody; without CancelledStopCanLand it is
-\* also never applied.  The ghost records a job ended by a stop that was
-\* sent before the job's own start request.
+\* cancelled, or whose URLSession request timed out, is answered to
+\* nobody; without CancelledStopCanLand it is also never applied.  The
+\* ghost records a job ended by a stop that was sent before the job's own
+\* start request: "cancelled" for a request the client's own code
+\* cancelled (the excuse the weaker properties make), "live" otherwise,
+\* a timed-out detached stop included.
+Dropped(r) == WasCancelled(r) \/ TimedOut(r)
 ServerResolves(s) ==
     /\ \/ /\ ServerAck(s)
-          /\ WasCancelled(TouchedReq) => CancelledStopCanLand
+          /\ Dropped(TouchedReq) => CancelledStopCanLand
        \/ /\ ServerFail(s)
-          /\ IF WasCancelled(TouchedReq)
+          /\ IF Dropped(TouchedReq)
              THEN CancelledStopCanLand \/ Ended(s) = {}
              ELSE StopsCanFail
     /\ LET r == TouchedReq
@@ -543,15 +660,16 @@ ServerResolves(s) ==
                       ELSE {IF WasCancelled(r) THEN "cancelled" ELSE "live"})]
     /\ UNCHANGED <<ctlVars, st, wire>>
 
-\* Two seconds pass for a stop a task is awaiting.  A late stop nobody
-\* awaits is no different from one on time.
+\* Two seconds pass for a stop a task is awaiting, or the request timeout
+\* for a detached stop (a pendingStopTasks entry).  For a stop nobody
+\* awaits, late is no different from on time.
 ClockTicks ==
     /\ StopsCanBeLate
     /\ ServerDelay
-    /\ \E c \in Controllers :
-          /\ TouchedReq.c = c
-          /\ task[c] # NoTask /\ task[c].pc = "awaitStop"
-          /\ task[c].stop = <<TouchedReq.gen, TouchedReq.n>>
+    /\ LET r == TouchedReq IN
+       \/ /\ task[r.c] # NoTask /\ task[r.c].pc \in StopWaits
+          /\ task[r.c].stop = <<r.gen, r.n>>
+       \/ DetachedStop(r)
     /\ UNCHANGED <<ctlVars, ownVars>>
 
 ServerStarts(c) == \E w \in wire[c] : StartLands(c, w)
@@ -562,6 +680,7 @@ Next ==
     \/ \E c \in Controllers :
           \/ Start(c) \/ UserQuality(c) \/ Retry(c) \/ RetryProceeds(c)
           \/ Close(c) \/ Fail(c) \/ StartFails(c) \/ WarmRetry(c)
+          \/ PlayerNeedsConsent(c) \/ Approve(c) \/ Decline(c)
           \/ TaskStep(c)
           \/ ServerStarts(c)
 
@@ -650,6 +769,29 @@ CleanAfterAckedClose ==
          /\ InFlightFrom(c, Sid(c)) = {})
         => Live(c) = {}
 
+\* While the consent choice shows, nothing is attached and no job the
+\* client owns runs: "Stop any copy/audio-conversion job before
+\* presenting the choice" (requestVideoTranscodeConsent).  A stop still
+\* unanswered, cancelled or not, leaves its job owned.
+ConsentShowing(c) == st[c].consent # 0 /\ st[c].consent = gen[c]
+ConsentBoundary ==
+    \A c \in Controllers :
+        ConsentShowing(c) => item[c] # "attached" /\ Owned(c) = {}
+
+-----------------------------------------------------------------------------
+(* Route constraints.  A Finding config that must show one route to a      *)
+(* violation, where a shorter route exists, names one as its CONSTRAINT.   *)
+
+\* The consent route: the only user action is Approve (no quality change,
+\* no Retry), and the Approve restart's own stop is answered within its
+\* wait, so a stale stop that ends the encode is one the consent request
+\* sent.
+ConsentRoute ==
+    \A c \in Controllers :
+        /\ st[c].userLeft = MaxUserActions \/ st[c].approved
+        /\ (st[c].approved /\ task[c] # NoTask /\ task[c].pc \in StopWaits)
+           => \A r \in StopReq(c, task[c].stop) : ~r.late
+
 -----------------------------------------------------------------------------
 (* Liveness                                                                *)
 
@@ -661,7 +803,7 @@ RestartSettles ==
 \* After Close every task returns and the joined cleanup ends.
 CloseCleansUp ==
     \A c \in Controllers :
-        st[c].life = "closed" ~> unwinding[c] = {} /\ PendingStopsJoined(c)
+        st[c].life = "closed" ~> unwinding[c] = {} /\ Joined(c)
 
 -----------------------------------------------------------------------------
 (* Witnesses.  Each is the negation of a state one branch of the model     *)
@@ -701,9 +843,12 @@ NeverWarmJoin ==
           /\ \A w \in wire[c] : w.seq # ghost[c].itemSeq)
 NeverRetryWaits ==
     \A c \in Controllers :
-        ~(st[c].retryGen # 0 /\ ~PendingStopsJoined(c))
+        ~(st[c].retryGen # 0 /\ ~Joined(c))
 NeverRestartFromFailure ==
     \A c \in Controllers : ~(st[c].failed /\ task[c] # NoTask)
+NeverConsentShown == \A c \in Controllers : ~ConsentShowing(c)
+NeverDetachedTimedOut ==
+    \A r \in stopReqs : ~(TimedOut(r) /\ r.status = "inFlight")
 NeverLateStart ==
     \A c \in Controllers :
         \A w \in wire[c] : task[c] # NoTask /\ task[c].seq = w.seq

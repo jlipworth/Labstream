@@ -10,11 +10,13 @@ scripts/check-tla-specs.sh specs/playback/plex
 scripts/check-tla-specs.sh --deep specs/playback/plex/Deep-BackToBack.cfg
 ```
 
-The model reproduces both halves of suspect 2, finds two more ways for a stale stop to end a
-replacement, and judges suspect 4's late start for Plex. Each has a `Finding-*` config and a
-trace below. None has been reproduced in the app or against a server. Two results depend on
-what PMS does with a stop when several jobs run under one session id, which the repository does
-not establish; they are conditional findings, listed under [What PMS does](#what-pms-does).
+The model reproduces both halves of suspect 2, finds three more ways for a stale stop to end a
+replacement (one of them Retry after the failure's detached stop timed out), judges suspect 4's
+late start for Plex, and models Plex's consent boundary, where the choice can show over a copy
+job that is still running. Each has a `Finding-*` config and a trace below. None has been
+reproduced in the app or against a server. Two results depend on what PMS does with a stop when
+several jobs run under one session id, which the repository does not establish; they are
+conditional findings, listed under [What PMS does](#what-pms-does).
 
 ## What is modelled
 
@@ -26,10 +28,13 @@ Each MainActor run between two awaits is one action. Functions are in
 | `Sid(c)` | `sessionID`, minted once per controller |
 | `Start` | `start()`: `beginStreaming(stoppingPreviousTranscode: false)` |
 | `UserQuality` | `reload(bitrateKbps:)` and the audio and subtitle track changes: `restartAtCurrentPosition` with an intent other than `explicitRetry`, then `beginStreaming` |
-| `Retry`, `RetryProceeds` | `retry()`, `failureRetryTask`, `waitForPendingStopRequests` |
+| `Retry`, `RetryProceeds`, `Joined` | `retry()` 2566, `failureRetryTask`, `waitForPendingStopRequests` 1236 awaited at 2580: it returns when every `pendingStopTasks` entry has, and a `sendTranscodeStop` entry returns when its request is answered or times out (`try?` drops the error). `restartAtCurrentPosition` with `.explicitRetry` then switches to the recovery client (5743, `switchToRecoveryControlClient` 2689) |
 | `Close` | `stop()` |
 | `Fail`, `StartFails` | `handlePlaybackFailure` and the watchdogs, and the `catch`es of `startStreaming`, each ending in `surfaceFailure` |
 | `WarmRetry` | `attemptStartupDeadlineRetry` on the Plex lane: `beginStreaming(stoppingPreviousTranscode: false)` |
+| `PlayerNeedsConsent` | `handlePlaybackFailure` on a failed copy lane (`directPlayFallbackArmed`, 5073 to 5093): `removeObservers` and `beginStreaming(resumeOffsetMsOverride:)`, an in-place restart whose task asks for consent instead of starting |
+| `TaskAsksConsent`, `ConsentShows` | that task past `stopPreviousTranscode` and the detach: `copyFailed` sends it to `requestVideoTranscodeConsent` (2956 to 2959), which detaches, calls `stopPreviousTranscode` again (2514) with its result discarded, finds `mediaBrowserSession` nil, passes the generation check and shows the choice (2531 to 2533) |
+| `Approve`, `Decline` | `approveVideoTranscoding` 2536 (`videoTranscodeApprovedForCurrentItem`, then `beginStreaming`, an in-place restart), `declineVideoTranscoding` 2549 (`surfaceFailure`) |
 | `RestartCore` | the synchronous part of `beginStreaming` |
 | `Terminal`, `SurfaceFailure` | what `stop()` and `surfaceFailure` share, with `sendTranscodeStop` and the `sentTranscodeStop` latch |
 | `TaskSendsStop` | the first run of `startStreaming`: its guard, then `stopPreviousTranscode` |
@@ -38,7 +43,7 @@ Each MainActor run between two awaits is one action. Functions are in
 | `TaskAttaches` | the last guard of `startStreaming`, and `load(_:resumeOffsetMs:)` |
 | `TaskUnwindExit` | any `guard !Task.isCancelled, generation == playbackGeneration else { return }` of `startStreaming` |
 | `ServerStarts` (`StartLands`) | PMS acts on a start request |
-| `ServerResolves`, `ClockTicks` | PMS applies a stop, or it ends unacknowledged; two seconds pass for a stop a task awaits |
+| `ServerResolves`, `ClockTicks` | PMS applies a stop, or it ends unacknowledged; two seconds pass for a stop a task awaits, or the `URLSession` request timeout passes for a detached stop (`PlexClient.recovery`, `Labstream/Shared/Networking/PlexClient.swift` 39 to 41, and `PlexSessionConfiguration.recoveryControlPlane`, `PMSKit/Sources/PMSKit/PlexSessionConfiguration.swift` 13 to 16: 5 s on the recovery client) |
 
 A task is `[gen, pc, seq, stop, stopping, warm]`: the generation it captured, where it is, its
 start request, the stop it awaits, `stoppingPreviousTranscode`, and whether it is the
@@ -50,6 +55,7 @@ startup-deadline retry. Its places:
 | `awaitStop` | `await stopPreviousTranscode` |
 | `negotiate` | its start request, on the wire |
 | `negotiated` | the answer to a request the server acted on, on its way back |
+| `consentStop` | `await stopPreviousTranscode` inside `requestVideoTranscodeConsent` |
 
 Cancelling a task moves it to `unwinding`. Every check in `startStreaming` is a bare `return`,
 so a cancelled task does nothing more; what its request created stays.
@@ -89,8 +95,12 @@ failed", so a pass of `OneEncoder` is sound. The base's `NoWrongKill` is checked
   watchdog and healthy-playback upshift) is not a separate action. It enters `beginStreaming`
   exactly as `UserQuality` does and differs only in not being a user action, so it is covered
   by `UserQuality`'s steps but counted against `MaxUserActions`.
-- **The consent boundary** is left out. `requestVideoTranscodeConsent` calls
-  `stopPreviousTranscode` too, with the same bounded wait, before it shows the choice.
+- **The consent boundary** is modelled for the copy-lane failure route (`PlayerNeedsConsent`), the
+  one that has a job to stop. The other calls of `requestVideoTranscodeConsent` from
+  `startStreaming` (2958, 2993, 3006: the decision or the copy-playlist fetch says video needs
+  encoding) come after the same stop and wait, and on a first start there is no job to stop; they
+  are not separate actions. The Original-quality condition is not modelled, and once the item's
+  encoding is approved no consent is asked again.
 - **Which request starts a transcoder.** On a cold session `start.m3u8` alone does not; the
   fetch of the media playlist does (the comment above the prewarm in `startStreaming`). The
   model has one start request per attempt and two places for it: the task makes it and waits
@@ -99,13 +109,26 @@ failed", so a pass of `OneEncoder` is sound. The base's `NoWrongKill` is checked
   start request never reaches the server, and the two places above differ by nothing a stop
   could see, so only the first is taken. With `LateStarts` a start request can be overtaken by a
   stop sent after it, and can land after its task was cancelled or its item detached.
+  `TaskIssuesStart(c, TRUE)` (AVPlayer's request after the attach) exists only with `LateStarts`:
+  without it, a capped-quality start whose task is cancelled is dropped rather than landing before
+  the stop that follows, which is harmless only because requests are then served in order.
 - **A cancelled stop.** When the wait gives up, or the awaiting task is cancelled, the task
   group cancels the `URLSession` request. The client hears nothing more. With
   `CancelledStopCanLand` the server may still apply it; without, it never does. Either way the
   job it was aimed at stays owned until the request ends: the client cancelled it, so the base's
   rule that a failed stop hands the job to the server does not excuse it.
-- **Time.** The two-second bound is `ClockTicks`, which can fire for any stop a task awaits.
-  `URLSession`'s own timeout is `ServerFail`.
+- **Time.** `ClockTicks` is the two-second bound for a stop a task awaits, and the `URLSession`
+  request timeout for a detached stop (`sendTranscodeStop`, a `pendingStopTasks` entry): 5 s on
+  the recovery client that every Retry switches to, 60 s otherwise. A detached stop that timed
+  out stays on the wire, as in the Emby and Jellyfin modules; the client dropped its connection,
+  so it is applied only with `CancelledStopCanLand`, and the join (`Joined`) ends at the timeout.
+  An earlier version treated the timeout as `ServerFail`, so a detached stop could never land
+  after the client stopped waiting, and the Retry route below was hidden. A kill by a timed-out
+  detached stop counts as `"live"`: the client's own code cancelled nothing, so the weaker
+  properties do not excuse it.
+- **`Terminal` for a failure raised inside the task** adds no join of that task, where
+  `surfaceFailure` does append it (5155 to 5158). The task returns right after, so nothing
+  changes.
 - **`ServerRecreate` is not enabled.** A detached Plex item's requests to a stopped session get
   404 (the comment above the detach in `startStreaming`); nothing in the repository shows PMS
   restarting a stopped job by itself.
@@ -133,7 +156,7 @@ on a restart, and since #27 the client tries never to have two. So the model was
 | --- | --- | --- |
 | `StopEndsAllUnderId` (base) | a stop ends every job under the id | it ends any non-empty set of them |
 | `WarmStartJoinsJob` | a request that asks again for what a running job was started for is served by that job | every start request adds a job |
-| `CancelledStopCanLand` | PMS may apply a stop the client cancelled | it never does |
+| `CancelledStopCanLand` | PMS may apply a stop the client cancelled, or whose `URLSession` request timed out | it never does |
 
 What depends on them:
 
@@ -148,15 +171,18 @@ What depends on them:
 - **`WarmStartJoinsJob`.** Every config uses `TRUE` except `Finding-WarmStartAddsJob`, where the
   startup-deadline retry runs two transcoders by design. It is a conditional finding: a defect
   unless PMS serves that request from the running job.
-- **`CancelledStopCanLand`.** The kill half of suspect 2 needs `TRUE`. The pile-up half does not
-  depend on it, nor on `StopEndsAllUnderId`. `Finding-FinalStopKillsReplacement` needs none of
-  the three.
+- **`CancelledStopCanLand`.** The kill half of suspect 2 needs `TRUE`, and so do
+  `Finding-RetryAfterTimedOutStop` and `Finding-CancelledConsentStopKillsApproved`. The pile-up
+  half does not depend on it, nor on `StopEndsAllUnderId`. `Finding-FinalStopKillsReplacement`
+  and `Finding-ConsentShowsOverRunningJob` need none of the three.
 
 ## Bounds
 
 - One controller, one session id. `MaxGeneration` bounds `playbackGeneration` and the
   incarnations; a controller sends at most `MaxGeneration - 1` start requests. It is set high
   enough that `MaxUserActions` runs out first (16 for two actions, 21 for three, 11 for one).
+  The consent configs take 19: a failing copy lane restarts without a user action. The distinct
+  state count of `Current-Consent` grows up to `MaxGeneration = 19` and is the same at 21 and 23.
 - `MaxUserActions` bounds quality changes and Retry taps together. Close and one failure per
   attempt are always available.
 - `EnvFails`, `RestartFromFailure`, `WarmRetries`, `StopsCanFail`, `StopsCanBeLate` and
@@ -169,11 +195,12 @@ What depends on them:
 | `OneEncoder` (base) | invariant | At most one job the client still owns. **Violated by the code (suspect 2).** |
 | `OneEncoderOutsideCancelledStops` | invariant | The same, beside the jobs a cancelled and still unanswered stop was aimed at. This is what the code keeps. |
 | `StopNeverKillsSuccessor` | invariant | No stop ends a job whose start request was sent after it. **Violated by the code (suspect 2).** |
-| `LiveStopNeverKillsSuccessor` | invariant | The same for every stop the client had not cancelled. **Violated by the code when a restart follows a failure without Retry.** |
+| `LiveStopNeverKillsSuccessor` | invariant | The same for every stop the client had not cancelled. **Violated by the code when a restart follows a failure without Retry, and (conditional) when Retry follows a failure whose stop timed out.** |
 | `NoWrongKill` (base) | invariant | No stop aimed at an older incarnation ended a newer one. |
 | `NoZombieItem` | invariant | No start request goes out while an older item is attached (#196). |
 | `NoOrphans` | invariant | After Close, and while a failure shows with nothing under way, a stop covering every job has been sent. A stop that fails counts. **Violated by the code after a restart from a failure (the restart core's finding).** |
 | `CleanAfterAckedClose` | invariant | Once Close's stop is acknowledged and nothing of the controller's is on the wire, the server runs nothing for it. **Violated by the code with a late start (suspect 4).** |
+| `ConsentBoundary` | invariant | While the consent choice shows, nothing is attached and no job the client owns runs ("Stop any copy/audio-conversion job before presenting the choice"). **Violated by the code when a stop takes over two seconds (`Finding-ConsentShowsOverRunningJob`).** |
 | `RestartSettles` | liveness | A start or restart ends: it attaches, fails or is closed. |
 | `CloseCleansUp` | liveness | After Close every task returns and the joined cleanup ends. |
 
@@ -185,23 +212,24 @@ the bound exists for.
 
 2026-11-25, tla2tools v1.7.4, `TLC_WORKERS=auto TLC_HEAP=4g` on 30 cores. Unless noted: one
 controller, two user actions, `MaxGeneration = 16`, failures and the startup-deadline retry on,
-`RestartFromFailure`, `StopsCanFail`, `StopsCanBeLate`, `LateStarts` and `CancelledStopCanLand`
-off, `StopEndsAllUnderId = FALSE`, `WarmStartJoinsJob = TRUE`.
+`RestartFromFailure`, `StopsCanFail`, `StopsCanBeLate`, `LateStarts`, `ConsentPossible` and
+`CancelledStopCanLand` off, `StopEndsAllUnderId = FALSE`, `WarmStartJoinsJob = TRUE`.
 
 | Config | Expect | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
-| `Current-InPlace` | pass | pass | 2,801,859 | 11 s |
+| `Current-InPlace` | pass | pass | 2,801,859 | 12 s |
 | `Current-ReusedId` | pass | pass (given `StopEndsAllUnderId`) | 1,262,840 | 6 s |
-| `Current-LateAck` | pass | pass (given `StopEndsAllUnderId`) | 20,963,959 | 66 s |
-| `Liveness-InPlace` | pass | pass | 55,830 | 5 s |
-| `Liveness-BoundedWait` | pass | pass | 19,153 | 2 s |
+| `Current-LateAck` | pass | pass (given `StopEndsAllUnderId`) | 2,534,848 | 10 s |
+| `Current-Consent` | pass | pass | 1,530,725 | 8 s |
+| `Liveness-InPlace` | pass | pass | 240,066 | 16 s |
+| `Liveness-BoundedWait` | pass | pass | 149,595 | 7 s |
 | `Faithful-StopPrevious-off` | `OneEncoder` violated | violated | stops at first error | 1 s |
 | `Faithful-DetachBeforeStart-off` | `NoZombieItem` violated | violated | stops at first error | 1 s |
 | `Mutant-StopNotAwaited` | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Mutant-StopNotAwaited-PileUp` | `OneEncoderOutsideCancelledStops` violated | violated | stops at first error | 1 s |
 | `Mutant-RetrySkipsJoin` | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
-| `Mutant-CloseSkipsFinalStop` | `NoOrphans` violated | violated | stops at first error | 1 s |
-| `Mutant-UnboundedStopWait` | `RestartSettles` (temporal) violated | violated | stops at first error | 1 s |
+| `Mutant-CloseSkipsFinalStop` | `NoOrphans` violated | violated | stops at first error | 0 s |
+| `Mutant-UnboundedStopWait` | `RestartSettles` (temporal) violated | violated | stops at first error | 3 s |
 | `Finding-LateStopKillsReplacement` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-LateStopKillsReplacement-CancelledWait` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-LateStopPilesUp` | `OneEncoder` violated | violated | stops at first error | 1 s |
@@ -209,10 +237,13 @@ off, `StopEndsAllUnderId = FALSE`, `WarmStartJoinsJob = TRUE`.
 | `Finding-RestartAfterFailureSkipsFinalStop` | `NoOrphans` violated | violated | stops at first error | 1 s |
 | `Finding-LateStartOutlivesStop` | `CleanAfterAckedClose` violated | violated | stops at first error | 1 s |
 | `Finding-LateStartPilesUp` | `OneEncoder` violated | violated | stops at first error | 1 s |
+| `Finding-ConsentShowsOverRunningJob` | `ConsentBoundary` violated | violated | stops at first error | 1 s |
+| `Finding-RetryAfterTimedOutStop` (conditional on PMS) | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
+| `Finding-CancelledConsentStopKillsApproved` (conditional on PMS) | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-StopEndsOnlySome` (conditional on PMS) | `CleanAfterAckedClose` violated | violated | stops at first error | 1 s |
 | `Finding-WarmStartAddsJob` (conditional on PMS) | `OneEncoder` violated | violated | stops at first error | 1 s |
-| `Proposed-StartAfterOwnStops` | pass | pass (given `StopEndsAllUnderId`) | 7,085,050 | 23 s |
-| `Proposed-Liveness` | pass | pass (given `StopEndsAllUnderId`) | 37,971 | 4 s |
+| `Proposed-StartAfterOwnStops` | pass | pass (given `StopEndsAllUnderId`) | 37,158,879 | 116 s |
+| `Proposed-Liveness` | pass | pass (given `StopEndsAllUnderId`) | 125,369 | 9 s |
 | `Deep-BackToBack` (deep) | pass | pass (given `StopEndsAllUnderId`) | 224,250,625 | 18 min 51 s |
 
 - `Current-InPlace`: three user actions, `MaxGeneration = 21`. Every stop is acknowledged within
@@ -223,12 +254,21 @@ off, `StopEndsAllUnderId = FALSE`, `WarmStartJoinsJob = TRUE`.
 - `Current-ReusedId` (review focus 2): `StopsCanFail` and `StopEndsAllUnderId`. A job whose stop
   was lost runs on under the id beside its replacement.
 - `Current-LateAck` (review focus 3): `StopsCanFail`, `StopsCanBeLate`, `CancelledStopCanLand`
-  and `StopEndsAllUnderId`. It checks `TypeOK`, `OneEncoderOutsideCancelledStops`,
-  `LiveStopNeverKillsSuccessor`, `NoZombieItem`, `NoOrphans` and `CleanAfterAckedClose`.
+  and `StopEndsAllUnderId`, no failures. It checks `TypeOK`, `OneEncoderOutsideCancelledStops`,
+  `LiveStopNeverKillsSuccessor`, `NoZombieItem`, `NoOrphans` and `CleanAfterAckedClose`. With
+  failures it fails `LiveStopNeverKillsSuccessor` (`Finding-RetryAfterTimedOutStop`, the same
+  constants with `EnvFails`); before the detached stop's timeout was modelled it passed with them
+  (20,963,959 states).
+- `Current-Consent`: `Current-InPlace` with `ConsentPossible`, two user actions,
+  `MaxGeneration = 19`, every `Current-InPlace` invariant and `ConsentBoundary`.
+  `Finding-ConsentShowsOverRunningJob` is it with late stops (checking `ConsentBoundary` only),
+  and `Finding-CancelledConsentStopKillsApproved` with late stops, `CancelledStopCanLand`, one
+  user action, no failures or startup-deadline retry and `CONSTRAINT ConsentRoute`.
 - `Liveness-InPlace`: `Current-LateAck`'s run with one user action and `MaxGeneration = 11`,
   under `FairSpec`: `RestartSettles` and `CloseCleansUp`. `Liveness-BoundedWait`: late and
   cancelled stops, one user action, under `ClockFairSpec`: `RestartSettles`.
-- `Proposed-StartAfterOwnStops`: both fixes, `Current-LateAck`'s run plus `RestartFromFailure`.
+- `Proposed-StartAfterOwnStops`: both fixes, `Current-LateAck`'s run plus failures and
+  `RestartFromFailure`.
   `Proposed-Liveness`: the same with one user action under `FairSpec`.
 - `Deep-BackToBack`: two controllers, each under its own session id, `Current-ReusedId`'s run
   with one user action each and `MaxGeneration = 11`. With `IdsNeverShared` the two share the
@@ -240,7 +280,9 @@ checks the full property, or keeps it and checks what the code still keeps.
 `OneEncoderOutsideCancelledStops` and `LiveStopNeverKillsSuccessor` excuse only the stops the
 client itself cancelled, which pins suspect 2 to `stopPreviousTranscode`'s give-up and to a
 cancelled wait. `RestartFromFailure` and `LateStarts` are off in every `Current` config; their
-`Finding` configs turn on nothing else.
+`Finding` configs turn on nothing else. `Current-LateAck` has no failures, and `Current-Consent`
+no late stops, for the same reason (`Finding-RetryAfterTimedOutStop`,
+`Finding-ConsentShowsOverRunningJob`).
 
 ### Faithfulness and mutants
 
@@ -254,8 +296,8 @@ cancelled wait. `RestartFromFailure` and `LateStarts` are off in every `Current`
 | `Mutant-CloseSkipsFinalStop` | `CloseSendsFinalStop` | `NoOrphans` | Close with a job running and no stop. |
 | `Mutant-UnboundedStopWait` | `BoundedStopWait` | `RestartSettles` | A restart waits for ever on a stop that is never answered. |
 
-`OneEncoder`, `StopNeverKillsSuccessor`, `LiveStopNeverKillsSuccessor`, `NoOrphans` and
-`CleanAfterAckedClose` are violated by the code as it stands; their `Finding` configs also show
+`OneEncoder`, `StopNeverKillsSuccessor`, `LiveStopNeverKillsSuccessor`, `NoOrphans`,
+`CleanAfterAckedClose` and `ConsentBoundary` are violated by the code as it stands; their `Finding` configs also show
 they can fail, and `Proposed-StartAfterOwnStops` that they can hold. `CleanAfterAckedClose` has
 no mutant of its own: `Finding-LateStartOutlivesStop` and `Finding-StopEndsOnlySome` are its
 failing runs.
@@ -279,7 +321,8 @@ only invariant, each is violated:
 | --- | --- |
 | `NeverStopWhileAttached`, `NeverRestartBehindItem`, `NeverBlankStop`, `NeverCancelledWait`, `NeverWarmJoin`, `NeverRetryWaits` | `Current-InPlace` |
 | `NeverTwoUnderOneId`, `NeverStopFailed` | `Current-ReusedId` |
-| `NeverGaveUp`, `NeverCancelledStopLands` | `Current-LateAck` |
+| `NeverGaveUp`, `NeverCancelledStopLands`, `NeverDetachedTimedOut` (Close's detached stop timed out) | `Current-LateAck` |
+| `NeverConsentShown` | `Current-Consent` |
 | `NeverRestartFromFailure` | `Proposed-StartAfterOwnStops` |
 | `NeverLateStart` | `Finding-LateStartPilesUp` |
 
@@ -402,6 +445,61 @@ start whose connection the client has dropped, after a stop sent later. `Finding
 is the same request order across a restart: `OneEncoder` is violated in 9 states, with the
 overtaken start's job beside the replacement's.
 
+### Conditional: Retry after the failure's stop timed out (`Finding-RetryAfterTimedOutStop`)
+
+`LiveStopNeverKillsSuccessor` is violated in 12 states with late stops. Its one server assumption
+is `CancelledStopCanLand`: PMS applies a stop whose connection the client dropped. The client
+cancels nothing itself, so the weaker property fails, not only `StopNeverKillsSuccessor`.
+
+| Step | Model | Swift |
+| --- | --- | --- |
+| 1 | `Start` | `start()`, `beginStreaming` 2715 |
+| 2 | `Fail`: a failure surfaces; its stop is detached, a `pendingStopTasks` entry | `surfaceFailure` 5133, `sendTranscodeStop` 5177: 1288 to 1294 |
+| 3 | `ClockTicks`: the request passes its `URLSession` timeout unanswered; the entry's `try?` returns, the request stays on the wire | 1294; 5 s on the recovery client (`PlexClient.recovery` 39 to 41) once any earlier Retry ran, 60 s otherwise |
+| 4, 5 | `Retry`, and the cancelled first task returns | `retry()` 2566 |
+| 6 | `RetryProceeds`: the join returns | `waitForPendingStopRequests` 1236, awaited at 2580; `restartAtCurrentPosition` 2584, `switchToRecoveryControlClient` 5743 |
+| 7, 8 | `TaskSendsStop`, `ServerResolves`: the Retry's own stop is sent and acknowledged | `stopPreviousTranscode` 2738 to 2747, called at 2767 |
+| 9, 10 | `TaskIssuesStart`, `ServerStarts`: the replacement starts | 2768; 2999, 3040 or AVPlayer after 3158 |
+| 11 | `ServerResolves`: the timed-out failure stop is applied. It names the session only (`TranscodeRequest.stop`), so it ends the replacement | |
+
+The comment at 2578 to 2579 is the rule this breaks: do not mint a replacement while the failed
+attempt's exact-session stop is still in flight. A timed-out request is still in flight, and the
+join cannot tell it from an answered one. The recovery client makes the timeout short: every
+Retry switches to it, so from the second failure on the detached stop gives up after 5 s.
+`Mutant-RetrySkipsJoin` is the same route with no join at all. In Swift, Retry should not treat a
+timed-out exact-session stop as joined.
+
+### The consent choice shows over a running copy job (`Finding-ConsentShowsOverRunningJob`)
+
+`ConsentBoundary` is violated in 11 states with late stops; no server assumption.
+
+| Step | Model | Swift |
+| --- | --- | --- |
+| 1 to 4 | `Start`, `TaskIssuesStart`, `ServerStarts`, `TaskAttaches`: the copy lane plays | |
+| 5 | `PlayerNeedsConsent`: the copy lane fails | `handlePlaybackFailure` 5073 to 5093: `beginStreaming` |
+| 6 | `TaskSendsStop`: the rebuild's stop | 2767 |
+| 7 | `ClockTicks`: two seconds, no answer | 2744 to 2746 |
+| 8 | `TaskAsksConsent`: the wait gave up and cancelled the request; the copy lane failed, so `requestVideoTranscodeConsent` detaches and sends a second stop | 2956 to 2959; 2512, 2514 |
+| 9 | `ClockTicks`: two seconds again | |
+| 10 | `ConsentShows`: `stopPreviousTranscode` returns with its result discarded, and the choice shows | 2531 to 2533 |
+
+The copy job may still be running when the user is asked whether to start an encoder:
+"Stop any copy/audio-conversion job before presenting the choice" (2502) holds only while each stop
+is answered within two seconds. Emby's consent request awaits an acknowledged stop and fails with
+LS-PB-008 otherwise (`ConsentRequiresAck` there); Plex has no such check.
+
+### Conditional: the consent request's cancelled stop ends the approved encode (`Finding-CancelledConsentStopKillsApproved`)
+
+`StopNeverKillsSuccessor` is violated in 17 states with late stops and `CancelledStopCanLand`, with
+the user's one action Approve and the Approve restart's own stop answered in time
+(`CONSTRAINT ConsentRoute`; without it TLC shows the shorter give-up in the Approve restart itself,
+which is `Finding-LateStopKillsReplacement`'s route). Steps 1 to 7 as above, but the rebuild's stop
+is acknowledged; then `TaskAsksConsent` sends the consent request's stop, it gives up after two
+seconds (`ConsentShows`), the user approves (`approveVideoTranscoding` 2536, `beginStreaming`),
+the Approve restart's stop is sent and acknowledged, the encode starts, and the consent request's
+stop, cancelled by its task group (2746), is applied and ends it. It needs that stop delayed past
+the user's decision, which fits the 60 s default client better than the 5 s recovery client.
+
 ### Proposed fixes
 
 `Proposed-StartAfterOwnStops` and `Proposed-Liveness` turn on:
@@ -418,7 +516,11 @@ overtaken start's job beside the replacement's.
 - `FixRestartResetsStopLatch`, from the restart core.
 
 With both, every property holds in full under late and lost stops and restarts from a
-failure, given `StopEndsAllUnderId`. The late start is not addressed (`LateStarts` is off
+failure, given `StopEndsAllUnderId`, and `Finding-RetryAfterTimedOutStop`'s route is closed too: a
+detached stop past its `URLSession` timeout still counts as unanswered. The model's fix waits for
+the server's outcome, which a request that timed out never reports to the client, so in Swift the
+fix needs the stop tracked past its timeout (or Retry to treat a timed-out exact-session stop as
+not joined), not only a guard on the join's return. The late start is not addressed (`LateStarts` is off
 there); the restart core's `FixJoinCancelledTasks` does not help it either, since the stop has
 already gone when the start lands.
 

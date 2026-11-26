@@ -2,6 +2,10 @@
 \* MODELS: Labstream/Shared/Player/PlaybackController.swift
 \* MODELS: PMSKit/Sources/PMSKit/Jellyfin/JellyfinPlayback.swift
 \* MODELS: PMSKit/Sources/PMSKit/RemoteStreamLifecyclePolicy.swift
+\* MODELS: Labstream/Shared/UI/DetailPlaybackLauncher.swift
+\* MODELS: Labstream/Shared/Player/PlaybackSessionSource.swift
+\* MODELS: PMSKit/Sources/PMSKit/MediaBrowser/MediaBrowserPlaybackPolicy.swift
+\* MODELS: PMSKit/Sources/PMSKit/MediaBrowser/MediaBrowserActiveEncodingStopExecutor.swift
 (***************************************************************************)
 (* The Jellyfin replacement order.  Every negotiation (a PlaybackInfo      *)
 (* request) returns a play-session id the server minted, and the           *)
@@ -28,7 +32,7 @@
 (*                                                                         *)
 (*   User      Reopen (seek, quality or track change, the startup-deadline *)
 (*             reopen), Approve, Decline, Retry, Close                     *)
-(*   Player    Fail                                                        *)
+(*   Player    Fail, PlayerNeedsConsent                                    *)
 (*   Timers    RetryProceeds (failureRetryTask after                       *)
 (*             waitForPendingStopRequests), DeferredFires (the two-second  *)
 (*             sleep ends and the prior session's stop goes out)           *)
@@ -40,7 +44,9 @@
 (*                            the playing session's stop                   *)
 (*               rejectStop   in stopRejectedRemoteStream                  *)
 (*             The first start's task is at begin, then consentStop when   *)
-(*             its stream needs consent.                                   *)
+(*             its stream needs consent.  A consent request from           *)
+(*             handlePlaybackFailure is a task too: begin, then            *)
+(*             consentStop.                                                *)
 (*             A cancelled task runs on to its next check.                 *)
 (*   Server    NegotiateLands, ServerResolves (a stop is applied or        *)
 (*             fails), ServerRecreates (the 2026-09-17 audit's job made    *)
@@ -153,7 +159,7 @@ JobRefs == Jobs \cup {NoJ}
 NoRq == [sid |-> NoSession, gen |-> 0, n |-> 0]
 RqOf(r) == [sid |-> r.sid, gen |-> r.gen, n |-> r.n]
 
-TaskKinds == {"initial", "reopen"}
+TaskKinds == {"initial", "reopen", "consent"}
 TaskPcs == {"begin", "negotiate", "negotiated", "consentStop", "rejectStop"}
 
 \* A playbackTask.  `gen` is the generation it captured; `sid` and `inc`
@@ -182,10 +188,11 @@ IsJTask(t) ==
 \*   didStop   its stop was handed over (session.didStop)
 \*   consent   videoTranscodeConsent.generation, 0 for nil
 \*   retryGen  the generation failureRetryTask captured, 0 for nil
+\*   approved  videoTranscodeApprovedForCurrentItem
 StRecords ==
     [life : {"new", "open", "closed"}, failed : BOOLEAN, retryGen : Gens,
      consent : Gens, cur : JobRefs, didStop : BOOLEAN,
-     userLeft : 0..MaxUserActions]
+     userLeft : 0..MaxUserActions, approved : BOOLEAN]
 
 \* ghost[c].
 \*   rejected  sessions stopRejectedRemoteStream was given
@@ -216,7 +223,7 @@ Init ==
     /\ st = [c \in Controllers |->
                 [life |-> "new", failed |-> FALSE, retryGen |-> 0,
                  consent |-> 0, cur |-> NoJ, didStop |-> FALSE,
-                 userLeft |-> MaxUserActions]]
+                 userLeft |-> MaxUserActions, approved |-> FALSE]]
     /\ deferred = [c \in Controllers |-> {}]
     /\ wire = [c \in Controllers |-> {}]
     /\ minted = NoSession
@@ -280,17 +287,23 @@ WindowCause(c) ==
           /\ r.c = c /\ r.status = "inFlight"
           /\ <<r.sid, r.gen>> \in ghost[c].fired \cup ghost[c].rejected
 
-\* Any cleanup of c's still under way: the window, or any stop c sent
-\* that is unanswered, or a task still awaiting a stop.  Only the
-\* user-timing constants read it.
+\* Cleanup of c's still under way on the user's clock: a reopen task
+\* runs, a deferred stop sleeps (the two seconds), a stop c sent is
+\* unanswered and still inside its request timeout, or a task still
+\* awaits a stop.  A stop past its timeout does not count: the client
+\* has stopped waiting for it, and so does the user, who may tap Retry or
+\* change quality at any later time.  Only the user-timing constants
+\* read it.
 CleanupUnderway(c) ==
-    \/ WindowCause(c)
-    \/ \E r \in stopReqs : r.c = c /\ r.status = "inFlight"
+    \/ \E t \in Running(c) : t.kind = "reopen"
+    \/ deferred[c] # {}
+    \/ \E r \in stopReqs : r.c = c /\ r.status = "inFlight" /\ ~r.late
     \/ \E t \in Running(c) : t.pc \in {"consentStop", "rejectStop"}
 
 \* The user starts another replacement while cleanup is under way: within
 \* about two seconds of the last replacement, or before the stops it
-\* caused are answered and the tasks awaiting them have run on.
+\* caused are answered or time out and the tasks awaiting them have run
+\* on.
 Replacing(c) == CleanupUnderway(c)
 
 \* The ids a negotiation may return now.  This is the server choosing the
@@ -441,13 +454,15 @@ Reopen(c) ==
     /\ QuickReopen \/ ~Replacing(c)
     /\ ReopenCore(c, [st EXCEPT ![c].userLeft = @ - 1, ![c].retryGen = 0])
 
-\* approveVideoTranscoding.
+\* approveVideoTranscoding.  The tap is a replacement like Reopen, so the
+\* same user-timing assumption gates it.
 Approve(c) ==
     /\ st[c].life = "open"
     /\ st[c].consent # 0 /\ st[c].consent = gen[c]
     /\ st[c].userLeft > 0
+    /\ QuickReopen \/ ~Replacing(c)
     /\ ReopenCore(c, [st EXCEPT ![c].consent = 0, ![c].userLeft = @ - 1,
-                                ![c].retryGen = 0])
+                                ![c].retryGen = 0, ![c].approved = TRUE])
 
 \* declineVideoTranscoding.
 Decline(c) ==
@@ -512,6 +527,26 @@ Fail(c) ==
     /\ st[c].consent = 0
     /\ item[c] = "attached" \/ task[c] # NoTask
     /\ SurfaceFailure(c, NoTask, st)
+
+\* The attached item fails on Original quality with no approval yet:
+\* handlePlaybackFailure cancels the task, bumps the generation, and
+\* starts a task that runs requestVideoTranscodeConsent.  The item stays
+\* attached until that task runs.  Not taken while a task runs, nor once
+\* the user approved encoding for the item; the Original-quality
+\* condition is not modelled (as Emby's).
+PlayerNeedsConsent(c) ==
+    /\ ConsentPossible
+    /\ st[c].life = "open"
+    /\ ~st[c].failed
+    /\ ~st[c].approved
+    /\ st[c].consent = 0
+    /\ item[c] = "attached"
+    /\ task[c] = NoTask
+    /\ gen[c] + 1 < MaxGeneration
+    /\ gen' = Upd(gen, c, gen[c] + 1)
+    /\ task' = Upd(task, c, JTask(gen[c] + 1, "consent", NoJ, NoSession))
+    /\ UNCHANGED <<serverVars, itemGen, item, unwinding, pendingStops,
+                   idleVars, ownVars>>
 
 \* The two-second sleep ends and priorStop() runs.  Nothing checks a
 \* generation, and the callback's own Task sends the request with nobody
@@ -632,20 +667,23 @@ NegotiateFails(c) ==
 (* The first start, and the consent request                                *)
 
 \* beginRemoteStream's task: playableRemoteStreamURL returns a URL and the
-\* item is loaded, or the task was cancelled and returns.
+\* item is loaded, or the task was cancelled and returns.  A consent
+\* task that was cancelled before it ran returns at its first guard.
 InitialRuns(c, t) ==
-    /\ t.kind = "initial" /\ t.pc = "begin"
+    /\ t.kind \in {"initial", "consent"} /\ t.pc = "begin"
+    /\ t.kind = "consent" => ~Accepts(c, t)
     /\ IF Accepts(c, t)
        THEN AttachCore(c)
        ELSE EndTask(c, t) /\ UNCHANGED <<gen, itemGen, item, pendingStops,
                                          idleVars>>
     /\ UNCHANGED <<serverVars, ownVars>>
 
-\* The first start's stream needs consent: requestVideoTranscodeConsent
-\* detaches and stops the playing session, awaited, unless didStop.
+\* The first start's stream needs consent, or the task PlayerNeedsConsent
+\* started runs: requestVideoTranscodeConsent detaches and stops the
+\* playing session, awaited, unless didStop.
 InitialNeedsConsent(c, t) ==
     /\ ConsentPossible
-    /\ t.kind = "initial" /\ t.pc = "begin"
+    /\ t.kind \in {"initial", "consent"} /\ t.pc = "begin"
     /\ Accepts(c, t)
     /\ item' = Upd(item, c, Detached(c))
     /\ IF StopsNow(c, ConsentStopsSession)
@@ -676,7 +714,7 @@ ConsentStopDone(c, t) ==
     /\ t.pc = "consentStop"
     /\ ReqDone(c, t.rq)
     /\ st' = next
-    /\ IF t.kind = "initial"
+    /\ IF t.kind \in {"initial", "consent"}
        THEN /\ EndTask(c, t)
             /\ UNCHANGED <<serverVars, ghost>>
        ELSE RejectHeld(c, t, t)
@@ -763,7 +801,7 @@ Step ==
     \/ \E c \in Controllers :
           \/ Start(c) \/ Reopen(c) \/ Approve(c) \/ Decline(c)
           \/ Retry(c) \/ RetryProceeds(c) \/ Close(c) \/ Fail(c)
-          \/ TaskStep(c) \/ NegotiateResolves(c)
+          \/ PlayerNeedsConsent(c) \/ TaskStep(c) \/ NegotiateResolves(c)
           \/ \E j \in deferred[c] : DeferredFires(c, j)
 
 \* The window after the step, from the state the step left.
@@ -900,6 +938,13 @@ WindowCloses ==
 \* No result is ever rejected, so no rejected session's stop is sent.
 NoRejection == \A c \in Controllers : ghost[c].rejected = {}
 
+\* The first start never asks for consent, so a consent request comes from
+\* handlePlaybackFailure or a reopen.
+NoInitialConsent ==
+    \A c \in Controllers :
+        ~(task[c] # NoTask /\ task[c].kind = "initial"
+          /\ task[c].pc = "consentStop")
+
 -----------------------------------------------------------------------------
 (* Witnesses.  Each is the negation of a state one branch of the model     *)
 (* reaches, so each is violated when checked as an invariant.  No config   *)
@@ -919,6 +964,8 @@ NeverReplacedById ==
           /\ server[j[1]][j[2]].endedBy = 0)
 NeverReusedId == \A s \in SessionIds : Latest(s) < 2
 NeverConsentShown == \A c \in Controllers : ~ConsentShowing(c)
+NeverPlayerConsent ==
+    \A c \in Controllers : ~(task[c] # NoTask /\ task[c].kind = "consent")
 NeverRetryWaits ==
     \A c \in Controllers : ~(st[c].retryGen # 0 /\ ~Joined(c))
 NeverTimedOut ==

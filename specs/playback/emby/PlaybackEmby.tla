@@ -2,6 +2,11 @@
 \* MODELS: Labstream/Shared/Player/PlaybackController.swift
 \* MODELS: Labstream/Shared/Player/EmbyReopenStopBarrier.swift
 \* MODELS: PMSKit/Sources/PMSKit/RemoteStreamLifecyclePolicy.swift
+\* MODELS: PMSKit/Sources/PMSKit/Emby/EmbyPlayback.swift
+\* MODELS: Labstream/Shared/UI/DetailPlaybackLauncher.swift
+\* MODELS: Labstream/Shared/Player/PlaybackSessionSource.swift
+\* MODELS: PMSKit/Sources/PMSKit/MediaBrowser/MediaBrowserPlaybackPolicy.swift
+\* MODELS: PMSKit/Sources/PMSKit/MediaBrowser/MediaBrowserActiveEncodingStopExecutor.swift
 (***************************************************************************)
 (* The Emby replacement order.  Every negotiation (a PlaybackInfo request) *)
 (* returns a play-session id the server minted, and the controller holds   *)
@@ -42,8 +47,9 @@
 (*   Barrier   BarrierResolves (the barrier's own task hears the answer,   *)
 (*             or its request times out)                                   *)
 (*   Server    NegotiateLands, ServerResolves (a stop is applied or        *)
-(*             fails), ClockTicks (the request timeout passes for the      *)
-(*             stop the barrier awaits)                                    *)
+(*             fails), ServerRecreatesJob (#421: a stopped job made again  *)
+(*             from an accepted media request), ClockTicks (the request    *)
+(*             timeout passes for the stop the barrier awaits)             *)
 (*                                                                         *)
 (* What the restart core (specs/playback/restart) already covers is left   *)
 (* out: seeks and their budget, pause intent, the loopback proxy.          *)
@@ -62,6 +68,13 @@ CONSTANTS
     ConsentPossible,  \* a stream may need the user's consent to encode
     StopsCanFail,     \* a stop may end unacknowledged
     StopsCanBeLate,   \* a stop may go unanswered past the request timeout
+    ServerRecreates,
+        \* the server may make a stopped job again (#421).  TRUE in every
+        \* safety config.  A liveness config may take FALSE: the step
+        \* changes only `server`, and with IdReuse "never" or "live" no
+        \* client step, stop resolution or timeout depends on whether a
+        \* stopped job runs again, so it adds states and no behaviour of
+        \* the client
 
     \* What the server does.  Not established for Emby; see the README.
     IdReuse,
@@ -98,7 +111,8 @@ ASSUME /\ MaxUserActions \in Nat
        /\ MaxGeneration >= 3
        /\ IdReuse \in {"never", "stopped", "live"}
        /\ \A b \in {EnvFails, RestartFromFailure, ConsentPossible,
-                    StopsCanFail, StopsCanBeLate, AbandonedNegotiateCanLand,
+                    StopsCanFail, StopsCanBeLate, ServerRecreates,
+                    AbandonedNegotiateCanLand,
                     StopsBeforeNegotiate, WaitsForStopAck,
                     BlocksOnUnconfirmedStop, JoinsPredecessor,
                     RejectedIsStopped, ConsentStopsSession,
@@ -808,6 +822,15 @@ ServerResolves(s) ==
     /\ ServerAck(s) \/ (StopsCanFail /\ ServerFail(s))
     /\ UNCHANGED <<ctlVars, ownVars>>
 
+\* The server makes a stopped job again from a media request it had
+\* already accepted: #421, an init.mp4 request landing while a seek-gap
+\* restart has the job unregistered starts a second writer for the same
+\* session.  Judged against the server, as in Jellyfin.
+ServerRecreatesJob(s) ==
+    /\ ServerRecreates
+    /\ ServerRecreate(s)
+    /\ UNCHANGED <<ctlVars, ownVars>>
+
 \* The request timeout passes for the stop a barrier awaits.  A late stop
 \* nobody awaits is no different from one on time.
 TouchedReq == CHOOSE r \in stopReqs : r \notin stopReqs'
@@ -827,7 +850,7 @@ NegotiateResolves(c) ==
     \/ NegotiateFails(c)
 
 Next ==
-    \/ \E s \in SessionIds : ServerResolves(s)
+    \/ \E s \in SessionIds : ServerResolves(s) \/ ServerRecreatesJob(s)
     \/ ClockTicks
     \/ \E c \in Controllers :
           \/ Start(c) \/ Reopen(c) \/ Approve(c) \/ Decline(c)
@@ -1002,6 +1025,8 @@ NeverLateAck ==
               /\ \E r \in StopsFor(c, tx.job[1], tx.job[2]) :
                     r.n = tx.rn /\ r.status = "acked")
 NeverStopFailed == \A r \in stopReqs : r.status # "failed"
+NeverRecreated ==
+    \A j \in Jobs : ~server[j[1]][j[2]].serverRecreated
 \* Two controllers: the second was given an id the first had used.
 NeverSharedId == OneOwnerPerId
 =============================================================================
