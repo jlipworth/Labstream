@@ -71,7 +71,6 @@ VARIABLES
     catt,       \* the attempt it is awaiting or holds
     chgen,      \* the generation of the handle it holds
     cwant,      \* it has torn down (Close, failure, superseded)
-    ccx,        \* its task was cancelled while awaiting standUpLoopback
     copens,     \* standUpLoopback calls it made
 
     \* MediaSessionProxy.
@@ -113,7 +112,7 @@ VARIABLES
     staleRetry,   \* send's catch took the stale-generation retry
     reopenTore    \* a re-open tore down a live session
 
-callerVars == <<cpc, catt, chgen, cwant, ccx, copens>>
+callerVars == <<cpc, catt, chgen, cwant, copens>>
 proxyVars == <<current, genCounter, nAtt, owner, genOf>>
 originVars == <<lref, lstate, sres, queue>>
 upVars == <<boxGen, boxValid, deadGens, budget, busy>>
@@ -133,7 +132,10 @@ CurAtt == IF current = 0 THEN 0 ELSE AttOf(current)
 Cancel(o) == [k |-> "cancel", o |-> o]
 Build(o) == [k |-> "build", o |-> o]
 
-\* What tearing sessions S down does beyond the proxy's own fields.
+\* What tearing sessions S down does beyond the proxy's own fields.  Under the fix, cx on a
+\* handler still reading its head stands for the fix's head-completion check: the stopped
+\* flag is re-checked under the lock when the head completes and the Task is inserted
+\* atomically with that check (or the NWConnections themselves are tracked and cancelled).
 DownAfter(S) == [o \in Attempts |-> down[o] \/ o \in S]
 
 HsAfterTeardown(S) ==
@@ -157,7 +159,6 @@ Init ==
     /\ catt = [c \in Controllers |-> 0]
     /\ chgen = [c \in Controllers |-> 0]
     /\ cwant = [c \in Controllers |-> FALSE]
-    /\ ccx = [c \in Controllers |-> FALSE]
     /\ copens = [c \in Controllers |-> 0]
     /\ current = 0
     /\ genCounter = 0
@@ -217,7 +218,6 @@ CallStandUp(c) ==
           /\ cpc' = [cpc EXCEPT ![c] = "awaitStart"]
           /\ catt' = [catt EXCEPT ![c] = o]
           /\ copens' = [copens EXCEPT ![c] = @ + 1]
-          /\ ccx' = [ccx EXCEPT ![c] = FALSE]
     /\ UNCHANGED <<chgen, cwant, genCounter, genOf, lref, lstate, sres, stops,
                    budget, busy, stopKill, crossCancel, lateFetch, lateAccept, badRotate,
                    staleIgnored, stopSawNil, casRejected, staleRetry>>
@@ -253,7 +253,7 @@ Resume(c) ==
                /\ deadGens' = IF FixInvalidateOnStop THEN deadGens \cup {boxGen} ELSE deadGens
                /\ cpc' = [cpc EXCEPT ![c] = IF cwant[c] THEN "done" ELSE "idle"]
                /\ UNCHANGED <<genCounter, genOf, stops, chgen, boxGen>>
-    /\ UNCHANGED <<catt, cwant, ccx, copens, nAtt, owner, lref, lstate, sres,
+    /\ UNCHANGED <<catt, cwant, copens, nAtt, owner, lref, lstate, sres,
                    budget, busy, stopKill, crossCancel, lateFetch, lateAccept, badRotate,
                    staleIgnored, stopSawNil, casRejected, staleRetry, reopenTore>>
 
@@ -266,7 +266,6 @@ Teardown(c) ==
     /\ cpc[c] \in {"idle", "awaitStart", "open"}
     /\ cwant' = [cwant EXCEPT ![c] = TRUE]
     /\ CASE cpc[c] = "awaitStart" ->
-              /\ ccx' = [ccx EXCEPT ![c] = CallerCancels]
               /\ sres' = IF CallerCancels /\ sres[catt[c]] = "none"
                          THEN [sres EXCEPT ![catt[c]] = "cancel"] ELSE sres
               /\ queue' = IF CallerCancels THEN Append(queue, Cancel(catt[c])) ELSE queue
@@ -274,10 +273,10 @@ Teardown(c) ==
          [] cpc[c] = "open" ->
               /\ stops' = stops \cup {chgen[c]}
               /\ cpc' = [cpc EXCEPT ![c] = "done"]
-              /\ UNCHANGED <<ccx, sres, queue>>
+              /\ UNCHANGED <<sres, queue>>
          [] OTHER ->
               /\ cpc' = [cpc EXCEPT ![c] = "done"]
-              /\ UNCHANGED <<ccx, sres, queue, stops>>
+              /\ UNCHANGED <<sres, queue, stops>>
     /\ UNCHANGED <<catt, chgen, copens, proxyVars, lref, lstate, hs, upVars, ghostVars>>
 
 \* A caller that reuses the proxy stops its session and may later re-open (the API allows it;
@@ -288,7 +287,7 @@ CallerStop(c) ==
     /\ cpc[c] = "open"
     /\ stops' = stops \cup {chgen[c]}
     /\ cpc' = [cpc EXCEPT ![c] = "idle"]
-    /\ UNCHANGED <<catt, chgen, cwant, ccx, copens, proxyVars, originVars, hs, upVars, ghostVars>>
+    /\ UNCHANGED <<catt, chgen, cwant, copens, proxyVars, originVars, hs, upVars, ghostVars>>
 
 \* stop(generation:): guard current?.generation == generation, then origin.stop(),
 \* connection = nil, current = nil.  origin.stop() only queues the listener cancel.
@@ -355,10 +354,14 @@ ListenerFails(o) ==
     /\ sres' = IF sres[o] = "none" THEN [sres EXCEPT ![o] = "fail"] ELSE sres
     /\ UNCHANGED <<callerVars, proxyVars, lref, queue, stops, hs, upVars, ghostVars>>
 
-\* newConnectionHandler -> handle(conn): start the connection and read its head.  The fix
-\* refuses connections once the session is torn down.
+\* newConnectionHandler -> handle(conn): start the connection and read its head.  A client
+\* can only connect to a port it was given: the attempt's handle must have been returned to
+\* a caller that kept it (not one that re-checked and stopped it).  The fix refuses
+\* connections once the session is torn down.
 Accept(o) ==
     /\ lstate[o] = "ready"
+    /\ genOf[o] # 0
+    /\ \E c \in Controllers : chgen[c] = genOf[o]
     /\ Len(hs) < MaxConns
     /\ ~(FixCancelHandlers /\ down[o])
     /\ hs' = Append(hs, [o |-> o, pc |-> "head", g |-> 0, cx |-> FALSE,
@@ -504,7 +507,6 @@ TypeOK ==
     /\ catt \in [Controllers -> 0..MaxOpens]
     /\ chgen \in [Controllers -> 0..MaxOpens]
     /\ cwant \in [Controllers -> BOOLEAN]
-    /\ ccx \in [Controllers -> BOOLEAN]
     /\ copens \in [Controllers -> 0..MaxOpens]
     /\ current \in 0..MaxOpens
     /\ genCounter \in 0..MaxOpens

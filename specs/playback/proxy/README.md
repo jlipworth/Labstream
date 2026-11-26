@@ -33,7 +33,7 @@ changed in `4ed709a4`. `MediaSessionProxy.swift`, `LoopbackOrigin.swift` and
 | `QueueStep`, `build` | start's queue block (`LoopbackOrigin.swift` 27 to 60): skip if completed (28), make the listener or fail (33, 57 to 58), assign `self.listener` (38) |
 | `QueueStep`, `cancel` | `self.listener?.cancel(); self.listener = nil` from `stop()` (72 to 75) or `onCancel` (64 to 67): it cancels whichever listener `self.listener` holds when it runs |
 | `ListenerReady`, `ListenerFails` | the `stateUpdateHandler` (42 to 55) and `ListenerStartState.complete` (139 to 151) |
-| `Accept(o)` | `newConnectionHandler` and `handle(_:handler:)` (39 to 41, 78 to 80) |
+| `Accept(o)` | `newConnectionHandler` and `handle(_:handler:)` (39 to 41, 78 to 80). Enabled only once the attempt's handle has been returned to a caller that kept it: no client can connect to a port it was never given |
 | `HeadArrives`, `HeadAbort` | `readHead` (92 to 108) delivering the head and starting the untracked `Task` (82), or `done(nil)` and `conn.cancel()` (81). The P7 resource await in `serve` (180 to 187) is folded in |
 | `FetchStart(i)` | `serve` calls `connection.send` (`MediaSessionProxy.swift` 206); `send` takes `makeAttempt()` (`UpstreamConnection.swift` 48) and the request goes out |
 | `FetchOk`, `FetchFail2` | the fetch or the single retry returns; the handler writes the response and closes (`LoopbackOrigin.swift` 83 to 86) |
@@ -89,7 +89,12 @@ them is suspect 1 and belongs to `../restart` (`Finding-ProxyAfterCleanup`).
   listener's own callbacks (ready, failed, a new connection) are actions that may run between
   any two of them, which is what a serial queue allows. A cancelled listener delivers no more
   connections; a connection accepted before its cancel keeps running, since `NWListener.cancel`
-  does not cancel accepted `NWConnection`s.
+  does not cancel accepted `NWConnection`s. That is an assumption taken from Apple's
+  documentation, not measured here.
+- **Who connects.** A connection needs a client that knows the port: `Accept` requires the
+  attempt's handle to have been returned to a caller that kept it (not one whose re-check
+  stopped it). After teardown the client may still hold the URL and connect (AVPlayer's
+  in-flight and queued segment requests), which is the window the findings use.
 - **The build block is atomic.** It checks `state.isCompleted` twice (28, 34). If `onCancel`
   completes the start between the second check and the assignment at 38, the listener is
   assigned and started anyway, but `onCancel` always queues a cancel after it (64), so the
@@ -158,13 +163,14 @@ deadline (proxy review finding H).
 
 | Config | Expect | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
-| `Current-Controller` | pass | pass | 61,661 | 1 s |
-| `Current-Reopen` | pass | pass | 2,632,171 | 9 s |
-| `Deep-Reopen` (deep) | pass | pass | 62,631,249 | 181 s |
-| `Liveness-Controller` | pass | pass | 61,661 | 7 s |
-| `Liveness-Reopen` | pass | pass | 142,199 | 18 s |
+| `Current-Controller` | pass | pass | 15,264 | 1 s |
+| `Current-Reopen` | pass | pass | 1,618,198 | 6 s |
+| `Deep-Reopen` (deep) | pass | pass | 45,606,950 | 138 s |
+| `Liveness-Controller` | pass | pass | 15,264 | 2 s |
+| `Liveness-Reopen` | pass | pass | 100,049 | 15 s |
 | `Faithful-RotateFenced-off` | `RotateRetiresFailedGeneration` violated | violated | stops at first error | 2 s |
-| `Mutant-ReopenKeepsListener` | `SingleReachableListener` violated | violated | stops at first error | 1 s |
+| `Mutant-ReopenKeepsListener` | `SingleReachableListener` violated | violated | stops at first error | 0 s |
+| `Mutant-ReopenKeepsListener-Liveness` | `StoppedListenerDies` (temporal) violated | violated | stops at first error | 4 s |
 | `Mutant-RotateUnconditional` | `RotateRetiresFailedGeneration` violated | violated | stops at first error | 1 s |
 | `Mutant-StaleStopCancelsListener` | `CancelHitsOwnListener` violated | violated | stops at first error | 1 s |
 | `Mutant-StaleStopTearsDown` | `StaleStopIgnored` violated | violated | stops at first error | 1 s |
@@ -175,21 +181,21 @@ deadline (proxy review finding H).
 | `Finding-UpstreamSessionNeverInvalidated` | `UpstreamSessionReleased` violated | violated | stops at first error | 0 s |
 | `Finding-ConcurrentStandUpLeaksListener` | `SingleReachableListener` violated | violated | stops at first error | 1 s |
 | `Finding-ConcurrentStandUpCancelsOther` | `CancelHitsOwnListener` violated | violated | stops at first error | 1 s |
-| `Proposed-Controller` | pass | pass | 14,501 | 1 s |
-| `Proposed-Fixes` | pass | pass | 389,469 | 2 s |
-| `Proposed-Liveness` | pass | pass | 41,037 | 4 s |
+| `Proposed-Controller` | pass | pass | 3,474 | 1 s |
+| `Proposed-Fixes` | pass | pass | 237,857 | 2 s |
+| `Proposed-Liveness` | pass | pass | 27,800 | 3 s |
 
 - `Current-Controller` checks `TypeOK`, `TeardownNotLost`, `SingleReachableListener` and
   `CancelHitsOwnListener`. It leaves out `StaleStopIgnored` and
   `RotateRetiresFailedGeneration`: with one stand-up there is no stale generation and one
   `UpstreamConnection`, so both would hold vacuously.
 - `Current-Reopen` and `Deep-Reopen` check all six properties the code keeps.
-- The three `Liveness`/`Proposed-Liveness` configs check `HandlersFinish`,
+- `Liveness-Controller`, `Liveness-Reopen` and `Proposed-Liveness` check `HandlersFinish`,
   `StoppedListenerDies` and `TeardownCompletes`.
 - `Proposed-Fixes` checks every safety property, including the three the code breaks;
   `Proposed-Controller` the same at the controller's bounds (without the two the re-open adds).
 - By hand, with `Proposed-Fixes`'s constants: `FixCancelHandlers` alone keeps
-  `NoFetchAfterStop` and `NoAcceptAfterStop` (308,033 states, pass). `FixInvalidateOnStop`
+  `NoFetchAfterStop` and `NoAcceptAfterStop` (193,736 states, pass). `FixInvalidateOnStop`
   alone does not: a re-open makes a fresh session and the old session's handlers fetch on it
   (violated in 9 states). Invalidating the session is for `UpstreamSessionReleased`, not for
   suspect 5.
@@ -198,20 +204,24 @@ deadline (proxy review finding H).
 
 | Config | Flips | Violates | Trace |
 | --- | --- | --- | --- |
-| `Faithful-RotateFenced-off` | `RotateFenced` | `RotateRetiresFailedGeneration` | Before `adada9d3`. 19 states: the first session's listener accepts a connection, a re-open stands up the second, and its listener accepts one too. Both fetches fail on generation 0 with a wedge, each on its own `UpstreamConnection` with its own budget. The first rotates to generation 1 and cancels generation 0; the second, with no stale check, rotates generation 1 away as well. |
-| `Mutant-RotateUnconditional` | `RotateCAS` | `RotateRetiresFailedGeneration` | The same 19 states with the stale check kept: both catches pass their check on generation 0 before either rotates (two actors, two threads), and the second `rotate` no longer compares. With the compare, `Current-Reopen` reaches exactly this interleaving and the second rotate is refused (`NeverCasRejected`). |
+| `Faithful-RotateFenced-off` | `RotateFenced` | `RotateRetiresFailedGeneration` | Before `adada9d3`. 20 states: the first session's listener accepts a connection, a re-open stands up the second, it opens, and its listener accepts one too. Both fetches fail on generation 0 with a wedge, each on its own `UpstreamConnection` with its own budget. The first rotates to generation 1 and cancels generation 0; the second, with no stale check, rotates generation 1 away as well. |
+| `Mutant-RotateUnconditional` | `RotateCAS` | `RotateRetiresFailedGeneration` | The same 20 states with the stale check kept: both catches pass their check on generation 0 before either rotates (two actors, two threads), and the second `rotate` no longer compares. With the compare, `Current-Reopen` reaches exactly this interleaving and the second rotate is refused (`NeverCasRejected`). |
 | `Mutant-StaleStopTearsDown` | `StopChecksGeneration` | `StaleStopIgnored` | 12 states: open (generation 1), `CallerStop` queues `stop(1)`, re-open, the second session opens (generation 2), then `stop(1)` arrives and tears it down. |
 | `Mutant-StaleStopCancelsListener` | `StopChecksGeneration` | `CancelHitsOwnListener` | The same, one step on: the cancel queued for session 1 cancels session 2's listener. |
 | `Mutant-TeardownDropped` | `CallerCancels`, `CallerRechecks` | `TeardownNotLost` | 6 states: stand up, tear down during the await, the listener binds and is ready, `standUpLoopback` returns a handle nobody stops. |
 | `Mutant-TeardownDropped-Liveness` | the same | `TeardownCompletes` | The same listener stays live forever. |
 | `Mutant-ReopenKeepsListener` | `ReopenStopsPrior` | `SingleReachableListener` | 7 states: open, re-open without `origin.stop()`, the build overwrites `self.listener` and the first listener can no longer be cancelled. |
+| `Mutant-ReopenKeepsListener-Liveness` | the same | `StoppedListenerDies` | The first session is torn down and its listener never stops listening. |
 
-`NoFetchAfterStop`, `NoAcceptAfterStop`, `UpstreamSessionReleased`, `SingleReachableListener`
-and `CancelHitsOwnListener` are violated by `Finding` configs, which are the proof they can
-fail; the `Proposed` configs are the proof that `NoFetchAfterStop`, `NoAcceptAfterStop` and
-`UpstreamSessionReleased` can hold. `SingleReachableListener`, `CancelHitsOwnListener`,
-`StaleStopIgnored` and `RotateRetiresFailedGeneration` also have mutants that break them in the
-single-caller model. `HandlersFinish` and `StoppedListenerDies` have no failing run.
+`NoFetchAfterStop`, `NoAcceptAfterStop` and `UpstreamSessionReleased` have no `Mutant`: the
+shipping code already violates them, so their `Finding` configs stand in as the proof that they
+can fail, and the `Proposed` configs are the proof that they can hold.
+`SingleReachableListener` and `CancelHitsOwnListener` are violated both by mutants in the
+single-caller model and by the two-caller `Finding` configs. `StaleStopIgnored`,
+`RotateRetiresFailedGeneration` and `TeardownNotLost` are broken by mutants.
+`StoppedListenerDies` and `TeardownCompletes` are broken by the `-Liveness` mutants.
+`HandlersFinish` has no failing run and holds by construction: every handler step is weakly
+fair and a handler's `pc` never goes back, so with fairness each handler reaches `done`.
 
 ### Every branch is taken
 
@@ -223,15 +233,15 @@ checked as the only invariant with the named config's constants and is violated:
 | `NeverTeardownDuringAwait` | `Current-Controller` | 3 | teardown while `standUpLoopback` awaits |
 | `NeverListenerFails` | `Current-Controller` | 3 | the listener fails to bind |
 | `NeverDeadHandle` | `Current-Controller` | 7 | a returned handle whose listener `onCancel` cancelled (see below) |
-| `NeverRotate` | `Current-Controller` | 9 | a wedge rotates the upstream session |
-| `NeverLateFetch`, `NeverOrphanFetchInFlight` | `Current-Controller` | 9 | a fetch after teardown; one in flight |
-| `NeverEarlyHandlerLateFetch` | `Current-Controller` | 9 | a handler accepted while its session was live fetches after the teardown |
+| `NeverRotate` | `Current-Controller` | 10 | a wedge rotates the upstream session |
+| `NeverLateFetch`, `NeverOrphanFetchInFlight` | `Current-Controller` | 10 | a fetch after teardown; one in flight |
+| `NeverEarlyHandlerLateFetch` | `Current-Controller` | 10 | a handler accepted while its session was live fetches after the teardown |
 | `NeverStopKilledEarly` | `Current-Controller` | 10 | the same with the teardown a `stop(generation:)` of an open session: suspect 5 in the review's form (below) |
 | `NeverReopenTeardown` | `Current-Reopen` | 6 | a re-open tears down a live session |
 | `NeverStopSawNil` | `Current-Reopen` | 8 | a stop arrives during a re-open's await and finds `current == nil` |
 | `NeverStaleStop` | `Current-Reopen` | 12 | a stale stop is ignored with a newer session current |
-| `NeverStaleRetry` | `Current-Reopen` | 13 | `send` takes the stale-generation retry |
-| `NeverCasRejected` | `Current-Reopen` | 19 | `SessionBox.rotate` refuses a generation another connection already rotated |
+| `NeverStaleRetry` | `Current-Reopen` | 14 | `send` takes the stale-generation retry |
+| `NeverCasRejected` | `Current-Reopen` | 20 | `SessionBox.rotate` refuses a generation another connection already rotated |
 
 No config lists them; to repeat one, copy the named config, replace its `INVARIANTS` and
 `PROPERTIES` with the witness, use `SPECIFICATION Spec` and run TLC.
@@ -264,13 +274,11 @@ In the review's form (`NeverStopKilledEarly` with `Current-Controller`'s constan
 `connection = nil` at 158 changes nothing for the handler: the `origin.start` closure captured
 `conn` at 110. Whether step 6 comes before or after the queued cancel runs makes no difference
 once the connection is accepted, since cancelling an `NWListener` does not cancel accepted
-connections.
+connections (an assumption from Apple's documentation, not measured).
 
-The config's own shortest trace is 9 states and shows the same defect on a stand-up that never
-returned a handle: `CallStandUp`, the build, `Teardown` while awaiting (`onCancel` completes
-the start with `CancellationError` and queues a cancel, 62 to 68), `Resume` runs the catch
-(114 to 120), the listener the build had already started becomes ready before the queued cancel
-runs, accepts a connection (`Accept`), and that handler fetches.
+The config's own shortest trace is also 10 states and differs only in order: `stop(1)` runs
+(step 7) before the connection is accepted (step 6), in the window before the queued listener
+cancel runs (`Finding-AcceptAfterStop`), and that handler then fetches.
 
 What bounds it. Each handler makes at most two upstream attempts: the first and a single retry
 (`UpstreamConnection.swift` 60 or 69). Each attempt is bounded by the session's timeouts, 20 s
@@ -299,14 +307,23 @@ refuses a connection once the flag is set; `send` checks cancellation before eac
 rotate retry at 69 has no check today). URLSession's async API cancels an in-flight request
 with its Task.
 
+Tracking Tasks is not enough on its own for the trace above. There the connection is accepted
+before the stop and its head completes after it, so at stop time no Task exists to cancel, and
+the Task created afterwards would not be cancelled. The fix must also do one of two things:
+(a) when the head completes, re-check the stopped flag under the same lock and insert the new
+Task into the set atomically with that check, or (b) track the accepted `NWConnection`s and
+cancel them in `stop()`. In the model, the fix sets `cx` on handlers still reading their head
+and `HeadArrives` then ends them. That `cx` stands for (a) or (b); without one of them the
+model's fix would be stronger than the code change.
+
 ### The listener serves after stop returns (`Finding-AcceptAfterStop`)
 
-`NoAcceptAfterStop` is violated in 7 states: the first six steps of the 9-state trace above, up
-to `Accept`. `stop(generation:)` and the start's catch return with the listener cancel only
-queued (`LoopbackOrigin.swift` 72, 64), and a connection the listener delivers before that block
-runs is served. In the canonical order: `stop(generation:)` returns at step 7 above and a
-connection accepted between it and the cancel block is handled like any other. The same fix
-covers it (the stopped flag).
+`NoAcceptAfterStop` is violated in 8 states: open (steps 1 to 4 above), Close queues the stop,
+`stop(1)` runs and returns with the listener cancel only queued (`LoopbackOrigin.swift` 72),
+and the listener accepts a connection from the client that still holds the URL before that block
+runs. The handler is served like any other. The start's catch (64) queues its cancel the same
+way, but there no handle was returned, so no client can connect. The same fix covers it (the
+stopped flag checked in `handle`).
 
 ### The upstream URLSession is never invalidated (`Finding-UpstreamSessionNeverInvalidated`)
 
@@ -362,6 +379,12 @@ flight, or a per-attempt token in `LoopbackOrigin`, would close them.
   handle with `current` set and nothing listening. The controller's re-check sees
   `Task.isCancelled` and stops it, so the app is unaffected; a caller that ignored
   cancellation would hand AVPlayer a dead port.
+- **A connection that never sends its head** (low). Weak fairness on the head read assumes the
+  client sends its head or closes. A local socket that does neither keeps its handler, the
+  handler's closure, the `UpstreamConnection` and the `SessionBox` alive indefinitely, since
+  `readHead` has no deadline (review finding H). The listener binds to loopback only
+  (`LoopbackOrigin.swift` 31) and AVPlayer closes its sockets when it is released, so this needs
+  a misbehaving local client.
 - **Rotation.** `adada9d3`'s fencing is load-bearing only across connections: within one
   `UpstreamConnection` the actor already orders the check and the rotate. Two connections over
   one `SessionBox` exist only on a reused proxy, which is also where `Current-Reopen` reaches a
