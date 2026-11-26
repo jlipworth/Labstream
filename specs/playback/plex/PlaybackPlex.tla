@@ -296,14 +296,9 @@ Joined(c) ==
                 r.n = k.n => (r.status # "inFlight" \/ r.late)
         ELSE TicketDone(c, k)
 
-\* failedAttemptStopUnconfirmed is set: the current failure's stop timed out
-\* (its bound passed with no HTTP answer), whatever PMS does with it later.
-\* An answer of any status, a failure included, is an answer.  A stop that
-\* fails at once without reaching PMS (PlexError.serverUnreachable) is
-\* unconfirmed in the Swift too; the model has no such outcome (see the
-\* README).  surfaceFailure resets it (failStop), an answered re-send clears
-\* it.
-Unconfirmed(c, id) == id # NoStop /\ \E r \in StopReq(c, id) : r.late
+\* A rejected HTTP stop or a transport failure is unconfirmed. A lost reply
+\* can leave the request on the wire after its local deadline (r.late).
+Unconfirmed(c, id) == id # NoStop /\ \E r \in StopReq(c, id) : r.late \/ r.status = "failed"
 StopUnconfirmed(c) == Unconfirmed(c, st[c].failStop)
 
 \* The stop a task awaits when it stops waiting with no answer: the wait
@@ -406,7 +401,9 @@ UserQuality(c) ==
         IF st[c].failed /\ FailureRestartJoinsPendingStops
         THEN /\ st' = [st EXCEPT
                    ![c].userLeft = @ - 1, ![c].retryGen = gen[c],
-                   ![c].retryKind = "restart", ![c].restop = NoStop,
+                   ![c].retryKind = "restart",
+                   ![c].failStop = IF st[c].restop # NoStop THEN st[c].restop ELSE @,
+                   ![c].restop = NoStop,
                    ![c].consent = 0, ![c].approved = @ /\ ~isReload]
              /\ UNCHANGED <<serverVars, ctlVars, wire, ghost>>
         ELSE /\ RestartCore(c, TRUE, FALSE, FALSE)
@@ -423,14 +420,14 @@ TaskJoined(c) ==
     ELSE Joined(c)
 
 \* st after the failureRetryTask restarts: Retry clears the error and
-\* sentTranscodeStop; a restart keeps the error and clears the latch only
+\* sentTranscodeStop; a quality restart also clears the error and clears the latch
 \* with FixRestartResetsStopLatch (#527).
 AfterTaskRestart(c) ==
     LET isRetry == st[c].retryKind = "retry" IN
     [st EXCEPT
         ![c].retryGen = 0,
         ![c].latch = IF isRetry \/ FixRestartResetsStopLatch THEN FALSE ELSE @,
-        ![c].failed = IF isRetry THEN FALSE ELSE @,
+        ![c].failed = FALSE,
         ![c].warmArmed = TRUE, ![c].failStop = NoStop, ![c].restop = NoStop]
 
 \* retry(): failureRetryTask, which first joins pendingStopTasks.
@@ -451,8 +448,7 @@ Retry(c) ==
 \* the wait without cancelling the task, so nothing is lost.
 \* The join returns when every detached stop is answered or its request
 \* timed out (Joined).  A "restart" task (a quality or track change while
-\* the failure showed) restarts with that change's plan: it clears neither
-\* the error nor, unless FixRestartResetsStopLatch (#527), sentTranscodeStop.
+\* the failure showed) clears the error and skips the stop already joined.
 RetryProceeds(c) ==
     LET isRetry == st[c].retryKind = "retry" IN
     /\ st[c].retryGen # 0
@@ -460,8 +456,8 @@ RetryProceeds(c) ==
     /\ TaskJoined(c)
     /\ RetryNeedsConfirmedStop => ~StopUnconfirmed(c)
     /\ st[c].restop = NoStop
-    /\ RestartCore(c, TRUE, FALSE, FALSE)
-    /\ st' = [AfterTaskRestart(c) EXCEPT ![c].failStop = st[c].failStop]
+    /\ RestartCore(c, FALSE, FALSE, FALSE)
+    /\ st' = AfterTaskRestart(c)
 
 \* The same task (Retry's, or a restart's from the overlay: joinFailedAttemptStop)
 \* finding failedAttemptStopUnconfirmed set (#539): it re-sends the session's
@@ -490,8 +486,8 @@ RetryRestopConfirmed(c) ==
     /\ st[c].restop # NoStop
     /\ st[c].retryGen # 0
     /\ st[c].retryGen = gen[c]
-    /\ \E r \in StopReq(c, st[c].restop) : r.status # "inFlight" /\ ~r.late
-    /\ RestartCore(c, TRUE, FALSE, FALSE)
+    /\ \E r \in StopReq(c, st[c].restop) : r.status = "acked" /\ ~r.late
+    /\ RestartCore(c, FALSE, FALSE, FALSE)
     /\ st' = AfterTaskRestart(c)
 
 \* The re-sent stop passed its bound: priorSessionStopUnconfirmed,

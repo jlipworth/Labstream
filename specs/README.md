@@ -5,7 +5,7 @@ run the checks. What each model covers, what it found and how it is kept equal t
 in each area's canonical doc and plan:
 
 - downloads: [docs/DOWNLOADS-OFFLINE.md, "Formal model (TLA+)"](../docs/DOWNLOADS-OFFLINE.md#formal-model-tla)
-  and [docs/plans/2026-11-24-downloads-tla-model.md](../docs/plans/2026-11-24-downloads-tla-model.md);
+  and [docs/archive/plans/2026-11-24-downloads-tla-model.md](../docs/archive/plans/2026-11-24-downloads-tla-model.md);
 - playback restart and cleanup: [docs/PLAYBACK-ARCHITECTURE.md, "Formal model (TLA+)"](../docs/PLAYBACK-ARCHITECTURE.md#formal-model-tla)
   and [docs/plans/2026-11-25-playback-tla-model.md](../docs/plans/2026-11-25-playback-tla-model.md).
 

@@ -100,10 +100,12 @@ def modelled_files(tree: CommitTree) -> dict[str, set[str]]:
     """Modelled file -> the modules (repository-relative .tla paths) that declare it."""
     owners: dict[str, set[str]] = {}
     for module in tree.spec_files(".tla"):
-        for line in tree.read(module).splitlines():
+        for number, line in enumerate(tree.read(module).splitlines(), 1):
             match = MODELS_LINE.match(line)
             if match:
                 owners.setdefault(match.group(1), set()).add(module)
+            elif re.match(r"^\s*\\\*\s*MODELS:", line):
+                raise DriftError(f"{module}:{number}: malformed MODELS declaration (expected one path)")
     return owners
 
 

@@ -38,11 +38,12 @@ When the user wants the current `main` on their own devices:
 
 ```sh
 git switch main && git pull --ff-only
-scripts/testflight-release.py ship --group "<internal group>" --yes
+# Set NEXT_BUILD to an integer above every upload for this marketing version
+# on the selected platforms. Check their upload histories in App Store Connect first.
+scripts/testflight-release.py ship --build-number "${NEXT_BUILD:?set NEXT_BUILD first}" --group "<internal group>" --yes
 ```
 
-`ship` runs preflight, archive, validate, and upload with `--build-number auto` (the commit count
-of HEAD, so no version-bump commit is needed), waits for processing, and adds the builds to the
+`ship` runs preflight, archive, validate, and upload with the explicit build number, waits for processing, and adds the builds to the
 internal group. The group can default from `LABSTREAM_TESTFLIGHT_GROUP` in `scripts/asc.local.env`.
 After a successful ship it prunes `~/Library/Developer/Xcode/Archives`: it keeps the newest three
 uploaded archive sets, every set attached to an App Store version, and any set newer than the

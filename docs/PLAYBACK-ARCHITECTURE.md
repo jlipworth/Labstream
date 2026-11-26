@@ -334,8 +334,8 @@ debounced into one settled final-target rebuild instead of restarting for every 
 - Track, quality, explicit-Retry, and adaptive-bitrate replacements enter the controller through
   a typed `PlaybackRestartIntent`. Its value-only `PlaybackRestartPlan` is reason-specific: every
   intent resets the final target, rearms the startup-deadline retry, and tears down observers;
-  only `.explicitRetry` also clears the visible error and resets ABR. Callers must not assume
-  every restart clears failure state.
+  only `.explicitRetry` resets ABR during preparation. Any restart from the error overlay
+  clears its diagnosis after the failed attempt’s cleanup succeeds.
 - Every intentional Plex in-place restart that supersedes a transcode (quality/audio
   reload, Retry, or final-target rebuild) stops the old job first with a bounded wait before
   requesting the replacement under the reused session id.
@@ -348,6 +348,15 @@ debounced into one settled final-target rebuild instead of restarting for every 
   with `priorSessionStopUnconfirmed` (LS-PB-008) instead of starting a new encoder.
 - A replacement that begins from a surfaced failure, whether explicit Retry or a quality, audio
   or subtitle change from the error overlay, first joins the failed attempt's exact-session stop.
+  The joined stop owns its own deadline. After confirmation the controller clears the old
+  diagnosis and starts the full 20-second reconnect watchdog for the new negotiation. A new
+  failure runs normal teardown and reports its own code. Plex skips its usual pre-restart stop
+  because the failed session has already been stopped. Plex requires HTTP success. A definite
+  connection failure allows an immediate re-send on recovery, while a lost reply consumes the
+  remaining observation window. A Jellyfin re-send records its result even when a quality
+  change cancels the Retry waiter. MediaBrowser accepts exact-session 404/410 as already gone.
+  HTTP 400 and authentication or service rejections retain cleanup authority. Emby retains the
+  exact stop if local validation rejects an encoder-backed PlaybackInfo result.
   On Plex that stop goes out on its own client bounded by `failedAttemptStopTimeout` (30 s,
   longer than the 5 s recovery control client); Jellyfin's acknowledged DELETE keeps its request
   timeout. On both, a timed-out or failed request is never counted as joined. If it is still

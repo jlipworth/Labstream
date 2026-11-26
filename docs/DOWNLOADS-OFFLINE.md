@@ -134,7 +134,13 @@ Rules that follow from this:
   - The queued publication then renames it onto the working path and validation runs. After a
     relaunch reconcile reports the body as captured, keeps or makes the row `finalizing`
     (whether or not `bodyCaptured` was durable yet), and launch recovery requeues the
-    publication.
+    publication. A repeated finish after relaunch reuses the exact attempt's saved body.
+    Publication replaces the working file atomically. On a rename error the row stays
+    finalizing with the captured bytes available for the next foreground or launch recovery.
+    This covers both storage exhaustion and other filesystem errors.
+  - A forward-only HTTP 206 must describe the entire file from byte zero, with a known
+    total equal to the received file length. Structured JSON and XML error pages fail
+    validation before durable capture.
   - A body has one publication at a time. The delegate claims it before the body is at the
     capture path, so a recovery pass that finds the body there cannot queue a second one, and a
     finish delivered twice is dropped. A publication that finds the body already at the working
@@ -154,7 +160,11 @@ Rules that follow from this:
     listing leaves a task that has already finished tracked, so its finish callback still
     writes the body; it supersedes and cancels only tasks that are still transferring. A
     progress callback under the pause makes the same decision, so the last progress of a
-    finished task does not drop it either.
+    finished task does not drop it either. Relaunch leaves an exact-attempt, finished segment
+    on a paused row for its pending callback. An aligned head arriving on an empty working
+    file can establish the first validator. Other adopted segments must match the pinned one.
+  - The watchdog charges a restart after the verdict commits. Capture reserves the attempt
+    before the filesystem move so the watchdog cannot cancel a finished body in that window.
 - **Reconcile asks the session what it owns when it decides.** Its live keys are a snapshot
   reattach took earlier. For an active row (never a paused one) reconcile also counts work the
   session owns at that moment: a finished body queued for its append, a delayed retry, a request
@@ -630,6 +640,8 @@ Recovery also:
   counting iOS purgeable space, matching the Settings storage gauge — and, if the volume still
   cannot hold the remaining network bytes, largest append copy, uncached side assets and headroom,
   parks the row as a pending resume instead of retrying. A user-initiated Retry can reattempt immediately, but still passes admission and storage preflights;
+- commits an Emby conversion handoff refused by the storage limit as a storage failure on
+  the preparing attempt before releasing the handoff;
 - migrates legacy Emby tombstones and pre-upgrade quarantined Plex intents into the cleanup
   journal, then runs required server cleanup through the cleanup runner (see
   [Server cleanup](#server-cleanup));
@@ -638,15 +650,16 @@ Recovery also:
   BIF and subtitles come from the part the row downloaded, not the media's first part. The repair
   resolves that part in the refreshed item by the persisted `sourcePartID`, so a later reorder of
   the item's media cannot hand it another version's assets; an ID the item no longer has selects
-  nothing, and only rows that stored no ID fall back to `mediaIndex`/`partIndex`, which must
-  both still resolve (the BIF never falls back to the first media) (#503). A successful source
+  nothing. Rows without a persisted part ID skip BIF and subtitle repair because the saved
+  indexes cannot identify the downloaded version after a reorder (#503, #556). A successful source
   refresh also teaches the row chapter thumbnails it was saved without, so later inventories owe
   them. The saved chapter list stays the row's timeline: only a saved chapter that matches a
   refreshed one (same index and start, or the one refreshed chapter starting within a second)
   gains its thumbnail, and titles, times and indexes never change. A row saved with no chapters
   adopts the refreshed list whole, titles and times included even without thumbnails. Chapter
   images are fetched only against that saved, persisted list, never the raw refreshed one, whose
-  indexes can differ. The poster selector skips an empty or blank artwork field and uses the
+  indexes can differ. When a thumbnail is learned during an image repair, the refresh waits
+  for that worker and offers the updated saved list in the same pass. The poster selector skips an empty or blank artwork field and uses the
   next valid one (#504). Work runs
   off-main, validates image/BIF/text payloads before promotion, and batches metadata publication.
   Retry authority is exact attempt + source + resource kind and is charged only when an eligible
@@ -1174,11 +1187,11 @@ then a plain regression test and its `Finding-*` config a `Faithful-*-off` one.
 
 | Finding | What goes wrong | Verdict | Issue |
 | --- | --- | --- | --- |
-| F1 | A crash between the `tmp/` stash and the working path loses a finished forward-only body. | fixed on `specs/downloads-tla`, pending merge (`session/Faithful-F1-off`) | #472 |
-| F2 | Foreground reconcile moves a user-paused row back to transferring from a stale live-task snapshot. | real; fixed on specs/downloads-tla, pending merge | #473 |
-| F3, RangeTrain-R3 | A user pause that lands while a transfer finishes discards the finished body. Forward-only: real. Static range (the pause's task listing supersedes a finished segment; one segment on a train, the whole remainder on the open-ended fallback): probable. | fixed on `specs/downloads-tla`, pending merge (`session/Faithful-F3-off`, `-Static`, `range-train/Faithful-R3-off`). The static fix rests on the same unexecuted step as the finding: that `getAllTasks` lists a finished task whose callback is queued. | #474 |
+| F1 | A crash between the `tmp/` stash and the working path loses a finished forward-only body. | fixed in #505 (`session/Faithful-F1-off`) | #472 |
+| F2 | Foreground reconcile moves a user-paused row back to transferring from a stale live-task snapshot. | real; fixed in #505 | #473 |
+| F3, RangeTrain-R3 | A user pause that lands while a transfer finishes discards the finished body. Forward-only: real. Static range (the pause's task listing supersedes a finished segment; one segment on a train, the whole remainder on the open-ended fallback): probable. | fixed in #505 (`session/Faithful-F3-off`, `-Static`, `range-train/Faithful-R3-off`). The static fix rests on the same unexecuted step as the finding: that `getAllTasks` lists a finished task whose callback is queued. | #474 |
 | F4 | A failing truncation verdict renames the body away before the verdict is durable; a crash in between leaves a finalizing row with no body, which reconcile fails as an internal error, and the strike is lost. | real, low | #491 |
-| Admission-A1 | Startup recovery fails a forward-only row that never started: a granted start cut by a crash, or a first start the user paused. | real; fixed on `specs/downloads-tla`, pending merge | #475 |
+| Admission-A1 | Startup recovery fails a forward-only row that never started: a granted start cut by a crash, or a first start the user paused. | real; fixed in #505 | #475 |
 | ServerPrep-S1 | Retry of a failed Plex preparation row abandons its running optimize job with no durable cancel and creates a second one. | real | #478 |
 | ServerPrep-S2 | The 24-hour Plex render deadline can fail a preparation row before its create is dispatched. | probable, low | #500 |
 | Cleanup-C1 | After a failed intent commit, an explicit artifact recovery re-registers the row deletion and files are unlinked before the intent is durable. | real | #479 |
@@ -1186,31 +1199,31 @@ then a plain regression test and its `Finding-*` config a `Faithful-*-off` one.
 | B30 | On a completely full volume the deletion intent cannot be saved, so Delete frees nothing. | real, known | #393 |
 | Wake-W1 | A completion handler that arrives while a claimed batch waits for its release inherits that batch's deadline. | probable | #480 |
 | Wake-W2 | An operation begun while an expired operation lingers does not hold the next wake. | probable | #481 |
-| SideAssets-S1 | A cancel that keeps the attempt leaves the poster's coordinator owner cancelled for the launch. | real; fixed on specs/downloads-tla, pending merge | #482 |
-| SideAssets-S2 | Pause All can park a completed row's side assets with nothing left to unpark them: subtitles, Jellyfin trickplay tiles, and any fetch that enters late in a task. Lasts one launch. | real; fixed on specs/downloads-tla, pending merge | #483 |
+| SideAssets-S1 | A cancel that keeps the attempt leaves the poster's coordinator owner cancelled for the launch. | real; fixed in #505 | #482 |
+| SideAssets-S2 | Pause All can park a completed row's side assets with nothing left to unpark them: subtitles, Jellyfin trickplay tiles, and any fetch that enters late in a task. Lasts one launch. | real; fixed in #505 | #483 |
 | SideAssets-S3 | A server outage spends the per-launch retry budget for an asset the server has. Trickplay retries are gated by the playlist's budget alone, and a park of an in-flight request also costs a dispatch. | behaviour confirmed; product decision | #484 |
 | SideAssets-S4 | A refused Resume leaves a user-paused row's side assets unparked. | behaviour confirmed; product decision | #485 |
 | SideAssets-S5 | A completed-row repair pass that is dropped (an edge while one runs, the 30 s timeout, a row whose generation moved) is not run again. | real, low | #493 |
-| SideAssets-S6 | A completed row on a backend that is not selected gets no session at launch, so no launch repairs its side assets until the user switches backend. | real, medium; fixed on specs/downloads-tla, pending merge | #494 |
-| SideAssets-S7 | The Plex BIF is selected from the media's first part, not the downloaded part: never requested when only the downloaded part has one, the wrong index cached when the first part has one. Fixed on `specs/downloads-tla`, pending merge: the initial pass and the completed-row repair select `media[mediaIndex].part[partIndex]`. | real, medium; fixed on specs/downloads-tla, pending merge | #495 |
+| SideAssets-S6 | A completed row on a backend that is not selected gets no session at launch, so no launch repairs its side assets until the user switches backend. | real, medium; fixed in #505 | #494 |
+| SideAssets-S7 | The Plex BIF is selected from the media's first part, not the downloaded part: never requested when only the downloaded part has one, the wrong index cached when the first part has one. The initial pass selects the downloaded part. Completed-row repair looks up the persisted `sourcePartID` across all media and selects no part if that ID disappeared. Only legacy rows without the ID use `media[mediaIndex].part[partIndex]`. | real, medium; fixed in #505 | #495 |
 | SideAssets-S8 | A side-asset promotion gives up on any concurrent write to its row and nothing retries. | real, low | #496 |
-| SideAssets-503 | The Plex completed-row repair looks the downloaded part up by media/part index, so after Plex reorders the item's media it fetches another version's subtitle and BIF, or none, on every launch. | real; fixed on specs/downloads-tla, pending merge | #503 |
-| SideAssets-504 | Assets missing from the saved row are never fetched: chapter thumbnails the server gained later, and a poster when Plex's `thumb` is `""` with a valid `art`. | real; fixed on specs/downloads-tla, pending merge | #504 |
+| SideAssets-503 | The Plex completed-row repair looks the downloaded part up by media/part index, so after Plex reorders the item's media it fetches another version's subtitle and BIF, or none, on every launch. | real; fixed in #505 | #503 |
+| SideAssets-504 | Assets missing from the saved row are never fetched: chapter thumbnails the server gained later, and a poster when Plex's `thumb` is `""` with a valid `art`. | real; fixed in #505 | #504 |
 | st-39 | A side-asset file renamed but not yet recorded is left on disk by Delete. | real, known | #401 |
 | #394 | Fetched chapter-image and trickplay-tile payloads wait in memory behind one-at-a-time preparation. | real, known | #394 |
 | Storage-S1 | An automatic requeue erases a storage-full park, so the row is redriven once without measuring free space. The reachable order is a redelivered body whose own append fails with ENOSPC before the launch enumeration. | real | #486 |
 | RangeTrain-R1 | A drain pass run by a held-body removal completion discards its result and strands the train until the self-heal, which a suspended background app does not get. | real | #477 |
-| RangeTrain-R2 | Reconcile fails a static row whose finished body is stashed and queued for append. | fixed on `specs/downloads-tla`, pending merge, for work the session owns: reconcile asks the session when it decides (`Faithful-R2-off`; the live-key snapshot alone is not enough, `Faithful-R2-off-SnapshotOnly`). Open: a body still undelivered by the daemon at that moment is lost with any ownership check (`Finding-R2-UndeliveredBodyLost`, #506). | #476 |
+| RangeTrain-R2 | Reconcile fails a static row whose finished body is stashed and queued for append. | fixed in #505, for work the session owns: reconcile asks the session when it decides (`Faithful-R2-off`; the live-key snapshot alone is not enough, `Faithful-R2-off-SnapshotOnly`). Open: a body still undelivered by the daemon at that moment is lost with any ownership check (`Finding-R2-UndeliveredBodyLost`, #506). | #476 |
 | RangeTrain-R4 | After a crash in the middle of an append, a segment finished while the app was dead is held beside the ones the planner started; when the head segment fails once, two held bodies fill the depth of two and the planner never fetches the gap at the checkpoint. | probable, medium, rare | #492 |
-| Status-S1 | A silently stalled transfer hides the batch speed for as long as it is silent. | real; fixed on specs/downloads-tla, pending merge | #487 |
-| Status-S2 | A stalled static-range row keeps showing a stale speed and ETA. | real; fixed on specs/downloads-tla, pending merge. Review of PR #505: the first fix polled every 15 s while a static row transferred, for ever; a one-shot expiry replaces it (`status/Faithful-488-Polling-off`) | #488 |
+| Status-S1 | A silently stalled transfer hides the batch speed for as long as it is silent. | real; fixed in #505 | #487 |
+| Status-S2 | A stalled static-range row keeps showing a stale speed and ETA. | real; fixed in #505. Review of PR #505: the first fix polled every 15 s while a static row transferred, for ever; a one-shot expiry replaces it (`status/Faithful-488-Polling-off`) | #488 |
 | Status-S3 | After a process death a row shows fewer bytes than before: a static-range row loses its in-memory optimistic total, a forward-only row the progress samples since its last persistence ticket. | probable | #490 |
 | Status-S4 | A forward-only row's first callback after the foreground grace inflates its speed. | probable; uncertain on a device | #489 |
-| Status-S5 | Past its two automatic restarts a stalled forward-only stream has no verdict; it stays downloading at zero bytes and hides the batch speed. | real, medium; fixed on specs/downloads-tla, pending merge. Review of PR #505: replayed bytes refilled the budget, so a stream that wedged at the same offset restarted for ever; the budget now refills only past the high-water mark (`status/Faithful-497-HighWater-off`) | #497 |
+| Status-S5 | Past its two automatic restarts a stalled forward-only stream has no verdict; it stays downloading at zero bytes and hides the batch speed. | real, medium; fixed in #505. Review of PR #505: replayed bytes refilled the budget, so a stream that wedged at the same offset restarted for ever; the budget now refills only past the high-water mark (`status/Faithful-497-HighWater-off`) | #497 |
 | Status-S6 | Fresh evidence without a common 0.5 s window hides the batch speed; a member reporting every 3.5 to 6 s makes it come and go. | real, low | #498 |
 | Status-S7 | A backlog reported after the 4 s settling and grace windows is published as live speed. | probable, low | #499 |
-| Status-S8 | A queued forward-only stall verdict re-read the row but not its bytes, so a stream that moved again before the queued operation ran was cancelled and restarted from byte 0. | real, low; fixed on specs/downloads-tla, pending merge. Review of PR #505: a finished (`finalizing`) body, or bytes moved after the read, were still cancelled before the reducer rejected the verdict; the store now commits it conditionally before any cancel (`status/Faithful-501-Commit-off`, `Faithful-501-Finalizing-off`) | #501 |
-| Status-502 | After a static-range resume from a blob, the published bytes went backwards: per-sample normalization against the watermark let a fresh count fall below a cumulative one, freezing the row and resetting the batch speed. | real, medium; fixed on specs/downloads-tla, pending merge (`status/Faithful-502-off`) | #502 |
+| Status-S8 | A queued forward-only stall verdict re-read the row but not its bytes, so a stream that moved again before the queued operation ran was cancelled and restarted from byte 0. | real, low; fixed in #505. Review of PR #505: a finished (`finalizing`) body, or bytes moved after the read, were still cancelled before the reducer rejected the verdict; the store now commits it conditionally before any cancel (`status/Faithful-501-Commit-off`, `Faithful-501-Finalizing-off`) | #501 |
+| Status-502 | After a static-range resume from a blob, the published bytes went backwards: per-sample normalization against the watermark let a fresh count fall below a cumulative one, freezing the row and resetting the batch speed. | real, medium; fixed in #505 (`status/Faithful-502-off`) | #502 |
 
 Wake-W1, Wake-W2, SideAssets-S3, SideAssets-S4, Status-S3, Status-S4, st-39 and #394 have a
 `Finding-*` config and no behavioural Swift pin: the decision is app-target code or a product
@@ -1231,5 +1244,5 @@ path.
   wrong reason. Nothing shows that the second round found all of them.
 - The bounds are small. TLC proves the properties for those bounds only.
 
-The plan `docs/plans/2026-11-24-downloads-tla-model.md` records the properties, results, findings
+The plan `docs/archive/plans/2026-11-24-downloads-tla-model.md` records the properties, results, findings
 and the follow-up models.

@@ -25,7 +25,6 @@ enum PlaybackRestartIntent: CaseIterable, Sendable {
                     .resetFinalTarget,
                     .resetAdaptiveBitrate,
                     .rearmStartupDeadlineRetry,
-                    .clearPlaybackError,
                     .removeObservers,
                 ],
                 plexControlClient: .refreshForRecovery
@@ -46,7 +45,6 @@ struct PlaybackRestartPlan: Equatable, Sendable {
         case resetFinalTarget
         case resetAdaptiveBitrate
         case rearmStartupDeadlineRetry
-        case clearPlaybackError
         case removeObservers
     }
 

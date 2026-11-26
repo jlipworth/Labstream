@@ -713,6 +713,7 @@ final class DownloadStore: @unchecked Sendable {
         rowMutationGenerations[ratingKey, default: 0] &+= 1
         rows[ratingKey] = row
     }
+    private var forwardOnlyCapturesInProgress: Set<DownloadAttemptKey> = []
     private var rows: [String: Row] = [:]          // ratingKey -> Row
     /// Truncation strikes of a row a Retry removed before seeding its replacement, keyed by
     /// rating key (guarded by `lock`). The replacement inherits them like an in-place
@@ -5377,6 +5378,20 @@ final class DownloadStore: @unchecked Sendable {
         return submitLifecycleEventLocked(event, for: key, facts: facts)
     }
 
+    /// Reserve the exact attempt across the delegate's filesystem move and lifecycle submission.
+    /// Both this reservation and the watchdog verdict linearize under the row lock.
+    func beginForwardOnlyCapture(for key: DownloadAttemptKey) -> Bool {
+        lock.withLock {
+            guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
+                  !Self.hasPendingRowDeletion(row), capturedBodyRelativePath(for: row) != nil else { return false }
+            return forwardOnlyCapturesInProgress.insert(key).inserted
+        }
+    }
+
+    func endForwardOnlyCapture(for key: DownloadAttemptKey) {
+        _ = lock.withLock { forwardOnlyCapturesInProgress.remove(key) }
+    }
+
     /// Review of PR #505 (#501 follow-up): conditionally accept a queued forward-only stall
     /// verdict. Only the exact attempt the verdict observed, still `.transferring` (a finished body
     /// is `.finalizing`, which also shows as `.downloading`), with bytes that have not moved past
@@ -5391,7 +5406,7 @@ final class DownloadStore: @unchecked Sendable {
             lock.unlock()
             return .staleOrMissing
         }
-        guard DownloadStallRecoveryPolicy.stallVerdictMayCommit(
+        guard !forwardOnlyCapturesInProgress.contains(key), DownloadStallRecoveryPolicy.stallVerdictMayCommit(
             lifecycle: row.lifecycle, bytes: row.bytes, observedBytes: observedBytes) else {
             lock.unlock()
             return .rejected(.illegal)

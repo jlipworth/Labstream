@@ -22,21 +22,20 @@ playback error-recovery fixes found by the playback TLA+ model (#547) on top of 
 fixes (#505). It processed to **VALID**, reached **IN_BETA_TESTING** and is in the **Labstream
 Internal** TestFlight group. It is not selected for the App Store versions. Builds **1662** and
 **1663** were uploaded for all four platforms on 2026-11-25, before #505 merged; their source commit
-is not recorded here, so 1664 is the one to install.
+is not recorded here, so install 1664 on Apple Vision Pro, iPhone, iPad and Apple TV.
 
-A further Apple TV-only build, **1.8.0 (build 1661)**, was archived on 2026-11-16 from clean `main`
+An earlier Apple TV-only build, **1.8.0 (build 1661)**, was archived on 2026-11-16 from clean `main`
 commit `58b17d87`. It adds **Send log to iPhone** under Settings ▸ Diagnostics and moves the Apple
 TV event log to Caches (#466). It processed to **VALID**, reached **IN_BETA_TESTING** and is in the
 **Labstream Internal** TestFlight group. It is not selected for the App Store version. The same
 commit was first uploaded as **build 1549** because `--build-number auto` was used; that build is
-identical in source, also in the internal group, and sorts below 1660, so 1661 is the one to
-install.
+identical in source, also in the internal group, and sorts below 1660, so 1661 was the recommended Apple TV build on 2026-11-16.
 
 An earlier Apple TV-only build, **1.8.0 (build 1660)**, was archived on 2026-11-15 from clean `main` commit
 `501e7024`. It moves Apple TV search to the system inline keyboard and makes Select on the current
 tab return to that tab's root (#464). It processed to **VALID**, reached **IN_BETA_TESTING** and is
 in the **Labstream Internal** TestFlight group. It is not selected for the App Store version, and
-the other three platforms stay on build 1659.
+the other three platforms were still on build 1659 on 2026-11-15.
 
 The latest recorded processed distribution for all four platforms is **1.8.0 (build 1659)**,
 archived on 2026-11-14 from clean `main` commit `b32e0c77`. It adds hold-to-scrub on the Apple TV
@@ -76,12 +75,12 @@ runtime client identity reads the bundle version and falls back to `0.0.0`.
 
 ### 1.8.0 internal TestFlight builds
 
-Newest first. Each row covers all four platforms; "Checked" is the recorded pre-upload
+Newest first. Platform coverage varies by build and is recorded in the change description; "Checked" is the recorded pre-upload
 verification, and none of it is physical-device or live-backend acceptance unless stated.
 
 | Date | Build | Commit | What it adds | Checked | Still open |
 | --- | --- | --- | --- | --- | --- |
-| 2026-11-26 | 1664 | `4ec0ae24` | Playback error recovery, from the playback TLA+ model ([#547](https://github.com/jlipworth/Labstream/pull/547)): Retry keeps working after a quality change from the error overlay (#526); Close after a track or quality change from the overlay stops the Plex transcode (#527); a restart from the overlay waits for the failed attempt's stop (#530); Retry waits up to 30 seconds for that stop and re-sends it once per tap, with LS-PB-008 if it never confirms (#539). Includes the downloads TLA+ fixes ([#505](https://github.com/jlipworth/Labstream/pull/505)). Apple Vision Pro, iPhone and iPad, and Apple TV; no Mac build. Not selected for the App Store versions. Builds 1662 and 1663 (2026-11-25, all four platforms, source commit not recorded) precede it. | Pre-upload validation (signing, entitlements; the four-platform privacy manifest comparison is skipped without a Mac build); full TLC run of the playback and downloads specs; hermetic PMSKit; macOS hosted suite (1032/1037, 8 known issues); iPhone hosted suite (1013, 8 known issues) and iPhone launch smoke; four-platform builds; docs hygiene. | The error-recovery checks against live Plex, Jellyfin and Emby (`TESTING-CHECKLIST.md`, Error-overlay recovery); server behavior the model assumes (#536); visionOS simulator smoke; everything open on 1661 and 1659; physical acceptance (#403). |
+| 2026-11-26 | 1664 | `4ec0ae24` | Playback error recovery, from the playback TLA+ model ([#547](https://github.com/jlipworth/Labstream/pull/547)): Retry keeps working after a quality change from the error overlay (#526); Close after a track or quality change from the overlay stops the Plex transcode (#527); a restart from the overlay waits for the failed attempt's stop (#530); the first failed-attempt stop uses a 30-second timeout on Plex and the request timeout on Jellyfin. If the stop remains unconfirmed, Retry can re-send it once per tap with a separate 10-second bound and surfaces LS-PB-008 if it still cannot confirm (#539). Includes the downloads TLA+ fixes ([#505](https://github.com/jlipworth/Labstream/pull/505)). Apple Vision Pro, iPhone and iPad, and Apple TV; no Mac build. Not selected for the App Store versions. Builds 1662 and 1663 (2026-11-25, all four platforms, source commit not recorded) precede it. | Pre-upload validation (signing, entitlements; the four-platform privacy manifest comparison is skipped without a Mac build); full TLC run of the playback and downloads specs; hermetic PMSKit; macOS hosted suite (1032/1037, 8 known issues); iPhone hosted suite (1013, 8 known issues) and iPhone launch smoke; four-platform builds; docs hygiene. | The error-recovery checks against live Plex, Jellyfin and Emby (`TESTING-CHECKLIST.md`, Error-overlay recovery); server behavior the model assumes (#536); visionOS simulator smoke; everything open on 1661 and 1659; physical acceptance (#403). |
 | 2026-11-16 | 1661 (and 1549) | `58b17d87` | Apple TV only: Settings ▸ Diagnostics ▸ Send log to iPhone serves the redacted report and event log to a phone on the same network through a QR code while the screen is open; the Apple TV event log moves to Caches ([#466](https://github.com/jlipworth/Labstream/pull/466)). Internal TestFlight on Apple TV. Not selected for the App Store version. Build 1549 is the same commit uploaded with an automatic build number below 1660. | Pre-upload validation (signing, entitlements; the four-platform privacy manifest comparison is skipped for a single platform); Apple TV simulator UI tests for the log screen (download over loopback, wrong-token 404, link closed with the screen) and the feedback screen; hermetic PMSKit suite; iOS and visionOS builds; docs hygiene. | A phone reaching the Apple TV over the network; no local-network prompt on the Apple TV; the event log surviving relaunch in Caches; the macOS hosted lane has an intermittent downloads-test failure that also occurs on `main`; everything open on 1660 and 1659; physical acceptance (#403). |
 | 2026-11-15 | 1660 | `501e7024` | Apple TV only: search uses the system inline keyboard with live results, so dictation needs no Done step; Select on the tab that is already showing returns to its root ([#464](https://github.com/jlipworth/Labstream/pull/464)). Internal TestFlight on Apple TV. Not selected for the App Store version. | Pre-upload validation (signing, entitlements; the four-platform privacy manifest comparison is skipped for a single platform); Apple TV simulator UI tests for the Search-tab press, keyboard letter entry, Home browse, feedback screen and launch; docs hygiene. | Dictation and the physical Siri Remote on the new keyboard; the tvOS hosted suite was not rerun; everything open on 1659; physical acceptance (#403). |
 | 2026-11-14 | 1659 | `b32e0c77` | Apple TV: holding Left or Right on the player timeline keeps scrubbing and speeds up (10, 30, 60, then 120 seconds a step) instead of moving one step ([#459](https://github.com/jlipworth/Labstream/pull/459)). Internal TestFlight on all four platforms. Not selected for the App Store versions. | Pre-upload validation (signing, entitlements, matching privacy manifests); clean tvOS simulator build with the Apple TV player (7) and Stats (1) UI tests, including the new hold test, which failed before the fix; docs hygiene. | The hold on the physical Siri Remote and its pace; a hold that starts with the controls hidden; the tvOS hosted suite was not rerun; everything open on 1658; physical acceptance (#403). |
@@ -268,9 +267,9 @@ creating a duplicate record:
    `upload --yes` uploads with an App Store Connect API key.
    `distribute --group <internal group> --yes` adds already-processed builds to an internal
    TestFlight group. Organizer remains the place to generate the aggregate privacy report. For an on-demand build to internal testers,
-   `ship --group <internal group> --yes` runs the whole sequence with `--build-number auto`
-   (the commit count of HEAD) and adds the processed builds to that group; a release candidate
-   can then be one of those builds, selected for review rather than archived again. Successful
+   choose an integer above every uploaded build for the version on the selected platforms.
+   `ship --build-number <n> --group <internal group> --yes` runs the sequence and adds the
+   processed builds to that group. One of those builds can then be selected for review. Successful
    ships prune local archives to the newest three uploaded sets plus any set attached to an App
    Store version (`prune-archives` dry-runs the same policy).
 

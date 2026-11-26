@@ -20,9 +20,10 @@ public enum BackgroundReattachTaskGatePolicy {
     public static func disposition(isSuperseded: Bool,
                                    isCanceling: Bool,
                                    isAttemptHalted: Bool,
-                                   rowStatus: DownloadStatus?) -> Disposition {
+                                   rowStatus: DownloadStatus?,
+                                   finishedCurrentSegment: Bool = false) -> Disposition {
         if isSuperseded || isCanceling || isAttemptHalted { return .leaveAlone }
-        if rowStatus == .paused { return .cancelForPausedRow }
+        if rowStatus == .paused { return finishedCurrentSegment ? .leaveAlone : .cancelForPausedRow }
         return .classify
     }
 

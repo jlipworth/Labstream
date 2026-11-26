@@ -130,6 +130,7 @@ struct PlaybackFormalModelFindingsTests {
         try #require(await eventually { route.count(.stop, .began) == 1 }, "failure sent no stop")
         controller.reload(bitrateKbps: 2000)
         try #require(await eventually { route.count(.decision, .began) == 2 }, "quality restart never started")
+        #expect(route.count(.stop, .began) == 1, "quality recovery duplicated the confirmed failure stop")
         let replacementStarted = try #require(route.lastIndex(.decision, .began))
         controller.stop()
         await controller.waitForPendingStopRequests()
@@ -385,8 +386,9 @@ struct PlaybackFormalModelFindingsTests {
         try #require(await eventually { route.count(.decision, .began) == 1 })
         controller.surfaceReconnectTimeout()
         try #require(await eventually { route.count(.stop, .answered) == 1 }, "failure stop never answered")
+        controller.makeRecoveryClient = { PlexClient(session: route.session, identity: $0) }
         controller.retry()
-        #expect(await eventually { !controller.playbackError.isFailed }, "Retry did not restart")
+        try #require(await eventually { route.count(.decision, .began) == 2 })
         #expect(route.count(.stop, .began) == 1, "Retry re-sent a stop that was already answered")
     }
 
@@ -496,14 +498,139 @@ struct PlaybackFormalModelFindingsTests {
 
     /// A Jellyfin session wired as DetailPlaybackLauncher wires it: both stop callbacks send the
     /// same DELETE, and `acknowledged` decides what `onStopAcknowledged` reports.
+    @Test(arguments: [0.4, 0.6], [false, true])
+    func replacementGetsFullReconnectDeadline(joinSeconds: Double, retry: Bool) async throws {
+        let log = EventLog()
+        let cleanup = TestGate()
+        let negotiation = TestGate()
+        let url = URL(string: "https://192.0.2.10/videos/fixture/master.m3u8")!
+        let session = jellyfinSession(streamURL: url, log: log, reopen: { _ in
+            log.append("negotiating")
+            await negotiation.wait()
+            throw PlaybackFailure(code: .authenticationRequired)
+        }) { await cleanup.wait(); return true }
+        let controller = makeMediaBrowserController(session: session, maxVideoBitrateKbps: 4000)
+        defer { Task { await cleanup.open(); await negotiation.open() }; controller.stop() }
+        controller.reconnectWatchdogSeconds = 0.5
+        controller.start()
+        try #require(await eventually { controller.player.currentItem != nil })
+        controller.surfaceReconnectTimeout()
+        if retry { controller.retry() } else { controller.reload(bitrateKbps: 2000) }
+        try await Task.sleep(for: .seconds(joinSeconds))
+        await cleanup.open()
+        try #require(await eventually { log.items.contains("negotiating") })
+        try await Task.sleep(for: .seconds(0.2))
+        #expect(!controller.playbackError.isFailed)
+        #expect(await eventually(within: 1) { controller.playbackError.isFailed })
+    }
+
+    @Test func overlayNegotiationSurfacesItsOwnError() async throws {
+        let url = URL(string: "https://192.0.2.10/videos/fixture/master.m3u8")!
+        let session = jellyfinSession(streamURL: url, log: EventLog(), reopen: { _ in
+            throw PlaybackFailure(code: .authenticationRequired)
+        }) { true }
+        let controller = makeMediaBrowserController(session: session, maxVideoBitrateKbps: 4000)
+        defer { controller.stop() }
+        controller.start()
+        try #require(await eventually { controller.player.currentItem != nil })
+        controller.surfaceReconnectTimeout()
+        controller.reload(bitrateKbps: 2000)
+        #expect(await eventually { controller.playbackError.failure?.code == .authenticationRequired })
+    }
+
+    @Test func rejectedEmbyPlaybackInfoBlocksNextNegotiation() async throws {
+        let route = PlexFixtureRoute(videoDecision: "transcode")
+        route.stopStatus.withValue { $0 = 503 }
+        let server = URL(string: "https://192.0.2.10")!
+        let url = server.appendingPathComponent("fixture.mp4")
+        let identity = PlatformClientIdentity.make(clientIdentifier: "stop-fixture")
+        let service = EmbyBrowseService(appModel: AppModel(identity: identity), session: route.session)
+        let backend = BackendSession(kind: .emby, baseURL: server, token: "fixture", userID: "fixture")
+        let item = MediaItem(ratingKey: "fixture", title: "Fixture", type: "movie")
+        let session = MediaBrowserPlaybackSession(
+            streamURL: url, backend: .emby, backendLabel: "Emby", httpHeaders: [:],
+            playSessionID: "original", sourceMetadata: .init(videoCodec: "hevc"),
+            playMethod: .transcode, transcodeReasons: [], progressSession: nil,
+            onStop: {}, reopener: { _ in
+                _ = try await service.playbackOpen(item: item, session: backend, identity: identity,
+                                                   maxVideoBitrateKbps: 2000, mediaSourceId: "wanted")
+                throw PlaybackFailure(code: .unknown)
+            }, onStopAcknowledged: { true })
+        let controller = makeMediaBrowserController(session: session, maxVideoBitrateKbps: 4000)
+        defer { controller.stop() }
+        controller.reload(bitrateKbps: 2000)
+        try #require(await eventually { controller.playbackError.isFailed })
+        try #require(route.count(.stop, .answered) >= 1)
+        #expect(controller.playbackError.failure?.code == .priorSessionStopUnconfirmed)
+        let stops = route.count(.stop, .began)
+        controller.retry()
+        #expect(await eventually { route.count(.stop, .began) > stops })
+        #expect(route.count(.playbackInfo, .began) == 1)
+    }
+
+    @Test func qualityChangeInheritsResentStopConfirmation() async throws {
+        let log = EventLog()
+        let gate = TestGate()
+        let url = URL(string: "https://192.0.2.10/videos/fixture/master.m3u8")!
+        let session = jellyfinSession(streamURL: url, log: log) {
+            log.append("stop")
+            guard log.count("stop") == 2 else { return false }
+            await gate.wait()
+            return true
+        }
+        let controller = makeMediaBrowserController(session: session, maxVideoBitrateKbps: 4000)
+        defer { Task { await gate.open() }; controller.stop() }
+        controller.start()
+        try #require(await eventually { controller.player.currentItem != nil })
+        controller.surfaceReconnectTimeout()
+        controller.retry()
+        try #require(await eventually { log.count("stop") == 2 })
+        controller.reload(bitrateKbps: 2000)
+        await gate.open()
+        #expect(await eventually { log.items.contains("negotiate-2000") })
+        #expect(log.count("stop") == 2)
+    }
+
+    @Test(arguments: [401, 403, 503])
+    func plexRejectsUnconfirmedStop(status: Int) async throws {
+        let route = PlexFixtureRoute(videoDecision: "transcode")
+        route.stopStatus.withValue { $0 = status }
+        let controller = makePlexController(route: route, maxVideoBitrateKbps: 4000)
+        defer { controller.stop() }
+        controller.start()
+        try #require(await eventually { route.count(.decision, .began) == 1 })
+        controller.surfaceReconnectTimeout()
+        controller.retry()
+        #expect(await eventually { controller.playbackError.failure?.code == .priorSessionStopUnconfirmed })
+    }
+
+    @Test func plexLostResponseRetainsOriginalStopDeadline() async throws {
+        let route = PlexFixtureRoute(videoDecision: "transcode")
+        route.fail([.stop])
+        route.transportFailure.withValue { $0 = .networkConnectionLost }
+        let controller = makePlexController(route: route, maxVideoBitrateKbps: 4000)
+        defer { controller.stop() }
+        controller.failedAttemptStopTimeout = 0.5
+        controller.start()
+        try #require(await eventually { route.count(.decision, .began) == 1 })
+        controller.surfaceReconnectTimeout()
+        try #require(await eventually { route.count(.stop, .failed) == 1 })
+        route.fail([])
+        controller.reload(bitrateKbps: 2000)
+        try await Task.sleep(for: .seconds(0.2))
+        #expect(route.count(.stop, .began) == 1)
+        #expect(await eventually { route.count(.decision, .began) == 2 })
+    }
+
     private func jellyfinSession(streamURL: URL, log: EventLog,
+                                 reopen: RemoteStreamReopener? = nil,
                                  acknowledged: @escaping @MainActor () async -> Bool) -> MediaBrowserPlaybackSession {
         MediaBrowserPlaybackSession(
             streamURL: streamURL, backend: .jellyfin, backendLabel: "Jellyfin", httpHeaders: [:],
             playSessionID: "session-0", sourceMetadata: .init(videoCodec: "hevc"),
             playMethod: .transcode, transcodeReasons: [], progressSession: nil,
             onStop: { log.append("legacy-stop-0") },
-            reopener: { request in
+            reopener: reopen ?? { request in
                 log.append("negotiate-\(request.bitrateKbps)")
                 return RemoteStreamOpenResult(url: streamURL, headers: [:], playSessionId: "session-1",
                                               onStop: {}, onStopAcknowledged: { true })
@@ -692,7 +819,7 @@ private final class EventLog {
 /// Records every Plex control-plane request a controller sends and can hold the responses of
 /// chosen kinds until released, so a test can put a start or stop "on the wire".
 private final class PlexFixtureRoute: @unchecked Sendable {
-    enum Kind: Hashable, Sendable { case decision, start, stop, other }
+    enum Kind: Hashable, Sendable { case decision, start, stop, playbackInfo, other }
     enum Phase: Sendable { case began, answered, cancelled, failed }
     struct Event: Sendable {
         let kind: Kind
@@ -704,6 +831,8 @@ private final class PlexFixtureRoute: @unchecked Sendable {
     let events = TestLockedBox<[Event]>([])
     let session: URLSession
     private let identifier = UUID().uuidString
+    let stopStatus = TestLockedBox(200)
+    let transportFailure = TestLockedBox(URLError.Code.notConnectedToInternet)
     private let videoDecision: String
     private let holding = TestLockedBox<Set<Kind>>([])
     private let failing = TestLockedBox<Set<Kind>>([])
@@ -750,6 +879,8 @@ private final class PlexFixtureRoute: @unchecked Sendable {
 
     static func kind(of request: URLRequest) -> Kind {
         let path = request.url?.path ?? ""
+        if path.hasSuffix("/PlaybackInfo") { return .playbackInfo }
+        if path.hasSuffix("/ActiveEncodings") { return .stop }
         if path.hasSuffix("/decision") { return .decision }
         if path.hasSuffix("start.m3u8") { return .start }
         if path.hasSuffix("/transcode/universal/stop") { return .stop }
@@ -769,10 +900,11 @@ private final class PlexFixtureRoute: @unchecked Sendable {
         let body: String = switch Self.kind(of: request) {
         case .decision:
             #"{"MediaContainer":{"generalDecisionCode":1001,"Metadata":[{"Media":[{"Part":[{"Stream":[{"streamType":1,"decision":"\#(videoDecision)"}]}]}]}]}}"#
+        case .playbackInfo: #"{"PlaySessionId":"rejected","MediaSources":[{"Id":"other","TranscodingUrl":"/stream.m3u8"}]}"#
         case .start: "#EXTM3U\n"
         case .stop, .other: "{}"
         }
-        return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+        return (HTTPURLResponse(url: request.url!, statusCode: Self.kind(of: request) == .stop ? stopStatus.value : 200, httpVersion: "HTTP/1.1",
                                 headerFields: nil)!, Data(body.utf8))
     }
 
@@ -815,7 +947,7 @@ private final class FormalModelURLProtocol: URLProtocol, @unchecked Sendable {
             route.record(request, .began)
             route.record(request, .failed)
             _ = finished.withValue { done in defer { done = true }; return done }
-            client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+            client?.urlProtocol(self, didFailWithError: URLError(route.transportFailure.value))
             return
         }
         let loading = LoadingContext(runLoop: CFRunLoopGetCurrent(), thread: Thread.current)

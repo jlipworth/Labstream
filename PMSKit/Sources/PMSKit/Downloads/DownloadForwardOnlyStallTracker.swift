@@ -86,9 +86,7 @@ public struct DownloadForwardOnlyStallTracker {
 
     /// Restore the bounded restart budget after an in-flight teardown that wiped tracker state.
     ///
-    /// The stall-restart path itself funnels through the shared terminal release (`remove`), which
-    /// would erase the attempt count `detectRestarts` just incremented — making the automatic
-    /// restart cap a no-op and letting a persistent wedge restart the encoder from byte 0 forever.
+    /// The manager charges the committed restart here after the shared terminal release (`remove`).
     /// The high-water mark is restored with it: the replacement replays from byte 0, and the budget
     /// resets only once it passes the bytes an earlier attempt reached.
     public mutating func seedRestartAttempts(_ ratingKey: String, attempts: Int, highWaterBytes high: Int) {
@@ -124,7 +122,7 @@ public struct DownloadForwardOnlyStallTracker {
                 restartAttempts: attempts
             ) {
                 let nextAttempt = attempts + 1
-                restartAttempts[record.ratingKey] = nextAttempt
+                // Charge only after the manager commits the restart and seeds the replacement.
                 restarts.append(DownloadForwardOnlyStallRestart(
                     record: record,
                     stalledFor: now.timeIntervalSince(observation.lastForwardProgressAt),

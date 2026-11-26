@@ -22,6 +22,20 @@ struct DownloadForwardOnlyStallTrackerTests {
                                                  resumeMode: resumeMode))
     }
 
+    @Test("A skipped restart below the high-water mark leaves a restart available")
+    func skippedRestartDoesNotSpendBudget() {
+        var tracker = DownloadForwardOnlyStallTracker()
+        let start = Date(timeIntervalSince1970: 1_000)
+        tracker.seedRestartAttempts("jellyfin:1", attempts: 1, highWaterBytes: 10_000)
+        func observe(_ bytes: Int, _ seconds: Double) -> DownloadForwardOnlyStallRestart? {
+            tracker.detectRestarts(records: [record(bytes: bytes)], now: start.addingTimeInterval(seconds)) { _ in true }.first
+        }
+        _ = observe(100, 0)
+        #expect(observe(100, 120)?.attempt == 2)
+        _ = observe(101, 121)
+        #expect(observe(101, 250)?.verdict == .restart)
+    }
+
     @Test("First observation does not immediately restart")
     func firstObservationDoesNotRestart() {
         var tracker = DownloadForwardOnlyStallTracker()
@@ -32,7 +46,7 @@ struct DownloadForwardOnlyStallTrackerTests {
         #expect(tracker.observation(for: "jellyfin:1")?.bytes == 10_000)
     }
 
-    @Test("Stalled active streams restart and increment bounded attempts")
+    @Test("Stalled active streams propose the next restart without spending it")
     func stalledActiveStreamRestarts() {
         var tracker = DownloadForwardOnlyStallTracker()
         let start = Date(timeIntervalSince1970: 1_000)
@@ -43,7 +57,7 @@ struct DownloadForwardOnlyStallTrackerTests {
         #expect(restarts.first?.record.ratingKey == "jellyfin:1")
         #expect(restarts.first?.attempt == 1)
         #expect(Int(restarts.first?.stalledFor ?? 0) == 120)
-        #expect(tracker.restartAttemptCount(for: "jellyfin:1") == 1)
+        #expect(tracker.restartAttemptCount(for: "jellyfin:1") == 0)
     }
 
     @Test("Byte progress resets the restart attempt budget")
@@ -52,6 +66,7 @@ struct DownloadForwardOnlyStallTrackerTests {
         let start = Date(timeIntervalSince1970: 1_000)
         _ = tracker.detectRestarts(records: [record(bytes: 10_000)], now: start) { _ in true }
         _ = tracker.detectRestarts(records: [record(bytes: 10_000)], now: start.addingTimeInterval(120)) { _ in true }
+        tracker.seedRestartAttempts("jellyfin:1", attempts: 1, highWaterBytes: 10_000)
         #expect(tracker.restartAttemptCount(for: "jellyfin:1") == 1)
 
         let progress = start.addingTimeInterval(130)

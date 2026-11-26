@@ -182,6 +182,14 @@ class TlaDriftTests(unittest.TestCase):
         self.assertEqual(self.run_check("base")[0], 1)
         self.assertEqual(self.run_check("HEAD..HEAD")[0], 0)
 
+    def test_malformed_declaration_fails_even_beside_valid_declarations(self):
+        self.append("specs/downloads/core/Core.tla", "\\* MODELS: Sources/Other.swift \\* note\n")
+        self.commit("malformed declaration")
+        status, output = self.run_check()
+        self.assertEqual(status, 2)
+        self.assertIn("Core.tla:", output)
+        self.assertIn("malformed MODELS", output)
+
     def test_missing_modelled_file_fails(self):
         self.git("rm", "-q", SESSION)
         self.commit("remove the session\n\nSpec-Unaffected: file removed")

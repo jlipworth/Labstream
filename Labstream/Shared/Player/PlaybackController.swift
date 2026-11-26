@@ -1315,7 +1315,6 @@ final class PlaybackController {
             "confirmed": .bool(confirmed),
         ])
         guard confirmed else { return .unconfirmed }
-        failedAttemptStopUnconfirmed = false
         return .confirmed
     }
 
@@ -1323,16 +1322,22 @@ final class PlaybackController {
     /// so Close joins it too. It bypasses `sentTranscodeStop`, which only guards the final stop.
     private func resendFailedAttemptStop() async -> Bool {
         let timeout = failedAttemptRestopTimeout
-        let ticket: Task<Bool, Never>
+        let operation: @MainActor () async -> Bool
         if let stop = failedAttemptSessionStop {
-            ticket = Task { @MainActor in await Self.firstResult(within: timeout, stop) }
+            operation = { await Self.firstResult(within: timeout, stop) }
         } else if let plexStop = plexFailedAttemptStop(timeout: timeout) {
-            ticket = Task { @MainActor in await plexStop() }
+            operation = plexStop
         } else {
             return false
         }
-        pendingStopTasks.append(Task { _ = await ticket.value })
-        return await ticket.value
+        let epoch = failureEpoch
+        let completion = Task { @MainActor in
+            let confirmed = await operation()
+            if confirmed, self.failureEpoch == epoch { self.failedAttemptStopUnconfirmed = false }
+            return confirmed
+        }
+        pendingStopTasks.append(Task { _ = await completion.value })
+        return await completion.value
     }
 
     /// `op`'s answer, or false once `seconds` pass. The bound holds only if `op` honours
@@ -1416,7 +1421,7 @@ final class PlaybackController {
     /// teardown must not block on (or fail with) the network.
     /// `tracksFailedAttempt`: a failure's stop, which Retry must see answered (#539). It goes
     /// out on its own client bounded by `failedAttemptStopTimeout` rather than the control
-    /// client's own timeout; an HTTP answer counts as answered, a timeout or transport error
+    /// client's own timeout. A successful stop confirms cleanup. Rejection or transport failure
     /// marks it unconfirmed.
     private func sendTranscodeStop(tracksFailedAttempt: Bool = false) {
         guard isStreaming, !sentTranscodeStop, let server, let token else { return }
@@ -1432,7 +1437,7 @@ final class PlaybackController {
     }
 
     /// The Plex exact-session stop for a failed attempt, on a copy of the control client bounded
-    /// by `timeout`. True for any HTTP answer; false for a timeout or a transport error (#539).
+    /// by `timeout`. Only a successful stop confirms cleanup.
     /// Not behind `sentTranscodeStop`: Retry's re-send uses it after the failure set the latch.
     private func plexFailedAttemptStop(timeout: TimeInterval) -> (@MainActor () async -> Bool)? {
         guard isStreaming, let server, let token else { return nil }
@@ -1442,12 +1447,19 @@ final class PlaybackController {
         return {
             let tracked = client.withTimeoutBound(timeout)
             defer { tracked.finishAndInvalidate() }
+            let deadline = ContinuousClock.now + .seconds(timeout)
             do {
-                try await tracked.send(req)
+                try await tracked.send(req, preservingTransportError: true)
                 return true
-            } catch PlexError.http, PlexError.unauthorized {
-                return true
+            } catch is PlexError {
+                return false
+            } catch let error as URLError where [.cannotFindHost, .dnsLookupFailed, .cannotConnectToHost,
+                                                  .notConnectedToInternet].contains(error.code) {
+                return false
             } catch {
+                // A lost response can hide an accepted stop. Keep its full observation
+                // window before allowing a re-send under Plex's reused session ID.
+                try? await Task.sleep(until: deadline, clock: .continuous)
                 return false
             }
         }
@@ -2736,7 +2748,6 @@ final class PlaybackController {
     /// sessions/static remote streams (nothing to re-fetch).
     func retry() {
         guard supportsQualityReload, playbackError.isFailed, failureRetryTask == nil else { return }
-        beginReconnectStatus()
         let snapshot = playheadSnapshotForRestart(cause: .retry)
         let resumeMs = snapshot.positionMs
         var fields = positionSnapshotDiagnosticFields(snapshot)
@@ -2763,7 +2774,6 @@ final class PlaybackController {
                 self.surfaceUnconfirmedFailedAttemptStop(restartInFlight: join == .restartInFlight)
                 return
             }
-            self.sentTranscodeStop = false
             self.restartAtCurrentPosition(offsetMs: resumeMs,
                                           bitrateKbps: self.maxVideoBitrateKbps,
                                           intent: .explicitRetry)
@@ -2865,8 +2875,10 @@ final class PlaybackController {
     /// Fresh control-plane client for a retry/rebuild after the stream wedged (#33).
     /// PlayerView uses this when it performs the full `.id()` rebuild, and in-place retry
     /// callers use `switchToRecoveryControlClient()` directly.
+    var makeRecoveryClient: (ClientIdentity) -> PlexClient = { PlexClient.recovery(identity: $0) }
+
     func recoveryControlClient() -> PlexClient {
-        PlexClient.recovery(identity: identity)
+        makeRecoveryClient(identity)
     }
 
     private func switchToRecoveryControlClient() {
@@ -2878,7 +2890,7 @@ final class PlaybackController {
     }
 
     /// `stoppingPreviousTranscode` is true on every in-place RESTART (quality/audio reload,
-    /// retry, final-target rebuild) and false only on the initial start: a restart reuses
+    /// final-target rebuild) unless failure cleanup already stopped the session: a restart reuses
     /// `sessionID`, and PMS proved unreliable at reaping the superseded job on its own — a
     /// live pile-up of software transcoders OOM-killed the server pod (8Gi cgroup) during the
     /// #25 stall testing. Explicitly stop the old job first (see `stopPreviousTranscode`).
@@ -4709,13 +4721,16 @@ final class PlaybackController {
         updateTransportStatus()
     }
 
+    var reconnectWatchdogSeconds: TimeInterval = 20
+
     private func armReconnectWatchdog() {
         reconnectWatchdogTask?.cancel()
         // Recovery deliberately replaces the player item after this deadline is armed,
         // so its authority must span playbackGeneration changes.
         let token = reconnectWatchdogAuthority.arm()
+        let seconds = reconnectWatchdogSeconds
         reconnectWatchdogTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(20))
+            try? await Task.sleep(for: .seconds(seconds))
             guard let self,
                   self.reconnectWatchdogAuthority.accepts(token),
                   self.reconnectInProgress else { return }
@@ -5911,7 +5926,6 @@ final class PlaybackController {
         // exact-session stop cannot end the replacement (Plex reuses the session id) or
         // overlap it (Jellyfin) (#530). Retry already joined before calling here.
         if intent != .explicitRetry, playbackError.isFailed {
-            beginReconnectStatus()
             let generation = playbackGeneration
             failureRetryTask = Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -5943,6 +5957,11 @@ final class PlaybackController {
                                             allowsNearZero: true)
         refreshVideoNowPlayingMetadata(elapsedMillisecondsOverride: offsetMs,
                                        playbackRateOverride: 0)
+        let recoveringFromFailure = playbackError.isFailed
+        if recoveringFromFailure {
+            playbackError.clear()
+            beginReconnectStatus()
+        }
         let plan = intent.plan
         for step in plan.preparationSteps {
             switch step {
@@ -5953,9 +5972,6 @@ final class PlaybackController {
             case .rearmStartupDeadlineRetry:
                 // Every existing intentional restart re-arms the GH #196 one-shot allowance.
                 startupDeadlineRetryAttempted = false
-            case .clearPlaybackError:
-                playbackError.clear()
-                updateTransportStatus()
             case .removeObservers:
                 removeObservers()
             }
@@ -5968,7 +5984,7 @@ final class PlaybackController {
             if plan.plexControlClient == .refreshForRecovery {
                 switchToRecoveryControlClient()
             }
-            beginStreaming(resumeOffsetMsOverride: offsetMs)
+            beginStreaming(resumeOffsetMsOverride: offsetMs, stoppingPreviousTranscode: !recoveringFromFailure)
         }
     }
 
@@ -6128,6 +6144,13 @@ final class PlaybackController {
                                                            delaySeconds: 2.0)
                 }
             } catch {
+                // The predecessor owns cleanup even if a newer reopen cancelled its waiter.
+                if let rejected = error as? EmbyBrowseService.UnconfirmedRejectedSession {
+                    self.embyReopenStopBarrier.retainFailedStop(rejected.retryStop)
+                    if self.offlinePlaybackClosed {
+                        _ = await self.embyReopenStopBarrier.beginFinalStop()?.value
+                    }
+                }
                 guard RemoteStreamLifecyclePolicy.acceptsReopenResult(
                     capturedGeneration: generation,
                     currentGeneration: self.playbackGeneration,

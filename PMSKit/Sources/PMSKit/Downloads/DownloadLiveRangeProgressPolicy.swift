@@ -80,7 +80,7 @@ public enum DownloadLiveRangeProgressPolicy {
         let rebase = latchedRebase
             ?? (reported < resumeDisplayBytes ? max(resumeDisplayBytes - max(baseOffset, 0), 0) : 0)
         latchedRebase = rebase
-        return max(reported + rebase, resumeDisplayBytes)
+        return max(saturatingAdd(reported, max(rebase, 0)), resumeDisplayBytes)
     }
 
     /// Live display bytes across an active segment train: the durable partial already on disk plus
@@ -99,9 +99,12 @@ public enum DownloadLiveRangeProgressPolicy {
     /// callback that lands in that window undercounts. Callers MUST still route this value through
     /// `mergedSample`, whose watermark keeps the published sample monotonic across that window.
     public static func aggregatedLiveBytes(durableBytes: Int, liveSegmentBodyBytes: [Int]) -> Int {
-        let base = max(durableBytes, 0)
-        let liveSum = liveSegmentBodyBytes.reduce(0) { $0 + max($1, 0) }
-        return base + liveSum
+        liveSegmentBodyBytes.reduce(max(durableBytes, 0)) { saturatingAdd($0, max($1, 0)) }
+    }
+
+    private static func saturatingAdd(_ bytes: Int, _ additional: Int) -> Int {
+        let (sum, overflow) = bytes.addingReportingOverflow(additional)
+        return overflow ? .max : sum
     }
 
     /// Clamp optimistic transfer coverage without claiming terminal completion before the
@@ -128,7 +131,7 @@ public enum DownloadLiveRangeProgressPolicy {
     /// sibling, a train reset) still reaches the estimator and rebaselines it.
     public static func rateSampleBytes(reportedBytes: Int, previous: Int?, bytesAwaitingAppend: Int) -> Int {
         guard let previous, reportedBytes < previous, bytesAwaitingAppend > 0,
-              reportedBytes + bytesAwaitingAppend >= previous else { return reportedBytes }
+              saturatingAdd(reportedBytes, bytesAwaitingAppend) >= previous else { return reportedBytes }
         return previous
     }
 

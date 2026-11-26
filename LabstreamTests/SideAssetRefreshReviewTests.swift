@@ -122,7 +122,7 @@ struct SideAssetRefreshReviewTests {
         #expect(await metadataEntered.wait(seconds: 10) == true)
         // The saved-list worker has failed B and exited before the refresh answers.
         try #require(await p6AwaitTask(Task {
-            await f.manager.downloadWorkRegistry.waitForWorkForTesting(
+            await f.manager.downloadWorkRegistry.waitForWork(
                 for: f.key, kind: .sideCache(.chapterImages))
         }))
         #expect(images.value.contains { $0.hasPrefix("/b") })
@@ -139,6 +139,97 @@ struct SideAssetRefreshReviewTests {
         #expect(saved.chapters?.map(\.tag) == ["A", "B"], "the saved timeline was replaced")
         #expect(saved.chapters?.map(\.startTimeOffset) == [0, 10_000])
         #expect(saved.chapterImageRelativePaths?[1] == nil)
+        await f.finish()
+    }
+
+    @Test func thumbnailLearnedDuringChapterRepairIsPublishedInThisPass() async throws {
+        let f = try await P7PlaybackFixture(status: .complete)
+        try #require(await p6AwaitTask(f.manager.completedSideAssetInventoryWorker))
+        f.manager.setQueuePausedForTesting(false)
+        _ = await f.store.updateMetadataAsync(for: f.key) {
+            $0.backendKind = .plex
+            $0.chapters = [OfflineChapter(tag: "A", startTimeOffset: 0, thumb: "/a"),
+                           OfflineChapter(tag: "B", startTimeOffset: 10000)]
+        }
+        let metadata = try #require(f.store.record(for: f.key)?.metadata)
+        let server = URL(string: "https://example.invalid")!
+        let entered = P6Acknowledgement<Bool>()
+        let release = DispatchSemaphore(value: 0)
+        let stub = AsyncAnsweringURLProtocol.Stub { request in
+            let url = request.url!
+            let source = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first { $0.name == "url" }?.value ?? url.path
+            if source.hasPrefix("/a") {
+                entered.signal(true)
+                _ = release.wait(timeout: .now() + 15)
+            }
+            return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Self.png)
+        }
+        let transport = URLSession(configuration: stub.configuration)
+        defer { release.signal(); transport.invalidateAndCancel() }
+        f.manager.optionalSideAssetSessionForTesting = transport
+        f.manager.cacheChapterImages(for: f.key, item: metadata.makeMediaItem(), backend: .plex,
+                                     server: server, token: "fixture")
+        try #require(await entered.wait(seconds: 10) == true)
+        let refreshed = MediaItem(ratingKey: metadata.ratingKey, title: "Fixture", type: "movie",
+                                  chapters: [Chapter(startTimeOffset: 0, thumb: "/a"),
+                                             Chapter(startTimeOffset: 10000, thumb: "/b")])
+        let adoption = Task {
+            await f.manager.adoptRefreshedChapterImages(for: f.key, metadata: metadata,
+                currentItem: refreshed, backend: .plex, server: server, token: "fixture")
+        }
+        for _ in 0..<500 {
+            if f.store.record(for: f.key)?.metadata?.chapters?.last?.thumb == "/b" { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(f.store.record(for: f.key)?.metadata?.chapters?.last?.thumb == "/b")
+        release.signal()
+        await adoption.value
+        try #require(await p6AwaitTask(Task { await f.manager.downloadWorkRegistry.waitForSideCacheForTesting(for: f.key) }))
+        #expect(f.store.record(for: f.key)?.metadata?.chapterImageRelativePaths?[1] != nil)
+        await f.finish()
+    }
+
+    enum DroppedEdge: CaseIterable { case busy, timeout, stale }
+
+    @Test("S5 repair retries each lost observation", arguments: DroppedEdge.allCases)
+    func droppedRepairEdge(_ edge: DroppedEdge) async throws {
+        let f = try await P7PlaybackFixture(status: .complete)
+        try #require(await p6AwaitTask(f.manager.completedSideAssetInventoryWorker))
+        f.manager.setQueuePausedForTesting(false)
+        f.manager.completedSideAssetInventories = [:]
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        if edge == .timeout {
+            f.manager.sideAssetInventoryWillReadForTesting = { _ = release.wait(timeout: .now() + 10) }
+            f.manager.sideAssetInventoryDeadlineForTesting = .after(0)
+        }
+        var observations = 0
+        f.manager.sideAssetInventoryDidObserveForTesting = {
+            observations += 1
+            guard observations == 1 else { return }
+            switch edge {
+            case .busy:
+                f.manager.rehydrateMissingOptionalSideAssetsForCompletedRows(reason: "foreground")
+            case .timeout:
+                release.signal()
+                f.manager.sideAssetInventoryWillReadForTesting = nil
+                f.manager.sideAssetInventoryDeadlineForTesting = nil
+            case .stale:
+                _ = await f.store.updateMetadataAsync(for: f.key) { $0.thumb = "/new" }
+            }
+        }
+        f.manager.rehydrateMissingOptionalSideAssetsForCompletedRows(reason: "launch")
+        try #require(await p6AwaitTask(f.manager.completedSideAssetInventoryWorker))
+        try #require(observations >= 1)
+        if edge != .busy && observations == 1 {
+            #expect(f.manager.completedSideAssetInventories[f.key] == nil)
+        }
+        await withKnownIssue("S5 (#493) dropped repair after \(edge)") {
+            for _ in 0..<50 where observations == 1 { try? await Task.sleep(for: .milliseconds(10)) }
+            #expect(observations >= 2)
+        }
+        f.manager.sideAssetInventoryDidObserveForTesting = nil
         await f.finish()
     }
 

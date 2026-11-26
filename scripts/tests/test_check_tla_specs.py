@@ -316,6 +316,26 @@ exit "${status:-13}"
                               "\\* FAKE-OUT: Error: Invariant Other is violated.\n\\* FAKE-EXIT: 12\n")
         self.assert_failed(result, "TLC exit 12 with 2 violation banners")
 
+    def test_tabbed_expectation_requires_the_violation(self):
+        result = self.outcome("Current-Tab", "\\*\tEXPECT: violation Small\n"
+                              "\\* FAKE-OUT: Model checking completed. No error has been found.\n"
+                              "\\* FAKE-EXIT: 0\n")
+        self.assert_failed(result, "expect: violation Small")
+
+    def test_duplicate_expectation_is_invalid(self):
+        result = self.outcome("Current-Duplicate", "\\* EXPECT: pass\n\\*\tEXPECT: pass\n")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("duplicate", result.stderr)
+
+    def test_single_line_properties_require_a_named_violation(self):
+        result = self.outcome("Finding-Inline", "\\* EXPECT: violation TEMPORAL\nPROPERTY A B\n")
+        self.assert_failed(result, "several properties (A, B)")
+
+    def test_invariant_named_deadlock_is_not_a_deadlock(self):
+        result = self.outcome("Finding-Deadlock", "\\* EXPECT: violation DEADLOCK\n"
+                              "\\* FAKE-OUT: Error: Invariant DEADLOCK is violated.\n\\* FAKE-EXIT: 12\n")
+        self.assert_failed(result, "got: invariant DEADLOCK")
+
     def test_named_safety_violations_and_deadlock(self):
         cases = [("Invariant Safe is violated.", "12", "Safe"), ("Action property Safe is violated.", "13", "Safe"),
                  ("Deadlock reached.", "11", "DEADLOCK")]

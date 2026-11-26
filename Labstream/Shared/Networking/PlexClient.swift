@@ -70,6 +70,12 @@ public actor PlexClient {
     /// Run a request and return the raw response body.
     @discardableResult
     public func send(_ r: PlexRequest) async throws -> Data {
+        try await send(r, preservingTransportError: false)
+    }
+
+    /// Exact-session cleanup distinguishes a request that could have reached PMS.
+    @discardableResult
+    func send(_ r: PlexRequest, preservingTransportError: Bool) async throws -> Data {
         let request = r.urlRequest()
         let data: Data
         let response: URLResponse
@@ -82,11 +88,13 @@ public actor PlexClient {
         } catch {
             // Connection refused, TLS failure, DNS, timeout, etc.
             if Task.isCancelled { throw CancellationError() }
+            if preservingTransportError { throw error }
             throw PlexError.serverUnreachable
         }
 
         guard let http = response as? HTTPURLResponse else {
-            // Non-HTTP response (shouldn't happen for our endpoints).
+            // Exact-session cleanup requires a positive HTTP acknowledgement.
+            if preservingTransportError { throw URLError(.badServerResponse) }
             return data
         }
 

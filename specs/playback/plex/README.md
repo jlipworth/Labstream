@@ -29,8 +29,8 @@ Each MainActor run between two awaits is one action. Functions are in
 | --- | --- |
 | `Sid(c)` | `sessionID`, minted once per controller |
 | `Start` | `start()`: `beginStreaming(stoppingPreviousTranscode: false)` |
-| `UserQuality` | `reload(bitrateKbps:)` and the audio and subtitle track changes: `restartAtCurrentPosition` with an intent other than `explicitRetry`, then `beginStreaming`. While a failure shows, `FailureRestartJoinsPendingStops` (#530) makes it a `failureRetryTask` that first joins `pendingStopTasks`, as `retry()` does (`retryKind = "restart"`, then `RetryProceeds`); the restart it then runs keeps that change's plan, clearing neither the error nor `sentTranscodeStop`. Since #539 that task's join is `joinFailedAttemptStop`, as Retry's: an unconfirmed failure stop is re-sent once and the change runs only once it is answered (`RetryRestops`, `RetryRestopConfirmed`), otherwise LS-PB-008 (`RetryRefused`) |
-| `StopUnconfirmed`, `st.failStop` | `failedAttemptStopUnconfirmed` (#539). `surfaceFailure` sends its stop with `sendTranscodeStop(tracksFailedAttempt: true)` through `plexFailedAttemptStop`, on a copy of the control client bounded by `failedAttemptStopTimeout` (30 s; `PlexClient.withTimeoutBound`), and `trackFailedAttemptStop` sets the flag when no HTTP answer came, in the failure's generation. Reset by each failure, cleared by an answered re-send. The model's `late` on that stop is the bound passing. A transport error at once (`serverUnreachable`, e.g. no network) also sets it in the Swift; the model has no such outcome, and the gap is safe: such a request never reached PMS, and Retry only re-sends |
+| `UserQuality` | `reload(bitrateKbps:)` and the audio and subtitle track changes: `restartAtCurrentPosition` with an intent other than `explicitRetry`, then `beginStreaming`. While a failure shows, `FailureRestartJoinsPendingStops` (#530) makes it a `failureRetryTask` that first joins `pendingStopTasks`, as `retry()` does (`retryKind = "restart"`, then `RetryProceeds`); the restart it then runs keeps that change's plan, clearing the error and skipping the already confirmed Plex stop. Since #539 that task's join is `joinFailedAttemptStop`, as Retry's: an unconfirmed failure stop is re-sent once and the change runs only once it is answered (`RetryRestops`, `RetryRestopConfirmed`), otherwise LS-PB-008 (`RetryRefused`) |
+| `StopUnconfirmed`, `st.failStop` | The failure's exact-session Plex stop requires HTTP success. A rejected request or definite connection failure is `failed`. Losing the reply may leave a stop on the wire. Swift holds that outcome to the original deadline, represented by `late`. A confirmed re-send clears the failure's stop authority. |
 | `RetryRestops`, `st.restop` | `joinFailedAttemptStop`: `resendFailedAttemptStop` sends one more stop through `plexFailedAttemptStop`, not behind `sentTranscodeStop`, as a `pendingStopTasks` entry bounded by `failedAttemptRestopTimeout` (10 s). Not while a restart from the error overlay runs (`restartInFlight`: `restartInFlightGeneration`, set by `beginStreaming` and cleared when its task body exits in the same generation; `task[c] # NoTask` in the model, where an ended task leaves the slot): the re-send could end the job that restart starts (`Proposed-StartAfterOwnStops` found it), so that tap keeps LS-PB-008 without ending the restart's reconnect status. A restart whose task has ended (for example its decision failed while the error showed) no longer counts, and the next tap re-sends |
 | `RetryRestopConfirmed`, `RetryRefused` | after the re-send, the generation and cancellation check: answered clears the flag and the restart runs; otherwise `playbackError.set(PlaybackFailure(code: .priorSessionStopUnconfirmed))` with `failureRetryTask` cleared, so the next tap re-sends again. Close resets `restop` |
 | `Retry`, `RetryProceeds`, `Joined` | `retry()` 2566, `failureRetryTask`, `waitForPendingStopRequests` 1236 awaited at 2580: it returns when every `pendingStopTasks` entry has, and a `sendTranscodeStop` entry returns when its request is answered or times out (`try?` drops the error). `restartAtCurrentPosition` with `.explicitRetry` then switches to the recovery client (5743, `switchToRecoveryControlClient` 2689) |
@@ -125,8 +125,8 @@ failed", so a pass of `OneEncoder` is sound. The base's `NoWrongKill` is checked
   job it was aimed at stays owned until the request ends: the client cancelled it, so the base's
   rule that a failed stop hands the job to the server does not excuse it.
 - **Time.** `ClockTicks` is the two-second bound for a stop a task awaits, and the `URLSession`
-  request timeout for a detached stop (`sendTranscodeStop`, a `pendingStopTasks` entry): 5 s on
-  the recovery client that every Retry switches to, 60 s otherwise. A detached stop that timed
+  request deadline for a detached stop. The failure stop has 30 s and the re-send has 10 s.
+  A lost response consumes the remaining deadline because PMS may have received the request. A detached stop that timed
   out stays on the wire, as in the Emby and Jellyfin modules; the client dropped its connection,
   so it is applied only with `CancelledStopCanLand`, and the join (`Joined`) ends at the timeout.
   An earlier version treated the timeout as `ServerFail`, so a detached stop could never land
@@ -516,12 +516,11 @@ Retry switches to it, so from the second failure on the detached stop gives up a
 The fix keeps tracking the stop past the control client's timeout, with a bound, and does not
 treat it as joined when the bound passes. `surfaceFailure` sends it on its own copy of the control
 client whose request and resource timeouts are `failedAttemptStopTimeout` (30 s), so after a Retry
-it is no longer cut off by the recovery client's 5 s. An HTTP answer of any status counts as
-answered. No answer within the bound (or a transport error at once) sets
+it is no longer cut off by the recovery client's 5 s. Only HTTP success confirms the stop. Rejection, timeout or a transport failure sets
 `failedAttemptStopUnconfirmed` for that failure. The Retry tap then re-sends the stop once
 (`joinFailedAttemptStop`, which the restart-from-failure path can share), bypassing the
 `sentTranscodeStop` latch, bounded by `failedAttemptRestopTimeout` (10 s). Both bounds are
-judgment calls. If PMS answers, the flag is cleared and Retry restarts; if not, Retry surfaces
+judgment calls. If PMS accepts the stop, the flag clears and Retry restarts; if not, Retry surfaces
 `priorSessionStopUnconfirmed` (LS-PB-008), starts nothing and clears `failureRetryTask`, so the
 next tap tries again. Each tap makes at most one request and waits at most the bound. The trace
 now ends in `RetryRestops` and `RetryRefused`, or in `RetryRestopConfirmed` and a restart.
