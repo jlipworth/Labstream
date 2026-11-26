@@ -27,7 +27,8 @@
 (*   Player    Fail, WarmRetry (the startup-deadline retry, which sends    *)
 (*             no stop), PlayerNeedsConsent (the copy lane fails and the   *)
 (*             rebuild asks for consent to encode)                         *)
-(*   Timers    RetryProceeds, RetryRefused (failureRetryTask after         *)
+(*   Timers    RetryProceeds, RetryRestops, RetryRestopConfirmed,           *)
+(*             RetryRefused (failureRetryTask after                        *)
 (*             waitForPendingStopRequests)                                 *)
 (*   Task      the playbackTask of one start or restart:                   *)
 (*               begin       created, not yet run                          *)
@@ -83,9 +84,11 @@ CONSTANTS
     DetachesBeforeStart,    \* #196: detach the old item after the wait
     RetryJoinsPendingStops,
     RetryNeedsConfirmedStop,
-        \* #539: the failure's stop is tracked on its own bounded client;
-        \* Retry restarts only if it was answered within that bound, and
-        \* otherwise fails with priorSessionStopUnconfirmed
+        \* #539: the failure's stop is tracked on its own bounded client.
+        \* Retry restarts at once only if it was answered within that bound;
+        \* otherwise the tap re-sends the stop once, bypassing the latch,
+        \* restarts if the re-send is answered and fails with
+        \* priorSessionStopUnconfirmed if not
     CloseSendsFinalStop,
 
     \* Proposed fixes.  FALSE is the code as it stands.
@@ -170,7 +173,8 @@ IsPTask(t) ==
 StRecords ==
     [life : {"new", "open", "closed"}, failed : BOOLEAN, latch : BOOLEAN,
      retryGen : Gens, warmArmed : BOOLEAN, userLeft : 0..MaxUserActions,
-     consent : Gens, approved : BOOLEAN]
+     consent : Gens, approved : BOOLEAN,
+     failStop : StopIds \cup {NoStop}, restop : StopIds \cup {NoStop}]
 
 \* ghost[c].
 \*   issued      start requests sent so far
@@ -226,7 +230,7 @@ Init ==
                 [life |-> "new", failed |-> FALSE, latch |-> FALSE,
                  retryGen |-> 0, warmArmed |-> TRUE,
                  userLeft |-> MaxUserActions, consent |-> 0,
-                 approved |-> FALSE]]
+                 approved |-> FALSE, failStop |-> NoStop, restop |-> NoStop]]
     /\ wire = [c \in Controllers |-> {}]
     /\ ghost = [c \in Controllers |->
                    [issued |-> 0, landed |-> 0, itemSeq |-> 0,
@@ -282,16 +286,15 @@ Joined(c) ==
                 r.n = k.n => (r.status # "inFlight" \/ r.late)
         ELSE TicketDone(c, k)
 
-\* failedAttemptStopUnconfirmed is set: a detached stop timed out (its
-\* bound passed with no HTTP answer), whatever PMS does with it later.  An
-\* answer of any status, a failure included, is an answer.  Only
-\* surfaceFailure and Close add stop entries, and Close ends the
-\* controller, so these are the failures' stops.  The flag is never
-\* cleared, and neither is `late`.
-StopUnconfirmed(c) ==
-    \E k \in pendingStops[c] :
-        /\ k.kind = "serverStop"
-        /\ \E r \in StopsFor(c, k.sid, k.gen) : r.n = k.n /\ r.late
+\* failedAttemptStopUnconfirmed is set: the current failure's stop timed out
+\* (its bound passed with no HTTP answer), whatever PMS does with it later.
+\* An answer of any status, a failure included, is an answer.  A stop that
+\* fails at once without reaching PMS (PlexError.serverUnreachable) is
+\* unconfirmed in the Swift too; the model has no such outcome (see the
+\* README).  surfaceFailure resets it (failStop), an answered re-send clears
+\* it.
+Unconfirmed(c, id) == id # NoStop /\ \E r \in StopReq(c, id) : r.late
+StopUnconfirmed(c) == Unconfirmed(c, st[c].failStop)
 
 \* The stop a task awaits when it stops waiting with no answer: the wait
 \* gave up, or the task was cancelled.  Either way the task group cancels
@@ -360,7 +363,9 @@ Terminal(c, inTask, join, send) ==
 \* surfaceFailure, past its `guard !playbackError.isFailed`.
 SurfaceFailure(c, inTask) ==
     /\ Terminal(c, inTask, TRUE, TRUE)
-    /\ st' = [st EXCEPT ![c].failed = TRUE, ![c].latch = TRUE]
+    /\ st' = [st EXCEPT ![c].failed = TRUE, ![c].latch = TRUE,
+                        ![c].failStop =
+                            IF st[c].latch THEN NoStop ELSE NewStopId(c)]
 
 -----------------------------------------------------------------------------
 (* User, player and timers                                                 *)
@@ -388,6 +393,7 @@ UserQuality(c) ==
     /\ \E isReload \in BOOLEAN :
         st' = [st EXCEPT
            ![c].userLeft = @ - 1, ![c].retryGen = 0, ![c].warmArmed = TRUE,
+           ![c].restop = NoStop,
            ![c].latch = IF FixRestartResetsStopLatch THEN FALSE ELSE @,
            ![c].consent = 0, ![c].approved = @ /\ ~isReload]
 
@@ -410,21 +416,56 @@ RetryProceeds(c) ==
     /\ st[c].retryGen = gen[c]
     /\ RetryJoinsPendingStops => Joined(c)
     /\ RetryNeedsConfirmedStop => ~StopUnconfirmed(c)
+    /\ st[c].restop = NoStop
     /\ RestartCore(c, TRUE, FALSE, FALSE)
     /\ st' = [st EXCEPT
            ![c].retryGen = 0, ![c].latch = FALSE, ![c].failed = FALSE,
            ![c].warmArmed = TRUE]
 
-\* The same task finding failedAttemptStopUnconfirmed set (#539): it clears
-\* failureRetryTask and surfaces priorSessionStopUnconfirmed.  The failure
-\* stays, nothing is sent and no transcode starts.
-RetryRefused(c) ==
+\* The same task finding failedAttemptStopUnconfirmed set (#539): it re-sends
+\* the session's stop once (plexFailedAttemptStop, not behind the latch) as
+\* a pendingStopTasks entry and awaits it, bounded.  Not while a restart
+\* from the error overlay runs (playbackTask != nil): that is refused.
+RetryRestops(c) ==
     /\ RetryNeedsConfirmedStop
     /\ st[c].retryGen # 0
     /\ st[c].retryGen = gen[c]
+    /\ st[c].restop = NoStop
     /\ RetryJoinsPendingStops => Joined(c)
     /\ StopUnconfirmed(c)
-    /\ st' = [st EXCEPT ![c].retryGen = 0]
+    /\ task[c] = NoTask
+    /\ pendingStops' = Upd(pendingStops, c,
+           pendingStops[c] \cup {ServerStopTicket(NewStop(c))})
+    /\ SendStop(c)
+    /\ st' = [st EXCEPT ![c].restop = NewStopId(c)]
+    /\ ghost' = [ghost EXCEPT ![c].stopLog = @ \cup {LoggedStop(c)}]
+    /\ UNCHANGED <<gen, itemGen, item, task, unwinding, idleVars, wire>>
+
+\* The re-sent stop is answered within its bound and the generation is
+\* unchanged: the flag is cleared and Retry restarts in the same run.
+RetryRestopConfirmed(c) ==
+    /\ st[c].restop # NoStop
+    /\ st[c].retryGen # 0
+    /\ st[c].retryGen = gen[c]
+    /\ \E r \in StopReq(c, st[c].restop) : r.status # "inFlight" /\ ~r.late
+    /\ RestartCore(c, TRUE, FALSE, FALSE)
+    /\ st' = [st EXCEPT
+           ![c].retryGen = 0, ![c].latch = FALSE, ![c].failed = FALSE,
+           ![c].warmArmed = TRUE, ![c].failStop = NoStop,
+           ![c].restop = NoStop]
+
+\* The re-sent stop passed its bound: priorSessionStopUnconfirmed,
+\* failureRetryTask cleared, so the next tap re-sends again.  Nothing
+\* starts.
+RetryRefused(c) ==
+    /\ st[c].retryGen # 0
+    /\ st[c].retryGen = gen[c]
+    /\ \/ Unconfirmed(c, st[c].restop)
+       \/ /\ st[c].restop = NoStop
+          /\ RetryJoinsPendingStops => Joined(c)
+          /\ StopUnconfirmed(c)
+          /\ task[c] # NoTask
+    /\ st' = [st EXCEPT ![c].retryGen = 0, ![c].restop = NoStop]
     /\ UNCHANGED <<serverVars, ctlVars, wire, ghost>>
 
 \* stop().
@@ -432,7 +473,7 @@ Close(c) ==
     /\ st[c].life = "open"
     /\ Terminal(c, FALSE, FALSE, CloseSendsFinalStop)
     /\ st' = [st EXCEPT
-           ![c].life = "closed", ![c].retryGen = 0,
+           ![c].life = "closed", ![c].retryGen = 0, ![c].restop = NoStop,
            ![c].latch = CloseSendsFinalStop \/ @, ![c].consent = 0]
 
 \* The item fails or a watchdog fires: handlePlaybackFailure and the
@@ -483,7 +524,7 @@ Approve(c) ==
     /\ RestartCore(c, TRUE, FALSE, FALSE)
     /\ st' = [st EXCEPT
            ![c].consent = 0, ![c].approved = TRUE, ![c].userLeft = @ - 1,
-           ![c].retryGen = 0, ![c].warmArmed = TRUE,
+           ![c].retryGen = 0, ![c].warmArmed = TRUE, ![c].restop = NoStop,
            ![c].latch = IF FixRestartResetsStopLatch THEN FALSE ELSE @]
 
 \* declineVideoTranscoding: surfaceFailure.
@@ -710,7 +751,8 @@ Next ==
     \/ ClockTicks
     \/ \E c \in Controllers :
           \/ Start(c) \/ UserQuality(c) \/ Retry(c) \/ RetryProceeds(c)
-          \/ RetryRefused(c) \/ Close(c) \/ Fail(c) \/ StartFails(c) \/ WarmRetry(c)
+          \/ RetryRestops(c) \/ RetryRestopConfirmed(c) \/ RetryRefused(c)
+          \/ Close(c) \/ Fail(c) \/ StartFails(c) \/ WarmRetry(c)
           \/ PlayerNeedsConsent(c) \/ Approve(c) \/ Decline(c)
           \/ TaskStep(c)
           \/ ServerStarts(c)
@@ -727,6 +769,8 @@ ClientFairness ==
     \A c \in Controllers :
         /\ WF_vars(TaskStep(c))
         /\ WF_vars(RetryProceeds(c))
+        /\ WF_vars(RetryRestops(c))
+        /\ WF_vars(RetryRestopConfirmed(c))
         /\ WF_vars(RetryRefused(c))
         /\ WF_vars(CurrentStartLands(c))
 
@@ -877,6 +921,9 @@ NeverRetryWaits ==
     \A c \in Controllers :
         ~(st[c].retryGen # 0 /\ ~Joined(c))
 NeverRetryRefused == \A c \in Controllers : ~ENABLED RetryRefused(c)
+NeverRetryRestops == \A c \in Controllers : ~ENABLED RetryRestops(c)
+NeverRestopConfirmed ==
+    \A c \in Controllers : ~ENABLED RetryRestopConfirmed(c)
 NeverRestartFromFailure ==
     \A c \in Controllers : ~(st[c].failed /\ task[c] # NoTask)
 NeverConsentShown == \A c \in Controllers : ~ConsentShowing(c)

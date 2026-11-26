@@ -33,7 +33,8 @@
 (*   User      Reopen (seek, quality or track change, the startup-deadline *)
 (*             reopen), Approve, Decline, Retry, Close                     *)
 (*   Player    Fail, PlayerNeedsConsent                                    *)
-(*   Timers    RetryProceeds, RetryRefused (failureRetryTask after         *)
+(*   Timers    RetryProceeds, RetryRestops, RetryRestopConfirmed,           *)
+(*             RetryRefused (failureRetryTask after                        *)
 (*             waitForPendingStopRequests), DeferredFires (the two-second  *)
 (*             sleep ends and the prior session's stop goes out)           *)
 (*   Task      a playbackTask.  A reopen task is at:                       *)
@@ -100,8 +101,9 @@ CONSTANTS
     RetryJoinsPendingStops,
     RetryNeedsConfirmedStop,
         \* #539: Retry mints a replacement only after the failed session's
-        \* stop was acknowledged; otherwise it fails with
-        \* priorSessionStopUnconfirmed (failedAttemptStopUnconfirmed)
+        \* stop was acknowledged.  Otherwise the tap re-sends that stop once
+        \* (joinFailedAttemptStop), proceeds if the re-send is acknowledged
+        \* and fails with priorSessionStopUnconfirmed if not
     StopTimesOut,        \* an awaited stop request has a timeout
 
     \* The model's own judgement.
@@ -193,10 +195,15 @@ IsJTask(t) ==
 \*   consent   videoTranscodeConsent.generation, 0 for nil
 \*   retryGen  the generation failureRetryTask captured, 0 for nil
 \*   approved  videoTranscodeApprovedForCurrentItem
+\*   failStop  the current failure's tracked stop request, NoRq once it is
+\*             confirmed or when the failure sent none (#539)
+\*   restop    the stop a Retry tap re-sent and awaits, NoRq for none
+RqRecs == [sid : SessionIds \cup {NoSession}, gen : Gens, n : Nat]
 StRecords ==
     [life : {"new", "open", "closed"}, failed : BOOLEAN, retryGen : Gens,
      consent : Gens, cur : JobRefs, didStop : BOOLEAN,
-     userLeft : 0..MaxUserActions, approved : BOOLEAN]
+     userLeft : 0..MaxUserActions, approved : BOOLEAN,
+     failStop : RqRecs, restop : RqRecs]
 
 \* ghost[c].
 \*   rejected  sessions stopRejectedRemoteStream was given
@@ -227,7 +234,8 @@ Init ==
     /\ st = [c \in Controllers |->
                 [life |-> "new", failed |-> FALSE, retryGen |-> 0,
                  consent |-> 0, cur |-> NoJ, didStop |-> FALSE,
-                 userLeft |-> MaxUserActions, approved |-> FALSE]]
+                 userLeft |-> MaxUserActions, approved |-> FALSE,
+                 failStop |-> NoRq, restop |-> NoRq]]
     /\ deferred = [c \in Controllers |-> {}]
     /\ wire = [c \in Controllers |-> {}]
     /\ minted = NoSession
@@ -277,16 +285,16 @@ Joined(c) ==
     /\ FixTracksDeferredStop => deferred[c] = {}
 
 \* failedAttemptStopUnconfirmed is set: onStopAcknowledged returned false
-\* for a stop entry c joins.  It does when the request failed, and when it
-\* timed out (`late`), whatever the server does with it later.  A request
-\* still inside its timeout has not returned yet.  Only surfaceFailure and
-\* Close add stop entries, and Close ends the controller, so these are the
-\* failures' stops.  The flag is never cleared, and neither is `late`.
-StopUnconfirmed(c) ==
-    \E k \in pendingStops[c] :
-        /\ k.kind = "serverStop"
-        /\ \E r \in StopsFor(c, k.sid, k.gen) :
-              r.n = k.n /\ (r.status = "failed" \/ r.late)
+\* for the current failure's stop.  It does when the request failed, and
+\* when it timed out (`late`), whatever the server does with it later.  A
+\* request still inside its timeout has not returned yet.  surfaceFailure
+\* resets it (failStop is the new failure's stop, or NoRq), and an
+\* acknowledged re-send clears it (failStop becomes NoRq).
+Unconfirmed(c, rq) ==
+    /\ rq # NoRq
+    /\ \E r \in StopsFor(c, rq.sid, rq.gen) :
+          r.n = rq.n /\ (r.status = "failed" \/ r.late)
+StopUnconfirmed(c) == Unconfirmed(c, st[c].failStop)
 
 \* jellyfinWindow, the base's replace-then-clean-up window: from the
 \* replacement request to the end of the prior session's deferred
@@ -413,7 +421,12 @@ SurfaceFailure(c, tin, next) ==
                                                     st[c].cur[2]))}
                  ELSE {}))
     /\ st' = [next EXCEPT ![c].failed = TRUE,
-                          ![c].didStop = IF stops THEN TRUE ELSE @]
+                          ![c].didStop = IF stops THEN TRUE ELSE @,
+                          ![c].failStop =
+                              IF stops
+                              THEN RqOf(NextStopReq(c, st[c].cur[1],
+                                                    st[c].cur[2]))
+                              ELSE NoRq]
     /\ IF stops THEN SendJ(c, st[c].cur) ELSE UNCHANGED serverVars
     /\ UNCHANGED <<itemGen, idleVars, deferred, minted, ghost, harm>>
 
@@ -471,6 +484,7 @@ Reopen(c) ==
     /\ QuickReopen \/ ~Replacing(c)
     /\ \E isReload \in BOOLEAN :
         ReopenCore(c, [st EXCEPT ![c].userLeft = @ - 1, ![c].retryGen = 0,
+                                 ![c].restop = NoRq,
                                  ![c].approved = @ /\ ~isReload])
 
 \* approveVideoTranscoding.  The tap is a replacement like Reopen, so the
@@ -481,7 +495,8 @@ Approve(c) ==
     /\ st[c].userLeft > 0
     /\ QuickReopen \/ ~Replacing(c)
     /\ ReopenCore(c, [st EXCEPT ![c].consent = 0, ![c].userLeft = @ - 1,
-                                ![c].retryGen = 0, ![c].approved = TRUE])
+                                ![c].retryGen = 0, ![c].approved = TRUE,
+                                ![c].restop = NoRq])
 
 \* declineVideoTranscoding.
 Decline(c) ==
@@ -503,24 +518,61 @@ Retry(c) ==
     /\ st' = [st EXCEPT ![c].retryGen = gen[c], ![c].userLeft = @ - 1]
     /\ UNCHANGED <<serverVars, ctlRest, deferred, wire, minted, ghost, harm>>
 
-\* failureRetryTask after `await waitForPendingStopRequests()`.
+\* failureRetryTask after the join in joinFailedAttemptStop, the failure's
+\* stop confirmed.
 RetryProceeds(c) ==
     /\ st[c].retryGen # 0
     /\ st[c].retryGen = gen[c]
+    /\ st[c].restop = NoRq
     /\ RetryJoinsPendingStops => Joined(c)
     /\ RetryNeedsConfirmedStop => ~StopUnconfirmed(c)
     /\ ReopenCore(c, [st EXCEPT ![c].retryGen = 0, ![c].failed = FALSE])
 
-\* The same task finding failedAttemptStopUnconfirmed set (#539): it clears
-\* failureRetryTask and surfaces priorSessionStopUnconfirmed.  The failure
-\* stays and nothing is sent or minted.
-RetryRefused(c) ==
+\* The same task finding failedAttemptStopUnconfirmed set (#539): it re-sends
+\* the failed session's stop once (failedAttemptSessionStop, kept after
+\* didStop) as a pendingStopTasks entry and awaits it, bounded.  Not while
+\* a reopen from the error overlay runs (playbackTask != nil): that is
+\* refused.
+RetryRestops(c) ==
+    LET j == <<st[c].failStop.sid, st[c].failStop.gen>> IN
     /\ RetryNeedsConfirmedStop
     /\ st[c].retryGen # 0
     /\ st[c].retryGen = gen[c]
+    /\ st[c].restop = NoRq
     /\ RetryJoinsPendingStops => Joined(c)
     /\ StopUnconfirmed(c)
-    /\ st' = [st EXCEPT ![c].retryGen = 0]
+    /\ task[c] = NoTask
+    /\ pendingStops' = Upd(pendingStops, c,
+           pendingStops[c] \cup {ServerStopTicket(NextStopReq(c, j[1], j[2]))})
+    /\ st' = [st EXCEPT ![c].restop = RqFor(c, j)]
+    /\ SendJ(c, j)
+    /\ UNCHANGED <<gen, itemGen, item, task, unwinding, idleVars, deferred,
+                   wire, minted, ghost, harm>>
+
+\* The re-sent stop is acknowledged within its bound and the generation is
+\* unchanged: the flag is cleared and the Retry reopens in the same run.
+RetryRestopConfirmed(c) ==
+    LET rq == st[c].restop IN
+    /\ rq # NoRq
+    /\ st[c].retryGen # 0
+    /\ st[c].retryGen = gen[c]
+    /\ \E r \in StopsFor(c, rq.sid, rq.gen) :
+          r.n = rq.n /\ r.status = "acked" /\ ~r.late
+    /\ ReopenCore(c, [st EXCEPT ![c].retryGen = 0, ![c].failed = FALSE,
+                                ![c].failStop = NoRq, ![c].restop = NoRq])
+
+\* The re-sent stop failed or passed its bound: priorSessionStopUnconfirmed,
+\* failureRetryTask cleared, so the next tap re-sends again.  Nothing is
+\* minted.
+RetryRefused(c) ==
+    /\ st[c].retryGen # 0
+    /\ st[c].retryGen = gen[c]
+    /\ \/ Unconfirmed(c, st[c].restop)
+       \/ /\ st[c].restop = NoRq
+          /\ RetryJoinsPendingStops => Joined(c)
+          /\ StopUnconfirmed(c)
+          /\ task[c] # NoTask
+    /\ st' = [st EXCEPT ![c].retryGen = 0, ![c].restop = NoRq]
     /\ UNCHANGED <<serverVars, ctlRest, deferred, wire, minted, ghost, harm>>
 
 \* stop().  It cancels the task and appends nothing for it.  It does not
@@ -546,6 +598,7 @@ Close(c) ==
                  ELSE {}))
     /\ st' = [st EXCEPT
            ![c].life = "closed", ![c].retryGen = 0, ![c].consent = 0,
+           ![c].restop = NoRq,
            ![c].didStop = IF stops THEN TRUE ELSE @]
     /\ IF stops THEN SendJ(c, st[c].cur) ELSE UNCHANGED serverVars
     /\ UNCHANGED <<itemGen, idleVars, deferred, minted, ghost, harm>>
@@ -832,7 +885,8 @@ Step ==
     \/ ClockTicks
     \/ \E c \in Controllers :
           \/ Start(c) \/ Reopen(c) \/ Approve(c) \/ Decline(c)
-          \/ Retry(c) \/ RetryProceeds(c) \/ RetryRefused(c) \/ Close(c)
+          \/ Retry(c) \/ RetryProceeds(c) \/ RetryRestops(c)
+          \/ RetryRestopConfirmed(c) \/ RetryRefused(c) \/ Close(c)
           \/ Fail(c)
           \/ PlayerNeedsConsent(c) \/ TaskStep(c) \/ NegotiateResolves(c)
           \/ \E j \in deferred[c] : DeferredFires(c, j)
@@ -854,6 +908,8 @@ ClientFairness ==
     \A c \in Controllers :
         /\ WF_vars(W(TaskStep(c)))
         /\ WF_vars(W(RetryProceeds(c)))
+        /\ WF_vars(W(RetryRestops(c)))
+        /\ WF_vars(W(RetryRestopConfirmed(c)))
         /\ WF_vars(W(RetryRefused(c)))
         /\ WF_vars(W(NegotiateResolves(c)))
         /\ WF_vars(W(\E j \in deferred[c] : DeferredFires(c, j)))
@@ -1001,6 +1057,9 @@ NeverConsentShown == \A c \in Controllers : ~ConsentShowing(c)
 NeverPlayerConsent ==
     \A c \in Controllers : ~(task[c] # NoTask /\ task[c].kind = "consent")
 NeverRetryRefused == \A c \in Controllers : ~ENABLED RetryRefused(c)
+NeverRetryRestops == \A c \in Controllers : ~ENABLED RetryRestops(c)
+NeverRestopConfirmed ==
+    \A c \in Controllers : ~ENABLED RetryRestopConfirmed(c)
 NeverRetryWaits ==
     \A c \in Controllers : ~(st[c].retryGen # 0 /\ ~Joined(c))
 NeverTimedOut ==

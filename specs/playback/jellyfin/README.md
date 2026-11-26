@@ -22,16 +22,20 @@ What the model shows:
   reopens and Retry, `NoOrphans` still holds (`Current-QuickReopen`); only `OneEncoder` fails.
 - **Fixed (#539): a stop that timed out no longer defeats Retry's join.** `retry()` awaits
   `waitForPendingStopRequests`, which returns when the failed session's stop request times out.
-  The failure's stop now goes through `onStopAcknowledged`, and when it was not acknowledged
-  (timed out or failed) Retry fails with `priorSessionStopUnconfirmed` (LS-PB-008), as Emby's
-  reopen does, instead of negotiating (`RetryNeedsConfirmedStop`, `RetryRefused`). With late
+  The failure's stop now goes through `onStopAcknowledged`. When it was not acknowledged (timed
+  out, failed, or never connected), each Retry tap re-sends it once, bounded, and negotiates only
+  if the re-send is acknowledged; otherwise it fails with `priorSessionStopUnconfirmed`
+  (LS-PB-008) and the next tap tries again, as Emby's barrier re-runs a retained failed stop
+  (`RetryNeedsConfirmedStop`, `RetryRestops`, `RetryRestopConfirmed`, `RetryRefused`). With late
   stops and Retry, `OneEncoder` holds (`Current-LateRetry`); without the check the replacement
   attaches beside the failed session's job (`Faithful-RetryAfterTimedOutStop-off`) and, under id
-  reuse, the timed-out stop ends it (`Faithful-RetryAfterTimedOutStop-ReusedId-off`). Still open:
-  under id reuse a *rejected result's* stop that timed out in the task the failure cancelled is
-  joined the same way and can end the Retry's replacement
-  (`Finding-RetryAfterTimedOutRejectStop-ReusedId`, conditional, the
-  `Finding-RejectedStopKillsReusedId` family). A quality or track change after the timeout
+  reuse, the timed-out stop ends it (`Faithful-RetryAfterTimedOutStop-ReusedId-off`). Still open,
+  both conditional on id reuse and on a stop the client abandoned still being applied (#536): an
+  acknowledged re-send does not fence the abandoned first stop, which can still end the Retry's
+  replacement (`Finding-RetryRestopDoesNotFence-ReusedId`); and a *rejected result's* stop that
+  timed out in the task the failure cancelled is joined the same way
+  (`Finding-RetryAfterTimedOutRejectStop-ReusedId`, the `Finding-RejectedStopKillsReusedId`
+  family). A quality or track change after the timeout
   overlaps the same way (the route of `Finding-RestartFromFailureOverlap`, here with no quick
   reopen; #530). Late stops without failures pass (`Current-LateStops`).
 - The skip of `94a9ca4e` is what keeps a reused id safe: without it the deferred stop ends the
@@ -94,7 +98,9 @@ are as of commit `abe0feab`; none of the modelled files changed after `0b7f3fcb`
 | `PlayerNeedsConsent` | the branch of `handlePlaybackFailure` (5058 to 5069) that cancels the task, bumps the generation and starts a task running `requestVideoTranscodeConsent`; that task then takes `InitialNeedsConsent` and `ConsentStopDone`, or returns at its first guard (`InitialRuns`) if it was cancelled first |
 | `Approve`, `Decline` | `approveVideoTranscoding` 2536 (it sets `videoTranscodeApprovedForCurrentItem`, which `PlayerNeedsConsent` reads), `declineVideoTranscoding` 2549 |
 | `Retry`, `RetryProceeds` | `retry()`, `failureRetryTask` with `waitForPendingStopRequests` and `restartAtCurrentPosition` |
-| `RetryRefused`, `StopUnconfirmed` | the `failedAttemptStopUnconfirmed` guard in `failureRetryTask` after the join: `playbackError.set(PlaybackFailure(code: .priorSessionStopUnconfirmed))`. The flag is set by `trackFailedAttemptStop` when the failure's `onStopAcknowledged` (`stopRemoteSessionIfNeeded(tracksFailedAttempt: true)` from `surfaceFailure`) returns false; it is never cleared |
+| `StopUnconfirmed`, `st.failStop` | `failedAttemptStopUnconfirmed`: set by `trackFailedAttemptStop` when the failure's `onStopAcknowledged` (`stopRemoteSessionIfNeeded(tracksFailedAttempt: true)` from `surfaceFailure`) returns false in the failure's generation; reset by each `surfaceFailure`, cleared by an acknowledged re-send |
+| `RetryRestops`, `st.restop` | `joinFailedAttemptStop` after the join: `resendFailedAttemptStop` re-runs `failedAttemptSessionStop` (kept after `didStop`) once, as a `pendingStopTasks` entry, bounded by `failedAttemptRestopTimeout` (10 s). Not while a reopen from the error overlay runs (`playbackTask != nil`, `task[c] # NoTask`); that tap is refused |
+| `RetryRestopConfirmed`, `RetryRefused` | the generation and cancellation check after the re-send: acknowledged clears the flag and `restartAtCurrentPosition` runs; otherwise `playbackError.set(PlaybackFailure(code: .priorSessionStopUnconfirmed))` with `failureRetryTask` cleared, so the next tap re-sends again. A cancelled or superseded task does nothing (Close resets `restop`) |
 | `Close` | `stop()` 1135: the task cancelled and dropped at 1181 to 1182, the detach 1201, `stopRemoteSessionIfNeeded` 1203 |
 | `SurfaceFailure`, `StopsNow` | `surfaceFailure` 5133 (the cancelled task joined at 5155 to 5158, `stopRemoteSessionIfNeeded` 5178); `stopRemoteSessionIfNeeded` 1255 for Jellyfin: `onStopAndWait` as a `pendingStopTasks` entry at 1268 |
 | `Fail` | `handlePlaybackFailure` and the watchdogs that end in `surfaceFailure` |
@@ -294,7 +300,7 @@ shipping value of every behaviour constant.
 | `Current-Reopen` | — | pass | pass | 723,971 | 5 s |
 | `Current-LateStops` | `Current-Reopen` + `StopsCanBeLate` − `EnvFails`, `RestartFromFailure` | pass | pass | 38,913 | 1 s |
 | `Current-LateFail` | `Current-ReopenSmall` + `StopsCanBeLate` | pass | pass (`OneEncoder` not checked; the restart route, `Finding-RestartFromFailureOverlap`, owns it) | 153,876 | 4 s |
-| `Current-LateRetry` | `Current-ReopenSmall` + `StopsCanBeLate` − `RestartFromFailure` | pass | pass (every invariant, `OneEncoder` included) | 50,613 | 2 s |
+| `Current-LateRetry` | `Current-ReopenSmall` + `StopsCanBeLate` − `RestartFromFailure` | pass | pass (every invariant, `OneEncoder` included) | 256,833 | 3 s |
 | `Current-ReusedId` | — | pass | pass (given `"latest"` reuse that replaces the job, `StopEndsAllUnderId`) | 233,522 | 2 s |
 | `Current-Consent` | `Current-ReopenSmall` + `ConsentPossible`, `MaxGeneration = 15` | pass | pass (no reopen while a task awaits a stop) | 2,221,320 | 12 s |
 | `Current-QuickRetry` | `Current-ReopenSmall` + `QuickRetry` | pass | pass | 55,495 | 1 s |
@@ -325,7 +331,8 @@ shipping value of every behaviour constant.
 | `Finding-RejectedStopKillsReusedId-Retry` (conditional) | `Current-ReusedId` + `RestartFromFailure` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-RestartFromFailureStaleStop` (conditional) | `Current-ReusedId` + `RestartFromFailure`, `QuickReopen` − `QuickRetry` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Faithful-RetryAfterTimedOutStop-ReusedId-off` (conditional) | `Current-ReusedId` + `StopsCanBeLate` − `RetryNeedsConfirmedStop` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 2 s |
-| `Finding-RetryAfterTimedOutRejectStop-ReusedId` (conditional) | `Current-ReusedId` + `StopsCanBeLate` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 2 s |
+| `Finding-RetryRestopDoesNotFence-ReusedId` (conditional, #536) | `Current-ReusedId` + `StopsCanBeLate`, one user action | `StopNeverKillsSuccessor` violated | violated | stops at first error | 2 s |
+| `Finding-RetryAfterTimedOutRejectStop-ReusedId` (conditional, #536) | `Current-ReusedId` + `StopsCanBeLate` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 2 s |
 | `Finding-SameIdSkipLeavesPrior` (conditional) | `Current-ReusedId` − `ReusedIdReplacesJob` | `OneEncoder` violated | violated | stops at first error | 1 s |
 | `Finding-BackToBackStaleStop` (conditional) | two controllers, see the config | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Proposed-CloseJoins` | `Current-ReopenSmall` + both join fixes | pass | pass | 48,176 | 2 s |
@@ -406,7 +413,7 @@ Checked as the only invariant, each witness is violated:
 | --- | --- |
 | `NeverDeferred`, `NeverDeferredAfterClose`, `NeverRejected`, `NeverRecreated`, `NeverStopFailed`, `NeverRetryWaits`, `NeverWindowTwo` | `Current-Reopen` |
 | `NeverTimedOut` | `Current-LateStops` |
-| `NeverRetryRefused` (Retry finds the failure's stop unconfirmed) | `Current-LateRetry` |
+| `NeverRetryRestops`, `NeverRestopConfirmed`, `NeverRetryRefused` (a tap re-sends the failure's stop; the re-send is acknowledged; it is not) | `Current-LateRetry` |
 | `NeverSkipped`, `NeverReusedId`, `NeverReplacedById`, `NoWrongKill` (the excused wrong kill) | `Current-ReusedId` |
 | `NeverConsentShown`, `NeverPlayerConsent` (the consent request from a failing item) | `Current-Consent` |
 | `NeverSharedId` | `Deep-BackToBack` |
@@ -493,15 +500,28 @@ missing join (#530): Retry joins here, and the join gives up at the request time
 
 The fix: `surfaceFailure` stops the failed session through `onStopAcknowledged`
 (`stopRemoteSessionIfNeeded(tracksFailedAttempt: true)`) and records an unacknowledged answer in
-`failedAttemptStopUnconfirmed` before the `pendingStopTasks` entry ends. After the join,
-`failureRetryTask` checks it and, set, surfaces `priorSessionStopUnconfirmed` and mints nothing;
-the flag is never cleared, because nothing tells the client the fate of a request it stopped
-waiting for. Every later Retry is refused the same way, so Retry either proceeds or ends in that
-one stable failure, with no extra request and no wait beyond the stop's own timeout. Both traces
-then end in `RetryRefused`, and every invariant holds in `Current-LateRetry`.
+`failedAttemptStopUnconfirmed` before the `pendingStopTasks` entry ends, if no later generation
+has taken over; each failure resets it. After the join, `joinFailedAttemptStop` (the helper the
+restart-from-failure path can share) checks it and, set, re-sends the failed session's stop once
+(`failedAttemptSessionStop`, kept after `didStop` as the Emby barrier keeps its operation), as a
+`pendingStopTasks` entry bounded by `failedAttemptRestopTimeout` (10 s; the failure-time
+tracking stays at the request's own timeout). It re-checks the generation and cancellation: an
+acknowledged re-send clears the flag and the Retry negotiates; otherwise it surfaces
+`priorSessionStopUnconfirmed` and clears `failureRetryTask`, so the next tap re-sends again. A
+blip that made the first DELETE fail at once no longer leaves Retry dead. Each tap makes at most
+one request and waits at most the bound, so there is no loop. Both traces now end in
+`RetryRestops` followed by `RetryRestopConfirmed` or `RetryRefused`, and every invariant holds in
+`Current-LateRetry`.
+
+What it does not fence (`Finding-RetryRestopDoesNotFence-ReusedId`, conditional on `"latest"`
+reuse and on #536, 12 states): the failure's stop times out, the tap re-sends it and the re-send
+is acknowledged (ending A), the Retry's negotiation returns A's id, and the first stop, still on
+the wire, ends the replacement. Nothing the client hears about the second request says what
+became of the first. A server that never returns a used id, or one that drops a request whose
+client went away, closes it; so would a fresh id per Retry, which is not modelled.
 
 What it does not cover (`Finding-RetryAfterTimedOutRejectStop-ReusedId`, conditional on
-`"latest"` reuse, 15 states): `Reopen` negotiates A's id again, `Fail` cancels that reopen and
+`"latest"` reuse and #536, 15 states): `Reopen` negotiates A's id again, `Fail` cancels that reopen and
 joins it, the reopen's `stopRejectedRemoteStream` sends the rejected result's stop, which times
 out, so the joined task returns; A's own stop was acknowledged, so Retry proceeds, its
 negotiation returns A's id once more, and the rejected result's stop ends the replacement. It is

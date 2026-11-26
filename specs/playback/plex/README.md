@@ -29,7 +29,9 @@ Each MainActor run between two awaits is one action. Functions are in
 | `Sid(c)` | `sessionID`, minted once per controller |
 | `Start` | `start()`: `beginStreaming(stoppingPreviousTranscode: false)` |
 | `UserQuality` | `reload(bitrateKbps:)` and the audio and subtitle track changes: `restartAtCurrentPosition` with an intent other than `explicitRetry`, then `beginStreaming` |
-| `RetryRefused`, `StopUnconfirmed` | the `failedAttemptStopUnconfirmed` guard in `failureRetryTask` after the join (#539): `playbackError.set(PlaybackFailure(code: .priorSessionStopUnconfirmed))`, no restart. `surfaceFailure` sends its stop with `sendTranscodeStop(tracksFailedAttempt: true)`, on a copy of the control client bounded by `failedAttemptStopTimeout` (30 s; `PlexClient.withTimeoutBound`), and `trackFailedAttemptStop` sets the flag when no HTTP answer came within the bound. It is never cleared. The model's `late` on that stop is the bound passing |
+| `StopUnconfirmed`, `st.failStop` | `failedAttemptStopUnconfirmed` (#539). `surfaceFailure` sends its stop with `sendTranscodeStop(tracksFailedAttempt: true)` through `plexFailedAttemptStop`, on a copy of the control client bounded by `failedAttemptStopTimeout` (30 s; `PlexClient.withTimeoutBound`), and `trackFailedAttemptStop` sets the flag when no HTTP answer came, in the failure's generation. Reset by each failure, cleared by an answered re-send. The model's `late` on that stop is the bound passing. A transport error at once (`serverUnreachable`, e.g. no network) also sets it in the Swift; the model has no such outcome, and the gap is safe: such a request never reached PMS, and Retry only re-sends |
+| `RetryRestops`, `st.restop` | `joinFailedAttemptStop`: `resendFailedAttemptStop` sends one more stop through `plexFailedAttemptStop`, not behind `sentTranscodeStop`, as a `pendingStopTasks` entry bounded by `failedAttemptRestopTimeout` (10 s). Not while a restart from the error overlay runs (`playbackTask != nil`, `task[c] # NoTask`): the re-send could end the job that restart starts (`Proposed-StartAfterOwnStops` found it), so that tap is refused |
+| `RetryRestopConfirmed`, `RetryRefused` | after the re-send, the generation and cancellation check: answered clears the flag and the restart runs; otherwise `playbackError.set(PlaybackFailure(code: .priorSessionStopUnconfirmed))` with `failureRetryTask` cleared, so the next tap re-sends again. Close resets `restop` |
 | `Retry`, `RetryProceeds`, `Joined` | `retry()` 2566, `failureRetryTask`, `waitForPendingStopRequests` 1236 awaited at 2580: it returns when every `pendingStopTasks` entry has, and a `sendTranscodeStop` entry returns when its request is answered or times out (`try?` drops the error). `restartAtCurrentPosition` with `.explicitRetry` then switches to the recovery client (5743, `switchToRecoveryControlClient` 2689) |
 | `Close` | `stop()` |
 | `Fail`, `StartFails` | `handlePlaybackFailure` and the watchdogs, and the `catch`es of `startStreaming`, each ending in `surfaceFailure` |
@@ -225,13 +227,14 @@ controller, two user actions, `MaxGeneration = 16`, failures and the startup-dea
 | `Current-InPlace` | pass | pass | 2,801,859 | 12 s |
 | `Current-ReusedId` | pass | pass (given `StopEndsAllUnderId`) | 1,262,840 | 6 s |
 | `Current-LateAck` | pass | pass (given `StopEndsAllUnderId`) | 2,534,848 | 10 s |
-| `Current-LateFail` | pass | pass (given `StopEndsAllUnderId`; every `Current-LateAck` invariant, `LiveStopNeverKillsSuccessor` included since #539) | 109,047 | 2 s |
+| `Current-LateFail` | pass | pass (given `StopEndsAllUnderId`; `LiveStopNeverKillsSuccessor` not checked, `Finding-RetryRestopDoesNotFence` owns it) | 109,047 | 2 s |
 | `Current-Consent` | pass | pass | 1,530,725 | 8 s |
 | `Liveness-InPlace` | pass | pass | 240,066 | 16 s |
 | `Liveness-BoundedWait` | pass | pass | 149,595 | 7 s |
 | `Faithful-StopPrevious-off` | `OneEncoder` violated | violated | stops at first error | 1 s |
 | `Faithful-DetachBeforeStart-off` | `NoZombieItem` violated | violated | stops at first error | 1 s |
 | `Faithful-RetryAfterTimedOutStop-off` (conditional on PMS) | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
+| `Finding-RetryRestopDoesNotFence` (conditional on PMS, #536) | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 2 s |
 | `Mutant-StopNotAwaited` | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Mutant-StopNotAwaited-PileUp` | `OneEncoderOutsideCancelledStops` violated | violated | stops at first error | 1 s |
 | `Mutant-RetrySkipsJoin` | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
@@ -266,8 +269,9 @@ controller, two user actions, `MaxGeneration = 16`, failures and the startup-dea
   (`Faithful-RetryAfterTimedOutStop-off`, the same constants with `EnvFails` and
   `RetryNeedsConfirmedStop = FALSE`); before the detached stop's timeout was modelled it passed
   with them (20,963,959 states). `Current-LateFail`: `Current-LateAck` with `EnvFails`, one user
-  action and `MaxGeneration = 11`, every `Current-LateAck` invariant (before #539 it left out
-  `LiveStopNeverKillsSuccessor`), so late stops and failures are checked together.
+  action and `MaxGeneration = 11`, every `Current-LateAck` invariant except
+  `LiveStopNeverKillsSuccessor` (owned by `Finding-RetryRestopDoesNotFence`, which is it with the
+  property), so late stops and failures are checked together.
 - `Current-Consent`: `Current-InPlace` with `ConsentPossible`, two user actions,
   `MaxGeneration = 19`, every `Current-InPlace` invariant and `ConsentBoundary`.
   `Finding-ConsentShowsOverRunningJob` is it with late stops (checking `ConsentBoundary` only),
@@ -332,7 +336,7 @@ only invariant, each is violated:
 | `NeverStopWhileAttached`, `NeverRestartBehindItem`, `NeverBlankStop`, `NeverCancelledWait`, `NeverWarmJoin`, `NeverRetryWaits` | `Current-InPlace` |
 | `NeverTwoUnderOneId`, `NeverStopFailed` | `Current-ReusedId` |
 | `NeverGaveUp`, `NeverCancelledStopLands`, `NeverDetachedTimedOut` (Close's detached stop timed out) | `Current-LateAck` |
-| `NeverRetryRefused` (Retry finds the failure's stop unconfirmed) | `Current-LateFail` |
+| `NeverRetryRestops`, `NeverRestopConfirmed`, `NeverRetryRefused` (a tap re-sends the failure's stop; PMS answers it; the bound passes) | `Current-LateFail` |
 | `NeverConsentShown` | `Current-Consent` |
 | `NeverRestartFromFailure` | `Proposed-StartAfterOwnStops` |
 | `NeverLateStart` | `Finding-LateStartPilesUp` |
@@ -485,12 +489,22 @@ The fix keeps tracking the stop past the control client's timeout, with a bound,
 treat it as joined when the bound passes. `surfaceFailure` sends it on its own copy of the control
 client whose request and resource timeouts are `failedAttemptStopTimeout` (30 s), so after a Retry
 it is no longer cut off by the recovery client's 5 s. An HTTP answer of any status counts as
-answered. No answer within the bound sets `failedAttemptStopUnconfirmed`; Retry then surfaces
-`priorSessionStopUnconfirmed` (LS-PB-008) and starts nothing, now and on every later tap, since
-the client will never hear that request's fate and a restart reuses the session id it names.
-Retry therefore either restarts after an answered stop or ends in one stable failure; there is no
-extra request, retry loop or unbounded wait. The trace ends in `RetryRefused`, and
-`Current-LateFail` checks `LiveStopNeverKillsSuccessor` again.
+answered. No answer within the bound (or a transport error at once) sets
+`failedAttemptStopUnconfirmed` for that failure. The Retry tap then re-sends the stop once
+(`joinFailedAttemptStop`, which the restart-from-failure path can share), bypassing the
+`sentTranscodeStop` latch, bounded by `failedAttemptRestopTimeout` (10 s). Both bounds are
+judgment calls. If PMS answers, the flag is cleared and Retry restarts; if not, Retry surfaces
+`priorSessionStopUnconfirmed` (LS-PB-008), starts nothing and clears `failureRetryTask`, so the
+next tap tries again. Each tap makes at most one request and waits at most the bound. The trace
+now ends in `RetryRestops` and `RetryRefused`, or in `RetryRestopConfirmed` and a restart.
+
+What it does not fence (`Finding-RetryRestopDoesNotFence`, conditional on
+`CancelledStopCanLand`, #536; 14 states): the re-send is answered, Retry restarts under the same
+session id, and the first stop, which the client stopped waiting for, is applied and ends the
+replacement. On Plex the session id is always reused, so the fix narrows the route (a second stop
+must be answered first) but does not close it; only PMS dropping an abandoned request, or a fresh
+session id per restart, would. `Current-LateFail` therefore still leaves out
+`LiveStopNeverKillsSuccessor`, now owned by that finding.
 
 ### The consent choice shows over a running copy job (`Finding-ConsentShowsOverRunningJob`)
 
