@@ -11,7 +11,8 @@ scripts/check-tla-specs.sh --deep specs/playback/plex/Deep-BackToBack.cfg
 ```
 
 The model reproduces both halves of suspect 2, finds three more ways for a stale stop to end a
-replacement (one of them Retry after the failure's detached stop timed out), judges suspect 4's
+replacement (one of them Retry after the failure's detached stop timed out, fixed by #539:
+`Faithful-RetryAfterTimedOutStop-off`), judges suspect 4's
 late start for Plex, and models Plex's consent boundary, where the choice can show over a copy
 job that is still running. Each has a `Finding-*` config and a trace below. None has been
 reproduced in the app or against a server. Two results depend on what PMS does with a stop when
@@ -28,6 +29,7 @@ Each MainActor run between two awaits is one action. Functions are in
 | `Sid(c)` | `sessionID`, minted once per controller |
 | `Start` | `start()`: `beginStreaming(stoppingPreviousTranscode: false)` |
 | `UserQuality` | `reload(bitrateKbps:)` and the audio and subtitle track changes: `restartAtCurrentPosition` with an intent other than `explicitRetry`, then `beginStreaming` |
+| `RetryRefused`, `StopUnconfirmed` | the `failedAttemptStopUnconfirmed` guard in `failureRetryTask` after the join (#539): `playbackError.set(PlaybackFailure(code: .priorSessionStopUnconfirmed))`, no restart. `surfaceFailure` sends its stop with `sendTranscodeStop(tracksFailedAttempt: true)`, on a copy of the control client bounded by `failedAttemptStopTimeout` (30 s; `PlexClient.withTimeoutBound`), and `trackFailedAttemptStop` sets the flag when no HTTP answer came within the bound. It is never cleared. The model's `late` on that stop is the bound passing |
 | `Retry`, `RetryProceeds`, `Joined` | `retry()` 2566, `failureRetryTask`, `waitForPendingStopRequests` 1236 awaited at 2580: it returns when every `pendingStopTasks` entry has, and a `sendTranscodeStop` entry returns when its request is answered or times out (`try?` drops the error). `restartAtCurrentPosition` with `.explicitRetry` then switches to the recovery client (5743, `switchToRecoveryControlClient` 2689) |
 | `Close` | `stop()` |
 | `Fail`, `StartFails` | `handlePlaybackFailure` and the watchdogs, and the `catch`es of `startStreaming`, each ending in `surfaceFailure` |
@@ -174,7 +176,8 @@ What depends on them:
   startup-deadline retry runs two transcoders by design. It is a conditional finding: a defect
   unless PMS serves that request from the running job.
 - **`CancelledStopCanLand`.** The kill half of suspect 2 needs `TRUE`, and so do
-  `Finding-RetryAfterTimedOutStop` and `Finding-CancelledConsentStopKillsApproved`. The pile-up
+  `Faithful-RetryAfterTimedOutStop-off` (#539, the code before the fix) and
+  `Finding-CancelledConsentStopKillsApproved`. The pile-up
   half does not depend on it, nor on `StopEndsAllUnderId`. `Finding-FinalStopKillsReplacement`
   and `Finding-ConsentShowsOverRunningJob` need none of the three.
 
@@ -222,12 +225,13 @@ controller, two user actions, `MaxGeneration = 16`, failures and the startup-dea
 | `Current-InPlace` | pass | pass | 2,801,859 | 12 s |
 | `Current-ReusedId` | pass | pass (given `StopEndsAllUnderId`) | 1,262,840 | 6 s |
 | `Current-LateAck` | pass | pass (given `StopEndsAllUnderId`) | 2,534,848 | 10 s |
-| `Current-LateFail` | pass | pass (given `StopEndsAllUnderId`; `LiveStopNeverKillsSuccessor` not checked) | 240,066 | 2 s |
+| `Current-LateFail` | pass | pass (given `StopEndsAllUnderId`; every `Current-LateAck` invariant, `LiveStopNeverKillsSuccessor` included since #539) | 109,047 | 2 s |
 | `Current-Consent` | pass | pass | 1,530,725 | 8 s |
 | `Liveness-InPlace` | pass | pass | 240,066 | 16 s |
 | `Liveness-BoundedWait` | pass | pass | 149,595 | 7 s |
 | `Faithful-StopPrevious-off` | `OneEncoder` violated | violated | stops at first error | 1 s |
 | `Faithful-DetachBeforeStart-off` | `NoZombieItem` violated | violated | stops at first error | 1 s |
+| `Faithful-RetryAfterTimedOutStop-off` (conditional on PMS) | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Mutant-StopNotAwaited` | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Mutant-StopNotAwaited-PileUp` | `OneEncoderOutsideCancelledStops` violated | violated | stops at first error | 1 s |
 | `Mutant-RetrySkipsJoin` | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
@@ -241,7 +245,6 @@ controller, two user actions, `MaxGeneration = 16`, failures and the startup-dea
 | `Finding-LateStartOutlivesStop` | `CleanAfterAckedClose` violated | violated | stops at first error | 1 s |
 | `Finding-LateStartPilesUp` | `OneEncoder` violated | violated | stops at first error | 1 s |
 | `Finding-ConsentShowsOverRunningJob` | `ConsentBoundary` violated | violated | stops at first error | 1 s |
-| `Finding-RetryAfterTimedOutStop` (conditional on PMS) | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-CancelledConsentStopKillsApproved` (conditional on PMS) | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-StopEndsOnlySome` (conditional on PMS) | `CleanAfterAckedClose` violated | violated | stops at first error | 1 s |
 | `Finding-WarmStartAddsJob` (conditional on PMS) | `OneEncoder` violated | violated | stops at first error | 1 s |
@@ -259,11 +262,12 @@ controller, two user actions, `MaxGeneration = 16`, failures and the startup-dea
 - `Current-LateAck` (review focus 3): `StopsCanFail`, `StopsCanBeLate`, `CancelledStopCanLand`
   and `StopEndsAllUnderId`, no failures. It checks `TypeOK`, `OneEncoderOutsideCancelledStops`,
   `LiveStopNeverKillsSuccessor`, `NoZombieItem`, `NoOrphans` and `CleanAfterAckedClose`. With
-  failures it fails `LiveStopNeverKillsSuccessor` (`Finding-RetryAfterTimedOutStop`, the same
-  constants with `EnvFails`); before the detached stop's timeout was modelled it passed with them
-  (20,963,959 states). `Current-LateFail`: `Current-LateAck` with `EnvFails`, one user action and
-  `MaxGeneration = 11`, every `Current-LateAck` invariant except `LiveStopNeverKillsSuccessor`
-  (owned by `Finding-RetryAfterTimedOutStop`), so late stops and failures are checked together.
+  failures and without #539's check it fails `LiveStopNeverKillsSuccessor`
+  (`Faithful-RetryAfterTimedOutStop-off`, the same constants with `EnvFails` and
+  `RetryNeedsConfirmedStop = FALSE`); before the detached stop's timeout was modelled it passed
+  with them (20,963,959 states). `Current-LateFail`: `Current-LateAck` with `EnvFails`, one user
+  action and `MaxGeneration = 11`, every `Current-LateAck` invariant (before #539 it left out
+  `LiveStopNeverKillsSuccessor`), so late stops and failures are checked together.
 - `Current-Consent`: `Current-InPlace` with `ConsentPossible`, two user actions,
   `MaxGeneration = 19`, every `Current-InPlace` invariant and `ConsentBoundary`.
   `Finding-ConsentShowsOverRunningJob` is it with late stops (checking `ConsentBoundary` only),
@@ -287,8 +291,8 @@ client itself cancelled, which pins suspect 2 to `stopPreviousTranscode`'s give-
 cancelled wait. `RestartFromFailure` and `LateStarts` are off in every `Current` config; their
 `Finding` configs turn on nothing else. `Current-LateAck` has no failures (`Current-LateFail` has
 them and drops `LiveStopNeverKillsSuccessor`), and `Current-Consent`
-no late stops, for the same reason (`Finding-RetryAfterTimedOutStop`,
-`Finding-ConsentShowsOverRunningJob`).
+no late stops, for the same reason (`Finding-ConsentShowsOverRunningJob`; before #539 also the
+route now in `Faithful-RetryAfterTimedOutStop-off`).
 
 ### Faithfulness and mutants
 
@@ -328,6 +332,7 @@ only invariant, each is violated:
 | `NeverStopWhileAttached`, `NeverRestartBehindItem`, `NeverBlankStop`, `NeverCancelledWait`, `NeverWarmJoin`, `NeverRetryWaits` | `Current-InPlace` |
 | `NeverTwoUnderOneId`, `NeverStopFailed` | `Current-ReusedId` |
 | `NeverGaveUp`, `NeverCancelledStopLands`, `NeverDetachedTimedOut` (Close's detached stop timed out) | `Current-LateAck` |
+| `NeverRetryRefused` (Retry finds the failure's stop unconfirmed) | `Current-LateFail` |
 | `NeverConsentShown` | `Current-Consent` |
 | `NeverRestartFromFailure` | `Proposed-StartAfterOwnStops` |
 | `NeverLateStart` | `Finding-LateStartPilesUp` |
@@ -451,9 +456,11 @@ start whose connection the client has dropped, after a stop sent later. `Finding
 is the same request order across a restart: `OneEncoder` is violated in 9 states, with the
 overtaken start's job beside the replacement's.
 
-### Conditional: Retry after the failure's stop timed out (`Finding-RetryAfterTimedOutStop`)
+### Fixed (#539), conditional: Retry after the failure's stop timed out (`Faithful-RetryAfterTimedOutStop-off`)
 
-`LiveStopNeverKillsSuccessor` is violated in 12 states with late stops. Its one server assumption
+Before #539, and in `Faithful-RetryAfterTimedOutStop-off` with `RetryNeedsConfirmedStop = FALSE`
+(line numbers as they were then), `LiveStopNeverKillsSuccessor` is violated in 12 states with
+late stops. Its one server assumption
 is `CancelledStopCanLand`: PMS applies a stop whose connection the client dropped. The client
 cancels nothing itself, so the weaker property fails, not only `StopNeverKillsSuccessor`.
 
@@ -472,8 +479,18 @@ The comment at 2578 to 2579 is the rule this breaks: do not mint a replacement w
 attempt's exact-session stop is still in flight. A timed-out request is still in flight, and the
 join cannot tell it from an answered one. The recovery client makes the timeout short: every
 Retry switches to it, so from the second failure on the detached stop gives up after 5 s.
-`Mutant-RetrySkipsJoin` is the same route with no join at all. In Swift, Retry should not treat a
-timed-out exact-session stop as joined.
+`Mutant-RetrySkipsJoin` is the same route with no join at all.
+
+The fix keeps tracking the stop past the control client's timeout, with a bound, and does not
+treat it as joined when the bound passes. `surfaceFailure` sends it on its own copy of the control
+client whose request and resource timeouts are `failedAttemptStopTimeout` (30 s), so after a Retry
+it is no longer cut off by the recovery client's 5 s. An HTTP answer of any status counts as
+answered. No answer within the bound sets `failedAttemptStopUnconfirmed`; Retry then surfaces
+`priorSessionStopUnconfirmed` (LS-PB-008) and starts nothing, now and on every later tap, since
+the client will never hear that request's fate and a restart reuses the session id it names.
+Retry therefore either restarts after an answered stop or ends in one stable failure; there is no
+extra request, retry loop or unbounded wait. The trace ends in `RetryRefused`, and
+`Current-LateFail` checks `LiveStopNeverKillsSuccessor` again.
 
 ### The consent choice shows over a running copy job (`Finding-ConsentShowsOverRunningJob`)
 
@@ -522,7 +539,7 @@ the user's decision, which fits the 60 s default client better than the 5 s reco
 - `FixRestartResetsStopLatch`, from the restart core.
 
 With both, every property holds in full under late and lost stops and restarts from a
-failure, given `StopEndsAllUnderId`, and `Finding-RetryAfterTimedOutStop`'s route is closed too: a
+failure, given `StopEndsAllUnderId`, and `Faithful-RetryAfterTimedOutStop-off`'s route is closed too: a
 detached stop past its `URLSession` timeout still counts as unanswered. The model's fix waits for
 the server's outcome, which a request that timed out never reports to the client, so in Swift the
 fix needs the stop tracked past its timeout (or Retry to treat a timed-out exact-session stop as

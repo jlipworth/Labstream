@@ -1230,6 +1230,16 @@ final class PlaybackController {
 
     private var pendingStopTasks: [Task<Void, Never>] = []
     private var failureRetryTask: Task<Void, Never>?
+    /// How long a failed attempt's exact-session stop is tracked before it counts as
+    /// unconfirmed (#539). Plex sends it on its own client with this bound, past the 5 s
+    /// timeout of the recovery client Retry switches to. Internal so tests can shorten it.
+    var failedAttemptStopTimeout: TimeInterval = 30
+    /// A failed attempt's exact-session stop timed out or was not acknowledged (#539). The
+    /// request may still be on its way to the server, where it can end the session or, under
+    /// a reused id, a replacement started after it; nothing tells the client its fate. So Retry
+    /// will not mint a replacement for this playback and surfaces `priorSessionStopUnconfirmed`
+    /// (LS-PB-008), as Emby's reopen does, instead of running beside or under that stop.
+    private var failedAttemptStopUnconfirmed = false
 
     /// Join teardown already started by stop(); used before a probe publishes its terminal report.
     /// Completion means requests finished, not that the server has no workers.
@@ -1252,7 +1262,9 @@ final class PlaybackController {
         return embyReopenStopBarrier.currentTicket
     }
 
-    private func stopRemoteSessionIfNeeded() {
+    /// `tracksFailedAttempt`: a failure's stop whose acknowledgement Retry needs (#539). It
+    /// uses the acknowledged callback, so a timed-out or failed DELETE is not taken as joined.
+    private func stopRemoteSessionIfNeeded(tracksFailedAttempt: Bool = false) {
         guard let session = mediaBrowserSession else { return }
         if session.backend == .emby {
             _ = beginEmbySessionStop(session)
@@ -1264,7 +1276,9 @@ final class PlaybackController {
                                                                     didAlreadyStop: session.didStop) {
         case .stop:
             session.didStop = true
-            if let stop = session.onStopAndWait {
+            if tracksFailedAttempt, let stop = session.onStopAcknowledged {
+                trackFailedAttemptStop { await stop() }
+            } else if let stop = session.onStopAndWait {
                 pendingStopTasks.append(Task { await stop() })
             } else if let stop = session.onStopAcknowledged {
                 pendingStopTasks.append(Task { _ = await stop() })
@@ -1285,13 +1299,41 @@ final class PlaybackController {
     /// process per close/rebuild until the inactivity reaper runs — observed live as
     /// a pile-up of open transcoder sessions on the server. Detached fire-and-forget:
     /// teardown must not block on (or fail with) the network.
-    private func sendTranscodeStop() {
+    /// `tracksFailedAttempt`: a failure's stop, which Retry must see answered (#539). It goes
+    /// out on its own client bounded by `failedAttemptStopTimeout` rather than the control
+    /// client's own timeout; an HTTP answer counts as answered, a timeout or transport error
+    /// marks it unconfirmed.
+    private func sendTranscodeStop(tracksFailedAttempt: Bool = false) {
         guard isStreaming, !sentTranscodeStop, let server, let token else { return }
         sentTranscodeStop = true
         let req = TranscodeRequest.stop(server: server, token: token,
                                         identity: identity, sessionID: sessionID)
-        let client = self.client
-        pendingStopTasks.append(Task.detached { _ = try? await client.send(req) })
+        guard tracksFailedAttempt else {
+            let client = self.client
+            pendingStopTasks.append(Task.detached { _ = try? await client.send(req) })
+            return
+        }
+        let tracked = client.withTimeoutBound(failedAttemptStopTimeout)
+        trackFailedAttemptStop {
+            defer { tracked.finishAndInvalidate() }
+            do {
+                try await tracked.send(req)
+                return true
+            } catch PlexError.http, PlexError.unauthorized {
+                return true
+            } catch {
+                return false
+            }
+        }
+    }
+
+    /// Run a failed attempt's exact-session stop as a `pendingStopTasks` entry and record an
+    /// unconfirmed outcome before the entry ends, so Retry's join reads it (#539).
+    private func trackFailedAttemptStop(_ stop: @escaping @MainActor () async -> Bool) {
+        pendingStopTasks.append(Task { @MainActor [weak self] in
+            let confirmed = await stop()
+            if !confirmed { self?.failedAttemptStopUnconfirmed = true }
+        })
     }
 
     // MARK: - Subtitles (soft renditions)
@@ -2580,6 +2622,17 @@ final class PlaybackController {
             await self.waitForPendingStopRequests()
             guard !Task.isCancelled, self.playbackGeneration == generation else { return }
             self.failureRetryTask = nil
+            // A stop that timed out is still in flight too, and the join cannot wait it out
+            // (#539): fail as Emby's reopen does rather than overlap or reuse its session.
+            guard !self.failedAttemptStopUnconfirmed else {
+                self.recordPlaybackDiagnostic("playback.retry_refused", fields: [
+                    "failure_code": .label(PlaybackFailure.Code.priorSessionStopUnconfirmed.rawValue),
+                ])
+                self.playbackError.set(PlaybackFailure(code: .priorSessionStopUnconfirmed))
+                self.endReconnectStatus()
+                self.updateTransportStatus()
+                return
+            }
             self.sentTranscodeStop = false
             self.restartAtCurrentPosition(offsetMs: resumeMs,
                                           bitrateKbps: self.maxVideoBitrateKbps,
@@ -5174,8 +5227,8 @@ final class PlaybackController {
         timeline.report(state: .stopped, force: true, positionMs: resumeMs)
         recordLocalPlaybackPosition(resumeMs)
         captionAppearance.stopPreview()
-        sendTranscodeStop()
-        stopRemoteSessionIfNeeded()
+        sendTranscodeStop(tracksFailedAttempt: true)
+        stopRemoteSessionIfNeeded(tracksFailedAttempt: true)
         stopVideoNowPlayingSession()
         refreshVideoNowPlayingMetadata(elapsedMillisecondsOverride: resumeMs, playbackRateOverride: 0)
         endReconnectStatus()

@@ -41,6 +41,22 @@ public actor PlexClient {
         return PlexClient(session: session, identity: identity)
     }
 
+    /// A client on a fresh copy of this client's session configuration whose request and
+    /// resource timeouts are both `timeout`, for one request that must be tracked for a fixed
+    /// bound whatever this client's own timeout is (the recovery client gives up after 5 s).
+    /// Call `finishAndInvalidate()` on it once its request has returned.
+    public nonisolated func withTimeoutBound(_ timeout: TimeInterval) -> PlexClient {
+        let configuration = session.configuration
+        configuration.timeoutIntervalForRequest = timeout
+        configuration.timeoutIntervalForResource = timeout
+        return PlexClient(session: URLSession(configuration: configuration), identity: identity)
+    }
+
+    /// Release a client made by `withTimeoutBound(_:)` once its work is done.
+    public nonisolated func finishAndInvalidate() {
+        session.finishTasksAndInvalidate()
+    }
+
     /// Run a request and decode the JSON body as `T`.
     public func send<T: Decodable>(_ r: PlexRequest, as type: T.Type) async throws -> T {
         let data = try await send(r)

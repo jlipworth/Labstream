@@ -27,7 +27,7 @@
 (*   Player    Fail, WarmRetry (the startup-deadline retry, which sends    *)
 (*             no stop), PlayerNeedsConsent (the copy lane fails and the   *)
 (*             rebuild asks for consent to encode)                         *)
-(*   Timers    RetryProceeds (failureRetryTask after                       *)
+(*   Timers    RetryProceeds, RetryRefused (failureRetryTask after         *)
 (*             waitForPendingStopRequests)                                 *)
 (*   Task      the playbackTask of one start or restart:                   *)
 (*               begin       created, not yet run                          *)
@@ -82,6 +82,10 @@ CONSTANTS
     BoundedStopWait,        \* for at most two seconds
     DetachesBeforeStart,    \* #196: detach the old item after the wait
     RetryJoinsPendingStops,
+    RetryNeedsConfirmedStop,
+        \* #539: the failure's stop is tracked on its own bounded client;
+        \* Retry restarts only if it was answered within that bound, and
+        \* otherwise fails with priorSessionStopUnconfirmed
     CloseSendsFinalStop,
 
     \* Proposed fixes.  FALSE is the code as it stands.
@@ -99,7 +103,7 @@ ASSUME /\ MaxUserActions \in Nat
                     WarmStartJoinsJob, StopsPreviousFirst,
                     WaitsForPreviousStop, BoundedStopWait,
                     DetachesBeforeStart, RetryJoinsPendingStops,
-                    CloseSendsFinalStop, FixStartAfterOwnStops,
+                    RetryNeedsConfirmedStop, CloseSendsFinalStop, FixStartAfterOwnStops,
                     FixRestartResetsStopLatch} :
               b \in BOOLEAN
        /\ ConsentPossible \in BOOLEAN
@@ -278,6 +282,17 @@ Joined(c) ==
                 r.n = k.n => (r.status # "inFlight" \/ r.late)
         ELSE TicketDone(c, k)
 
+\* failedAttemptStopUnconfirmed is set: a detached stop timed out (its
+\* bound passed with no HTTP answer), whatever PMS does with it later.  An
+\* answer of any status, a failure included, is an answer.  Only
+\* surfaceFailure and Close add stop entries, and Close ends the
+\* controller, so these are the failures' stops.  The flag is never
+\* cleared, and neither is `late`.
+StopUnconfirmed(c) ==
+    \E k \in pendingStops[c] :
+        /\ k.kind = "serverStop"
+        /\ \E r \in StopsFor(c, k.sid, k.gen) : r.n = k.n /\ r.late
+
 \* The stop a task awaits when it stops waiting with no answer: the wait
 \* gave up, or the task was cancelled.  Either way the task group cancels
 \* the request (group.cancelAll, or structured cancellation), and
@@ -394,10 +409,23 @@ RetryProceeds(c) ==
     /\ st[c].retryGen # 0
     /\ st[c].retryGen = gen[c]
     /\ RetryJoinsPendingStops => Joined(c)
+    /\ RetryNeedsConfirmedStop => ~StopUnconfirmed(c)
     /\ RestartCore(c, TRUE, FALSE, FALSE)
     /\ st' = [st EXCEPT
            ![c].retryGen = 0, ![c].latch = FALSE, ![c].failed = FALSE,
            ![c].warmArmed = TRUE]
+
+\* The same task finding failedAttemptStopUnconfirmed set (#539): it clears
+\* failureRetryTask and surfaces priorSessionStopUnconfirmed.  The failure
+\* stays, nothing is sent and no transcode starts.
+RetryRefused(c) ==
+    /\ RetryNeedsConfirmedStop
+    /\ st[c].retryGen # 0
+    /\ st[c].retryGen = gen[c]
+    /\ RetryJoinsPendingStops => Joined(c)
+    /\ StopUnconfirmed(c)
+    /\ st' = [st EXCEPT ![c].retryGen = 0]
+    /\ UNCHANGED <<serverVars, ctlVars, wire, ghost>>
 
 \* stop().
 Close(c) ==
@@ -682,7 +710,7 @@ Next ==
     \/ ClockTicks
     \/ \E c \in Controllers :
           \/ Start(c) \/ UserQuality(c) \/ Retry(c) \/ RetryProceeds(c)
-          \/ Close(c) \/ Fail(c) \/ StartFails(c) \/ WarmRetry(c)
+          \/ RetryRefused(c) \/ Close(c) \/ Fail(c) \/ StartFails(c) \/ WarmRetry(c)
           \/ PlayerNeedsConsent(c) \/ Approve(c) \/ Decline(c)
           \/ TaskStep(c)
           \/ ServerStarts(c)
@@ -699,6 +727,7 @@ ClientFairness ==
     \A c \in Controllers :
         /\ WF_vars(TaskStep(c))
         /\ WF_vars(RetryProceeds(c))
+        /\ WF_vars(RetryRefused(c))
         /\ WF_vars(CurrentStartLands(c))
 
 \* Every stop is answered or fails.  The user, failures and the watchdog
@@ -847,6 +876,7 @@ NeverWarmJoin ==
 NeverRetryWaits ==
     \A c \in Controllers :
         ~(st[c].retryGen # 0 /\ ~Joined(c))
+NeverRetryRefused == \A c \in Controllers : ~ENABLED RetryRefused(c)
 NeverRestartFromFailure ==
     \A c \in Controllers : ~(st[c].failed /\ task[c] # NoTask)
 NeverConsentShown == \A c \in Controllers : ~ConsentShowing(c)

@@ -211,7 +211,124 @@ struct PlaybackFormalModelFindingsTests {
         }
     }
 
+    /// Plex-RetryAfterTimedOutStop (#539, conditional on PMS applying a stop after the client
+    /// stopped waiting). `retry()` joins `pendingStopTasks`, and the failure's detached stop
+    /// used to end its entry when its URLSession request timed out, so Retry restarted under the
+    /// same session id while that stop could still land and end the replacement
+    /// (`plex/Faithful-RetryAfterTimedOutStop-off.cfg`, `LiveStopNeverKillsSuccessor`). The
+    /// failure's stop is tracked up to `failedAttemptStopTimeout`; unanswered by then, Retry
+    /// fails with `priorSessionStopUnconfirmed` instead of starting a transcode.
+    @Test("#539: Retry does not restart a Plex transcode whose failure stop timed out")
+    func retryDoesNotRestartAPlexTranscodeWhoseFailureStopTimedOut() async throws {
+        let route = PlexFixtureRoute(videoDecision: "transcode")
+        let controller = makePlexController(route: route, maxVideoBitrateKbps: 4000)
+        controller.failedAttemptStopTimeout = 0.5
+        defer { route.hold([]); route.releaseHeld(); controller.stop() }
+        controller.start()
+        try #require(await eventually { route.count(.decision, .began) == 1 })
+        route.hold([.stop])                    // PMS never answers the failure's stop
+        controller.surfaceReconnectTimeout()
+        try #require(controller.playbackError.isFailed)
+        try #require(await eventually { route.count(.stop, .began) == 1 }, "failure sent no stop")
+        try? await Task.sleep(for: .milliseconds(700))   // past the stop's bound
+        // Retry's restart moves control requests to the recovery client, which this route does
+        // not see; a restart is observed as Retry clearing the failure.
+        controller.retry()
+        let restarted = await eventually(within: 1.5) { !controller.playbackError.isFailed }
+        #expect(!restarted, "Retry restarted under the session while the failure's stop was unconfirmed")
+        #expect(controller.playbackError.failure?.code == .priorSessionStopUnconfirmed,
+                "Retry did not surface the unconfirmed stop (\(String(describing: controller.playbackError.failure?.code)))")
+        // Stable: a second tap neither restarts nor hangs.
+        controller.retry()
+        let restartedAgain = await eventually(within: 1) { !controller.playbackError.isFailed }
+        #expect(!restartedAgain && controller.playbackError.failure?.code == .priorSessionStopUnconfirmed)
+        #expect(route.count(.decision, .began) == 1)
+    }
+
+    /// The other side of #539: a failure stop PMS answers within the bound still lets Retry
+    /// restart, on the session it stopped.
+    @Test("#539: Retry restarts a Plex transcode once the failure stop is answered")
+    func retryRestartsAPlexTranscodeOnceTheFailureStopIsAnswered() async throws {
+        let route = PlexFixtureRoute(videoDecision: "transcode")
+        let controller = makePlexController(route: route, maxVideoBitrateKbps: 4000)
+        defer { route.hold([]); route.releaseHeld(); controller.stop() }
+        controller.start()
+        try #require(await eventually { route.count(.decision, .began) == 1 })
+        controller.surfaceReconnectTimeout()
+        try #require(await eventually { route.count(.stop, .answered) == 1 }, "failure stop never answered")
+        controller.retry()
+        #expect(await eventually { !controller.playbackError.isFailed }, "Retry did not restart")
+    }
+
     // MARK: - Jellyfin
+
+    /// Jellyfin-RetryAfterTimedOutStop (#539). The failed session's exact-session stop times
+    /// out (`onStopAcknowledged` returns false); `retry()` used to join the Void stop and
+    /// negotiate a replacement beside the failed session's still-running encoder
+    /// (`jellyfin/Faithful-RetryAfterTimedOutStop-off.cfg`, `OneEncoder`), or, under id
+    /// reuse, under the id the late stop still names. As on Emby (LS-PB-008), Retry fails
+    /// with `priorSessionStopUnconfirmed` instead.
+    @Test("#539: Retry does not negotiate a Jellyfin replacement while the failed session's stop is unconfirmed")
+    func retryDoesNotNegotiateAJellyfinReplacementWhileTheFailedStopIsUnconfirmed() async throws {
+        let log = EventLog()
+        let streamURL = try #require(URL(string: "https://192.0.2.10/videos/fixture/master.m3u8"))
+        let session = MediaBrowserPlaybackSession(
+            streamURL: streamURL, backend: .jellyfin, backendLabel: "Jellyfin", httpHeaders: [:],
+            playSessionID: "session-0", sourceMetadata: .init(videoCodec: "hevc"),
+            playMethod: .transcode, transcodeReasons: [], progressSession: nil,
+            onStop: { log.append("legacy-stop-0") },
+            reopener: { request in
+                log.append("negotiate-\(request.bitrateKbps)")
+                return RemoteStreamOpenResult(url: streamURL, headers: [:], playSessionId: "session-1",
+                                              onStop: {}, onStopAcknowledged: { true })
+            },
+            // As DetailPlaybackLauncher wires it: both callbacks send the same DELETE; the
+            // request timed out, so it is not acknowledged.
+            onStopAndWait: { log.append("stop-0") },
+            onStopAcknowledged: { log.append("stop-0"); return false })
+        let controller = makeMediaBrowserController(session: session, maxVideoBitrateKbps: 4000)
+        defer { controller.stop() }
+        controller.start()
+        try #require(await eventually { controller.player.currentItem != nil }, "the initial stream never attached")
+        controller.surfaceReconnectTimeout()
+        try #require(controller.playbackError.isFailed)
+        try #require(await eventually { log.items.contains("stop-0") }, "failure did not stop the session")
+        controller.retry()
+        let negotiated = await eventually(within: 1.5) { log.items.contains { $0.hasPrefix("negotiate-") } }
+        #expect(!negotiated, "Retry negotiated a replacement while the failed session's stop was unconfirmed: \(log.items)")
+        #expect(controller.playbackError.failure?.code == .priorSessionStopUnconfirmed,
+                "Retry did not surface the unconfirmed stop (\(String(describing: controller.playbackError.failure?.code)))")
+        controller.retry()
+        let negotiatedAgain = await eventually(within: 1) { log.items.contains { $0.hasPrefix("negotiate-") } }
+        #expect(!negotiatedAgain && controller.playbackError.isFailed)
+    }
+
+    /// The other side of #539: an acknowledged failure stop lets Retry negotiate as before.
+    @Test("#539: Retry negotiates a Jellyfin replacement once the failed session's stop is acknowledged")
+    func retryNegotiatesAJellyfinReplacementOnceTheFailedStopIsAcknowledged() async throws {
+        let log = EventLog()
+        let streamURL = try #require(URL(string: "https://192.0.2.10/videos/fixture/master.m3u8"))
+        let session = MediaBrowserPlaybackSession(
+            streamURL: streamURL, backend: .jellyfin, backendLabel: "Jellyfin", httpHeaders: [:],
+            playSessionID: "session-0", sourceMetadata: .init(videoCodec: "hevc"),
+            playMethod: .transcode, transcodeReasons: [], progressSession: nil,
+            onStop: {},
+            reopener: { request in
+                log.append("negotiate-\(request.bitrateKbps)")
+                return RemoteStreamOpenResult(url: streamURL, headers: [:], playSessionId: "session-1",
+                                              onStop: {}, onStopAcknowledged: { true })
+            },
+            onStopAndWait: { log.append("stop-0") },
+            onStopAcknowledged: { log.append("stop-0"); return true })
+        let controller = makeMediaBrowserController(session: session, maxVideoBitrateKbps: 4000)
+        defer { controller.stop() }
+        controller.start()
+        try #require(await eventually { controller.player.currentItem != nil }, "the initial stream never attached")
+        controller.surfaceReconnectTimeout()
+        try #require(await eventually { log.items.contains("stop-0") }, "failure did not stop the session")
+        controller.retry()
+        #expect(await eventually { log.items.contains { $0.hasPrefix("negotiate-") } }, "Retry did not negotiate: \(log.items)")
+    }
 
     /// Jellyfin-ConsentClobbersDidStop (#531). The consent request awaits the old session's
     /// stop; a quality change reopens and attaches a new session on the same shared session

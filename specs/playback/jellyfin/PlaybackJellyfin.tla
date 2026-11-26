@@ -33,7 +33,7 @@
 (*   User      Reopen (seek, quality or track change, the startup-deadline *)
 (*             reopen), Approve, Decline, Retry, Close                     *)
 (*   Player    Fail, PlayerNeedsConsent                                    *)
-(*   Timers    RetryProceeds (failureRetryTask after                       *)
+(*   Timers    RetryProceeds, RetryRefused (failureRetryTask after         *)
 (*             waitForPendingStopRequests), DeferredFires (the two-second  *)
 (*             sleep ends and the prior session's stop goes out)           *)
 (*   Task      a playbackTask.  A reopen task is at:                       *)
@@ -98,6 +98,10 @@ CONSTANTS
     ConsentRejectsNegotiated, \* a result that needs consent is not attached
     CloseStopsSession,   \* stop() calls stopRemoteSessionIfNeeded
     RetryJoinsPendingStops,
+    RetryNeedsConfirmedStop,
+        \* #539: Retry mints a replacement only after the failed session's
+        \* stop was acknowledged; otherwise it fails with
+        \* priorSessionStopUnconfirmed (failedAttemptStopUnconfirmed)
     StopTimesOut,        \* an awaited stop request has a timeout
 
     \* The model's own judgement.
@@ -124,8 +128,8 @@ ASSUME /\ MaxUserActions \in Nat
                     ReusedIdReplacesJob, SkipsReusedIdStop, DefersPriorStop,
                     RejectedIsStopped, ConsentStopsSession,
                     ConsentRejectsNegotiated, CloseStopsSession,
-                    RetryJoinsPendingStops, StopTimesOut,
-                    WindowEndsWithCleanup, FixCloseJoinsTask,
+                    RetryJoinsPendingStops, RetryNeedsConfirmedStop,
+                    StopTimesOut, WindowEndsWithCleanup, FixCloseJoinsTask,
                     FixTracksDeferredStop, FixConsentStopFenced} :
               b \in BOOLEAN
 
@@ -272,6 +276,17 @@ Joined(c) ==
           IF k.kind = "serverStop" THEN ReqDone(c, k) ELSE TicketDone(c, k)
     /\ FixTracksDeferredStop => deferred[c] = {}
 
+\* failedAttemptStopUnconfirmed is set: onStopAcknowledged returned false
+\* for a stop entry c joins.  It does when the request failed, and when it
+\* timed out (`late`), whatever the server does with it later.  A request
+\* still inside its timeout has not returned yet.  Only surfaceFailure and
+\* Close add stop entries, and Close ends the controller, so these are the
+\* failures' stops.  The flag is never cleared, and neither is `late`.
+StopUnconfirmed(c) ==
+    \E k \in pendingStops[c] :
+        /\ k.kind = "serverStop"
+        /\ \E r \in StopsFor(c, k.sid, k.gen) :
+              r.n = k.n /\ (r.status = "failed" \/ r.late)
 
 \* jellyfinWindow, the base's replace-then-clean-up window: from the
 \* replacement request to the end of the prior session's deferred
@@ -493,7 +508,20 @@ RetryProceeds(c) ==
     /\ st[c].retryGen # 0
     /\ st[c].retryGen = gen[c]
     /\ RetryJoinsPendingStops => Joined(c)
+    /\ RetryNeedsConfirmedStop => ~StopUnconfirmed(c)
     /\ ReopenCore(c, [st EXCEPT ![c].retryGen = 0, ![c].failed = FALSE])
+
+\* The same task finding failedAttemptStopUnconfirmed set (#539): it clears
+\* failureRetryTask and surfaces priorSessionStopUnconfirmed.  The failure
+\* stays and nothing is sent or minted.
+RetryRefused(c) ==
+    /\ RetryNeedsConfirmedStop
+    /\ st[c].retryGen # 0
+    /\ st[c].retryGen = gen[c]
+    /\ RetryJoinsPendingStops => Joined(c)
+    /\ StopUnconfirmed(c)
+    /\ st' = [st EXCEPT ![c].retryGen = 0]
+    /\ UNCHANGED <<serverVars, ctlRest, deferred, wire, minted, ghost, harm>>
 
 \* stop().  It cancels the task and appends nothing for it.  It does not
 \* touch a deferred stop.
@@ -804,7 +832,8 @@ Step ==
     \/ ClockTicks
     \/ \E c \in Controllers :
           \/ Start(c) \/ Reopen(c) \/ Approve(c) \/ Decline(c)
-          \/ Retry(c) \/ RetryProceeds(c) \/ Close(c) \/ Fail(c)
+          \/ Retry(c) \/ RetryProceeds(c) \/ RetryRefused(c) \/ Close(c)
+          \/ Fail(c)
           \/ PlayerNeedsConsent(c) \/ TaskStep(c) \/ NegotiateResolves(c)
           \/ \E j \in deferred[c] : DeferredFires(c, j)
 
@@ -825,6 +854,7 @@ ClientFairness ==
     \A c \in Controllers :
         /\ WF_vars(W(TaskStep(c)))
         /\ WF_vars(W(RetryProceeds(c)))
+        /\ WF_vars(W(RetryRefused(c)))
         /\ WF_vars(W(NegotiateResolves(c)))
         /\ WF_vars(W(\E j \in deferred[c] : DeferredFires(c, j)))
 
@@ -970,6 +1000,7 @@ NeverReusedId == \A s \in SessionIds : Latest(s) < 2
 NeverConsentShown == \A c \in Controllers : ~ConsentShowing(c)
 NeverPlayerConsent ==
     \A c \in Controllers : ~(task[c] # NoTask /\ task[c].kind = "consent")
+NeverRetryRefused == \A c \in Controllers : ~ENABLED RetryRefused(c)
 NeverRetryWaits ==
     \A c \in Controllers : ~(st[c].retryGen # 0 /\ ~Joined(c))
 NeverTimedOut ==
