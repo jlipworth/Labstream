@@ -386,8 +386,8 @@ Retry(c) ==
     /\ UNCHANGED <<serverVars, ctlVars, wire, ghost>>
 
 \* failureRetryTask after `await waitForPendingStopRequests()`.  A task
-\* that wakes to another generation returns and leaves failureRetryTask
-\* set (the restart core's Finding-RetryWedgedByAttach); that is no step.
+\* that wakes to another generation clears failureRetryTask and returns
+\* (#526; the restart core's RetryBails); it is left out here, no step.
 \* The join returns when every detached stop is answered or its request
 \* timed out (Joined).
 RetryProceeds(c) ==

@@ -78,7 +78,7 @@ failed", so a pass of `OneEncoder` is sound. The base's `NoWrongKill` is checked
 ## What is abstracted, and why
 
 - **What the restart core covers** is left out: seeks and their budget, pause intent, the
-  loopback proxy, attach fencing, and `RetryBails` (`Finding-RetryWedgedByAttach` there).
+  loopback proxy, attach fencing, and `RetryBails` (`Faithful-RetryWedgedByAttach-off` there, fixed in #526).
   `seekHold`, `budget`, `paused`, `proxy` and `jellyfinWindow` never change. No module is
   imported: the core's `Terminal` and `RestartCore` are rewritten here for the Plex order, about
   forty lines, because the core sends the prior stop synchronously and detaches at once.

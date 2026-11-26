@@ -108,6 +108,7 @@ CONSTANTS
         \* every restart clears sentTranscodeStop, not only retry()
     FixRetryBailClearsTask
         \* failureRetryTask clears itself when its generation check fails
+        \* (shipping since #526)
 
 ASSUME /\ MaxUserActions \in Nat
        /\ RestartBudget \in Gens
@@ -616,9 +617,11 @@ RetryProceeds(c) ==
 
 \* failureRetryTask wakes to a generation that is no longer the one it
 \* captured, without having been cancelled: a restart begun before the
-\* Retry tap reached load().  The Swift returns at the guard and leaves
-\* failureRetryTask set, which is no step at all; retry() then refuses
-\* every later tap.  With the proposed fix the task clears the slot.
+\* Retry tap reached load().  Since #526 the task clears failureRetryTask
+\* before its generation check, so it ends here.  With the fix off
+\* (FixRetryBailClearsTask = FALSE, the code before #526) it returned at
+\* the guard with the slot still set, which is no step at all, and
+\* retry() refused every later tap (Faithful-RetryWedgedByAttach-off).
 RetryBails(c) ==
     /\ FixRetryBailClearsTask
     /\ retryGen[c] # 0
@@ -1214,8 +1217,8 @@ AbandonedSessionStopped ==
         []<>(\A j \in JobsOf(c) : SentStopFor(c, j[1], j[2]) \/ IsCur(c, j))
 
 \* Retry's wait for the previous attempt's cleanup ends, and the task
-\* with it, so that Retry can be tapped again.  The code does not keep
-\* this (see Finding-RetryWedgedByAttach).
+\* with it, so that Retry can be tapped again.  The code before #526 did
+\* not keep this (see Faithful-RetryWedgedByAttach-off).
 RetryRuns ==
     \A c \in Controllers : retryGen[c] # 0 ~> retryGen[c] = 0
 

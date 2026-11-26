@@ -2578,8 +2578,14 @@ final class PlaybackController {
             // Do not mint a replacement while the failed attempt's exact-session stop
             // is still in flight (particularly when the backend reuses its session ID).
             await self.waitForPendingStopRequests()
-            guard !Task.isCancelled, self.playbackGeneration == generation else { return }
+            // Identity guard: `stop()` and `restartAtCurrentPosition` cancel this task before
+            // they release the slot, so a cancelled task no longer owns it (a newer retry may).
+            guard !Task.isCancelled else { return }
+            // An uncancelled task still owns the slot. Release it on every exit, including a
+            // restart that superseded the captured generation while the join ran (#526);
+            // otherwise `retry()`'s `failureRetryTask == nil` guard refuses every later tap.
             self.failureRetryTask = nil
+            guard self.playbackGeneration == generation else { return }
             self.sentTranscodeStop = false
             self.restartAtCurrentPosition(offsetMs: resumeMs,
                                           bitrateKbps: self.maxVideoBitrateKbps,

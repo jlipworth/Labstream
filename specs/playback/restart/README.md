@@ -15,7 +15,9 @@ The model reproduces suspect 1 and suspect 4, and found five defects nobody had 
 them from the second independent review: a cancelled reopen that loses its answer, and an
 unattended restart that resets the seek budget). Each has a `Finding-*` config and a trace
 below. A review read each against the Swift and found it plausible; none has been reproduced
-in the app.
+in the app. One is fixed: Retry wedged by a restart from a failure (#526) is now
+`Faithful-RetryWedgedByAttach-off`, and its fix constant `FixRetryBailClearsTask` is `TRUE` in
+every other config.
 
 ## What is modelled
 
@@ -110,7 +112,7 @@ The configs are scoped around it the way the module already scopes suspect 1:
   configs check instead `CloseCleansUpOutsideRaceAndLost` and
   `AbandonedSessionStoppedOutsideLost`, which excuse only `LostAnswer(c)` sessions and hold
   every other session to the full property. The other temporal configs
-  (`Finding-ProxyAfterCleanup-Liveness`, `Finding-RetryWedgedByAttach`, `Proposed-Liveness*`)
+  (`Finding-ProxyAfterCleanup-Liveness`, `Faithful-RetryWedgedByAttach-off`, `Proposed-Liveness*`)
   run with `FALSE`. The two liveness findings carry over to `TRUE`: `NegotiatedLost` only adds behaviours, and it is
   enabled only where `TaskResume` also is, so a violating fair behaviour stays fair.
 
@@ -211,8 +213,8 @@ The configs are scoped around it the way the module already scopes suspect 1:
 | `AbandonedSessionStopped` | liveness | A session that is not the one playing gets a stop. |
 | `CloseCleansUpOutsideRaceAndLost`, `AbandonedSessionStoppedOutsideLost` | liveness | `CloseCleansUpOutsideYieldRace` and `AbandonedSessionStopped` excusing also a session in `LostAnswer(c)`. This is what the code keeps. |
 | `SeekHoldReleased` | liveness | A held scrubber is released. Holds by construction (the ceiling is always enabled while held, under weak fairness); a check of the model. |
-| `RetryJoinEnds` | liveness | The wait of a retry task that is still current ends. |
-| `RetryRuns` | liveness | Every retry task ends, so Retry can be tapped again. **Violated by the code.** |
+| `RetryJoinEnds` | liveness | The wait of a retry task that is still current ends. Implied by `RetryRuns`. |
+| `RetryRuns` | liveness | Every retry task ends, so Retry can be tapped again. Held by the code since #526; violated with `FixRetryBailClearsTask = FALSE` (`Faithful-RetryWedgedByAttach-off`). |
 
 `BoundedRestarts` counts with two ghost counters instead of a liveness formula. With bounded
 generations every behaviour restarts finitely often, so "eventually no more restarts" could
@@ -229,7 +231,8 @@ adaptive-bitrate restart re-arms the one-shot, so the bound is `1 + 2 * AbrMaxCh
 
 ## Configs and results
 
-2026-11-25 (round-2 fixes), tla2tools v1.7.4, `TLC_WORKERS=auto TLC_HEAP=4g` on 30 cores. Unless
+2026-11-25 (round-2 fixes; rerun after the #526 fix, `FixRetryBailClearsTask = TRUE`, where the
+numbers changed: `Current-RetryRetry`, `Liveness-Core` with `RetryRuns`), tla2tools v1.7.4, `TLC_WORKERS=auto TLC_HEAP=4g` on 30 cores. Unless
 noted: one controller, three sessions, `MaxGeneration = 7`, `RestartRoom = 3`, two user actions,
 `RestartBudget = 1`, `AbrMaxChanges = 2`, both cleanup shapes `TRUE`, `CancelDropsAnswer` as
 described above, proxies and failures on, automatic recovery off.
@@ -239,11 +242,12 @@ described above, proxies and failures on, automatic recovery off.
 | `Current-AutoRecovery` | pass | pass | 1,144,656 | 9 s |
 | `Current-CancelPastCheck` | pass | pass | 33,055,192 | 151 s |
 | `Current-Core` | pass | pass | 17,183,405 | 63 s |
-| `Current-RetryRetry` | pass | pass | 886,440 | 4 s |
+| `Current-RetryRetry` | pass | pass | 886,650 | 9 s |
 | `Current-StartStreamingShape` | pass | pass | 1,431,670 | 6 s |
-| `Liveness-Core` | pass | pass | 489,095 | 71 s |
+| `Liveness-Core` | pass | pass | 489,095 | 144 s |
 | `Liveness-Proxy` | pass | pass | 86,727 | 10 s |
 | `Faithful-DetachBeforeStop-off` | `DetachBeforeStop` violated | violated | stops at first error | 1 s |
+| `Faithful-RetryWedgedByAttach-off` | `RetryRuns` (temporal) violated | violated | stops at first error | 3 s |
 | `Mutant-AttachUnfenced` | `GenerationFencing` violated | violated | stops at first error | 0 s |
 | `Mutant-BudgetNotEnforced` | `BoundedRestarts` violated | violated | stops at first error | 1 s |
 | `Mutant-CleanupKeepsProxy` | `ProxyOwnershipOutsideYieldRace` violated | violated | stops at first error | 1 s |
@@ -259,7 +263,6 @@ described above, proxies and failures on, automatic recovery off.
 | `Finding-ProxyAfterCleanup` | `ProxyOwnership` violated | violated | stops at first error | 4 s |
 | `Finding-ProxyAfterCleanup-Liveness` | `CloseCleansUp` (temporal) violated | violated | stops at first error | 6 s |
 | `Finding-RestartAfterFailureSkipsFinalStop` | `NoOrphansOutsideLostAnswer` violated | violated | stops at first error | 1 s |
-| `Finding-RetryWedgedByAttach` | `RetryRuns` (temporal) violated | violated | stops at first error | 4 s |
 | `Finding-SeekDroppedByAttach` | `SeekIntentSurvivesAttach` violated | violated | stops at first error | 0 s |
 | `Finding-StopNoJoin` | `JoinCoversCleanup` violated | violated | stops at first error | 1 s |
 | `Finding-StopNoJoin-LateStart` | `NoOrphans` violated | violated | stops at first error | 1 s |
@@ -287,7 +290,8 @@ described above, proxies and failures on, automatic recovery off.
 - `Liveness-Core`: two Retry or quality actions, no proxies or seeks. `Liveness-Proxy`: one
   user action over two sessions with everything on. Both run with `CancelDropsAnswer = TRUE`
   and check `CloseCleansUpOutsideRaceAndLost`, `AbandonedSessionStoppedOutsideLost`,
-  `RetryJoinEnds` and `SeekHoldReleased`.
+  `RetryRuns` (the full property, since #526; before it they checked the weaker
+  `RetryJoinEnds`) and `SeekHoldReleased`.
 - `Proposed-Fixes` and `Proposed-ControllerLatch` check the full `ProxyOwnership`,
   `NoOrphans`, `JoinCoversCleanup` and `SeekIntentSurvivesAttach` beside the rest, with
   `CancelDropsAnswer = FALSE`; `Proposed-Liveness`
@@ -307,6 +311,7 @@ excuses only the session whose answer was lost. For the others the broken proper
 | Config | Flips | Violates | Trace |
 | --- | --- | --- | --- |
 | `Faithful-DetachBeforeStop-off` | `StopDetachesFirst` | `DetachBeforeStop` | Close sends the stop while the item is still attached (the order before #327). |
+| `Faithful-RetryWedgedByAttach-off` | `FixRetryBailClearsTask` | `RetryRuns` | A restart from a failure overtakes a waiting retry task, which returns with `failureRetryTask` still set (the code before #526; trace under "Fixed findings"). |
 | `Mutant-AttachUnfenced` | `AttachChecksGeneration` | `GenerationFencing` | Close cancels the task; its request lands and it attaches all the same. |
 | `Mutant-SeekClearUnfenced` | `SeekClearChecksGeneration` | `SeekHoldFencing` | A native seek's completion releases the hold a later restart re-armed. |
 | `Mutant-ResumeUnguarded` | `ResumeSeekGuarded` | `PauseIntent` | The user pauses before the item attaches; its resume seek completes and plays. |
@@ -318,7 +323,7 @@ excuses only the session whose answer was lost. For the others the broken proper
 | `Mutant-RetrySkipsJoin` | `RetryJoinsPendingStops` | `NoOrphansOutsideLostAnswer` | Retry restarts while the failed attempt's task is still unwinding. |
 | `Mutant-RestartRoomTwo` | `RestartRoom` (3 to 2) | `CloseStaysEnabled` | Round 1's bound: start, fail, Retry, fail, a quality change attaches at the bound, fail; the controller is open and cannot Close. |
 
-`ProxyOwnership`, `JoinCoversCleanup`, `SeekIntentSurvivesAttach`, `RetryRuns`,
+`ProxyOwnership`, `JoinCoversCleanup`, `SeekIntentSurvivesAttach`,
 `CloseCleansUp`, `NoOrphans` and `BoundedRestarts` are violated by the code as it stands; their
 `Finding` configs are the proof they can fail and the `Proposed` configs the proof they can hold
 (`BoundedRestarts` has no `Proposed` config with seeks and automatic recovery together; its
@@ -326,7 +331,8 @@ excuses only the session whose answer was lost. For the others the broken proper
 `Mutant-CloseSkipsFinalStop`, `Mutant-RetrySkipsJoin` and
 `Finding-RestartAfterFailureSkipsFinalStop`; `CloseStaysEnabled` in `Mutant-RestartRoomTwo`.
 `AbandonedSessionStopped` fails only through the lost answer (with `CancelDropsAnswer = TRUE`;
-the `Liveness` configs check its scoped form). `SeekHoldReleased` holds by construction and
+the `Liveness` configs check its scoped form). `RetryRuns` fails in
+`Faithful-RetryWedgedByAttach-off`. `SeekHoldReleased` holds by construction and
 `RetryJoinEnds` has no failing run.
 
 ### Every branch is taken
@@ -448,29 +454,6 @@ It needs a seek committed in the 500 ms before a start or restart reaches `load(
 Proposed fix (`FixSettleSurvivesAttach`): `load()` re-arms a pending settle under the new
 generation, or the timer captures the seek instead of the playback generation.
 
-### New: Retry is dead after a restart from a failure overtakes it (`Finding-RetryWedgedByAttach`)
-
-`RetryRuns` is violated: the behaviour ends with `retryGen` set for ever.
-
-| Step | Model | Swift |
-| --- | --- | --- |
-| 1, 2 | `Start`, `NegotiateFails`: a failure shows | `surfaceFailure` 5133 |
-| 3 | `UserQuality`: a restart from the failure. The error stays up: only `explicitRetry` clears it | `reload` 2470, `restartAtCurrentPosition` 5710; `PlaybackRestartIntent.plan` |
-| 4 | `Retry`, while the error still shows: the retry task captures generation G and waits for the join | `retry()` 2567, 2575 to 2580 |
-| 5, 6 | `NegotiateLands`, `TaskResume` and `Attach`: `load()` bumps the generation and clears the error | 3795, 3816 |
-| 7 | `Fail`: a failure shows again, and `failureRetryTask` is still set | `surfaceFailure` |
-
-When its join ends the retry task fails `playbackGeneration == generation` and returns (2581)
-without reaching `self.failureRetryTask = nil` (2582). `retry()` requires
-`failureRetryTask == nil` (2567), so after the next failure the Retry button does nothing. A
-quality or track change (5713 to 5714) or Close clears it.
-
-It needs the join to outlast the restart: a stop request still hanging when the restarted
-stream loads, which is the dead-connection case Retry exists for. The failure message itself
-suggests lowering the quality.
-
-Proposed fix (`FixRetryBailClearsTask`): clear `failureRetryTask` on the bail path.
-
 ### New: no final stop after a restart from a failure (`Finding-RestartAfterFailureSkipsFinalStop`)
 
 `NoOrphans` is violated in 7 states with `StopLatchPerSession = FALSE`, the Plex latch.
@@ -541,6 +524,37 @@ restarts are themselves bounded (the one-shot, and `AdaptiveBitratePolicy`'s 4 c
 Proposed fix: unattended restarts (`adaptiveBitrate` intent, `attemptStartupDeadlineRetry`)
 clear the pending target without resetting the budget, or the budget's contract is widened to
 say unattended restarts reset it.
+
+## Fixed findings
+
+### Fixed (#526): Retry was dead after a restart from a failure overtook it (`Faithful-RetryWedgedByAttach-off`)
+
+With the fix off, `RetryRuns` is violated: the behaviour ends with `retryGen` set for ever. The
+trace and line numbers below are the code before the fix.
+
+| Step | Model | Swift |
+| --- | --- | --- |
+| 1, 2 | `Start`, `NegotiateFails`: a failure shows | `surfaceFailure` 5133 |
+| 3 | `UserQuality`: a restart from the failure. The error stays up: only `explicitRetry` clears it | `reload` 2470, `restartAtCurrentPosition` 5710; `PlaybackRestartIntent.plan` |
+| 4 | `Retry`, while the error still shows: the retry task captures generation G and waits for the join | `retry()` 2567, 2575 to 2580 |
+| 5, 6 | `NegotiateLands`, `TaskResume` and `Attach`: `load()` bumps the generation and clears the error | 3795, 3816 |
+| 7 | `Fail`: a failure shows again, and `failureRetryTask` is still set | `surfaceFailure` |
+
+When its join ends the retry task fails `playbackGeneration == generation` and returns (2581)
+without reaching `self.failureRetryTask = nil` (2582). `retry()` requires
+`failureRetryTask == nil` (2567), so after the next failure the Retry button does nothing. A
+quality or track change (5713 to 5714) or Close clears it.
+
+It needs the join to outlast the restart: a stop request still hanging when the restarted
+stream loads, which is the dead-connection case Retry exists for. The failure message itself
+suggests lowering the quality.
+
+Fix (#526, `FixRetryBailClearsTask = TRUE`): after its join, a retry task that was not
+cancelled clears `failureRetryTask` before the generation check, so every exit releases the
+slot. A cancelled task returns without touching it: `stop()` and `restartAtCurrentPosition`
+cancel the task before they release the slot, so a newer retry may own it by then. The
+behavioural pin is `PlaybackFormalModelFindingsTests` "#526: Retry still runs after a quality
+change superseded an earlier retry".
 
 ## Observations that are not findings
 - MediaBrowser seek reopens bypass `FinalTargetRebuildPolicy`, so nothing budgets them.

@@ -221,8 +221,10 @@ What depends on them:
 - **Automatic reopens** (the copy fallback, the copy reopen retry, the startup-deadline reopen)
   are `Reopen` steps and count against `MaxUserActions`.
 - **`failureRetryTask`.** `Reopen` and `Approve` clear it, as `restartAtCurrentPosition` does. A
-  seek's direct `reopenRemoteStream` does not; that wedge is the restart core's
-  `Finding-RetryWedgedByAttach`.
+  seek's direct `reopenRemoteStream` does not; the retry task then wakes to another generation
+  and, since #526, clears the slot itself (the restart core's `RetryBails`,
+  `Faithful-RetryWedgedByAttach-off`). That step is left out here: `retryGen` stays set, which
+  only bounds this model's Retry further.
 - **The consent overlay.** A reopen needs no consent choice showing, apart from `Approve`.
   `reopenRemoteStream` does not clear `videoTranscodeConsent.generation` (`beginStreaming` and
   `reload` do), so a track change while the choice shows would leave a choice that neither

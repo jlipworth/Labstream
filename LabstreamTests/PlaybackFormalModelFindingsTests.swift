@@ -75,11 +75,11 @@ struct PlaybackFormalModelFindingsTests {
 
     // MARK: - Plex
 
-    /// Restart-RetryWedgedByAttach (#526). From the error overlay the user changes quality and
-    /// taps Retry; the retry task waits on the failure's pending stop while the quality
-    /// restart's `load()` supersedes its generation, and it returns without clearing
-    /// `failureRetryTask`. On the next failure Retry does nothing
-    /// (`restart/Finding-RetryWedgedByAttach.cfg`, `RetryRuns`).
+    /// Restart-RetryWedgedByAttach (#526, fixed). From the error overlay the user changes quality
+    /// and taps Retry; the retry task waits on the failure's pending stop while the quality
+    /// restart's `load()` supersedes its generation. The task used to return without clearing
+    /// `failureRetryTask`, so on the next failure Retry did nothing; it now clears its own slot
+    /// on every exit (`restart/Faithful-RetryWedgedByAttach-off.cfg`, `RetryRuns`).
     @Test("#526: Retry still runs after a quality change superseded an earlier retry")
     func retryStillRunsAfterAQualityChangeSupersededAnEarlierRetry() async throws {
         let route = PlexFixtureRoute(videoDecision: "transcode")
@@ -105,15 +105,13 @@ struct PlaybackFormalModelFindingsTests {
         try #require(await eventually {
             route.count(.stop, .answered) + route.count(.stop, .cancelled) == route.count(.stop, .began)
         }, "held stops never resolved")
-        // Retry inside the poll: once a fixed retry task has unwound, one of these calls starts a
-        // retry; on current code every call is a no-op because failureRetryTask stays set.
+        // Retry inside the poll: once the superseded retry task has unwound, one of these calls
+        // starts a retry. Before the fix every call was a no-op because failureRetryTask stayed set.
         let retried = await eventually(within: 3) {
             controller.retry()
             return !controller.playbackError.isFailed
         }
-        withKnownIssue("TLA+ finding Restart-RetryWedgedByAttach (#526): a superseded retry task leaves failureRetryTask set, so Retry stops responding") {
-            #expect(retried, "Retry after the second failure did not start a retry")
-        }
+        #expect(retried, "Retry after the second failure did not start a retry")
     }
 
     /// RestartAfterFailureSkipsFinalStop (#527). `surfaceFailure` sends the transcode stop and
