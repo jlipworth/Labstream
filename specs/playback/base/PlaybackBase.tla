@@ -152,7 +152,7 @@ CONSTANTS
     RecreateCountsAgainstServer,
         \* TRUE: a job the server recreated is the server's, not the
         \* client's (the judgement the design uses).  FALSE counts it as
-        \* client-owned; Base-Mutant-RecreateCountsAgainstClient shows
+        \* client-owned; BaseSmoke-Mutant-RecreateCountsAgainstClient shows
         \* that judgement violates OneEncoder.
     IdsNeverShared,
         \* TRUE: a session id belongs to the controller that first used it
@@ -258,7 +258,7 @@ Latest(s) == Cardinality(Started(s))
 \* The controller that first used the id.
 IdOwner(s) == server[s][1].owner
 \* Every job under an id has one owner.  Holds by construction with
-\* IdsNeverShared; Base-Mutant-SharedId shows it fail without.
+\* IdsNeverShared; BaseSmoke-Mutant-SharedId shows it fail without.
 OneOwnerPerId ==
     \A s \in SessionIds, g \in Incarnations :
         server[s][g].owner \in {NoController, IdOwner(s)}

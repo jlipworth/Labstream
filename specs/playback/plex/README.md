@@ -335,7 +335,7 @@ against a server the repository does not rule out:
 | `Finding-StopEndsOnlySome` | `StopEndsAllUnderId = FALSE` | `CleanAfterAckedClose` (and `OneEncoder`) | A stop is lost, the replacement starts beside the old job, and Close's acknowledged stop ends one of the two. |
 | `Finding-WarmStartAddsJob` | `WarmStartJoinsJob = FALSE` | `OneEncoder` | The startup-deadline retry's request starts a second job. |
  `NoWrongKill`'s mutant is
-`Base-Mutant-StartBeforeStopResolves`. `CloseCleansUp` has no failing run.
+`BaseSmoke-Mutant-StartBeforeStopResolves`. `CloseCleansUp` has no failing run.
 
 ### Every branch is taken
 

@@ -332,7 +332,7 @@ the owning task:
 ### Task 1: area base
 
 **Files:** create `specs/playback/base/PlaybackBase.tla`, `PlaybackControllerOps.tla`,
-`README.md`, `specs/playback/base/Base-Current-Smoke.cfg` (with a tiny smoke spec module if
+`README.md`, `specs/playback/base/BaseSmoke-Current-Smoke.cfg` (with a tiny smoke spec module if
 needed).
 
 **Produces:** constants `Controllers`, `SessionIds`, `MaxGeneration`; the server record
@@ -348,7 +348,7 @@ client-owned encoding session per controller, with a `jellyfinWindow` exemption 
 
 - [ ] Write the modules and the smoke config (`EXPECT: pass`) that exercises every server
       action.
-- [ ] Add a `Base-Mutant-RecreateCountsAgainstClient.cfg` showing that judging
+- [ ] Add a `BaseSmoke-Mutant-RecreateCountsAgainstClient.cfg` showing that judging
       `serverRecreated` jobs as client-owned violates `OneEncoder`; `EXPECT: violation OneEncoder`.
 - [ ] Run `scripts/check-tla-specs.sh specs/playback/base`; every config matches its header.
 - [ ] Commit.

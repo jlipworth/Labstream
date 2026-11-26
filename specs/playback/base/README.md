@@ -51,14 +51,14 @@ are not modelled.
 Which jobs a stop ends when several run under one id was not established for any backend, so
 the model allows every non-empty choice. An acknowledged stop therefore ends the job the client
 meant only if no other job runs under that id, and a client cannot know that: a job whose stop
-was lost, or that the server recreated, still runs there. `Base-Mutant-ReusedId` is that trace.
+was lost, or that the server recreated, still runs there. `BaseSmoke-Mutant-ReusedId` is that trace.
 A module whose backend reuses a session id (Plex always does) should expect `OneEncoder` and
 `NoWrongKill` to report it, and must then decide from the backend's real behaviour whether it
 is a finding or the abstraction.
 
 `StopEndsAllUnderId = TRUE` narrows the choice to every job under the id. It is an assumption
 about a backend, so a config that takes it says so in its comment and the module's README gives
-the evidence. `Base-Current-ReusedId` is `Base-Mutant-ReusedId`'s client against such a server:
+the evidence. `BaseSmoke-Current-ReusedId` is `BaseSmoke-Mutant-ReusedId`'s client against such a server:
 the careful reuse is then enough.
 
 ## Constants
@@ -118,20 +118,20 @@ Unless noted: one controller, two session ids, `MaxGeneration = 2`, three stop r
 
 | Config | Expect | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
-| `Base-Current-Smoke` | pass | pass | 963,454 | 5 s |
-| `Base-Current-TwoControllers` | pass | pass | 158,699 | 1 s |
-| `Base-Current-ReusedId` | pass | pass | 9,784,262 | 31 s |
-| `Base-Mutant-RecreateCountsAgainstClient` | `OneEncoder` violated | violated | stops at first error | 1 s |
-| `Base-Mutant-StartUnderLiveId` | `OneEncoder` violated | violated | stops at first error | 1 s |
-| `Base-Mutant-ReusedId` | `OneEncoder` violated | violated | stops at first error | 1 s |
-| `Base-Mutant-WindowNotFlagged` | `OneEncoder` violated | violated | stops at first error | 1 s |
-| `Base-Mutant-StartBeforeStopResolves` | `NoWrongKill` violated | violated | stops at first error | 1 s |
-| `Base-Mutant-SharedId` | `OneOwnerPerId` violated | violated | stops at first error | 1 s |
-| `Base-Mutant-CleanupNotTicketed` | `JoinCoversCleanup` violated | violated | stops at first error | 1 s |
+| `BaseSmoke-Current-Smoke` | pass | pass | 963,454 | 5 s |
+| `BaseSmoke-Current-TwoControllers` | pass | pass | 158,699 | 1 s |
+| `BaseSmoke-Current-ReusedId` | pass | pass | 9,784,262 | 31 s |
+| `BaseSmoke-Mutant-RecreateCountsAgainstClient` | `OneEncoder` violated | violated | stops at first error | 1 s |
+| `BaseSmoke-Mutant-StartUnderLiveId` | `OneEncoder` violated | violated | stops at first error | 1 s |
+| `BaseSmoke-Mutant-ReusedId` | `OneEncoder` violated | violated | stops at first error | 1 s |
+| `BaseSmoke-Mutant-WindowNotFlagged` | `OneEncoder` violated | violated | stops at first error | 1 s |
+| `BaseSmoke-Mutant-StartBeforeStopResolves` | `NoWrongKill` violated | violated | stops at first error | 1 s |
+| `BaseSmoke-Mutant-SharedId` | `OneOwnerPerId` violated | violated | stops at first error | 1 s |
+| `BaseSmoke-Mutant-CleanupNotTicketed` | `JoinCoversCleanup` violated | violated | stops at first error | 1 s |
 
 The three `Current` configs check `TypeOK`, `OneEncoder`, `NoWrongKill`, `JoinCoversCleanup` and
-`OneOwnerPerId`. `Base-Current-TwoControllers` uses two controllers, `MaxGeneration = 1` and
-one stop request. `Base-Current-ReusedId` sets `SmokeReusesIds` and `StopEndsAllUnderId`.
+`OneOwnerPerId`. `BaseSmoke-Current-TwoControllers` uses two controllers, `MaxGeneration = 1` and
+one stop request. `BaseSmoke-Current-ReusedId` sets `SmokeReusesIds` and `StopEndsAllUnderId`.
 
 - **RecreateCountsAgainstClient** (5 steps): start, stop, acknowledged, start the other session,
   the server recreates the first. Counted as the client's, that is two owned jobs.
@@ -157,13 +157,13 @@ TLC.
 
 | Witness | Constants of | Shows |
 | --- | --- | --- |
-| `NeverAcked` | `Base-Current-Smoke` | `ServerAck` |
-| `NeverFailedLost`, `NeverFailedApplied` | `Base-Current-Smoke` | both branches of `ServerFail` |
-| `NeverLate`, `NeverLateThenAcked` | `Base-Current-Smoke` | `ServerDelay`, and an acknowledgement after it |
-| `NeverRecreated` | `Base-Current-Smoke` | `ServerRecreate` |
-| `NeverInWindow` | `Base-Current-Smoke` | the window flag is opened |
-| `NeverTwoUnderOneId` | `Base-Mutant-ReusedId` | two jobs run under one id |
-| `NeverEndsNewestOnly`, `NeverEndsOlderOnly` | `Base-Mutant-ReusedId` | a stop ends only the newest job, and a stop meant for the newest ends only an older one |
+| `NeverAcked` | `BaseSmoke-Current-Smoke` | `ServerAck` |
+| `NeverFailedLost`, `NeverFailedApplied` | `BaseSmoke-Current-Smoke` | both branches of `ServerFail` |
+| `NeverLate`, `NeverLateThenAcked` | `BaseSmoke-Current-Smoke` | `ServerDelay`, and an acknowledgement after it |
+| `NeverRecreated` | `BaseSmoke-Current-Smoke` | `ServerRecreate` |
+| `NeverInWindow` | `BaseSmoke-Current-Smoke` | the window flag is opened |
+| `NeverTwoUnderOneId` | `BaseSmoke-Mutant-ReusedId` | two jobs run under one id |
+| `NeverEndsNewestOnly`, `NeverEndsOlderOnly` | `BaseSmoke-Mutant-ReusedId` | a stop ends only the newest job, and a stop meant for the newest ends only an older one |
 
 The last three need a client that reuses an id, which the `Current` client does not.
 
@@ -179,4 +179,4 @@ judgements true:
 `SmokeReusesIds` replaces the second rule with the most careful reuse the client can manage: no
 stop of its own for the id in flight, and stops only for the newest job it started under the
 id. TLC showed each of those is needed (without the first, the second of two stops sent for one
-job ends the job started next), and `Base-Mutant-ReusedId` shows they are still not enough.
+job ends the job started next), and `BaseSmoke-Mutant-ReusedId` shows they are still not enough.
