@@ -116,10 +116,10 @@ struct PlaybackFormalModelFindingsTests {
         }
     }
 
-    /// RestartAfterFailureSkipsFinalStop (#527). `surfaceFailure` sends the transcode stop and
-    /// sets `sentTranscodeStop`; only `retry()` clears it. A quality change from the error
-    /// overlay starts a new transcode under the same session, and Close then sends no stop for
-    /// it (`restart/Finding-RestartAfterFailureSkipsFinalStop.cfg`).
+    /// RestartAfterFailureSkipsFinalStop (#527, fixed). `surfaceFailure` sends the transcode stop
+    /// and sets `sentTranscodeStop`. A quality change from the error overlay starts a new
+    /// transcode under the same session; `beginStreaming` clears the latch, so Close sends a stop
+    /// for it (`restart/Faithful-RestartAfterFailureSkipsFinalStop-off.cfg` is the old behaviour).
     @Test("#527: Close stops a transcode started by a quality change after a failure")
     func closeStopsATranscodeStartedByAQualityChangeAfterFailure() async throws {
         let route = PlexFixtureRoute(videoDecision: "transcode")
@@ -134,10 +134,24 @@ struct PlaybackFormalModelFindingsTests {
         let replacementStarted = try #require(route.lastIndex(.decision, .began))
         controller.stop()
         await controller.waitForPendingStopRequests()
-        withKnownIssue("TLA+ finding RestartAfterFailureSkipsFinalStop (#527): the stop latch set by the failure suppresses Close's stop for the replacement transcode") {
-            #expect(route.events.value[replacementStarted...].contains { $0.kind == .stop && $0.phase == .began },
-                    "Close sent no transcode stop for the transcode the quality change started")
-        }
+        #expect(route.events.value[replacementStarted...].contains { $0.kind == .stop && $0.phase == .began },
+                "Close sent no transcode stop for the transcode the quality change started")
+    }
+
+    /// #527 guard: the latch still sends one stop per transcode. A failure stops the transcode and
+    /// Close with no restart in between sends no second stop for it.
+    @Test("#527: Close after a failure with no restart sends no second stop")
+    func closeAfterAFailureWithNoRestartSendsNoSecondStop() async throws {
+        let route = PlexFixtureRoute(videoDecision: "transcode")
+        let controller = makePlexController(route: route, maxVideoBitrateKbps: 4000)
+        controller.start()
+        try #require(await eventually { route.count(.decision, .began) == 1 })
+        controller.surfaceReconnectTimeout()
+        try #require(controller.playbackError.isFailed)
+        try #require(await eventually { route.count(.stop, .began) == 1 }, "failure sent no stop")
+        controller.stop()
+        await controller.waitForPendingStopRequests()
+        #expect(route.count(.stop, .began) == 1, "Close re-sent the stop the failure already sent")
     }
 
     /// Restart-SeekDroppedByAttach (#528). A scrub while no item is loaded arms the 500 ms
