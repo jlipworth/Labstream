@@ -1,6 +1,6 @@
 # Playback and session-lifecycle formal models (TLA+)
 
-**Status (2026-11-25):** design approved for phase 1 (#519). Nothing is modelled yet. Phase 2
+**Status (2026-11-26):** phase 1 (#519) is done; see [Phase 1 results](#phase-1-results-2026-11-26). Phase 2
 (#521) and phase 3 (#522) are filed; the progress-reporting latch is #523.
 
 **Scope:** model checking of the parts of Labstream outside downloads where independent
@@ -192,6 +192,79 @@ pinning tests.
 - Hermetic PMSKit tests, and app tests for any pinned finding.
 - Strict MkDocs build, `scripts/check-doc-links.py`, `scripts/check-docs-mermaid.py` and
   `scripts/ci-hygiene.sh` after doc changes.
+
+## Phase 1 results (2026-11-26)
+
+Phase 1 is done on `specs/playback-tla`: six modules under `specs/playback/` (base, restart,
+plex, emby, jellyfin, proxy), two review rounds, the findings filed and pinned, and the four
+error-recovery defects fixed on the same branch (decided by the user on 2026-11-25, after the
+design's "find and file only" scope). The per-config results, traces and abstractions live in
+each module's README; this section records the program-level outcome.
+
+### How it was built and reviewed
+
+- Each module was written by one agent and reviewed by a fresh Opus reviewer before the next
+  dependent module started; every reviewer finding was fixed or ruled on.
+- Round 2 (task 8): two independent Opus reviewers read all six models against the Swift. They
+  found nine Important model problems (a cancelled reopen always receiving its answer; the
+  generation bound disabling Close; restart-budget ghosts reset at the code's own reset points;
+  Jellyfin's timed-out-stop gate blocking Retry forever; Plex modelling a URLSession timeout as a
+  lost request; Emby's server-recreate switched off; Plex's consent boundary unmodelled; missing
+  `\* MODELS:` lines) and coverage gaps. All were fixed and re-reviewed; the fixes surfaced
+  #537 to #540.
+- Faithfulness: `emby/Faithful-EmbyOverlap-off` reproduces the 2026-10-04 overlap and
+  `jellyfin/Faithful-JellyfinReusedIdStop-off` the reused-id stop; every fixed finding keeps a
+  `Faithful-*-off` config that still fails with its fix turned off.
+
+### Findings
+
+| Issue | Finding | Kind | Status |
+| --- | --- | --- | --- |
+| #524 | A restart can install a proxy after cleanup (leaked listener; orphaned playing proxy) | unconditional | open, pinned |
+| #525 | Close does not join the cancelled start; a Plex transcode can start after the stop | unconditional | open, not pinnable hermetically |
+| #526 | Retry stops responding after a quality change from the error overlay | unconditional | **fixed** |
+| #527 | Plex: Close sends no stop after a restart from the error overlay | unconditional | **fixed** |
+| #528 | A seek just before a restart's item loads is dropped | unconditional | open, pinned |
+| #529 | Plex: a timed-out stop lets the replacement start beside the old transcode | unconditional (pile-up), conditional (kill) | open, pile-up pinned |
+| #530 | A restart from the error overlay skips Retry's pending-stop join | unconditional | **fixed** |
+| #531 | Jellyfin: a consent request marks a newer session stopped | unconditional | open, pinned |
+| #532 | Jellyfin: two quick reopens leave three encoders | unconditional | open, pinned |
+| #533 | Proxy handlers keep fetching after the proxy stops | unconditional | open, pinned |
+| #534 | The proxy never invalidates its upstream URLSession | unconditional | open, pinned |
+| #535 | A reopen while the consent choice shows leaves it undismissable | needs repro | open, pinned |
+| #536 | Server behaviours that decide the conditional findings | checklist | open |
+| #537 | A reopen cancelled after the server minted its session leaks it | conditional on PlaybackInfo starting an encoder | open |
+| #538 | Unattended restarts reset the seek-rebuild budget | unconditional, low | open |
+| #539 | Retry's stop join gave up at the request timeout | unconditional (Jellyfin), conditional (Plex) | **fixed** |
+| #540 | Plex: the consent choice can show while the copy job runs | unconditional | open |
+
+### The fixes (#526, #527, #530, #539)
+
+- **#527:** `beginStreaming` re-arms the Plex final-stop latch for every new transcode.
+- **#530:** a quality, audio or subtitle change from the error overlay joins the failed attempt's
+  stop before minting a replacement.
+- **#539:** the failed attempt's exact-session stop is tracked on its own 30 s bound; a Retry or
+  overlay restart that finds it unconfirmed re-sends it once on a 10 s bound and proceeds only on
+  confirmation, otherwise LS-PB-008, and the next attempt re-sends again. The outcome is keyed on
+  a failure epoch. A first draft made Retry permanently dead after LS-PB-008; review rejected it
+  because a network blip fails the stop at once, and the Emby barrier already re-runs its stop.
+- **#526:** the Retry task releases its slot on every uncancelled exit. After #530 no public-API
+  route to the wedge remains, so its regression test uses a DEBUG-only seam
+  (`advancePlaybackGenerationForTesting`).
+- Residual (conditional, #536): a confirmed re-sent stop does not fence a stop the client already
+  gave up on under a reused session id (`plex/Finding-RetryRestopDoesNotFence`,
+  `jellyfin/Finding-RetryRestopDoesNotFence-ReusedId`).
+
+### Verification
+
+- TLC: every config in `specs/playback/` and `specs/downloads/`, default and deep tiers, on the
+  final branch head (see the PR for the run summary); `scripts/check-tla-drift.py` clean.
+- Swift: hermetic PMSKit tests; `LabstreamMacTests` 1032 tests and `LabstreamTests` on the iPhone
+  simulator 1013 tests, each with 8 known issues (the open pins); visionOS, iPhone, tvOS and macOS
+  builds with Xcode 27.2; an iPhone simulator install and launch smoke (sign-in screen).
+- Not done here: live checks on Plex, Jellyfin and Emby (`TESTING-CHECKLIST.md`, "Error-overlay
+  recovery"), the #536 server probes, a visionOS simulator smoke (no signed-in golden simulator
+  recorded), and hardware.
 
 ## Phase 1 implementation plan
 
