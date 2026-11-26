@@ -30,7 +30,6 @@ struct PlaybackRestartIntentTests {
             .resetFinalTarget,
             .resetAdaptiveBitrate,
             .rearmStartupDeadlineRetry,
-            .clearPlaybackError,
             .removeObservers,
         ])
         #expect(plan.plexControlClient == .refreshForRecovery)

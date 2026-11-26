@@ -299,10 +299,8 @@ struct JellyfinBrowseService: MediaBrowserBrowseFacade {
                                                              maxHeight: maxHeight)
     }
 
-    /// Returns whether the encoder is confirmed gone. `true` on a 2xx, and also when the
-    /// server answers that there is nothing to stop (404/400) — either way the FFmpeg job is
-    /// no longer live. `false` only when we could not reach/authenticate the server, so the
-    /// caller (#84 launch sweep) keeps the persisted PlaySessionId for a later retry.
+    /// A 2xx acknowledges the request. An exact-session 404 or 410 counts as already
+    /// gone. Other responses retain cleanup authority. Worker exit is not observable here.
     /// Convenience for playback teardown, which always runs on the live (active) lane.
     /// Download teardown uses the explicit-`session` overload so it targets the job's OWN
     /// backend even after a switch.

@@ -9,6 +9,11 @@ struct EmbyBrowseService: MediaBrowserBrowseFacade {
     let appModel: AppModel
     var session: URLSession = .shared
 
+    struct UnconfirmedRejectedSession: LocalizedError {
+        let retryStop: @MainActor @Sendable () async -> Bool
+        var errorDescription: String? { PlaybackFailure(code: .priorSessionStopUnconfirmed).message }
+    }
+
     enum ServiceError: Error, LocalizedError {
         case notAuthenticated
         case noPlayableItem
@@ -274,9 +279,14 @@ struct EmbyBrowseService: MediaBrowserBrowseFacade {
             // encoding stop when PlaybackInfo actually advertised an encoder-backed source.
             if info.mediaSources.contains(where: { $0.transcodingURL?.isEmpty == false }),
                let playSessionID = info.playSessionId, !playSessionID.isEmpty {
-                _ = await stopActiveEncoding(playSessionId: playSessionID,
+                let stop: @MainActor @Sendable () async -> Bool = {
+                    await stopActiveEncoding(playSessionId: playSessionID,
                                              session: playbackSession,
                                              identity: identity)
+                }
+                guard await Task { await stop() }.value else {
+                    throw UnconfirmedRejectedSession(retryStop: stop)
+                }
             }
             throw error
         }
@@ -289,10 +299,8 @@ struct EmbyBrowseService: MediaBrowserBrowseFacade {
 
     /// Active-encoding cleanup invariant: `/Sessions/Playing/Stopped` does NOT stop the
     /// transcoder. For server-encoded sources, the stop path calls this on teardown.
-    /// Returns whether the encoder is confirmed gone. `true` on a 2xx, and also when the
-    /// server answers that there is nothing to stop (404/400) — either way the FFmpeg job is
-    /// no longer live. `false` only when we could not reach/authenticate the server, so the
-    /// caller (#84 launch sweep) keeps the persisted PlaySessionId for a later retry.
+    /// A 2xx acknowledges the request. An exact-session 404 or 410 counts as already
+    /// gone. Other responses retain cleanup authority. Worker exit is not observable here.
     /// Convenience for playback teardown, which always runs on the live (active) lane.
     /// Download teardown uses the explicit-`session` overload so it targets the job's OWN
     /// backend even after a switch.

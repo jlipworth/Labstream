@@ -173,6 +173,11 @@ layout code changed.
       overlay and Close. Confirm on the server that the replacement session ends at once, that
       the failed session's encoder is gone before the replacement starts (no two encoders), and
       that Retry still responds afterwards.
+- [ ] Delay failure cleanup to just before and just after 20 seconds. On Retry and on an overlay
+      quality change, verify the replacement gets its own full reconnect deadline. Reject the
+      new negotiation and verify its code appears. Count Plex stops across both clients and
+      confirm only one acknowledged stop precedes replacement. On Jellyfin change quality
+      during Retry's re-send and confirm that its success permits replacement without a third DELETE.
 - [ ] With the server unreachable during the failure, tap Retry: expect LS-PB-008 while the old
       stop cannot be confirmed; restore the network and tap Retry again: the stop is re-sent and
       playback resumes, with one encoder on the server.

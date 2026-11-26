@@ -35,6 +35,14 @@ final class EmbyReopenStopBarrier {
         latestTicket = task
         return task
     }
+    /// The browse service already sent this exact-session DELETE and received no confirmation.
+    func retainFailedStop(_ stop: @escaping () async -> Bool) {
+        precondition(!hasAuthority)
+        operation = stop
+        latestTicket = Task { false }
+        finalRetryAttempted = false
+    }
+
     /// Teardown joins in-flight work or retries a failed ticket once, never an automatic loop.
     func beginFinalStop() -> Task<Bool, Never>? {
         if let pending { return pending }

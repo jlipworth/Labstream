@@ -78,6 +78,7 @@ struct PlaybackFailure: LocalizedError, Equatable, Sendable {
     @MainActor
     static func classify(_ error: Error?, signals: [Signal] = []) -> PlaybackFailure {
         if let failure = error as? PlaybackFailure { return failure }
+        if error is EmbyBrowseService.UnconfirmedRejectedSession { return .init(code: .priorSessionStopUnconfirmed) }
         if let error = error as? PlexError {
             switch error {
             case .unauthorized: return .init(code: .serverHTTP, httpStatus: 401)
