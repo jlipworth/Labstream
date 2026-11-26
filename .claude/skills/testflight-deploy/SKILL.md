@@ -58,7 +58,8 @@ processing take most of an hour.
 # 1. Version/build bumped and merged first (bump-version skill); release from published main.
 git switch main && git pull --ff-only
 
-# 2. Checks: clean source, versions, profiles, identity, and that the build is not uploaded yet.
+# 2. Checks: clean source, versions, manually managed profiles, identity, and that the build is
+#    new and above every build already uploaded for the version.
 scripts/testflight-release.py preflight
 
 # 3. Archives go to ~/Library/Developer/Xcode/Archives/<date>/ (visible in Organizer);

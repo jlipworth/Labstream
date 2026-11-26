@@ -188,7 +188,7 @@ class ProfileSelectionTests(unittest.TestCase):
         return tf.Profile(name, name, "TEAM", frozenset(platforms), self.NOW + dt.timedelta(days=days),
                           [cert * 20], pathlib.Path(name), managed)
 
-    def test_prefers_named_profile_over_xcode_managed_and_skips_unusable(self):
+    def test_skips_xcode_managed_and_unusable_profiles(self):
         profiles = [
             self.profile("managed", {"iOS", "xrOS"}, 400, managed=True),
             self.profile("named", {"iOS", "xrOS", "visionOS"}, 300),
@@ -202,6 +202,48 @@ class ProfileSelectionTests(unittest.TestCase):
         self.assertEqual(tf.choose_profile(profiles, tf.PLATFORMS["tvos"], identities, self.NOW)[0].name, "tv")
         with self.assertRaisesRegex(tf.ReleaseError, "macos"):
             tf.choose_profile(profiles, tf.PLATFORMS["macos"], identities, self.NOW)
+
+
+    def test_only_xcode_managed_profiles_is_a_clear_error(self):
+        profiles = [self.profile("managed", {"iOS", "xrOS"}, 400, managed=True)]
+        with self.assertRaisesRegex(tf.ReleaseError, "manually managed"):
+            tf.choose_profile(profiles, tf.PLATFORMS["ios"], {"AA" * 20}, self.NOW)
+
+
+class UploadGuardTests(unittest.TestCase):
+    class Client:
+        def __init__(self, existing, highest):
+            self.existing, self.highest = existing, highest
+
+        def builds(self, version, build, platform):
+            return [{"id": "b"}] if build in self.existing else []
+
+        def highest_build(self, version, platform):
+            return self.highest
+
+    def plan(self, build):
+        profile = tf.Profile("p", "u", "TEAM", frozenset({"iOS"}), dt.datetime.now(dt.timezone.utc), [], pathlib.Path("p"))
+        return tf.Plan(tf.PLATFORMS["ios"], "1.0", build, profile, "ID")
+
+    def check(self, client, build):
+        @contextlib.contextmanager
+        def fake_client(_creds):
+            yield client
+        with mock.patch.object(tf, "asc_client", fake_client):
+            tf.check_not_uploaded([self.plan(build)], tf.Credentials(FAKE_KEY_ID, FAKE_ISSUER, FAKE_APP, "pem"))
+
+    def test_rejects_an_existing_or_lower_build_number(self):
+        with self.assertRaisesRegex(tf.ReleaseError, "already on App Store Connect"):
+            self.check(self.Client({"1662"}, 1663), "1662")
+        with self.assertRaisesRegex(tf.ReleaseError, "--build-number 1664"):
+            self.check(self.Client(set(), 1663), "1596")
+        self.check(self.Client(set(), 1663), "1664")
+
+    def test_export_puts_system_rsync_first(self):
+        with mock.patch.dict(os.environ, {"PATH": "/opt/homebrew/bin:/usr/bin:/bin"}):
+            path = tf.export_environment()["PATH"].split(os.pathsep)
+        self.assertLess(path.index("/usr/bin"), path.index("/opt/homebrew/bin"))
+        self.assertEqual(path.count("/usr/bin"), 1)
 
 
 class FakeClient:
