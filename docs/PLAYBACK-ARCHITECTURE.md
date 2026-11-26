@@ -348,9 +348,10 @@ debounced into one settled final-target rebuild instead of restarting for every 
   with `priorSessionStopUnconfirmed` (LS-PB-008) instead of starting a new encoder.
 - A replacement that begins from a surfaced failure, whether explicit Retry or a quality, audio
   or subtitle change from the error overlay, first joins the failed attempt's exact-session stop.
-  On Plex and Jellyfin that stop is tracked on its own bound (`failedAttemptStopTimeout`, 30 s,
-  longer than the 5 s recovery control client) so a timed-out request is never counted as
-  joined. If it is still unconfirmed, the replacement re-sends the stop once on a shorter bound
+  On Plex that stop goes out on its own client bounded by `failedAttemptStopTimeout` (30 s,
+  longer than the 5 s recovery control client); Jellyfin's acknowledged DELETE keeps its request
+  timeout. On both, a timed-out or failed request is never counted as joined. If it is still
+  unconfirmed, the replacement re-sends the stop once on a shorter bound
   (`failedAttemptRestopTimeout`, 10 s) and proceeds only when it is confirmed; otherwise it shows
   LS-PB-008 and the next attempt re-sends again. Both bounds are judgment calls: long enough for a
   slow but reachable server, short enough that a user tap is never held indefinitely, and never an

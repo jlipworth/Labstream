@@ -243,8 +243,10 @@ each module's README; this section records the program-level outcome.
 - **#527:** `beginStreaming` re-arms the Plex final-stop latch for every new transcode.
 - **#530:** a quality, audio or subtitle change from the error overlay joins the failed attempt's
   stop before minting a replacement.
-- **#539:** the failed attempt's exact-session stop is tracked on its own 30 s bound; a Retry or
-  overlay restart that finds it unconfirmed re-sends it once on a 10 s bound and proceeds only on
+- **#539:** on Plex the failed attempt's exact-session stop goes out on its own client bounded by
+  `failedAttemptStopTimeout` (30 s); Jellyfin's acknowledged DELETE keeps its request timeout, and
+  on both a timed-out or failed request is never counted as joined. A Retry or overlay restart
+  that finds it unconfirmed re-sends it once on a 10 s bound and proceeds only on
   confirmation, otherwise LS-PB-008, and the next attempt re-sends again. The outcome is keyed on
   a failure epoch. A first draft made Retry permanently dead after LS-PB-008; review rejected it
   because a network blip fails the stop at once, and the Emby barrier already re-runs its stop.
@@ -260,7 +262,9 @@ each module's README; this section records the program-level outcome.
 - TLC: every config in `specs/playback/` and `specs/downloads/`, default and deep tiers, on the
   final branch head (see the PR for the run summary); `scripts/check-tla-drift.py` clean.
 - Swift: hermetic PMSKit tests; `LabstreamMacTests` 1032 tests and `LabstreamTests` on the iPhone
-  simulator 1013 tests, each with 8 known issues (the open pins); visionOS, iPhone, tvOS and macOS
+  simulator 1013 tests. The app targets record 8 known issues from 6 open controller pins (#524's
+  pin wraps three expectations, one per proxy stand-up); the two proxy pins (#533, #534) run in
+  PMSKit's `swift test`. That is 8 open pins in total; #525 is not pinned. visionOS, iPhone, tvOS and macOS
   builds with Xcode 27.2; an iPhone simulator install and launch smoke (sign-in screen).
 - Not done here: live checks on Plex, Jellyfin and Emby (`TESTING-CHECKLIST.md`, "Error-overlay
   recovery"), the #536 server probes, a visionOS simulator smoke (no signed-in golden simulator

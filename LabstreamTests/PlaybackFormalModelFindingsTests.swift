@@ -204,7 +204,7 @@ struct PlaybackFormalModelFindingsTests {
     /// a replacement; a quality change from the error overlay goes through
     /// `restartAtCurrentPosition`, which used to skip that join, so the replacement started while
     /// the failure's stop (same session id) was still in flight and could end it
-    /// (`plex/Faithful-FinalStopKillsReplacement-off.cfg`, `StopNeverKillsSuccessor`).
+    /// (`plex/Faithful-FinalStopKillsReplacement-off.cfg`, `LiveStopNeverKillsSuccessor`).
     @Test("#530: a restart from the error overlay joins the failure's stop first")
     func restartFromTheErrorOverlayJoinsTheFailuresStopFirst() async throws {
         let route = PlexFixtureRoute(videoDecision: "transcode")
@@ -302,7 +302,9 @@ struct PlaybackFormalModelFindingsTests {
         // The next tap tries again: one more re-send, and still no restart.
         controller.retry()
         #expect(await eventually(within: 2) { route.count(.stop, .began) == 3 }, "the second tap did not re-send the stop")
-        try? await Task.sleep(for: .milliseconds(800))
+        // The tracked stop and both re-sends each time out, ending their requests in stopLoading.
+        try #require(await eventually { route.count(.stop, .cancelled) == 3 },
+                     "the second re-send did not time out (\(route.count(.stop, .cancelled)) cancelled)")
         #expect(controller.playbackError.isFailed && controller.playbackError.failure?.code == .priorSessionStopUnconfirmed)
         #expect(route.count(.stop, .began) == 3)
     }
