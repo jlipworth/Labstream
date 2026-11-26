@@ -1,5 +1,9 @@
 # Downloads formal model (TLA+)
 
+Archived after #505 merged. W0–W8 are complete. Open product findings retain their individual issues.
+The [downloads overhaul plan](../../plans/2026-10-16-downloads-overhaul.md#formal-model-follow-ups)
+owns the remaining verification and tooling work.
+
 **Status (2026-11-25):** the modelling program is done on `specs/downloads-tla`: the pilot (the
 session, finalize and sweep core with process death), the shared base W0 (the lifecycle reducer
 as shared TLA+ operators, held equal to the Swift by a generated table; a pinned TLC runner with
@@ -37,9 +41,9 @@ folder per module with the shared modules in `base/` (`specs/README.md` has the 
 fix has its own issue and change; the ones carried by this branch are listed in the status above.
 
 **Evidence that motivated it:** the
-[bugs versus main audit](../evidence/2026-10-17-downloads-overhaul-bugs-vs-main.md). Its
+[bugs versus main audit](../../evidence/2026-10-17-downloads-overhaul-bugs-vs-main.md). Its
 interleaving-only defects (B02, B03, B04, B06, B09 to B12, B22, B32) were found by review and by
-field reports, not by a tool. The [overhaul plan](2026-10-16-downloads-overhaul.md) owns the design
+field reports, not by a tool. The [overhaul plan](../../plans/2026-10-16-downloads-overhaul.md) owns the design
 the model describes.
 
 **Out of scope:** proving the Swift implements the model. The model is a hand-written abstraction;

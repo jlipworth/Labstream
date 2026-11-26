@@ -3,7 +3,7 @@ import Testing
 @testable import PMSKit
 
 /// Orderings the TLA+ model of the downloads session core found on the current design
-/// (`specs/downloads/session/Finding-*.cfg`, `docs/plans/2026-11-24-downloads-tla-model.md`).
+/// (`specs/downloads/session/Finding-*.cfg`, `docs/archive/plans/2026-11-24-downloads-tla-model.md`).
 ///
 /// Each test states the behaviour the design wants. A test for an open finding is wrapped in
 /// `withKnownIssue`, so the suite stays green while the finding is open. When a fix lands the

@@ -126,8 +126,8 @@ class Redactor:
     def mask(value: str) -> str:
         return value if len(value) <= 4 else f"{value[:2]}…{value[-2:]}"
 
-    def __call__(self, text: str) -> str:
-        if self.verbose:
+    def __call__(self, text: str, *, force: bool = False) -> str:
+        if self.verbose and not force:
             return text
         for secret in sorted(self.secrets, key=len, reverse=True):
             text = text.replace(secret, self.mask(secret))
@@ -251,6 +251,7 @@ def optional_credentials() -> Credentials | None:
         app_id = setting("LABSTREAM_ASC_APP_ID", local)
         if not (key_path and key_id and issuer_id and app_id):
             return None
+        REDACT.add(key_id, issuer_id, app_id)
         creds = Credentials(key_id, issuer_id, app_id, extract_pem(pathlib.Path(key_path).expanduser().read_text()))
     REDACT.add(creds.key_id, creds.issuer_id, creds.app_id)
     return creds
@@ -262,7 +263,7 @@ def private_key_file(creds: Credentials) -> Generator[pathlib.Path, None, None]:
     directory = pathlib.Path(tempfile.mkdtemp(prefix="ls-asc-"))
     try:
         os.chmod(directory, 0o700)
-        path = directory / f"AuthKey_{creds.key_id}.p8"
+        path = directory / "signing-key.p8"
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as handle:
             handle.write(creds.private_key_pem)
@@ -308,6 +309,14 @@ def make_jwt(creds: Credentials, key_path: pathlib.Path, now: int | None = None)
     return f"{signing_input}.{b64url(der_to_raw_signature(der))}"
 
 
+def build_components(version: str) -> tuple[int, ...]:
+    """Compare CFBundleVersion numerically, treating omitted components as zero."""
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,2}", version):
+        raise ReleaseError("expected a build number with one to three numeric components")
+    components = tuple(map(int, version.split(".")))
+    return components + (0,) * (3 - len(components))
+
+
 class ASCClient:
     def __init__(self, token: str, app_id: str) -> None:
         self.token = token
@@ -332,8 +341,8 @@ class ASCClient:
             raise APIError(f"App Store Connect API {method} {path} -> HTTP {exc.code}: {detail}", exc.code) from None
         return json.loads(raw) if raw else None
 
-    def highest_build(self, version: str, platform: Platform) -> int:
-        """Highest numeric build already uploaded for this version on this platform (0 if none)."""
+    def highest_build(self, version: str, platform: Platform) -> str:
+        """Highest build across all upload pages for this version and platform."""
         res = self.request("GET", "/v1/builds", {
             "filter[app]": self.app_id,
             "filter[preReleaseVersion.version]": version,
@@ -342,9 +351,18 @@ class ASCClient:
             "fields[builds]": "version",
             "limit": "200",
         })
-        numbers = [int(b["attributes"]["version"]) for b in res.get("data", [])
-                   if str(b["attributes"].get("version", "")).isdigit()]
-        return max(numbers, default=0)
+        highest = "0"
+        while True:
+            for build in res["data"]:
+                version_number = build["attributes"]["version"]
+                if build_components(version_number) > build_components(highest):
+                    highest = version_number
+            next_url = res.get("links", {}).get("next")
+            if not next_url:
+                return highest
+            if not next_url.startswith(API_ROOT + "/v1/builds?"):
+                raise ReleaseError("unexpected App Store Connect builds pagination URL")
+            res = self.request("GET", next_url.removeprefix(API_ROOT))
 
     def builds(self, version: str, build: str, platform: Platform) -> list[dict[str, Any]]:
         res = self.request("GET", "/v1/builds", {
@@ -758,10 +776,11 @@ def check_not_uploaded(plans: list[Plan], creds: Credentials) -> None:
                     "bump CURRENT_PROJECT_VERSION or use --build-number auto for a new binary"
                 )
             highest = client.highest_build(plan.version, plan.platform)
-            if plan.build.isdigit() and int(plan.build) <= highest:
+            highest_components = build_components(highest)
+            if build_components(plan.build) <= highest_components:
                 raise ReleaseError(
                     f"{plan.platform.key} {plan.version} ({plan.build}) is not above the highest build already "
-                    f"on App Store Connect for that version ({highest}); pass --build-number {highest + 1} or higher"
+                    f"on App Store Connect for that version ({highest}); pass --build-number {highest_components[0] + 1} or higher"
                 )
 
 
@@ -1101,7 +1120,7 @@ def cmd_ship(args: argparse.Namespace) -> int:
     try:
         cmd_prune_archives(argparse.Namespace(keep=ARCHIVE_SETS_TO_KEEP, yes=True))
     except ReleaseError as exc:
-        warn(f"archive pruning skipped: {exc}")
+        warn(REDACT(f"archive pruning skipped: {exc}", force=True))
     return 0
 
 
@@ -1148,8 +1167,8 @@ def main(argv: list[str] | None = None) -> int:
     }
     try:
         handlers[args.command](args)
-    except ReleaseError as exc:
-        print(REDACT(f"testflight-release: {exc}"), file=sys.stderr)
+    except Exception as exc:
+        print(REDACT(f"testflight-release: {exc}", force=True), file=sys.stderr)
         return 1
     return 0
 
