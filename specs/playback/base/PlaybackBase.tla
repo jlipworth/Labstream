@@ -350,10 +350,12 @@ EndedBy(s, G, r) ==
         THEN [server[s][g] EXCEPT !.state = "stopped", !.endedBy = r.gen]
         ELSE server[s][g]]]
 
-ServerAck(s) ==
-    \E r \in InFlight(s), G \in StopReach(s) :
+ServerAckWithReach(s, reach) ==
+    \E r \in InFlight(s), G \in reach :
         /\ stopReqs' = Resolved(r, "acked")
         /\ server' = Settled(EndedBy(s, G, r), stopReqs')
+
+ServerAck(s) == ServerAckWithReach(s, StopReach(s))
 
 ServerFail(s) ==
     \E r \in InFlight(s), G \in StopReach(s) \cup {{}} :

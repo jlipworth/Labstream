@@ -45,10 +45,10 @@ struct MediaBrowserPlaybackPolicyTests {
     }
 
     @Test func activeEncodingStopPolicyConfirmsOnlySuccessfulOrGoneStatuses() {
-        for status in [200, 204, 299, 400, 404, 410] {
+        for status in [200, 204, 299, 404, 410] {
             #expect(MediaBrowserActiveEncodingStopPolicy.isConfirmedStopped(httpStatus: status))
         }
-        for status in [nil, 300, 401, 403, 409, 429, 500, 503] as [Int?] {
+        for status in [nil, 300, 400, 401, 403, 409, 429, 500, 503] as [Int?] {
             #expect(!MediaBrowserActiveEncodingStopPolicy.isConfirmedStopped(httpStatus: status))
         }
     }

@@ -91,7 +91,7 @@ are as of commit `abe0feab`; none of the modelled files changed after `0b7f3fcb`
 | Model | Swift |
 | --- | --- |
 | `Start` | `start()` with `beginRemoteStream` (3232). `DetailPlaybackLauncher` negotiated the first session before the controller existed (`DetailPlaybackLauncher.open`), so its job runs and its callbacks are installed |
-| `Reopen` | a settled seek outside the buffer (5697), `reload(bitrateKbps:)` (2470) and the track changes through `restartAtCurrentPosition` (5710), and the MediaBrowser branch of `attemptStartupDeadlineRetry` (5463), each ending in `reopenRemoteStream` (5750). While a failure shows (only the quality and track changes are reachable then), `FailureRestartJoinsPendingStops` (#530) makes it a `failureRetryTask` that first joins `pendingStopTasks`, as `retry()` does (`retryKind = "restart"`, then `RetryProceeds`); the reopen then leaves the error showing |
+| `Reopen` | a settled seek outside the buffer (5697), `reload(bitrateKbps:)` (2470) and the track changes through `restartAtCurrentPosition` (5710), and the MediaBrowser branch of `attemptStartupDeadlineRetry` (5463), each ending in `reopenRemoteStream` (5750). While a failure shows (only the quality and track changes are reachable then), `FailureRestartJoinsPendingStops` (#530) makes it a `failureRetryTask` that first joins `pendingStopTasks`, as `retry()` does (`retryKind = "restart"`, then `RetryProceeds`); the reopen then clears the error |
 | `ReopenCore` | the synchronous part of `reopenRemoteStream`: `playbackTask?.cancel()` 5766, the generation bump, `priorStop = didStopRemoteSession ? nil : onStopRemoteSession` 5770, `priorPlaySessionId` 5771, the detach 5777 to 5780, the task at 5808. The Emby branch (5782 to 5800) is not taken |
 | `TaskBegins` | `await predecessor?.value` (nil for Jellyfin, 5811), the first `acceptsReopenResult` check, and `remoteStreamReopener(request)` 5839 |
 | `NegotiateLands` | Jellyfin answers the PlaybackInfo request (`JellyfinPlayback.playbackInfoRequest`, `PMSKit/Sources/PMSKit/Jellyfin/JellyfinPlayback.swift` 139). The request carries no play-session id; the id is read from the response (`resolveMediaBrowserStream`, 285) |
@@ -107,7 +107,7 @@ are as of commit `abe0feab`; none of the modelled files changed after `0b7f3fcb`
 | `Retry`, `RetryProceeds` | `retry()`, `failureRetryTask` with `waitForPendingStopRequests` and `restartAtCurrentPosition` |
 | `StopUnconfirmed`, `st.failStop` | `failedAttemptStopUnconfirmed`: set by `trackFailedAttemptStop` when the failure's `onStopAcknowledged` (`stopRemoteSessionIfNeeded(tracksFailedAttempt: true)` from `surfaceFailure`) returns false in the failure's generation; reset by each `surfaceFailure`, cleared by an acknowledged re-send |
 | `RetryRestops`, `st.restop` | `joinFailedAttemptStop` after the join: `resendFailedAttemptStop` re-runs `failedAttemptSessionStop` (kept after `didStop`) once, as a `pendingStopTasks` entry, bounded by `failedAttemptRestopTimeout` (10 s). Not while a reopen from the error overlay runs (`restartInFlight`, cleared when `reopenRemoteStream`'s task body exits in its generation; `task[c] # NoTask`); that tap keeps LS-PB-008 without ending the reopen's reconnect status, and a later tap re-sends once the reopen's task has ended |
-| `RetryRestopConfirmed`, `RetryRefused` | the generation and cancellation check after the re-send: acknowledged clears the flag and `restartAtCurrentPosition` runs; otherwise `playbackError.set(PlaybackFailure(code: .priorSessionStopUnconfirmed))` with `failureRetryTask` cleared, so the next tap re-sends again. A cancelled or superseded task does nothing (Close resets `restop`) |
+| `RetryRestopConfirmed`, `RetryRefused` | the generation and cancellation check after the re-send: acknowledged clears the flag and `restartAtCurrentPosition` runs; otherwise `playbackError.set(PlaybackFailure(code: .priorSessionStopUnconfirmed))` with `failureRetryTask` cleared, so the next tap re-sends again. A superseding quality change inherits the re-send ticket, whose confirmation survives cancellation of the Retry waiter (Close resets `restop`) |
 | `Close` | `stop()` 1135: the task cancelled and dropped at 1181 to 1182, the detach 1201, `stopRemoteSessionIfNeeded` 1203 |
 | `SurfaceFailure`, `StopsNow` | `surfaceFailure` 5133 (the cancelled task joined at 5155 to 5158, `stopRemoteSessionIfNeeded` 5178); `stopRemoteSessionIfNeeded` 1255 for Jellyfin: `onStopAndWait` as a `pendingStopTasks` entry at 1268 |
 | `Fail` | `handlePlaybackFailure` and the watchdogs that end in `surfaceFailure` |
@@ -340,7 +340,7 @@ shipping value of every behaviour constant.
 | `Finding-DeferredStopUnfenced` (conditional) | `Current-ReusedId` + `"live"`, `QuickReopen`, `RestartFromFailure` − `QuickRetry`, `EnvFails`, route constraint | `StopNeverKillsSuccessor` violated | violated | stops at first error | 2 s |
 | `Finding-DeferredStopUnfenced-Retry` (conditional) | `Current-ReusedId` + `"live"`, route constraint | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-RejectedStopKillsReusedId` (conditional) | `Current-ReusedId` + `QuickReopen` − `QuickRetry` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
-| `Finding-RejectedStopKillsReusedId-Retry` (conditional) | `Current-ReusedId` + `RestartFromFailure` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
+| `Faithful-OverlayRetryKillsReplacement-off` (conditional) | `Current-ReusedId` + `RestartFromFailure` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Faithful-RetryAfterTimedOutStop-ReusedId-off` (conditional) | `Current-ReusedId` + `StopsCanBeLate` − `RetryNeedsConfirmedStop` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 2 s |
 | `Finding-RetryRestopDoesNotFence-ReusedId` (conditional, #536) | `Current-ReusedId` + `StopsCanBeLate`, one user action | `StopNeverKillsSuccessor` violated | violated | stops at first error | 2 s |
 | `Finding-RetryAfterTimedOutRejectStop-ReusedId` (conditional, #536) | `Current-ReusedId` + `StopsCanBeLate` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 2 s |
@@ -628,12 +628,13 @@ Each needs `IdReuse = "latest"` (a server that may return the id it minted last)
   returns A's id (`"latest"`), `Reopen` again, the first task rejects that result and sends its
   stop (5844, 5919), the second task negotiates at once (nothing orders it behind the
   rejection) and gets the same id, and the rejected result's stop ends it.
-- **`Finding-RejectedStopKillsReusedId-Retry`** (14 states before #530, `QuickRetry`, `RestartFromFailure`):
+- **`Faithful-OverlayRetryKillsReplacement-off`** (14 states before #530, `QuickRetry`, `RestartFromFailure`):
   `Fail`, a quality change while the failure shows starts a reopen (since #530 only once the
   failure's stop is answered, which makes the trace one step longer; the error still shows), `Retry`, `RetryProceeds`
   cancels that reopen without joining it (`restartAtCurrentPosition` from `failureRetryTask`;
   only the task `surfaceFailure` cancelled is joined), and the cancelled reopen's rejected result's
-  stop ends the Retry's replacement. This is the case the restart core asked this module to check.
+  stop ends the Retry's replacement. Since #552 the error clears before the reopen.
+  `Current-OverlayRetryReusedId` checks the fixed path and the faithful config restores the old error lifetime.
 - **`Faithful-RestartFromFailureStaleStop-off`** (formerly `Finding-RestartFromFailureStaleStop`;
   fixed by #530; 7 states, `QuickReopen`, `RestartFromFailure`): `Fail` sends A's stop, a quality
   or track change while the failure shows reopens without the join `retry()` has, gets A's id,
