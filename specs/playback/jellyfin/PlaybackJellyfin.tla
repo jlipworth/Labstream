@@ -1061,6 +1061,11 @@ WindowCloses ==
 \* No result is ever rejected, so no rejected session's stop is sent.
 NoRejection == \A c \in Controllers : ghost[c].rejected = {}
 
+\* No Retry tap re-sends the failure's stop (#539), so no state after a
+\* re-send is explored.  Deep-BackToBack uses it to set aside the route
+\* Finding-RetryRestopKillsOtherPlayback shows.
+NoRestop == \A c \in Controllers : st[c].restop = NoRq
+
 \* The first start never asks for consent, so a consent request comes from
 \* handlePlaybackFailure or a reopen.
 NoInitialConsent ==

@@ -256,6 +256,11 @@ each module's README; this section records the program-level outcome.
 - Residual (conditional, #536): a confirmed re-sent stop does not fence a stop the client already
   gave up on under a reused session id (`plex/Finding-RetryRestopDoesNotFence`,
   `jellyfin/Finding-RetryRestopDoesNotFence-ReusedId`).
+- Residual (conditional, #536), found by the deep tier after the merges: with two controllers and
+  a server that reuses an id once nothing runs under it, a failure stop that failed but was applied
+  is re-sent by Retry for an already-ended job, the other playback can be given that id, and the
+  re-send ends it (`jellyfin/Finding-RetryRestopKillsOtherPlayback`). `jellyfin/Deep-BackToBack`
+  now sets this route aside (`CONSTRAINT NoRestop`).
 
 ### Verification
 

@@ -70,6 +70,11 @@ What the model shows:
   for the failed attempt's stop, is fixed by #530 (`Faithful-RestartFromFailureStaleStop-off`,
   `Current-RestartFromFailure-ReusedId`). A server that keeps the old job running under a returned id
   leaves the skipped prior with no stop (`Finding-SameIdSkipLeavesPrior`).
+- **New with #539, conditional (#536): Retry's re-send can reach another playback.** With two
+  controllers and a server that reuses ids with nothing running under them (`"stopped"`), a
+  failure stop that failed but was applied is re-sent for an id whose job has already ended; the
+  other playback can be given that id before the re-send lands, and it ends that playback's job
+  (`Finding-RetryRestopKillsOtherPlayback`). `Deep-BackToBack` passes with this route set aside.
 - `ServerRecreate` (the 2026-09-17 audit's job made again from an accepted HLS request) is on in
   every config and judged against the server.
 
@@ -211,9 +216,11 @@ What depends on them:
   stale-stop findings above.
 - `"live"`: suspect 3. A deferred stop meant for the session two back reaches a replacement
   that came back under that session's id.
-- `"stopped"`: no stale stop reaches anything, because a stop that has not been answered keeps
-  its job running. `Deep-BackToBack` uses it to let the second playback reuse the first one's
-  ids.
+- `"stopped"`: a stop sent while its job runs keeps the id out of reuse until it lands, so no
+  such stop reaches a successor. Retry's re-send (#539) is the exception: it is sent after a first
+  stop that failed may already have ended the job, and with two controllers the other playback
+  can be given the id meanwhile (`Finding-RetryRestopKillsOtherPlayback`). `Deep-BackToBack` uses
+  `"stopped"` to let the second playback reuse the first one's ids, with that route set aside.
 - `StopEndsAllUnderId = FALSE` with reuse fails `OneEncoder` in `Current-ReusedId`'s run: an
   acknowledged stop ends only a recreated older job under the id and leaves the one it meant.
 
@@ -339,10 +346,11 @@ shipping value of every behaviour constant.
 | `Finding-RetryAfterTimedOutRejectStop-ReusedId` (conditional, #536) | `Current-ReusedId` + `StopsCanBeLate` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 2 s |
 | `Finding-SameIdSkipLeavesPrior` (conditional) | `Current-ReusedId` − `ReusedIdReplacesJob` | `OneEncoder` violated | violated | stops at first error | 1 s |
 | `Finding-BackToBackStaleStop` (conditional) | two controllers, see the config | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
+| `Finding-RetryRestopKillsOtherPlayback` (conditional, #536) | `Deep-BackToBack` without its constraint, default tier | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Proposed-CloseJoins` | `Current-ReopenSmall` + both join fixes | pass | pass | 56,431 | 2 s |
 | `Proposed-ConsentStopFenced` | `Finding-ConsentClobbersDidStop` + `FixConsentStopFenced` | pass | pass (`OneEncoder` not checked) | 2,078,548 | 37 s |
 | `Proposed-TracksDeferredStop` | `Finding-DeferredStopUnfenced-Retry` + `FixTracksDeferredStop`, no constraint | pass | pass (given `StopsCanBeLate = FALSE`) | 270,612 | 2 s |
-| `Deep-BackToBack` (deep) | — | pass | pass (given `IdReuse = "stopped"`) | 122,691,237 | 11 min 34 s |
+| `Deep-BackToBack` (deep) | two controllers, `CONSTRAINT NoRestop` | pass | pass (given `IdReuse = "stopped"` and no Retry re-send) | 64,480,409 | 7 min 54 s |
 
 - `Current-Reopen`: three user actions, four session ids, `MaxGeneration = 15`. It checks
   `TypeOK`, `OneEncoder`, `NoOrphans`, `GenerationsSuffice` and `IdsSuffice`. Late stops are off:
@@ -383,11 +391,14 @@ shipping value of every behaviour constant.
   route constraint.
 - `Deep-BackToBack`: two controllers, four ids, one user action each, `MaxGeneration = 10`,
   `IdsNeverShared = FALSE`, `IdReuse = "stopped"`, `StopEndsAllUnderId`, failing stops, no
-  consent, no restart from a failure. The second controller is given an id the first used
-  (witness `NeverSharedId`). `Finding-BackToBackStaleStop` is two controllers with
+  consent, no restart from a failure, `CONSTRAINT NoRestop` (no Retry re-send is explored). The
+  second controller is given an id the first used (witness `NeverSharedId`). Without the
+  constraint it fails in 9 states (`Finding-RetryRestopKillsOtherPlayback`); it passed without
+  one before #539 added the re-send. `Finding-BackToBackStaleStop` is two controllers with
   `"latest"` reuse.
 
-Two Finding configs carry `CONSTRAINT NoRejection` (no state with a rejected result is explored),
+`Deep-BackToBack` carries `CONSTRAINT NoRestop`, which sets aside the route
+`Finding-RetryRestopKillsOtherPlayback` shows. Two Finding configs carry `CONSTRAINT NoRejection` (no state with a rejected result is explored),
 so that TLC shows the deferred-stop route rather than the shorter rejected-stop route, and
 `Finding-ConsentClobbersDidStop-PlayerFailure` carries `CONSTRAINT NoInitialConsent`, so that it
 shows the failing item's consent request rather than the first start's. The constraints are
@@ -632,6 +643,13 @@ Each needs `IdReuse = "latest"` (a server that may return the id it minted last)
 - **`Finding-BackToBackStaleStop`** (5 states, two controllers, `IdsNeverShared = FALSE`): the
   first playback is closed and its stop is not awaited (UI teardown is non-blocking); the next
   playback's first negotiation returns the same id, and the stop ends it.
+- **`Finding-RetryRestopKillsOtherPlayback`** (9 states, two controllers, `IdsNeverShared =
+  FALSE`; unlike the rest it needs `IdReuse = "stopped"`, not `"latest"`; #536): c1 fails and
+  sends A's stop; the stop fails (a transport error) but the server applied it, so A's job has
+  ended and `failedAttemptStopUnconfirmed` is set (`trackFailedAttemptStop`). The Retry tap's
+  `joinFailedAttemptStop` re-sends it (`resendFailedAttemptStop`) for an id with nothing running
+  under it; c2 opens and is given A's id; the re-send is acknowledged and ends c2's job. Retry's
+  join fences only c1's own negotiation.
 - **`Finding-SameIdSkipLeavesPrior`** (6 states, `ReusedIdReplacesJob = FALSE`): a reopen comes back
   under the prior's id, the skip sends no stop, and the prior job runs beside the replacement
   until a stop for the id ends both.
