@@ -703,7 +703,7 @@ sequenceDiagram
 
 `specs/playback/` holds TLA+ models of the restart, reopen, Retry and cleanup ordering described
 above, checked with TLC. `specs/README.md` covers the layout, config kinds and how to run them;
-the plan, [docs/plans/2026-11-25-playback-tla-model.md](plans/2026-11-25-playback-tla-model.md),
+the plan, `docs/plans/2026-11-25-playback-tla-model.md`,
 records the design, the review rounds and every finding.
 
 | Module | Models |
