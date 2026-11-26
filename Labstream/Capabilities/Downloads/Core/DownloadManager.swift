@@ -293,6 +293,11 @@ public final class DownloadManager {
     /// errors directly from SwiftUI. Under Observation that makes every progress tick invalidate a
     /// broad part of the list. Keep the hot derived strings/fractions in one snapshot so the view
     /// observes a single value and row bodies stay manager-free.
+    #if DEBUG
+    @ObservationIgnored var sideAssetInventoryDidObserveForTesting: (() async -> Void)?
+    @ObservationIgnored var sideAssetInventoryWillReadForTesting: (@Sendable () -> Void)?
+    @ObservationIgnored var sideAssetInventoryDeadlineForTesting: DownloadStoreDeadline?
+    #endif
     @ObservationIgnored var completedSideAssetInventoryWorker: Task<Void, Never>?
     @ObservationIgnored var completedSideAssetInventories: [DownloadAttemptKey: CompletedSideAssetInventory] = [:]
     /// #494: restores the saved session of a backend that is not selected, for the completed-row

@@ -124,29 +124,7 @@ struct DownloadsFormalModelSideAssetsTests {
         #expect(resumeQueue.contains("where record.lifecycle != .paused"))
     }
 
-    /// S5. The completed-row repair is edge driven: launch, foreground, backend ready or switched,
-    /// Resume All. An edge that arrives while an inventory pass runs returns at the first guard,
-    /// and the running pass observed the rows before that edge. A pass whose worker misses its
-    /// 30 s deadline ends without dispatching, and a row whose mutation generation moved while it
-    /// was observed is skipped. None of the three leaves a note to run again, so the rows wait
-    /// for the next edge the user happens to cause.
-    @Test("S5: a dropped repair edge is run again")
-    func droppedRepairEdgeRunsAgain() throws {
-        let pass = try #require(Self.appSource(
-            from: "    func rehydrateMissingOptionalSideAssetsForCompletedRows(",
-            to: "\n    /// Reuse the pass inventory when still current", in: Self.sideCachePath))
-
-        // What the model relies on: the three places a pass can end without scanning a row.
-        #expect(pass.contains("await work.observe(deadline: .after(30))"))
-        #expect(pass.contains("guard inventory.matches(self.store)"))
-        #expect(pass.contains("defer { self.completedSideAssetInventoryWorker = nil }"))
-
-        withKnownIssue("TLA+ finding S5 (#493): a busy, timed-out or stale repair pass is not rerun") {
-            #expect(!pass.contains(
-                        "guard !isQueuePaused, completedSideAssetInventoryWorker == nil else { return }"),
-                    "an edge that arrives while a pass runs is dropped without a rerun note")
-        }
-    }
+    // S5 runs the three repair-pass interleavings in SideAssetRefreshReviewTests.
 
     /// S6 (#494, fixed). Launch restores the selected backend's session, then used to hydrate
     /// only the other backends that own active work or journaled server cleanup. A completed row
@@ -220,7 +198,7 @@ struct DownloadsFormalModelSideAssetsTests {
         let initial = try #require(Self.appSource(
             from: "        cachePlexBIF(for: attemptKey, item: item, mediaIndex: mediaIndex,",
             to: "\n        let initialRoute", in: Self.plexPath))
-        #expect(initial.contains("partIndex: partIndex, server: server, token: token)"))
+        #expect(initial.contains("partIndex: partIndex, sourcePartID: chosenMedia?.part[safe: partIndex]?.id"))
         #expect(initial.contains("let staticPart = chosenMedia?.part[safe: partIndex]"))
         let repair = try #require(Self.appSource(
             from: "                    self.cachePlexBIF(for: attemptKey, item: currentItem, mediaIndex: mediaIndex,",
@@ -244,7 +222,7 @@ struct DownloadsFormalModelSideAssetsTests {
     /// downloaded part up by media and part index. After Plex reorders the item's media another
     /// part sits at that index, so the repair fetched that part's subtitles and BIF, or none, on
     /// every launch, although the row persists the downloaded part's `sourcePartID`. Both repairs
-    /// now resolve the part by that ID; the indexes are used only when no ID was stored, and an ID
+    /// now resolve the part by that ID. A legacy row without a saved ID and an ID
     /// the refreshed item no longer has selects nothing
     /// (`side-assets/Current-503-RepairByPartID`; `Faithful-503-off-*` keep the old behaviour).
     @Test("#503: the Plex repair resolves the downloaded part by its persisted ID")
