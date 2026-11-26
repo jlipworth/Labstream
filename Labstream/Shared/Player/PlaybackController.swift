@@ -1276,8 +1276,9 @@ final class PlaybackController {
         }
     }
 
-    /// Whether the final `/video/:/transcode/universal/stop` was already fired, so
-    /// repeated teardowns (dismantle + explicit stop paths) send it exactly once.
+    /// Whether the final `/video/:/transcode/universal/stop` was already fired for the current
+    /// transcode, so repeated teardowns (dismantle + explicit stop paths) send it exactly once.
+    /// Cleared by `beginStreaming` when a new transcode is started (#527).
     private var sentTranscodeStop = false
 
     /// Best-effort: tell PMS to kill this session's transcode job. HLS gives the
@@ -2712,6 +2713,11 @@ final class PlaybackController {
         playbackGeneration += 1
         let generation = playbackGeneration
         activeFinalTargetRebuildGeneration = finalTargetRebuildGeneration
+        // #527: every Plex start goes through here, and the start it makes is a new transcode
+        // (a restart stops the previous job first, under the same session id). Re-arm the final
+        // stop for it, or a stop already sent by surfaceFailure would suppress Close's stop for a
+        // transcode a quality/track change started from the error overlay.
+        sentTranscodeStop = false
         playbackTask = Task { [weak self] in
             guard let self else { return }
             await self.startStreaming(resumeOffsetMsOverride: resumeOffsetMsOverride,

@@ -89,7 +89,9 @@ CONSTANTS
         \* no start request goes out while a stop of this controller's is
         \* unanswered
     FixRestartResetsStopLatch
-        \* every restart clears sentTranscodeStop, not only retry()
+        \* every restart clears sentTranscodeStop, not only retry().
+        \* Shipping since #527 (beginStreaming clears it): TRUE is the
+        \* code as it stands; FALSE is the old latch.
 
 ASSUME /\ MaxUserActions \in Nat
        /\ MaxGeneration >= 3
@@ -361,8 +363,8 @@ Start(c) ==
 
 \* reload(bitrateKbps:) and the audio and subtitle track changes:
 \* restartAtCurrentPosition with an intent other than explicitRetry.
-\* Nothing in it asks whether a failure is showing, and only retry()
-\* clears sentTranscodeStop.  reload clears
+\* Nothing in it asks whether a failure is showing.  beginStreaming
+\* clears sentTranscodeStop (#527; before it only retry() did).  reload clears
 \* videoTranscodeApprovedForCurrentItem; a track change keeps it
 \* (`isReload` picks which one the step is).
 UserQuality(c) ==

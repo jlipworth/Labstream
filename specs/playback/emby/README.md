@@ -505,7 +505,7 @@ behind.
   and an attach needs the barrier empty; the third comes from the one reopen that is past its
   predecessor. The transaction tail is what makes that "the one".
 - **A restart from a failure.** The restart core's `Finding-RestartAfterFailureSkipsFinalStop`
-  does not carry over. `didStop` belongs to the session and an attach clears it, so a quality
+  (fixed for Plex in #527, now `Faithful-RestartAfterFailureSkipsFinalStop-off`) does not carry over. `didStop` belongs to the session and an attach clears it, so a quality
   change while a failure shows leaves a session that Close stops. `Current-Reopen` has
   `RestartFromFailure` on and checks `NoOrphans`.
 - **Retry's join.** `retry()` awaits `waitForPendingStopRequests` before it reopens. For Emby
