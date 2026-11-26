@@ -1249,11 +1249,25 @@ final class PlaybackController {
     /// re-send it (as `EmbyReopenStopBarrier` keeps `operation`). Plex re-sends by session id.
     private var failedAttemptSessionStop: (@MainActor () async -> Bool)?
 
+    /// The generation of a restart (`beginStreaming` / `reopenRemoteStream`) whose task body is
+    /// still running (#539). `playbackTask` is not cleared when its task ends, so it cannot say
+    /// whether a restart is under way. The task clears this on exit while its generation is
+    /// current; a newer generation makes a stale value harmless.
+    private var restartInFlightGeneration: Int?
+    private var restartInFlight: Bool { restartInFlightGeneration == playbackGeneration }
+
+    private func endRestartInFlight(generation: Int) {
+        if restartInFlightGeneration == generation { restartInFlightGeneration = nil }
+    }
+
     enum FailedAttemptStopJoin: Equatable {
         /// The failure's stop is confirmed (now or by the re-sent stop): a replacement may start.
         case confirmed
         /// Still unconfirmed after one bounded re-send: surface LS-PB-008.
         case unconfirmed
+        /// Unconfirmed, and a restart from the error overlay is running under this session, so
+        /// no stop is re-sent (it could end the job that restart starts).
+        case restartInFlight
         /// Cancelled or another generation took over while waiting: do nothing.
         case superseded
     }
@@ -1268,7 +1282,7 @@ final class PlaybackController {
         guard failedAttemptStopUnconfirmed else { return .confirmed }
         // A restart started from the error overlay is already under way under this session:
         // a stop sent now could end the job it is starting. Report, do not re-send.
-        guard playbackTask == nil else { return .unconfirmed }
+        guard !restartInFlight else { return .restartInFlight }
         recordPlaybackDiagnostic("playback.failed_stop_resent")
         let confirmed = await resendFailedAttemptStop()
         guard !Task.isCancelled, playbackGeneration == generation else { return .superseded }
@@ -1296,7 +1310,10 @@ final class PlaybackController {
         return await ticket.value
     }
 
-    /// `op`'s answer, or false once `seconds` pass (the request is then cancelled).
+    /// `op`'s answer, or false once `seconds` pass. The bound holds only if `op` honours
+    /// cancellation: `group` waits for both children, so a stop callback that ignored it would
+    /// hold the tap until its own request timeout. `stopActiveEncodingNow`'s URLSession request
+    /// is cancelled with its task.
     private static func firstResult(within seconds: TimeInterval,
                                     _ op: @escaping @MainActor () async -> Bool) async -> Bool {
         await withTaskGroup(of: Bool.self) { group in
@@ -2713,9 +2730,11 @@ final class PlaybackController {
             guard join == .confirmed else {
                 self.recordPlaybackDiagnostic("playback.retry_refused", fields: [
                     "failure_code": .label(PlaybackFailure.Code.priorSessionStopUnconfirmed.rawValue),
+                    "restart_in_flight": .bool(join == .restartInFlight),
                 ])
                 self.playbackError.set(PlaybackFailure(code: .priorSessionStopUnconfirmed))
-                self.endReconnectStatus()
+                // The overlay restart owns the reconnect status while it runs.
+                if join != .restartInFlight { self.endReconnectStatus() }
                 self.updateTransportStatus()
                 return
             }
@@ -2851,8 +2870,10 @@ final class PlaybackController {
         playbackGeneration += 1
         let generation = playbackGeneration
         activeFinalTargetRebuildGeneration = finalTargetRebuildGeneration
+        restartInFlightGeneration = generation
         playbackTask = Task { [weak self] in
             guard let self else { return }
+            defer { self.endRestartInFlight(generation: generation) }
             await self.startStreaming(resumeOffsetMsOverride: resumeOffsetMsOverride,
                                       stoppingPreviousTranscode: stoppingPreviousTranscode,
                                       generation: generation)
@@ -5947,11 +5968,13 @@ final class PlaybackController {
             "detached_prior_item": .bool(true),
             "deferred_prior_session_stop": .bool(priorStop != nil),
         ])
+        restartInFlightGeneration = generation
         playbackTask = Task { @MainActor [weak self] in
             // Even a cancelled intermediate waiter must join its predecessor so the chain
             // includes rejected-result cleanup before a newer transaction negotiates.
             await predecessor?.value
             guard let self else { return }
+            defer { self.endRestartInFlight(generation: generation) }
             do {
                 guard RemoteStreamLifecyclePolicy.acceptsReopenResult(
                     capturedGeneration: generation, currentGeneration: self.playbackGeneration,

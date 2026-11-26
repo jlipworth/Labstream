@@ -266,6 +266,31 @@ struct PlaybackFormalModelFindingsTests {
         #expect(route.count(.stop, .answered) == 1, "the tap did not re-send the stop")
     }
 
+    /// #539: a restart from the error overlay that fails before it builds an item (the network
+    /// is still down) must not leave Retry refusing for good. Its task ends; the next tap re-sends
+    /// the failure's stop and restarts once PMS answers.
+    @Test("#539: Retry re-sends and restarts after an overlay reload failed before its item")
+    func retryResendsAfterAnOverlayReloadFailedBeforeItsItem() async throws {
+        let route = PlexFixtureRoute(videoDecision: "transcode")
+        let controller = makePlexController(route: route, maxVideoBitrateKbps: 4000)
+        defer { route.fail([]); controller.stop() }
+        controller.start()
+        try #require(await eventually { route.count(.decision, .began) == 1 })
+        route.fail([.stop, .decision])         // the network drops
+        controller.surfaceReconnectTimeout()
+        try #require(await eventually { route.count(.stop, .failed) == 1 }, "failure stop did not fail")
+        controller.reload(bitrateKbps: 2000)   // from the overlay; the error stays
+        try #require(await eventually { route.count(.decision, .failed) == 1 }, "overlay reload never asked for a decision")
+        try? await Task.sleep(for: .milliseconds(200))   // let the reload's task finish
+        try #require(controller.playbackError.isFailed)
+        route.fail([])                         // the network is back
+        let stopsBefore = route.count(.stop, .began)
+        controller.retry()
+        #expect(await eventually { !controller.playbackError.isFailed },
+                "Retry did not restart (\(String(describing: controller.playbackError.failure?.code)))")
+        #expect(route.count(.stop, .began) == stopsBefore + 1, "the tap did not re-send the failure's stop")
+    }
+
     /// The other side of #539: a failure stop PMS answers within the bound lets Retry restart
     /// without re-sending it.
     @Test("#539: Retry restarts a Plex transcode once the failure stop is answered")

@@ -30,7 +30,7 @@ Each MainActor run between two awaits is one action. Functions are in
 | `Start` | `start()`: `beginStreaming(stoppingPreviousTranscode: false)` |
 | `UserQuality` | `reload(bitrateKbps:)` and the audio and subtitle track changes: `restartAtCurrentPosition` with an intent other than `explicitRetry`, then `beginStreaming` |
 | `StopUnconfirmed`, `st.failStop` | `failedAttemptStopUnconfirmed` (#539). `surfaceFailure` sends its stop with `sendTranscodeStop(tracksFailedAttempt: true)` through `plexFailedAttemptStop`, on a copy of the control client bounded by `failedAttemptStopTimeout` (30 s; `PlexClient.withTimeoutBound`), and `trackFailedAttemptStop` sets the flag when no HTTP answer came, in the failure's generation. Reset by each failure, cleared by an answered re-send. The model's `late` on that stop is the bound passing. A transport error at once (`serverUnreachable`, e.g. no network) also sets it in the Swift; the model has no such outcome, and the gap is safe: such a request never reached PMS, and Retry only re-sends |
-| `RetryRestops`, `st.restop` | `joinFailedAttemptStop`: `resendFailedAttemptStop` sends one more stop through `plexFailedAttemptStop`, not behind `sentTranscodeStop`, as a `pendingStopTasks` entry bounded by `failedAttemptRestopTimeout` (10 s). Not while a restart from the error overlay runs (`playbackTask != nil`, `task[c] # NoTask`): the re-send could end the job that restart starts (`Proposed-StartAfterOwnStops` found it), so that tap is refused |
+| `RetryRestops`, `st.restop` | `joinFailedAttemptStop`: `resendFailedAttemptStop` sends one more stop through `plexFailedAttemptStop`, not behind `sentTranscodeStop`, as a `pendingStopTasks` entry bounded by `failedAttemptRestopTimeout` (10 s). Not while a restart from the error overlay runs (`restartInFlight`: `restartInFlightGeneration`, set by `beginStreaming` and cleared when its task body exits in the same generation; `task[c] # NoTask` in the model, where an ended task leaves the slot): the re-send could end the job that restart starts (`Proposed-StartAfterOwnStops` found it), so that tap keeps LS-PB-008 without ending the restart's reconnect status. A restart whose task has ended (for example its decision failed while the error showed) no longer counts, and the next tap re-sends |
 | `RetryRestopConfirmed`, `RetryRefused` | after the re-send, the generation and cancellation check: answered clears the flag and the restart runs; otherwise `playbackError.set(PlaybackFailure(code: .priorSessionStopUnconfirmed))` with `failureRetryTask` cleared, so the next tap re-sends again. Close resets `restop` |
 | `Retry`, `RetryProceeds`, `Joined` | `retry()` 2566, `failureRetryTask`, `waitForPendingStopRequests` 1236 awaited at 2580: it returns when every `pendingStopTasks` entry has, and a `sendTranscodeStop` entry returns when its request is answered or times out (`try?` drops the error). `restartAtCurrentPosition` with `.explicitRetry` then switches to the recovery client (5743, `switchToRecoveryControlClient` 2689) |
 | `Close` | `stop()` |
@@ -235,6 +235,7 @@ controller, two user actions, `MaxGeneration = 16`, failures and the startup-dea
 | `Faithful-DetachBeforeStart-off` | `NoZombieItem` violated | violated | stops at first error | 1 s |
 | `Faithful-RetryAfterTimedOutStop-off` (conditional on PMS) | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-RetryRestopDoesNotFence` (conditional on PMS, #536) | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 2 s |
+| `Current-LateFailNoLanding` | pass | pass (that finding with `CancelledStopCanLand = FALSE`: every `Current-LateAck` invariant, `LiveStopNeverKillsSuccessor` included, with failures and the re-send) | 131,212 | 2 s |
 | `Mutant-StopNotAwaited` | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Mutant-StopNotAwaited-PileUp` | `OneEncoderOutsideCancelledStops` violated | violated | stops at first error | 1 s |
 | `Mutant-RetrySkipsJoin` | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
@@ -504,7 +505,9 @@ session id, and the first stop, which the client stopped waiting for, is applied
 replacement. On Plex the session id is always reused, so the fix narrows the route (a second stop
 must be answered first) but does not close it; only PMS dropping an abandoned request, or a fresh
 session id per restart, would. `Current-LateFail` therefore still leaves out
-`LiveStopNeverKillsSuccessor`, now owned by that finding.
+`LiveStopNeverKillsSuccessor`, now owned by that finding. `Current-LateFailNoLanding` is that
+finding with `CancelledStopCanLand = FALSE` and passes with the property checked: the server
+assumption is the only gap left.
 
 ### The consent choice shows over a running copy job (`Finding-ConsentShowsOverRunningJob`)
 
