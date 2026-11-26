@@ -109,7 +109,19 @@ ensure_jar() {
 
 # Value of a `\* KEY: value` header line in a .cfg file (empty when absent).
 cfg_header() {
-  sed -n "s/^\\\\\\* *$2: *\\(.*[^ ]\\) *\$/\\1/p" "$1" | head -n 1
+  awk -v key="$2" '
+    /^[[:space:]]*\\\*/ {
+      sub(/^[[:space:]]*\\\*[[:space:]]*/, "")
+      if (index($0, key ":") != 1) next
+      sub(/^[^:]*:[[:space:]]*/, "")
+      sub(/[[:space:]]+$/, "")
+      if (key == "EXPECT" && (seen || !$0)) {
+        print FILENAME ": duplicate or empty EXPECT header" > "/dev/stderr"
+        exit 2
+      }
+      if (!seen++) print
+    }
+  ' "$1"
 }
 
 # Absolute path of an existing file or directory.
@@ -174,10 +186,13 @@ cfg_properties() {
       for (w in words) keyword[words[w]] = 1
     }
     {
-      sub(/\\\*.*/, "")
+      # Strip comments before splitting fields, including inline PROPERTY lists.
+      line = $0
+      sub(/\\\*.*/, "", line)
+      n = split(line, fields, " ")
       first = 1
-      if ($1 in keyword) { inside = ($1 == "PROPERTY" || $1 == "PROPERTIES"); first = 2 }
-      if (inside) for (i = first; i <= NF; i++) names = names (names == "" ? "" : " ") $i
+      if (fields[1] in keyword) { inside = (fields[1] == "PROPERTY" || fields[1] == "PROPERTIES"); first = 2 }
+      if (inside) for (i = first; i <= n; i++) names = names (names == "" ? "" : " ") fields[i]
     }
     END { print names }
   ' "$1"
@@ -331,6 +346,7 @@ run_tlc() {
 # the banner and a clean finish agree: the banner alone can be followed by a crash.
 classify_tlc() {
   local log="$1" status="$2" banners count stray
+  RESULT_SUBTYPE=""
   RESULT=BROKEN
   RESULT_KIND=broken
   RESULT_WHY=""
@@ -371,6 +387,7 @@ classify_tlc() {
   fi
   case "${banners%% *}:$status" in
     invariant:12|action:12|action:13|temporal:13|deadlock:11)
+      RESULT_SUBTYPE="${banners%% *}"
       RESULT="${banners#* }"
       RESULT_KIND=violation ;;
     *) RESULT_WHY="TLC exit $status does not match its banner (${banners#* })" ;;
@@ -489,7 +506,11 @@ while IFS= read -r cfg; do
   # A broken run never matches; a violation matches only the expected property.
   if [[ "$RESULT_KIND" == "$wanted_kind" ]] \
       && { [[ "$wanted_kind" == pass ]] || [[ "$RESULT" == "$wanted" ]]; }; then
-    outcome="ok"
+    case "$wanted:$RESULT_SUBTYPE" in
+      DEADLOCK:deadlock|TEMPORAL:temporal) outcome="ok" ;;
+      DEADLOCK:*|TEMPORAL:*) got="$RESULT_SUBTYPE $RESULT" ;;
+      *) outcome="ok" ;;
+    esac
   fi
   if [[ "$outcome" == ok && -n "$others" ]]; then
     rest_log="$out/tlc.others.log"
