@@ -79,6 +79,7 @@ class CredentialTests(unittest.TestCase):
 
     def test_private_key_file_is_owner_only_and_removed(self):
         with tf.private_key_file(self.creds) as key_path:
+            self.assertNotIn(self.creds.key_id, key_path.name)
             self.assertEqual(stat.S_IMODE(key_path.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(key_path.parent.stat().st_mode), 0o700)
             self.assertEqual(key_path.read_text(), self.pem.strip() + "\n")
@@ -219,7 +220,7 @@ class UploadGuardTests(unittest.TestCase):
             return [{"id": "b"}] if build in self.existing else []
 
         def highest_build(self, version, platform):
-            return self.highest
+            return str(self.highest)
 
     def plan(self, build):
         profile = tf.Profile("p", "u", "TEAM", frozenset({"iOS"}), dt.datetime.now(dt.timezone.utc), [], pathlib.Path("p"))
@@ -238,6 +239,23 @@ class UploadGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(tf.ReleaseError, "--build-number 1664"):
             self.check(self.Client(set(), 1663), "1596")
         self.check(self.Client(set(), 1663), "1664")
+
+    def test_dotted_builds_compare_numerically_with_missing_components_zero(self):
+        for candidate, highest in [("2.1", "300"), ("300", "300.0"), ("300.2", "300.10")]:
+            with self.subTest(candidate=candidate), self.assertRaisesRegex(tf.ReleaseError, "not above"):
+                self.check(self.Client(set(), highest), candidate)
+        self.check(self.Client(set(), "300.9"), "300.10")
+
+    def test_highest_build_reads_later_pages_and_dotted_versions(self):
+        client = tf.ASCClient("unused", "app")
+        path = "/v1/builds?cursor=next"
+        responses = [
+            {"data": [{"attributes": {"version": "12"}}], "links": {"next": tf.API_ROOT + path}},
+            {"data": [{"attributes": {"version": "300.1"}}]},
+        ]
+        with mock.patch.object(client, "request", side_effect=responses) as request:
+            self.assertEqual(client.highest_build("1.0", tf.PLATFORMS["ios"]), "300.1")
+            self.assertEqual(request.call_args_list[-1], mock.call("GET", path))
 
     def test_export_puts_system_rsync_first(self):
         with mock.patch.dict(os.environ, {"PATH": "/opt/homebrew/bin:/usr/bin:/bin"}):
@@ -279,6 +297,15 @@ class CommandGuardTests(unittest.TestCase):
         with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
             code = tf.main(argv)
         return code, out.getvalue(), err.getvalue()
+
+    def test_openssl_exception_masks_key_id_even_in_verbose_mode(self):
+        tf.REDACT.add(FAKE_KEY_ID)
+        error = subprocess.CalledProcessError(1, ["openssl", "-sign", FAKE_KEY_ID])
+        with mock.patch.object(tf, "cmd_validate", side_effect=error):
+            code, _, err = self.run_main(["validate", "--verbose"])
+        self.assertEqual(code, 1)
+        self.assertIn("openssl", err)
+        self.assertNotIn(FAKE_KEY_ID, err)
 
     def test_upload_requires_explicit_yes_before_any_work(self):
         with mock.patch.object(tf, "source_state", side_effect=AssertionError("must not run")):
