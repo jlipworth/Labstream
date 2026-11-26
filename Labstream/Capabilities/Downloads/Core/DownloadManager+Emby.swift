@@ -67,11 +67,15 @@ extension DownloadManager {
         // `session.start` only kicks off the transfer, so protection (and the encoder-teardown
         // PlaySessionId) is released terminally from `refreshRecords`/`releaseInFlight`.
 
-        if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Emby",
+        if recordStorageRefusal(ratingKey: ratingKey, backend: "Emby",
                                     expectedBytes: estimatedBytes(for: item, choice: choice,
                                                                   mediaIndex: mediaIndex,
                                                                   partIndex: partIndex,
                                                                   backend: .emby)) {
+            if let previousRecord, previousRecord.status.isActiveWork, let owner = self.attemptKey(for: previousRecord) {
+                _ = await applyServerPrepFailure(.storage, for: owner, context: "emby_storage_limit")
+                if store.ownsAttempt(owner) { clearStaticRangePendingResume(ratingKey: ratingKey) }
+            }
             releaseInFlight(for: attemptKey)
             return
         }

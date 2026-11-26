@@ -26,6 +26,12 @@ struct BackgroundReattachTaskGatePolicyTests {
             rowStatus: .paused) == .cancelForPausedRow)
     }
 
+    @Test func finishedSegmentOnPausedRowAwaitsCallback() {
+        #expect(BackgroundReattachTaskGatePolicy.disposition(
+            isSuperseded: false, isCanceling: false, isAttemptHalted: false,
+            rowStatus: .paused, finishedCurrentSegment: true) == .leaveAlone)
+    }
+
     @Test("Active rows and unknown rows keep the existing classification")
     func activeRowsClassify() {
         for status in [DownloadStatus.queued, .downloading] {

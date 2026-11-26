@@ -136,14 +136,13 @@ public enum StaticRangeTrainIntegrityPolicy {
         case discard(reason: String)
     }
 
-    /// Validator gate for an UNOWNED (dead-finish-adopted) body. Stricter than
-    /// `arrivingBodyDecision` in both directions: an unowned body must never PIN a validator
-    /// (a fresh attempt at durable 0 — or right after a restart cleared the pin — would adopt
-    /// the OLD attempt's validator and then trust its siblings), and gets no absent-validator
-    /// tolerance (an absent header on an unowned body could splice another resource version).
+    /// An exact-attempt, aligned head on an empty working file can establish the first
+    /// validator. Every later or out-of-order adopted segment must match the existing pin.
     public static func unownedBodyValidatorDecision(storedValidator: String?,
-                                                    responseValidator: String?) -> UnownedBodyValidatorDecision {
+                                                    responseValidator: String?,
+                                                    alignedEmptyHead: Bool = false) -> UnownedBodyValidatorDecision {
         guard let storedValidator else {
+            if alignedEmptyHead && responseValidator != nil { return .apply }
             return .discard(reason: "adopted_no_pinned_validator")
         }
         guard let responseValidator else {

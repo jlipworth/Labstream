@@ -540,6 +540,7 @@ public final class DownloadManager {
 
     #if DEBUG
     var scheduledRefreshTaskForTesting: Task<Void, Never>? { refreshRecordsTask }
+    @ObservationIgnored var foregroundSnapshotDidFinishForTesting: (() -> Void)?
     @ObservationIgnored var foregroundRecoveryDidResolveForTesting: ((Bool) -> Void)?
 
     func drainManagerOperationsForTesting() async {
@@ -2324,6 +2325,9 @@ public final class DownloadManager {
         let snapshotRatingKeys = Set(observedRows.keys).subtracting(forwardOnlyRowsAdmissionMayOwn())
         // R2 (#476): `liveKeys` is a snapshot; reconcile also asks the session what it owns when
         // it decides, so a finished body queued for its append is not failed with its row.
+        #if DEBUG
+        foregroundSnapshotDidFinishForTesting?()
+        #endif
         session.reattach { [weak self, store, session] liveKeys in
             let submission = store.submitReconcile(
                 liveRatingKeys: liveKeys, snapshotRatingKeys: snapshotRatingKeys,
@@ -2341,6 +2345,7 @@ public final class DownloadManager {
                 #endif
                 guard case .committed = proof, self.startupRecoveryState == .ready else { return }
                 self.refreshRecords()
+                self.refinalizeInterruptedForwardOnlyBodies()
                 guard self.isAppSceneActive, !self.isQueuePaused else { return }
                 self.session.observeStaticRangeHealthAfterReconciliation()
                 self.resumeInterruptedStaticByteRangeDownloads(candidateKeys: interruptedStaticKeys,
@@ -4225,7 +4230,7 @@ public final class DownloadManager {
                                                                  mediaIndex: mediaIndex,
                                                                  partIndex: partIndex)
     }
-    func rejectIfOverStorageLimit(ratingKey: String, backend: String, expectedBytes: Int?) -> Bool {
+    func recordStorageRefusal(ratingKey: String, backend: String, expectedBytes: Int?) -> Bool {
         guard let message = storageLimitMessage(adding: expectedBytes,
                                                 replacingRatingKey: ratingKey) else { return false }
         recordDownloadDiagnostic("downloads.enqueue_failed", fields: [
@@ -4235,6 +4240,11 @@ public final class DownloadManager {
             "expected_bytes": .bytes(expectedBytes),
         ])
         lastError[ratingKey] = .storageLimitExceeded(message)
+        return true
+    }
+
+    func rejectIfOverStorageLimit(ratingKey: String, backend: String, expectedBytes: Int?) -> Bool {
+        guard recordStorageRefusal(ratingKey: ratingKey, backend: backend, expectedBytes: expectedBytes) else { return false }
         // A retry/resume handoff arrives here with a row still parked in active-work status and
         // (for static resumes) a pendingResume marker. Fail the row and drop the marker BEFORE
         // publishing the refresh — a still-queued row with a lingering marker is exempt from stale
@@ -5100,7 +5110,7 @@ public final class DownloadManager {
         }
         guard committed else { return }
         // `releaseInFlight` wipes the stall tracker entry, including the attempt count
-        // `detectRestarts` just incremented and the byte high-water mark. Seed both back: without
+        // for committed restarts and the byte high-water mark. Seed both back: without
         // the count the 2-restart cap never binds, and without the high-water mark the replacement's
         // replay from byte 0 refills the budget (#497 review); either way a stream that wedges at
         // the same offset restarts the encoder from byte 0 every stall timeout for ever.

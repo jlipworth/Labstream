@@ -110,8 +110,10 @@ struct StaticRangeTrainIntegrityPolicyTests {
             remainderReason: nil) == .unrestricted)
     }
 
-    @Test("An unowned body may apply only onto an existing, exactly-matching validator pin")
+    @Test("An adopted head can establish the pin and subsequent adopted bodies must match")
     func unownedBodyValidatorDecision() {
+        #expect(StaticRangeTrainIntegrityPolicy.unownedBodyValidatorDecision(
+            storedValidator: nil, responseValidator: "v1", alignedEmptyHead: true) == .apply)
         #expect(StaticRangeTrainIntegrityPolicy.unownedBodyValidatorDecision(
             storedValidator: "\"v1\"", responseValidator: "\"v1\"") == .apply)
         // Never pins: an unowned body arriving before the first owned pin must be discarded,

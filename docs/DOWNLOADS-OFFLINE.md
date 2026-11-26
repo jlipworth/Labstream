@@ -134,7 +134,13 @@ Rules that follow from this:
   - The queued publication then renames it onto the working path and validation runs. After a
     relaunch reconcile reports the body as captured, keeps or makes the row `finalizing`
     (whether or not `bodyCaptured` was durable yet), and launch recovery requeues the
-    publication.
+    publication. A repeated finish after relaunch reuses the exact attempt's saved body.
+    Publication replaces the working file atomically. On a rename error the row stays
+    finalizing with the captured bytes available for the next foreground or launch recovery.
+    This covers both storage exhaustion and other filesystem errors.
+  - A forward-only HTTP 206 must describe the entire file from byte zero, with a known
+    total equal to the received file length. Structured JSON and XML error pages fail
+    validation before durable capture.
   - A body has one publication at a time. The delegate claims it before the body is at the
     capture path, so a recovery pass that finds the body there cannot queue a second one, and a
     finish delivered twice is dropped. A publication that finds the body already at the working
@@ -154,7 +160,11 @@ Rules that follow from this:
     listing leaves a task that has already finished tracked, so its finish callback still
     writes the body; it supersedes and cancels only tasks that are still transferring. A
     progress callback under the pause makes the same decision, so the last progress of a
-    finished task does not drop it either.
+    finished task does not drop it either. Relaunch leaves an exact-attempt, finished segment
+    on a paused row for its pending callback. An aligned head arriving on an empty working
+    file can establish the first validator. Other adopted segments must match the pinned one.
+  - The watchdog charges a restart after the verdict commits. Capture reserves the attempt
+    before the filesystem move so the watchdog cannot cancel a finished body in that window.
 - **Reconcile asks the session what it owns when it decides.** Its live keys are a snapshot
   reattach took earlier. For an active row (never a paused one) reconcile also counts work the
   session owns at that moment: a finished body queued for its append, a delayed retry, a request
@@ -630,6 +640,8 @@ Recovery also:
   counting iOS purgeable space, matching the Settings storage gauge — and, if the volume still
   cannot hold the remaining network bytes, largest append copy, uncached side assets and headroom,
   parks the row as a pending resume instead of retrying. A user-initiated Retry can reattempt immediately, but still passes admission and storage preflights;
+- commits an Emby conversion handoff refused by the storage limit as a storage failure on
+  the preparing attempt before releasing the handoff;
 - migrates legacy Emby tombstones and pre-upgrade quarantined Plex intents into the cleanup
   journal, then runs required server cleanup through the cleanup runner (see
   [Server cleanup](#server-cleanup));
@@ -638,15 +650,16 @@ Recovery also:
   BIF and subtitles come from the part the row downloaded, not the media's first part. The repair
   resolves that part in the refreshed item by the persisted `sourcePartID`, so a later reorder of
   the item's media cannot hand it another version's assets; an ID the item no longer has selects
-  nothing, and only rows that stored no ID fall back to `mediaIndex`/`partIndex`, which must
-  both still resolve (the BIF never falls back to the first media) (#503). A successful source
+  nothing. Rows without a persisted part ID skip BIF and subtitle repair because the saved
+  indexes cannot identify the downloaded version after a reorder (#503, #556). A successful source
   refresh also teaches the row chapter thumbnails it was saved without, so later inventories owe
   them. The saved chapter list stays the row's timeline: only a saved chapter that matches a
   refreshed one (same index and start, or the one refreshed chapter starting within a second)
   gains its thumbnail, and titles, times and indexes never change. A row saved with no chapters
   adopts the refreshed list whole, titles and times included even without thumbnails. Chapter
   images are fetched only against that saved, persisted list, never the raw refreshed one, whose
-  indexes can differ. The poster selector skips an empty or blank artwork field and uses the
+  indexes can differ. When a thumbnail is learned during an image repair, the refresh waits
+  for that worker and offers the updated saved list in the same pass. The poster selector skips an empty or blank artwork field and uses the
   next valid one (#504). Work runs
   off-main, validates image/BIF/text payloads before promotion, and batches metadata publication.
   Retry authority is exact attempt + source + resource kind and is charged only when an eligible
