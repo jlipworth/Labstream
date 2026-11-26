@@ -187,11 +187,11 @@ struct PlaybackFormalModelFindingsTests {
         }
     }
 
-    /// FinalStopKillsReplacement (#530). `retry()` joins the pending stops before minting a
-    /// replacement; a quality change from the error overlay goes through
-    /// `restartAtCurrentPosition` and skips that join, so the replacement starts while the
-    /// failure's stop (same session id) is still in flight and can end it
-    /// (`plex/Finding-FinalStopKillsReplacement.cfg`, `StopNeverKillsSuccessor`).
+    /// FinalStopKillsReplacement (#530, fixed). `retry()` joins the pending stops before minting
+    /// a replacement; a quality change from the error overlay goes through
+    /// `restartAtCurrentPosition`, which used to skip that join, so the replacement started while
+    /// the failure's stop (same session id) was still in flight and could end it
+    /// (`plex/Faithful-FinalStopKillsReplacement-off.cfg`, `StopNeverKillsSuccessor`).
     @Test("#530: a restart from the error overlay joins the failure's stop first")
     func restartFromTheErrorOverlayJoinsTheFailuresStopFirst() async throws {
         let route = PlexFixtureRoute(videoDecision: "transcode")
@@ -206,8 +206,55 @@ struct PlaybackFormalModelFindingsTests {
         controller.reload(bitrateKbps: 2000)
         let replacementSent = await eventually(within: 1.5) { route.count(.decision, .began) >= 2 }
         // The failure's stop is still held (nothing releases it in this window).
-        withKnownIssue("TLA+ finding FinalStopKillsReplacement (#530): a restart from the error overlay skips Retry's pending-stop join") {
-            #expect(!replacementSent, "the replacement started while the failure's stop was still in flight")
+        #expect(!replacementSent, "the replacement started while the failure's stop was still in flight")
+        // Once that stop is answered the restart goes ahead.
+        route.releaseHeld()
+        #expect(await eventually { route.count(.decision, .began) >= 2 },
+                "the restart never went ahead after the failure's stop was answered")
+    }
+
+    /// Jellyfin-RestartFromFailureOverlap (#530, fixed). The failure stops the failed session
+    /// (`onStopAndWait`, a pendingStopTasks entry); a quality change from the error overlay used
+    /// to negotiate the replacement while that stop was still in flight, so two encoders ran
+    /// outside the replace-then-clean-up window
+    /// (`jellyfin/Faithful-RestartFromFailureOverlap-off.cfg`, `OneEncoder`).
+    @Test("#530: a Jellyfin restart from the error overlay joins the failure's stop first")
+    func jellyfinRestartFromTheErrorOverlayJoinsTheFailuresStopFirst() async throws {
+        let log = EventLog()
+        let gate = TestGate()
+        let streamURL = try #require(URL(string: "https://192.0.2.10/videos/fixture/master.m3u8"))
+        let session = MediaBrowserPlaybackSession(
+            streamURL: streamURL, backend: .jellyfin, backendLabel: "Jellyfin", httpHeaders: [:],
+            playSessionID: "session-0", sourceMetadata: .init(videoCodec: "hevc"),
+            playMethod: .transcode, transcodeReasons: [], progressSession: nil,
+            onStop: { log.append("legacy-stop-0") },
+            reopener: { request in
+                log.append("negotiate-\(request.bitrateKbps)")
+                return RemoteStreamOpenResult(url: streamURL, headers: [:], playSessionId: "session-1",
+                                              onStop: { log.append("legacy-stop-1") },
+                                              onStopAndWait: { log.append("stop-1") })
+            },
+            onStopAndWait: {
+                log.append("stop-0-begin")
+                await gate.wait()
+                log.append("stop-0-end")
+            })
+        let controller = makeMediaBrowserController(session: session, maxVideoBitrateKbps: 4000)
+        defer { controller.stop() }
+        controller.start()
+        try #require(await eventually { controller.player.currentItem != nil }, "the initial stream never attached")
+        controller.surfaceReconnectTimeout()
+        try #require(controller.playbackError.isFailed)
+        try #require(await eventually { log.items.contains("stop-0-begin") }, "the failure never stopped its session")
+        controller.reload(bitrateKbps: 2000)
+        let negotiatedEarly = await eventually(within: 1.5) { log.items.contains("negotiate-2000") }
+        #expect(!negotiatedEarly, "the replacement was negotiated while the failure's stop was in flight: \(log.items)")
+        await gate.open()
+        #expect(await eventually { log.items.contains("negotiate-2000") },
+                "the restart never went ahead after the failure's stop was answered: \(log.items)")
+        if let stopEnd = log.items.firstIndex(of: "stop-0-end"),
+           let negotiate = log.items.firstIndex(of: "negotiate-2000") {
+            #expect(stopEnd < negotiate, "negotiated before the failure's stop ended: \(log.items)")
         }
     }
 

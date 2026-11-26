@@ -82,6 +82,9 @@ CONSTANTS
     BoundedStopWait,        \* for at most two seconds
     DetachesBeforeStart,    \* #196: detach the old item after the wait
     RetryJoinsPendingStops,
+    FailureRestartJoinsPendingStops,
+        \* #530: a quality or track change while a failure shows joins
+        \* pendingStopTasks first, as retry() does
     CloseSendsFinalStop,
 
     \* Proposed fixes.  FALSE is the code as it stands.
@@ -99,6 +102,7 @@ ASSUME /\ MaxUserActions \in Nat
                     WarmStartJoinsJob, StopsPreviousFirst,
                     WaitsForPreviousStop, BoundedStopWait,
                     DetachesBeforeStart, RetryJoinsPendingStops,
+                    FailureRestartJoinsPendingStops,
                     CloseSendsFinalStop, FixStartAfterOwnStops,
                     FixRestartResetsStopLatch} :
               b \in BOOLEAN
@@ -159,13 +163,16 @@ IsPTask(t) ==
     /\ t.stopping \in BOOLEAN /\ t.warm \in BOOLEAN
 
 \* st[c].  `latch` is sentTranscodeStop; `retryGen` the generation
-\* failureRetryTask captured (0 for nil); `warmArmed` is
+\* failureRetryTask captured (0 for nil); `retryKind` what that task
+\* restarts with: "retry" (retry()) or "restart" (a quality or track
+\* change while a failure shows, FailureRestartJoinsPendingStops); `warmArmed` is
 \* ~startupDeadlineRetryAttempted; `consent` is
 \* videoTranscodeConsent.generation (0 for nil); `approved` is
 \* videoTranscodeApprovedForCurrentItem.
 StRecords ==
     [life : {"new", "open", "closed"}, failed : BOOLEAN, latch : BOOLEAN,
-     retryGen : Gens, warmArmed : BOOLEAN, userLeft : 0..MaxUserActions,
+     retryGen : Gens, retryKind : {"retry", "restart"},
+     warmArmed : BOOLEAN, userLeft : 0..MaxUserActions,
      consent : Gens, approved : BOOLEAN]
 
 \* ghost[c].
@@ -220,7 +227,7 @@ Init ==
     /\ ControllerInit(0)
     /\ st = [c \in Controllers |->
                 [life |-> "new", failed |-> FALSE, latch |-> FALSE,
-                 retryGen |-> 0, warmArmed |-> TRUE,
+                 retryGen |-> 0, retryKind |-> "retry", warmArmed |-> TRUE,
                  userLeft |-> MaxUserActions, consent |-> 0,
                  approved |-> FALSE]]
     /\ wire = [c \in Controllers |-> {}]
@@ -361,20 +368,29 @@ Start(c) ==
 
 \* reload(bitrateKbps:) and the audio and subtitle track changes:
 \* restartAtCurrentPosition with an intent other than explicitRetry.
-\* Nothing in it asks whether a failure is showing, and only retry()
-\* clears sentTranscodeStop.  reload clears
+\* Only retry() clears sentTranscodeStop.  reload clears
 \* videoTranscodeApprovedForCurrentItem; a track change keeps it
-\* (`isReload` picks which one the step is).
+\* (`isReload` picks which one the step is).  While a failure shows,
+\* FailureRestartJoinsPendingStops (#530) makes the restart a
+\* failureRetryTask that joins pendingStopTasks first (RetryProceeds);
+\* without it the restart begins at once.
 UserQuality(c) ==
     /\ st[c].life = "open"
     /\ st[c].userLeft > 0
     /\ st[c].failed => RestartFromFailure
-    /\ RestartCore(c, TRUE, FALSE, FALSE)
     /\ \E isReload \in BOOLEAN :
-        st' = [st EXCEPT
-           ![c].userLeft = @ - 1, ![c].retryGen = 0, ![c].warmArmed = TRUE,
-           ![c].latch = IF FixRestartResetsStopLatch THEN FALSE ELSE @,
-           ![c].consent = 0, ![c].approved = @ /\ ~isReload]
+        IF st[c].failed /\ FailureRestartJoinsPendingStops
+        THEN /\ st' = [st EXCEPT
+                   ![c].userLeft = @ - 1, ![c].retryGen = gen[c],
+                   ![c].retryKind = "restart",
+                   ![c].consent = 0, ![c].approved = @ /\ ~isReload]
+             /\ UNCHANGED <<serverVars, ctlVars, wire, ghost>>
+        ELSE /\ RestartCore(c, TRUE, FALSE, FALSE)
+             /\ st' = [st EXCEPT
+                   ![c].userLeft = @ - 1, ![c].retryGen = 0,
+                   ![c].warmArmed = TRUE,
+                   ![c].latch = IF FixRestartResetsStopLatch THEN FALSE ELSE @,
+                   ![c].consent = 0, ![c].approved = @ /\ ~isReload]
 
 \* retry(): failureRetryTask, which first joins pendingStopTasks.
 Retry(c) ==
@@ -382,21 +398,29 @@ Retry(c) ==
     /\ st[c].failed
     /\ st[c].retryGen = 0
     /\ st[c].userLeft > 0
-    /\ st' = [st EXCEPT ![c].retryGen = gen[c], ![c].userLeft = @ - 1]
+    /\ st' = [st EXCEPT ![c].retryGen = gen[c], ![c].retryKind = "retry",
+                        ![c].userLeft = @ - 1]
     /\ UNCHANGED <<serverVars, ctlVars, wire, ghost>>
 
 \* failureRetryTask after `await waitForPendingStopRequests()`.  A task
 \* that wakes to another generation returns and leaves failureRetryTask
 \* set (the restart core's Finding-RetryWedgedByAttach); that is no step.
 \* The join returns when every detached stop is answered or its request
-\* timed out (Joined).
+\* timed out (Joined).  A "restart" task (a quality or track change while
+\* the failure showed) restarts with that change's plan: it clears neither
+\* the error nor, unless FixRestartResetsStopLatch, sentTranscodeStop.
 RetryProceeds(c) ==
+    LET isRetry == st[c].retryKind = "retry" IN
     /\ st[c].retryGen # 0
     /\ st[c].retryGen = gen[c]
-    /\ RetryJoinsPendingStops => Joined(c)
+    /\ IF isRetry THEN RetryJoinsPendingStops => Joined(c)
+                  ELSE Joined(c)
     /\ RestartCore(c, TRUE, FALSE, FALSE)
     /\ st' = [st EXCEPT
-           ![c].retryGen = 0, ![c].latch = FALSE, ![c].failed = FALSE,
+           ![c].retryGen = 0,
+           ![c].latch = IF isRetry \/ FixRestartResetsStopLatch THEN FALSE
+                        ELSE @,
+           ![c].failed = IF isRetry THEN FALSE ELSE @,
            ![c].warmArmed = TRUE]
 
 \* stop().

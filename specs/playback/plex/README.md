@@ -11,7 +11,8 @@ scripts/check-tla-specs.sh --deep specs/playback/plex/Deep-BackToBack.cfg
 ```
 
 The model reproduces both halves of suspect 2, finds three more ways for a stale stop to end a
-replacement (one of them Retry after the failure's detached stop timed out), judges suspect 4's
+replacement (one of them Retry after the failure's detached stop timed out; another, a restart
+from the error overlay racing the failure's own stop, is fixed by #530), judges suspect 4's
 late start for Plex, and models Plex's consent boundary, where the choice can show over a copy
 job that is still running. Each has a `Finding-*` config and a trace below. None has been
 reproduced in the app or against a server. Two results depend on what PMS does with a stop when
@@ -27,7 +28,7 @@ Each MainActor run between two awaits is one action. Functions are in
 | --- | --- |
 | `Sid(c)` | `sessionID`, minted once per controller |
 | `Start` | `start()`: `beginStreaming(stoppingPreviousTranscode: false)` |
-| `UserQuality` | `reload(bitrateKbps:)` and the audio and subtitle track changes: `restartAtCurrentPosition` with an intent other than `explicitRetry`, then `beginStreaming` |
+| `UserQuality` | `reload(bitrateKbps:)` and the audio and subtitle track changes: `restartAtCurrentPosition` with an intent other than `explicitRetry`, then `beginStreaming`. While a failure shows, `FailureRestartJoinsPendingStops` (#530) makes it a `failureRetryTask` that first joins `pendingStopTasks`, as `retry()` does (`retryKind = "restart"`, then `RetryProceeds`); the restart it then runs keeps that change's plan, clearing neither the error nor `sentTranscodeStop` |
 | `Retry`, `RetryProceeds`, `Joined` | `retry()` 2566, `failureRetryTask`, `waitForPendingStopRequests` 1236 awaited at 2580: it returns when every `pendingStopTasks` entry has, and a `sendTranscodeStop` entry returns when its request is answered or times out (`try?` drops the error). `restartAtCurrentPosition` with `.explicitRetry` then switches to the recovery client (5743, `switchToRecoveryControlClient` 2689) |
 | `Close` | `stop()` |
 | `Fail`, `StartFails` | `handlePlaybackFailure` and the watchdogs, and the `catch`es of `startStreaming`, each ending in `surfaceFailure` |
@@ -175,7 +176,7 @@ What depends on them:
   unless PMS serves that request from the running job.
 - **`CancelledStopCanLand`.** The kill half of suspect 2 needs `TRUE`, and so do
   `Finding-RetryAfterTimedOutStop` and `Finding-CancelledConsentStopKillsApproved`. The pile-up
-  half does not depend on it, nor on `StopEndsAllUnderId`. `Finding-FinalStopKillsReplacement`
+  half does not depend on it, nor on `StopEndsAllUnderId`. `Faithful-FinalStopKillsReplacement-off`
   and `Finding-ConsentShowsOverRunningJob` need none of the three.
 
 ## Bounds
@@ -197,7 +198,7 @@ What depends on them:
 | `OneEncoder` (base) | invariant | At most one job the client still owns. **Violated by the code (suspect 2).** |
 | `OneEncoderOutsideCancelledStops` | invariant | The same, beside the jobs a cancelled and still unanswered stop was aimed at. This is what the code keeps. |
 | `StopNeverKillsSuccessor` | invariant | No stop ends a job whose start request was sent after it. **Violated by the code (suspect 2).** |
-| `LiveStopNeverKillsSuccessor` | invariant | The same for every stop the client had not cancelled. **Violated by the code when a restart follows a failure without Retry, and (conditional) when Retry follows a failure whose stop timed out.** |
+| `LiveStopNeverKillsSuccessor` | invariant | The same for every stop the client had not cancelled. **Violated by the code (conditional) when Retry follows a failure whose stop timed out.** A restart from a failure without Retry violated it until #530 (`Faithful-FinalStopKillsReplacement-off`). |
 | `NoWrongKill` (base) | invariant | No stop aimed at an older incarnation ended a newer one. |
 | `NoZombieItem` | invariant | No start request goes out while an older item is attached (#196). |
 | `NoOrphans` | invariant | After Close, and while a failure shows with nothing under way, a stop covering every job has been sent. A stop that fails counts. **Violated by the code after a restart from a failure (the restart core's finding).** |
@@ -224,6 +225,7 @@ controller, two user actions, `MaxGeneration = 16`, failures and the startup-dea
 | `Current-LateAck` | pass | pass (given `StopEndsAllUnderId`) | 2,534,848 | 10 s |
 | `Current-LateFail` | pass | pass (given `StopEndsAllUnderId`; `LiveStopNeverKillsSuccessor` not checked) | 240,066 | 2 s |
 | `Current-Consent` | pass | pass | 1,530,725 | 8 s |
+| `Current-RestartFromFailure` | pass | pass (`NoOrphans` not checked; `Finding-RestartAfterFailureSkipsFinalStop` owns it) | 4,290,647 | 35 s |
 | `Liveness-InPlace` | pass | pass | 240,066 | 16 s |
 | `Liveness-BoundedWait` | pass | pass | 149,595 | 7 s |
 | `Faithful-StopPrevious-off` | `OneEncoder` violated | violated | stops at first error | 1 s |
@@ -231,12 +233,12 @@ controller, two user actions, `MaxGeneration = 16`, failures and the startup-dea
 | `Mutant-StopNotAwaited` | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Mutant-StopNotAwaited-PileUp` | `OneEncoderOutsideCancelledStops` violated | violated | stops at first error | 1 s |
 | `Mutant-RetrySkipsJoin` | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
+| `Faithful-FinalStopKillsReplacement-off` | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Mutant-CloseSkipsFinalStop` | `NoOrphans` violated | violated | stops at first error | 0 s |
 | `Mutant-UnboundedStopWait` | `RestartSettles` (temporal) violated | violated | stops at first error | 3 s |
 | `Finding-LateStopKillsReplacement` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-LateStopKillsReplacement-CancelledWait` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-LateStopPilesUp` | `OneEncoder` violated | violated | stops at first error | 1 s |
-| `Finding-FinalStopKillsReplacement` | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-RestartAfterFailureSkipsFinalStop` | `NoOrphans` violated | violated | stops at first error | 1 s |
 | `Finding-LateStartOutlivesStop` | `CleanAfterAckedClose` violated | violated | stops at first error | 1 s |
 | `Finding-LateStartPilesUp` | `OneEncoder` violated | violated | stops at first error | 1 s |
@@ -245,8 +247,8 @@ controller, two user actions, `MaxGeneration = 16`, failures and the startup-dea
 | `Finding-CancelledConsentStopKillsApproved` (conditional on PMS) | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-StopEndsOnlySome` (conditional on PMS) | `CleanAfterAckedClose` violated | violated | stops at first error | 1 s |
 | `Finding-WarmStartAddsJob` (conditional on PMS) | `OneEncoder` violated | violated | stops at first error | 1 s |
-| `Proposed-StartAfterOwnStops` | pass | pass (given `StopEndsAllUnderId`) | 37,158,879 | 116 s |
-| `Proposed-Liveness` | pass | pass (given `StopEndsAllUnderId`) | 125,369 | 9 s |
+| `Proposed-StartAfterOwnStops` | pass | pass (given `StopEndsAllUnderId`) | 33,653,572 | 210 s |
+| `Proposed-Liveness` | pass | pass (given `StopEndsAllUnderId`) | 127,890 | 15 s |
 | `Deep-BackToBack` (deep) | pass | pass (given `StopEndsAllUnderId`) | 224,250,625 | 18 min 51 s |
 
 - `Current-InPlace`: three user actions, `MaxGeneration = 21`. Every stop is acknowledged within
@@ -284,8 +286,9 @@ needs one thing from the environment, so a `Current` config either leaves that t
 checks the full property, or keeps it and checks what the code still keeps.
 `OneEncoderOutsideCancelledStops` and `LiveStopNeverKillsSuccessor` excuse only the stops the
 client itself cancelled, which pins suspect 2 to `stopPreviousTranscode`'s give-up and to a
-cancelled wait. `RestartFromFailure` and `LateStarts` are off in every `Current` config; their
-`Finding` configs turn on nothing else. `Current-LateAck` has no failures (`Current-LateFail` has
+cancelled wait. `LateStarts` is off in every `Current` config; its `Finding` configs turn on
+nothing else. `RestartFromFailure` is on only in `Current-RestartFromFailure`, which drops
+`NoOrphans` (`Finding-RestartAfterFailureSkipsFinalStop`, #527). `Current-LateAck` has no failures (`Current-LateFail` has
 them and drops `LiveStopNeverKillsSuccessor`), and `Current-Consent`
 no late stops, for the same reason (`Finding-RetryAfterTimedOutStop`,
 `Finding-ConsentShowsOverRunningJob`).
@@ -299,6 +302,7 @@ no late stops, for the same reason (`Finding-RetryAfterTimedOutStop`,
 | `Mutant-StopNotAwaited` | `WaitsForPreviousStop` | `LiveStopNeverKillsSuccessor` | The stop is sent, the start follows at once, and the stop is applied after the job starts. |
 | `Mutant-StopNotAwaited-PileUp` | `WaitsForPreviousStop` | `OneEncoderOutsideCancelledStops` | The same, before the stop is applied: two owned jobs. |
 | `Mutant-RetrySkipsJoin` | `RetryJoinsPendingStops` | `LiveStopNeverKillsSuccessor` | Fail, Retry: the failure's detached stop is still unanswered when the restart starts its job, and ends it. |
+| `Faithful-FinalStopKillsReplacement-off` | `FailureRestartJoinsPendingStops` | `LiveStopNeverKillsSuccessor` | Fail, a quality or track change from the error overlay: the restart does not join the failure's stop, which ends the replacement (#530; trace below). |
 | `Mutant-CloseSkipsFinalStop` | `CloseSendsFinalStop` | `NoOrphans` | Close with a job running and no stop. |
 | `Mutant-UnboundedStopWait` | `BoundedStopWait` | `RestartSettles` | A restart waits for ever on a stop that is never answered. |
 
@@ -405,7 +409,14 @@ This is the state #27 exists to prevent ("so superseded jobs can't pile up and O
 restart's, or Close's) ends both, so the pile-up lasts until then. If it ends only some, the
 extra job can outlive Close (`Finding-StopEndsOnlySome`).
 
-### New: a restart from a failure races the failure's own stop (`Finding-FinalStopKillsReplacement`)
+### Fixed (#530): a restart from a failure raced the failure's own stop (`Faithful-FinalStopKillsReplacement-off`)
+
+Fixed by #530: `restartAtCurrentPosition` now joins `pendingStopTasks` before a restart that
+begins while a failure shows, as `retry()` does, and `FailureRestartJoinsPendingStops = TRUE`
+models it. `Current-RestartFromFailure` checks the full `StopNeverKillsSuccessor` with restarts
+from a failure on. The trace below is the code before the fix, which
+`Faithful-FinalStopKillsReplacement-off` (the former `Finding-FinalStopKillsReplacement`) still
+reproduces with the join off.
 
 `LiveStopNeverKillsSuccessor` is violated in 9 states, with every stop answered in time and no
 cancelled request.
@@ -421,16 +432,23 @@ cancelled request.
 
 `retry()` waits for exactly this ("Do not mint a replacement while the failed attempt's
 exact-session stop is still in flight", 2578 to 2580), and `Mutant-RetrySkipsJoin` shows the wait
-is needed. A quality or track change from the failure overlay takes the other path and skips it.
-It needs the two stops to be served out of order, or the first to be slow: the dead-connection
+is needed. A quality or track change from the failure overlay took the other path and skipped it.
+It needed the two stops to be served out of order, or the first to be slow: the dead-connection
 case a failure overlay usually follows, where the failure message itself suggests a lower
 quality.
+
+The deferred restart takes the `failureRetryTask` slot, so a Retry tap while it waits is ignored
+(the restart already under way is the recovery), and Close or a newer change cancels it. Its
+`Finding-RestartAfterFailureSkipsFinalStop` half is unchanged: the restart still leaves
+`sentTranscodeStop` set (#527).
 
 ### The restart core's finding under the Plex order (`Finding-RestartAfterFailureSkipsFinalStop`)
 
 `NoOrphans` is violated in 9 states: `Start`, `Fail` (1290 sets `sentTranscodeStop`),
 `UserQuality`, the restart's stop and its acknowledgement, the replacement starts, `Close`.
-`sendTranscodeStop` returns at 1289 and no stop covers the running job. Reusing the session id
+`sendTranscodeStop` returns at 1289 and no stop covers the running job. Since #530 the restart
+first waits for the failure's stop (`ServerResolves`, then `RetryProceeds`), so the trace is longer; the
+latch is untouched. Reusing the session id
 does not help: every later restart stops its predecessor, but the last job has only Close.
 
 ### Suspect 4 on Plex: a start acted on after the final stop (`Finding-LateStartOutlivesStop`)

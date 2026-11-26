@@ -5712,6 +5712,30 @@ final class PlaybackController {
                                           intent: PlaybackRestartIntent) {
         failureRetryTask?.cancel()
         failureRetryTask = nil
+        // A quality, audio or subtitle change from the error overlay begins from a failure,
+        // just like Retry: join the failed attempt's stops first, as retry() does, so its
+        // exact-session stop cannot end the replacement (Plex reuses the session id) or
+        // overlap it (Jellyfin) (#530). Retry already joined before calling here.
+        if intent != .explicitRetry, playbackError.isFailed {
+            let generation = playbackGeneration
+            failureRetryTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.waitForPendingStopRequests()
+                guard !Task.isCancelled else { return }
+                self.failureRetryTask = nil
+                guard self.playbackGeneration == generation, self.playbackError.isFailed else { return }
+                self.performRestartAtCurrentPosition(offsetMs: offsetMs,
+                                                     bitrateKbps: bitrateKbps,
+                                                     intent: intent)
+            }
+            return
+        }
+        performRestartAtCurrentPosition(offsetMs: offsetMs, bitrateKbps: bitrateKbps, intent: intent)
+    }
+
+    private func performRestartAtCurrentPosition(offsetMs: Int,
+                                                 bitrateKbps: Int,
+                                                 intent: PlaybackRestartIntent) {
         setPendingResumeMs(offsetMs, cause: .restartTarget, allowsNearZero: true)
         rememberTrustworthyPlaybackPosition(offsetMs,
                                             cause: .restartTarget,
