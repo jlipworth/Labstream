@@ -41,11 +41,15 @@ public enum DownloadCompletionValidation {
         if let status = httpStatusCode, !(200...299).contains(status) {
             return "Server returned HTTP \(status)."
         }
-        if let mime = mimeType?.lowercased(),
-           mime.hasPrefix("text/") || mime.contains("application/json") || mime.contains("application/xml") {
-            return "Server returned a \(mime) page, not a video."
-        }
-        return nil
+        return errorPageMIME(mimeType).map { "Server returned a \($0) page, not a video." }
+    }
+
+    static func errorPageMIME(_ mimeType: String?) -> String? {
+        guard let mime = mimeType?.split(separator: ";").first?
+            .trimmingCharacters(in: .whitespaces).lowercased(),
+              mime.hasPrefix("text/") || mime == "application/json" || mime == "application/xml"
+                || mime.hasSuffix("+json") || mime.hasSuffix("+xml") else { return nil }
+        return mime
     }
 
     /// A decoded file shorter than this fraction of its expected source duration is treated as

@@ -9,19 +9,26 @@ public enum ForwardOnlyFinishedBodyPolicy {
     /// Why a finished response is not a media body at all.
     public enum ResponseRejection: Sendable, Equatable {
         case httpStatus(Int)
+        case incompleteRange
         /// An HTML, JSON or XML page (a server error page), lowercased.
         case nonMediaMIME(String)
     }
 
     /// The HTTP checks that need only the response. A response that is not HTTP has no status to
     /// judge and is left to the playability probe, as before.
-    public static func responseRejection(httpStatus: Int?, mimeType: String?) -> ResponseRejection? {
+    public static func responseRejection(httpStatus: Int?, mimeType: String?,
+                                         contentRange: String? = nil, bodyBytes: Int? = nil) -> ResponseRejection? {
         guard let httpStatus else { return nil }
         guard (200...299).contains(httpStatus) else { return .httpStatus(httpStatus) }
-        if let mime = mimeType?.lowercased(),
-           mime.hasPrefix("text/") || mime.contains("application/json")
-            || mime.contains("application/xml") {
+        if let mime = DownloadCompletionValidation.errorPageMIME(mimeType) {
             return .nonMediaMIME(mime)
+        }
+        if httpStatus == 206 {
+            let range = contentRange?.trimmingCharacters(in: .whitespaces).lowercased()
+            guard let bodyBytes, bodyBytes > 0,
+                  let match = range?.wholeMatch(of: #/bytes ([0-9]+)-([0-9]+)/([0-9]+)/#),
+                  Int(match.1) == 0, Int(match.2) == bodyBytes - 1, Int(match.3) == bodyBytes
+            else { return .incompleteRange }
         }
         return nil
     }

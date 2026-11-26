@@ -53,6 +53,8 @@ struct ServerPrepRunnerIntegrationTests {
         try #require(await fixture.wait { fixture.wire.value.queueReads >= 3 })
         #expect(fixture.wire.value.creates == 0)
         #expect(fixture.store.metadata(for: key.ratingKey)?.plexOptimizeCreateDispatchedAtEpochSeconds == dispatched)
+        let poller = try #require(fixture.manager.serverPrepPollerTaskForTesting(for: key))
+        await poller.value
         let reopened = DownloadTestFiles.store(baseDirectory: fixture.directory)
         #expect(reopened.metadata(for: key.ratingKey)?.plexOptimizeCreateDispatchedAtEpochSeconds == dispatched)
     }
@@ -184,6 +186,36 @@ struct ServerPrepRunnerIntegrationTests {
         #expect(fixture.store.metadata(for: key.ratingKey)?.mediaSourceID == "converted")
         #expect(fixture.store.metadata(for: key.ratingKey)?.resolvedResumeMode(ratingKey: key.ratingKey) == .staticByteRange)
         #expect(fixture.wire.value.negotiations == 1)
+    }
+
+    @Test func embyStorageRefusalPersistsItsReason() async throws {
+        let fixture = try await PrepRunnerFixture()
+        fixture.manager.storageLimitBytesOverrideForTesting = 1
+        let key = try await fixture.seed(.emby)
+        let poller = try #require(fixture.manager.beginEmbyConvertPoller(for: key))
+        try #require(fixture.manager.embyConvertAttemptIsCurrent(ratingKey: key.ratingKey,
+            attemptID: poller, targetName: fixture.target))
+        await fixture.manager.handoffEmbyConvertedSource(item: fixture.item, sourceID: "converted",
+            targetName: fixture.target, audioStreamIndex: nil, attemptKey: key,
+            pollerID: poller, waitsForTransferSlot: false)
+        guard case .storageLimitExceeded = fixture.manager.lastError[key.ratingKey] else {
+            Issue.record("Handoff should reach the storage refusal"); return
+        }
+        let reopened = DownloadTestFiles.store(baseDirectory: fixture.directory)
+        #expect(reopened.lifecycleState(for: key)?.history.lastFailure == .storage)
+        #expect(fixture.store.lifecycleState(for: key)?.history.lastFailure == .storage)
+        #expect(fixture.transfers.value.isEmpty)
+    }
+
+    @Test func reusedEmbyConversionReportsStorageFailure() async throws {
+        let fixture = try await PrepRunnerFixture()
+        fixture.wire.withValue { $0.embyReuseAfterRead = 1 }
+        fixture.manager.storageLimitBytesOverrideForTesting = 1
+        let key = try await fixture.seed(.emby)
+        fixture.startEmby(key)
+        try #require(await fixture.wait { fixture.store.record(for: key)?.status == .failed })
+        #expect(fixture.store.lifecycleState(for: key)?.history.lastFailure == .storage)
+        #expect(fixture.transfers.value.isEmpty)
     }
 
     // Pins 24/25: cancellation fences the static handoff; global queue pause parks Convert too.

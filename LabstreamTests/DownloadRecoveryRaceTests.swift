@@ -18,8 +18,8 @@ struct DownloadRecoveryRaceTests {
     /// looks for a body there. Recovery arriving between the move and the delegate's claim used
     /// to claim the body itself and queue a publication; the delegate then queued a second one,
     /// which cleared the working path the first had just filled and failed the row.
-    @Test("A recovery pass that arrives while the delegate captures a body queues no second publication")
-    func recoveryDuringCaptureDoesNotPublishTwice() async throws {
+    @Test("A recovery pass that arrives while the delegate captures a body queues no second publication", arguments: [false, true])
+    func recoveryDuringCaptureDoesNotPublishTwice(redelivery: Bool) async throws {
         let fixture = try P6Fixture()
         let store = fixture.store()
         let key = try fixture.seed(store, mode: .liveForwardOnly, ratingKey: "jellyfin:fixture")
@@ -34,10 +34,15 @@ struct DownloadRecoveryRaceTests {
         session.onFinalizerRequest = { finalizers.append($0) }
         defer { finalizers.all.forEach { session.abandonFinalizerRequest($0) } }
 
+        let capture = try #require(store.forwardOnlyCapturedBodyURL(for: key))
+        let survivingBody = Data(repeating: 42, count: body.count)
         let recovered = RecoveryResult()
         session.opaqueBodyDidReachStashForTesting = { [weak session] in
             // Launch recovery, exactly where the capture is visible and the delegate has not
             // queued its publication yet.
+            if !redelivery, let row = store.record(for: key) {
+                #expect(store.submitStallVerdict(for: key, observedBytes: row.bytes) == .rejected(.illegal))
+            }
             recovered.set(session?.finalizeCompletedStaticRangeFile(
                 ratingKey: key.ratingKey, validationLabel: "forward_only_recovered"))
         }
@@ -45,6 +50,7 @@ struct DownloadRecoveryRaceTests {
                           with: URLRequest(url: URL(string: "https://example.invalid/stream")!),
                           byteRangeCheckpoint: false)
         let request = try #require(await requests.waitForCount(1).first)
+        if redelivery { try survivingBody.write(to: capture) }
         request.finish(status: 200, body: body, headers: [
             "Content-Type": "video/mp4", "Content-Length": "\(body.count)",
         ])
@@ -54,7 +60,7 @@ struct DownloadRecoveryRaceTests {
         #expect(recovered.value == true, "recovery sees the body as already owned")
         #expect(finalizers.count == 1, "one publication, so one finalization")
         let working = try #require(store.attemptWorkingFileURL(for: key))
-        #expect((try? Data(contentsOf: working)) == body, "the published body is still there")
+        #expect((try? Data(contentsOf: working)) == (redelivery ? survivingBody : body), "the published body is still there")
         #expect(store.lifecycleState(for: key)?.lifecycle == .finalizing)
         #expect(store.record(for: key)?.status != .failed)
         #expect(await wait { session.opaquePublicationOwnerForTesting(key) == nil })
@@ -99,6 +105,32 @@ struct DownloadRecoveryRaceTests {
         #expect(session.claimedRangeBodiesForTesting().isEmpty)
     }
 
+    @Test("A publication move error retains the capture for the next reconcile")
+    func publicationMoveFailureCanRecover() async throws {
+        let fixture = try P6Fixture()
+        let store = fixture.store()
+        let key = try fixture.seed(store, mode: .liveForwardOnly, ratingKey: "jellyfin:fixture")
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+        defer { session.invalidateInjectedSessionForTesting() }
+        try prepare(session, fixture)
+        await activate(session)
+        let capture = try #require(store.forwardOnlyCapturedBodyURL(for: key))
+        let working = try #require(store.attemptWorkingFileURL(for: key))
+        try body.write(to: capture)
+        try Data().write(to: working)
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: working.path)
+        defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: working.path) }
+        _ = store.submitLifecycleEvent(.bodyCaptured, for: key, facts: .init(route: .forwardOnly))
+        #expect(session.finalizeCompletedStaticRangeFile(ratingKey: key.ratingKey, validationLabel: "recovery"))
+        await session.drainRangeIOForTesting()
+        try #require((try? Data(contentsOf: capture)) == body)
+        #expect(store.lifecycleState(for: key)?.lifecycle == .finalizing)
+        try FileManager.default.setAttributes([.immutable: false], ofItemAtPath: working.path)
+        #expect(session.finalizeCompletedStaticRangeFile(ratingKey: key.ratingKey, validationLabel: "recovery"))
+        await session.drainRangeIOForTesting()
+        #expect((try? Data(contentsOf: working)) == body)
+    }
+
     // MARK: 2. A queued progress callback under a pause
 
     /// Every declared byte of the only segment has arrived and the task has not finished yet.
@@ -106,8 +138,8 @@ struct DownloadRecoveryRaceTests {
     /// before its finish callback. It used to drop the task's tracking and mark it superseded,
     /// so the finish callback dropped the body, also after the pause's task listing had
     /// already decided to leave the finished task tracked.
-    @Test("The last progress of a finished task under a pause does not drop its body")
-    func finalProgressBetweenPauseAndFinishKeepsTheBody() async throws {
+    @Test("A finished task survives a live pause or paused relaunch", arguments: [false, true])
+    func finalProgressBetweenPauseAndFinishKeepsTheBody(relaunch: Bool) async throws {
         let bytes = 256 * 1_024
         let payload = Data(repeating: 9, count: bytes)
         let fixture = try P6Fixture()
@@ -131,11 +163,19 @@ struct DownloadRecoveryRaceTests {
         // The whole response body arrives; the transfer is not finished yet.
         request.respond(status: 206, body: payload, headers: [
             "Content-Range": "bytes 0-\(bytes - 1)/\(bytes)", "Content-Length": "\(bytes)",
-            "Content-Type": "video/mp4",
+            "Content-Type": "video/mp4", "ETag": "\"v1\"",
         ])
         try #require(await wait { task.countOfBytesReceived >= Int64(bytes) })
 
-        session.pause(ratingKey: key.ratingKey)
+        if relaunch {
+            _ = store.submitLifecycleEvent(.pause(.user), for: key)
+            session.forgetRangeTaskForTesting(task.taskIdentifier)
+            _ = await withCheckedContinuation { continuation in
+                session.reattach { continuation.resume(returning: $0) }
+            }
+        } else {
+            session.pause(ratingKey: key.ratingKey)
+        }
         // The last progress callback, after the halt and before the finish callback.
         session.urlSession(URLSession.shared, downloadTask: task, didWriteData: Int64(bytes),
                            totalBytesWritten: Int64(bytes), totalBytesExpectedToWrite: Int64(bytes))
@@ -148,6 +188,29 @@ struct DownloadRecoveryRaceTests {
         #expect((try? Data(contentsOf: working)) == payload)
         #expect(await wait { store.record(for: key)?.status == .paused })
         #expect(await wait { session.claimedRangeBodiesForTesting().isEmpty })
+    }
+
+    @Test("A head finished before reconcile establishes the pin on an empty working file")
+    func adoptedHeadPublishesItsBytes() async throws {
+        let fixture = try P6Fixture()
+        let store = fixture.store()
+        let key = try fixture.seed(store)
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+        defer { session.invalidateInjectedSessionForTesting() }
+        try prepare(session, fixture)
+        await activate(session)
+        let working = try #require(store.attemptWorkingFileURL(for: key))
+        // start creates the empty durable partial before scheduling its head.
+        try Data().write(to: working)
+        let stash = fixture.directory.appendingPathComponent("head.body")
+        try body.write(to: stash)
+        session.applyFinishedHeldRangeBodyForTesting(
+            attemptKey: key, workingURL: working, expectedBytes: body.count * 2, baseOffset: 0,
+            segmentLength: body.count, stash: stash, contentRangeStart: 0, adopted: true,
+            validator: "v1", contentRangeTotal: body.count * 2)
+        await session.drainRangeIOForTesting()
+        #expect(store.rangeValidator(for: key) == "v1")
+        #expect((try? Data(contentsOf: working)) == body)
     }
 
     // MARK: 3. A lease wait that runs out
@@ -221,58 +284,29 @@ struct DownloadRecoveryRaceTests {
     /// user taps Resume: the retry is granted and the row is `admitted` before its task
     /// exists. Reconcile used to read that newer row and requeue it (`planned`,
     /// `seasonPlanned`) under its supervised start.
-    @Test("Foreground reconcile leaves a row that changed after its snapshot")
-    func foregroundReconcileSkipsARowResumedDuringTheListing() throws {
-        let fixture = try P6Fixture()
-        let store = fixture.store()
-        let resumed = try seedForwardOnly(fixture, store, "resumed", status: .paused)
-        let untouched = try seedForwardOnly(fixture, store, "untouched", status: .downloading)
-        let keys: Set<String> = [resumed.ratingKey, untouched.ratingKey]
-
-        // recoverStaticRangeTransfersAfterForeground: the snapshot, before `getAllTasks`.
-        let observed = store.reconcileRowObservations()
-        #expect(Set(observed.keys) == keys)
-
-        // The user's Resume lands while the listing runs.
-        guard case .accepted = store.submitLifecycleEvent(.retry(.freshAttempt), for: resumed) else {
-            Issue.record("Expected the retry to apply"); return
+    @MainActor
+    @Test("Foreground reconcile leaves rows changed during its task listing", arguments: [false, true])
+    func foregroundReconcileSkipsChangedRows(aba: Bool) async throws {
+        let f = try await P7PlaybackFixture(status: .complete)
+        let resumed = try seedForwardOnly(f.files, f.store, "resumed", status: .paused)
+        let untouched = try seedForwardOnly(f.files, f.store, "untouched", status: .downloading)
+        if aba {
+            guard case .accepted = f.store.submitLifecycleEvent(.retry(.freshAttempt), for: resumed) else {
+                Issue.record("Expected retry to apply"); return
+            }
         }
-        #expect(store.lifecycleState(for: resumed)?.lifecycle == .admitted)
-
-        store.reconcileOnWorker(liveRatingKeys: [], snapshotRatingKeys: keys, observedRows: observed)
-
-        #expect(store.lifecycleState(for: resumed)?.lifecycle == .admitted,
-                "the supervised retry's row is not requeued")
-        #expect(store.lifecycleState(for: resumed)?.history.admissionIntent == nil)
-        // A row nobody touched is still judged: with no task, body or checkpoint it fails.
-        #expect(store.record(for: untouched)?.status == .failed)
-
-        // Startup reconcile carries no observations (admission is closed, no start runs) and
-        // requeues the same admitted row, as Admission-A1 specifies.
-        store.reconcileOnWorker(liveRatingKeys: [], snapshotRatingKeys: keys)
-        #expect(store.lifecycleState(for: resumed)?.lifecycle == .planned)
-        #expect(store.lifecycleState(for: resumed)?.history.admissionIntent == .seasonPlanned)
-    }
-
-    /// The generation, not the lifecycle, is compared: a row that leaves a state and returns
-    /// to it during the listing was still changed by someone who knows more than the snapshot.
-    @Test("Foreground reconcile leaves a row that changed and changed back")
-    func foregroundReconcileSkipsARowThatReturnedToItsState() throws {
-        let fixture = try P6Fixture()
-        let store = fixture.store()
-        let key = try seedForwardOnly(fixture, store, "aba", status: .paused)
-        guard case .accepted = store.submitLifecycleEvent(.retry(.freshAttempt), for: key) else {
-            Issue.record("Expected the retry to apply"); return
+        f.manager.foregroundSnapshotDidFinishForTesting = {
+            if aba { _ = f.store.submitLifecycleEvent(.pause(.user), for: resumed) }
+            _ = f.store.submitLifecycleEvent(.retry(.freshAttempt), for: resumed)
         }
-        let observed = store.reconcileRowObservations()
-        // Pause, then Resume again: `admitted` once more, by a newer supervised start.
-        guard case .accepted = store.submitLifecycleEvent(.pause(.user), for: key),
-              case .accepted = store.submitLifecycleEvent(.retry(.freshAttempt), for: key) else {
-            Issue.record("Expected the pause and the retry to apply"); return
-        }
-        store.reconcileOnWorker(liveRatingKeys: [], snapshotRatingKeys: [key.ratingKey],
-                                observedRows: observed)
-        #expect(store.lifecycleState(for: key)?.lifecycle == .admitted)
+        let recovered = P6Acknowledgement<Bool>()
+        f.manager.foregroundRecoveryDidResolveForTesting = { recovered.signal($0) }
+        f.manager.noteAppSceneRecovery(.aggregateSceneBecameActive)
+        try #require(await recovered.wait(seconds: 10) == true)
+        #expect(f.store.lifecycleState(for: resumed)?.lifecycle == .admitted)
+        #expect(f.store.record(for: untouched)?.status == .failed)
+        f.manager.foregroundSnapshotDidFinishForTesting = nil
+        await f.finish()
     }
 
     // MARK: Fixture

@@ -98,7 +98,7 @@ struct DownloadSideAssetPolicyTests {
             == "jellyfin://item/x/Backdrop?tag=t")
     }
 
-    @Test("Plex repair part is resolved by the persisted part ID, by index only without one (#503)")
+    @Test("Plex repair requires the persisted part ID after a reorder")
     func plexRepairPartByID() {
         let item = MediaItem(ratingKey: "item", title: "Title", type: "movie", media: [
             Media(id: 2, part: [part(id: 20, indexes: "sd"), part(id: 21)]),
@@ -106,8 +106,8 @@ struct DownloadSideAssetPolicyTests {
         ])
         #expect(DownloadSideAssetPolicy.plexRepairPart(from: item, mediaIndex: 0, partIndex: 1, sourcePartID: 11)?.id == 11)
         #expect(DownloadSideAssetPolicy.plexRepairPart(from: item, mediaIndex: 0, partIndex: 1, sourcePartID: 99) == nil)
-        // Legacy rows without an ID keep the index lookup, strictly in range.
-        #expect(DownloadSideAssetPolicy.plexRepairPart(from: item, mediaIndex: 0, partIndex: 1, sourcePartID: nil)?.id == 21)
+        // Even valid indexes cannot identify the downloaded version after a reorder.
+        #expect(DownloadSideAssetPolicy.plexRepairPart(from: item, mediaIndex: 0, partIndex: 1, sourcePartID: nil) == nil)
         #expect(DownloadSideAssetPolicy.plexRepairPart(from: item, mediaIndex: 5, partIndex: 0, sourcePartID: nil) == nil)
         // The BIF follows the same identity, and still needs the part's own index.
         #expect(DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: 0, partIndex: 1, sourcePartID: 11)?.id == 11)
@@ -194,5 +194,12 @@ struct DownloadSideAssetPolicyTests {
             == ParsedChapterImageKey(itemID: "abc", index: 0, tag: nil))
         #expect(DownloadSideAssetPolicy.parsedSyntheticChapterImageKey("emby://item/abc/Chapter/nope", scheme: "emby") == nil)
         #expect(DownloadSideAssetPolicy.parsedSyntheticChapterImageKey("jellyfin://item/abc/Chapter/1", scheme: "emby") == nil)
+    }
+
+    @Test(arguments: [0, Int.max])
+    func distantChapterStartsAreDistinct(start: Int) {
+        #expect(DownloadSideAssetPolicy.learnedOfflineChapters(
+            saved: [OfflineChapter(startTimeOffset: .min)],
+            current: [Chapter(startTimeOffset: start, thumb: "/fixture")]) == nil)
     }
 }

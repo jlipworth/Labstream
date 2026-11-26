@@ -325,7 +325,7 @@ launch edge of a later launch scans the row.
 Proposed in the model (`FixPassReruns`): a pass that was asked for while one ran, that timed out
 or that skipped a row runs again. `Proposed-S5-PassReruns` and `-Stale` pass with it.
 
-Pin: `droppedRepairEdgeRunsAgain`. Issue #493.
+Pin: `LabstreamTests/SideAssetRefreshReviewTests.droppedRepairEdge` exercises the busy, timeout and stale-row cases separately. Issue #493.
 
 ### S6: a completed row on a backend that is not selected is never repaired (real, fixed)
 

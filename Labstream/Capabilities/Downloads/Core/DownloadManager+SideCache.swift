@@ -53,13 +53,27 @@ extension DownloadManager {
         scheduleEarlyPosters(for: store.records)
         guard !isQueuePaused, completedSideAssetInventoryWorker == nil else { return }
         let candidates = records.filter(\.isComplete)
+        #if DEBUG
+        let beforeRead = sideAssetInventoryWillReadForTesting
+        #endif
         let work = DownloadStoreWork { [store] in
-            candidates.compactMap { CompletedSideAssetInventory.observe(record: $0, store: store) }
+            #if DEBUG
+            beforeRead?()
+            #endif
+            return candidates.compactMap { CompletedSideAssetInventory.observe(record: $0, store: store) }
         }
         completedSideAssetInventoryWorker = Task { @MainActor [weak self] in
             guard let self else { return }
             defer { self.completedSideAssetInventoryWorker = nil }
-            guard let inventories = await work.observe(deadline: .after(30)),
+            var deadline = DownloadStoreDeadline.after(30)
+            #if DEBUG
+            deadline = self.sideAssetInventoryDeadlineForTesting ?? deadline
+            #endif
+            let observed = await work.observe(deadline: deadline)
+            #if DEBUG
+            await self.sideAssetInventoryDidObserveForTesting?()
+            #endif
+            guard let inventories = observed,
                   !Task.isCancelled, !self.isQueuePaused else { return }
             // #494: after Resume All, restore the sessions this inventory owes before dispatching.
             // Launch skipped them under Pause All; this reuses the pass's observation.
@@ -194,8 +208,7 @@ extension DownloadManager {
             // before retrying BIF and text subtitles; ownership/status guards prevent a delayed
             // response from reviving work after Delete, Pause, or another terminal failure.
             // #503: Plex can reorder an item's media after the download, so the refreshed item's
-            // part is resolved by the persisted `sourcePartID`; the indexes are the fallback for a
-            // row that stored no ID.
+            // part is resolved by the persisted `sourcePartID`; rows without a part ID skip part-specific repairs.
             let mediaIndex = metadata.mediaIndex ?? 0
             let partIndex = metadata.partIndex ?? 0
             let sourcePartID = metadata.sourcePartID
@@ -375,8 +388,11 @@ extension DownloadManager {
                 $0.chapters = learned
             }
         }
-        guard result == .applied || result == .noChange, !Task.isCancelled,
-              let persisted = store.record(for: attemptKey)?.metadata,
+        guard result == .applied || result == .noChange else { return }
+        await downloadWorkRegistry.waitForWork(for: attemptKey, kind: .sideCache(.chapterImages))
+        guard !Task.isCancelled, store.attemptAdmitsWork(attemptKey),
+              let row = store.record(for: attemptKey), row.status != .paused, row.status != .failed,
+              let persisted = row.metadata,
               persisted.sideAssetSourceIdentity == metadata.sideAssetSourceIdentity else { return }
         refreshRecords()
         cacheChapterImages(for: attemptKey, item: persisted.makeMediaItem(), backend: backend,
@@ -643,7 +659,7 @@ extension DownloadManager {
     /// a missing/invalid BIF never fails the media download. The request carries the token in
     /// query, so do not log the URL or surfaced error.
     func cachePlexBIF(for attemptKey: DownloadAttemptKey, item: MediaItem, mediaIndex: Int,
-                              partIndex: Int, sourcePartID: Int? = nil, server: URL, token: String) {
+                              partIndex: Int, sourcePartID: Int?, server: URL, token: String) {
         guard let part = DownloadSideAssetPolicy.selectedPlexBIFPart(
             from: item, mediaIndex: mediaIndex, partIndex: partIndex,
             sourcePartID: sourcePartID) else { return }
