@@ -346,6 +346,21 @@ debounced into one settled final-target rebuild instead of restarting for every 
 - Emby detaches the old item, then awaits an acknowledged exact-session stop of the prior session
   before negotiating the replacement. An unacknowledged stop keeps cleanup authority and fails
   with `priorSessionStopUnconfirmed` (LS-PB-008) instead of starting a new encoder.
+- A replacement that begins from a surfaced failure, whether explicit Retry or a quality, audio
+  or subtitle change from the error overlay, first joins the failed attempt's exact-session stop.
+  On Plex that stop goes out on its own client bounded by `failedAttemptStopTimeout` (30 s,
+  longer than the 5 s recovery control client); Jellyfin's acknowledged DELETE keeps its request
+  timeout. On both, a timed-out or failed request is never counted as joined. If it is still
+  unconfirmed, the replacement re-sends the stop once on a shorter bound
+  (`failedAttemptRestopTimeout`, 10 s) and proceeds only when it is confirmed; otherwise it shows
+  LS-PB-008 and the next attempt re-sends again. Both bounds are judgment calls: long enough for a
+  slow but reachable server, short enough that a user tap is never held indefinitely, and never an
+  unbounded retry. The outcome is keyed on a failure epoch, so a late result from an older failure
+  cannot clear a newer one. A confirmed re-send does not fence a stop the client already gave up
+  on: on a reused session id that earlier request could still land late (conditional, #536).
+- The Plex final-stop latch is re-armed for every new transcode, so Close after a restart from the
+  error overlay stops the replacement; a failure followed by Close with no restart still sends
+  exactly one stop.
 - On either MediaBrowser backend, a consent boundary awaits the old session stop before showing
   the choice, and cleans up any rejected newly negotiated session without attaching it.
 
@@ -667,7 +682,9 @@ sequenceDiagram
   detach the player item, and stop its exact backend session without waiting for Close.
   The shared error surface uses the [stable playback codes](AGENT-PLAYBACK-TROUBLESHOOTING.md#playback-failure-codes),
   not raw server text. Explicit Retry joins pending cleanup before replacing the attempt and
-  preserves trustworthy resume position, quality, approved consent, and user pause intent.
+  preserves trustworthy resume position, quality, approved consent, and user pause intent. The
+  Retry task always releases its slot when it is not cancelled, including when a newer generation
+  superseded it, so Retry cannot become unresponsive.
 - Terminal stop detaches the player item before issuing server-stop requests so paused HLS
   resource loading cannot continue against a stopped session. UI teardown remains non-blocking;
   named probes join the controller-owned stop requests before publishing their final report.
@@ -682,3 +699,42 @@ sequenceDiagram
   cleanup as distinct operations.
 - Treat cleanup failures as non-fatal where the user-visible playback path can continue.
 - Keep diagnostic fields shape-level and redacted: no full URLs, tokens, hosts, titles, or filenames.
+
+## Formal model (TLA+)
+
+`specs/playback/` holds TLA+ models of the restart, reopen, Retry and cleanup ordering described
+above, checked with TLC. `specs/README.md` covers the layout, config kinds and how to run them;
+the plan, `docs/plans/2026-11-25-playback-tla-model.md`,
+records the design, the review rounds and every finding.
+
+| Module | Models |
+| --- | --- |
+| `base/` | An abstract server holding encoding jobs per session id and incarnation, with nondeterministic acknowledgement, latency, failure, session-id reuse and server-recreated jobs; the controller's state and steps as shared operators. |
+| `restart/` | The backend-agnostic controller core: generations, the current and cancelled-but-running tasks, seek hold, restart budgets, `PlaybackRestartIntent`, the proxy slot, Close, failure and Retry. |
+| `plex/` | The in-place order: stop the superseded transcode with a bounded wait, detach, start under the reused session id, attach; the consent boundary. |
+| `emby/` | Detach, the acknowledged exact-session stop barrier, then negotiate; `priorSessionStopUnconfirmed`; the consent boundary. |
+| `jellyfin/` | Replace first, then the deferred prior stop and its reused-id skip; the documented overlap window. |
+| `proxy/` | The PMSKit loopback proxy: listener stand-up and stop across actor hops, request handlers, upstream fetches and the upstream `URLSession`. |
+
+What the models check, across the backends:
+
+- at most one encoding session the client still owns per playback, outside Jellyfin's
+  replace-then-clean-up window (`OneEncoder`);
+- every session the client stops owning is sent a stop, and after Close, a surfaced failure or
+  Retry every negotiated session is attached or stopped (`NoOrphans`);
+- a stop for a superseded session never ends its successor, including with reused session ids
+  and late acknowledgements (`StopNeverKillsSuccessor`);
+- at most one live proxy listener, none after Close, and no upstream fetch after the proxy stops;
+- stale seek completions and stale replacements never win over newer intent; restarts without a
+  user action are bounded; pause intent survives resume-seeks and Retry; Close detaches the item
+  before server stops go out.
+
+Each model also has `Faithful-*-off` configs that reproduce historical bugs with their fix turned
+off, among them the Emby reopen overlap of the 2026-10-04 audit (`emby/Faithful-EmbyOverlap-off`)
+and the Jellyfin reused-id stop (`jellyfin/Faithful-JellyfinReusedIdStop-off`).
+
+Some results depend on server behaviour the repository has no evidence for: whether PMS applies a
+stop the client stopped waiting for, what one stop does to two jobs under one Plex session id, and
+whether Jellyfin or Emby ever return a play-session id that was used before. Those results are
+labelled conditional in each README, and #536 tracks the live checks that would settle them.
+Server acknowledgement still proves only that a request was answered, not that an encoder exited.

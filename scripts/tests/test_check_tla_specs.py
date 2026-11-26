@@ -599,8 +599,10 @@ class RepositorySpecConventionTests(unittest.TestCase):
             first = config.stem.split("-")[0]
             if first in kinds or config.name == "Reducer-Conformance.cfg":
                 continue
-            # A helper module's configs carry its name: wake/WakeLaunchGate-Current-Gate.cfg.
-            self.assertEqual(f"Downloads{first}", header(config, "SPEC"), config.relative_to(SPECS))
+            # A helper module's configs carry its name without the area prefix:
+            # downloads/wake/WakeLaunchGate-Current-Gate.cfg, playback/base/BaseSmoke-Current-Smoke.cfg.
+            area = config.relative_to(SPECS).parts[0].capitalize()
+            self.assertEqual(f"{area}{first}", header(config, "SPEC"), config.relative_to(SPECS))
             self.assertIn(config.stem.split("-")[1], kinds, config.relative_to(SPECS))
 
     def test_expectation_matches_the_kind_in_the_name(self):

@@ -168,6 +168,14 @@ layout code changed.
 - [ ] With manual/Off subtitle preferences, stale account-selected source metadata does not
       check a subtitle row. An explicit player selection still wins. If the chosen subtitle
       needs video encoding, consent remains required; switching Off can return to video copy.
+- [ ] Error-overlay recovery (#526, #527, #530, #539), on Plex, Jellyfin and Emby: force a
+      playback failure (drop the server or network mid-play), then change quality from the
+      overlay and Close. Confirm on the server that the replacement session ends at once, that
+      the failed session's encoder is gone before the replacement starts (no two encoders), and
+      that Retry still responds afterwards.
+- [ ] With the server unreachable during the failure, tap Retry: expect LS-PB-008 while the old
+      stop cannot be confirmed; restore the network and tap Retry again: the stop is re-sent and
+      playback resumes, with one encoder on the server.
 
 ### Common player matrix
 
