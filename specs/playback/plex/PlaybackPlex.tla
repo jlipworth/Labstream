@@ -92,7 +92,9 @@ CONSTANTS
         \* no start request goes out while a stop of this controller's is
         \* unanswered
     FixRestartResetsStopLatch
-        \* every restart clears sentTranscodeStop, not only retry()
+        \* every restart clears sentTranscodeStop, not only retry().
+        \* Shipping since #527 (beginStreaming clears it): TRUE is the
+        \* code as it stands; FALSE is the old latch.
 
 ASSUME /\ MaxUserActions \in Nat
        /\ MaxGeneration >= 3
@@ -368,7 +370,8 @@ Start(c) ==
 
 \* reload(bitrateKbps:) and the audio and subtitle track changes:
 \* restartAtCurrentPosition with an intent other than explicitRetry.
-\* Only retry() clears sentTranscodeStop.  reload clears
+\* beginStreaming clears sentTranscodeStop (#527; before it only retry()
+\* did).  reload clears
 \* videoTranscodeApprovedForCurrentItem; a track change keeps it
 \* (`isReload` picks which one the step is).  While a failure shows,
 \* FailureRestartJoinsPendingStops (#530) makes the restart a
@@ -405,10 +408,13 @@ Retry(c) ==
 \* failureRetryTask after `await waitForPendingStopRequests()`.  A task
 \* that wakes to another generation returns and leaves failureRetryTask
 \* set (the restart core's Finding-RetryWedgedByAttach); that is no step.
+\* A "restart" task that wakes to another generation also takes no step,
+\* where the Swift clears the slot; no action bumps the generation during
+\* the wait without cancelling the task, so nothing is lost.
 \* The join returns when every detached stop is answered or its request
 \* timed out (Joined).  A "restart" task (a quality or track change while
 \* the failure showed) restarts with that change's plan: it clears neither
-\* the error nor, unless FixRestartResetsStopLatch, sentTranscodeStop.
+\* the error nor, unless FixRestartResetsStopLatch (#527), sentTranscodeStop.
 RetryProceeds(c) ==
     LET isRetry == st[c].retryKind = "retry" IN
     /\ st[c].retryGen # 0

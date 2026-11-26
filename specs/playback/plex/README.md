@@ -225,11 +225,12 @@ controller, two user actions, `MaxGeneration = 16`, failures and the startup-dea
 | `Current-LateAck` | pass | pass (given `StopEndsAllUnderId`) | 2,534,848 | 10 s |
 | `Current-LateFail` | pass | pass (given `StopEndsAllUnderId`; `LiveStopNeverKillsSuccessor` not checked) | 240,066 | 2 s |
 | `Current-Consent` | pass | pass | 1,530,725 | 8 s |
-| `Current-RestartFromFailure` | pass | pass (`NoOrphans` not checked; `Finding-RestartAfterFailureSkipsFinalStop` owns it) | 4,290,647 | 35 s |
+| `Current-RestartFromFailure` | pass | pass | 4,422,329 | 18 s |
 | `Liveness-InPlace` | pass | pass | 240,066 | 16 s |
 | `Liveness-BoundedWait` | pass | pass | 149,595 | 7 s |
 | `Faithful-StopPrevious-off` | `OneEncoder` violated | violated | stops at first error | 1 s |
 | `Faithful-DetachBeforeStart-off` | `NoZombieItem` violated | violated | stops at first error | 1 s |
+| `Faithful-RestartAfterFailureSkipsFinalStop-off` | `NoOrphans` violated | violated | stops at first error | 1 s |
 | `Mutant-StopNotAwaited` | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Mutant-StopNotAwaited-PileUp` | `OneEncoderOutsideCancelledStops` violated | violated | stops at first error | 1 s |
 | `Mutant-RetrySkipsJoin` | `LiveStopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
@@ -239,7 +240,6 @@ controller, two user actions, `MaxGeneration = 16`, failures and the startup-dea
 | `Finding-LateStopKillsReplacement` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-LateStopKillsReplacement-CancelledWait` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
 | `Finding-LateStopPilesUp` | `OneEncoder` violated | violated | stops at first error | 1 s |
-| `Finding-RestartAfterFailureSkipsFinalStop` | `NoOrphans` violated | violated | stops at first error | 1 s |
 | `Finding-LateStartOutlivesStop` | `CleanAfterAckedClose` violated | violated | stops at first error | 1 s |
 | `Finding-LateStartPilesUp` | `OneEncoder` violated | violated | stops at first error | 1 s |
 | `Finding-ConsentShowsOverRunningJob` | `ConsentBoundary` violated | violated | stops at first error | 1 s |
@@ -287,8 +287,11 @@ checks the full property, or keeps it and checks what the code still keeps.
 `OneEncoderOutsideCancelledStops` and `LiveStopNeverKillsSuccessor` excuse only the stops the
 client itself cancelled, which pins suspect 2 to `stopPreviousTranscode`'s give-up and to a
 cancelled wait. `LateStarts` is off in every `Current` config; its `Finding` configs turn on
-nothing else. `RestartFromFailure` is on only in `Current-RestartFromFailure`, which drops
-`NoOrphans` (`Finding-RestartAfterFailureSkipsFinalStop`, #527). `Current-LateAck` has no failures (`Current-LateFail` has
+nothing else. `FixRestartResetsStopLatch` is `TRUE` (shipping since #527) everywhere but
+`Faithful-RestartAfterFailureSkipsFinalStop-off`, and `FailureRestartJoinsPendingStops` (shipping
+since #530) everywhere but `Faithful-FinalStopKillsReplacement-off`. `RestartFromFailure` is on in
+`Current-RestartFromFailure`, which checks every `Current-InPlace` invariant with it.
+`Current-LateAck` has no failures (`Current-LateFail` has
 them and drops `LiveStopNeverKillsSuccessor`), and `Current-Consent`
 no late stops, for the same reason (`Finding-RetryAfterTimedOutStop`,
 `Finding-ConsentShowsOverRunningJob`).
@@ -299,6 +302,7 @@ no late stops, for the same reason (`Finding-RetryAfterTimedOutStop`,
 | --- | --- | --- | --- |
 | `Faithful-StopPrevious-off` | `StopsPreviousFirst` | `OneEncoder` | A quality change requests the replacement with no stop; both jobs run (#27). |
 | `Faithful-DetachBeforeStart-off` | `DetachesBeforeStart` | `NoZombieItem` | The stop is acknowledged and the replacement requested with the old item still attached (#196). |
+| `Faithful-RestartAfterFailureSkipsFinalStop-off` | `FixRestartResetsStopLatch` | `NoOrphans` | The latch before #527: fail, a quality change from the overlay, Close sends no stop for the job it started. |
 | `Mutant-StopNotAwaited` | `WaitsForPreviousStop` | `LiveStopNeverKillsSuccessor` | The stop is sent, the start follows at once, and the stop is applied after the job starts. |
 | `Mutant-StopNotAwaited-PileUp` | `WaitsForPreviousStop` | `OneEncoderOutsideCancelledStops` | The same, before the stop is applied: two owned jobs. |
 | `Mutant-RetrySkipsJoin` | `RetryJoinsPendingStops` | `LiveStopNeverKillsSuccessor` | Fail, Retry: the failure's detached stop is still unanswered when the restart starts its job, and ends it. |
@@ -306,8 +310,10 @@ no late stops, for the same reason (`Finding-RetryAfterTimedOutStop`,
 | `Mutant-CloseSkipsFinalStop` | `CloseSendsFinalStop` | `NoOrphans` | Close with a job running and no stop. |
 | `Mutant-UnboundedStopWait` | `BoundedStopWait` | `RestartSettles` | A restart waits for ever on a stop that is never answered. |
 
-`OneEncoder`, `StopNeverKillsSuccessor`, `LiveStopNeverKillsSuccessor`, `NoOrphans`,
-`CleanAfterAckedClose` and `ConsentBoundary` are violated by the code as it stands; their `Finding` configs also show
+`OneEncoder`, `StopNeverKillsSuccessor`, `LiveStopNeverKillsSuccessor`,
+`CleanAfterAckedClose` and `ConsentBoundary` are violated by the code as it stands (`NoOrphans`
+was too until #527; `Faithful-RestartAfterFailureSkipsFinalStop-off` and
+`Mutant-CloseSkipsFinalStop` are its failing runs now); their `Finding` configs also show
 they can fail, and `Proposed-StartAfterOwnStops` that they can hold. `CleanAfterAckedClose` has
 no mutant of its own: `Finding-LateStartOutlivesStop` and `Finding-StopEndsOnlySome` are its
 failing runs.
@@ -437,13 +443,16 @@ It needed the two stops to be served out of order, or the first to be slow: the 
 case a failure overlay usually follows, where the failure message itself suggests a lower
 quality.
 
-The deferred restart takes the `failureRetryTask` slot, so a Retry tap while it waits is ignored
-(the restart already under way is the recovery), and Close or a newer change cancels it. Its
-`Finding-RestartAfterFailureSkipsFinalStop` half is unchanged: the restart still leaves
-`sentTranscodeStop` set (#527).
+The deferred restart takes the `failureRetryTask` slot and shows the reconnect status, so a Retry
+tap while it waits is ignored (the restart already under way is the recovery), and Close or a newer
+change cancels it. Its restart goes through `beginStreaming`, which clears `sentTranscodeStop`
+(#527), so Close covers the replacement.
 
-### The restart core's finding under the Plex order (`Finding-RestartAfterFailureSkipsFinalStop`)
+### Fixed (#527): the restart core's finding under the Plex order (`Faithful-RestartAfterFailureSkipsFinalStop-off`)
 
+Fixed: `beginStreaming` clears `sentTranscodeStop`, so each new transcode gets its own final
+stop. `FixRestartResetsStopLatch` is `TRUE` in every config but this `Faithful` one, which keeps
+the old latch; with the fix on, its constants pass (392,451 distinct states). The old trace:
 `NoOrphans` is violated in 9 states: `Start`, `Fail` (1290 sets `sentTranscodeStop`),
 `UserQuality`, the restart's stop and its acknowledgement, the replacement starts, `Close`.
 `sendTranscodeStop` returns at 1289 and no stop covers the running job. Since #530 the restart
@@ -537,7 +546,8 @@ the user's decision, which fits the 60 s default client better than the 5 s reco
   longer bounded by two seconds, so it leans on the request's own timeout (5 s on the recovery
   client that Retry switches to, 60 s otherwise); `Mutant-UnboundedStopWait` is what it costs if
   a stop is never answered at all.
-- `FixRestartResetsStopLatch`, from the restart core.
+- `FixRestartResetsStopLatch`, from the restart core. Shipping since #527 (`TRUE` in every
+  config but its `Faithful` one).
 
 With both, every property holds in full under late and lost stops and restarts from a
 failure, given `StopEndsAllUnderId`, and `Finding-RetryAfterTimedOutStop`'s route is closed too: a

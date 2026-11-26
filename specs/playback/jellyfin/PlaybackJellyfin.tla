@@ -508,7 +508,10 @@ Retry(c) ==
 
 \* failureRetryTask after `await waitForPendingStopRequests()`.  A
 \* "restart" task (a quality or track change while the failure showed)
-\* reopens with that change's plan, which leaves the error showing.
+\* reopens with that change's plan, which leaves the error showing.  A
+\* "restart" task that wakes to another generation takes no step, where
+\* the Swift clears the slot; no action bumps the generation during the
+\* wait without cancelling the task, so nothing is lost.
 RetryProceeds(c) ==
     LET isRetry == st[c].retryKind = "retry" IN
     /\ st[c].retryGen # 0

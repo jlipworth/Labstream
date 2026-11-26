@@ -505,13 +505,20 @@ behind.
   and an attach needs the barrier empty; the third comes from the one reopen that is past its
   predecessor. The transaction tail is what makes that "the one".
 - **A restart from a failure.** The restart core's `Finding-RestartAfterFailureSkipsFinalStop`
-  does not carry over. `didStop` belongs to the session and an attach clears it, so a quality
+  (fixed for Plex in #527, now `Faithful-RestartAfterFailureSkipsFinalStop-off`) does not carry over. `didStop` belongs to the session and an attach clears it, so a quality
   change while a failure shows leaves a session that Close stops. `Current-Reopen` has
   `RestartFromFailure` on and checks `NoOrphans`.
 - **Retry's join.** `retry()` awaits `waitForPendingStopRequests` before it reopens. For Emby
   the barrier and the tail already hold the reopen back: `Current-Reopen` with
   `RetryJoinsPendingStops = FALSE` passes every property (5,317,743 distinct states). The join
   is not what keeps the order here, so no mutant is kept for it.
+- **The #530 join on a restart from a failure.** Since #530 a quality or track change while a
+  failure shows joins `pendingStopTasks` (as `retry()` does) before `reopenRemoteStream`. This
+  model does not add that join: `Reopen` still reopens at once while a failure shows, as do the
+  automatic reopens it also stands for. The model therefore allows the un-joined order as well,
+  a superset of the code's behaviours, so its safety passes stay sound. One difference it does
+  not show: when the failure's stop was not acknowledged, the reopen after the join makes one
+  more stop attempt through the barrier.
 - **Close while the consent choice shows** (review focus 4). `stop()` clears the consent
   generation, joins a rejected session's stop if one is in flight, and retries a failed one once.
   `Current-CloseAtConsent` reaches Close with the choice showing, with and without that stop in
