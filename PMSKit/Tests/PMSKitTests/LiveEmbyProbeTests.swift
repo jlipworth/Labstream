@@ -98,7 +98,7 @@ struct LiveEmbyProbeTests {
             playSessionId: result.playSessionId)
         let (_, stopStatus) = try await transport.send(stop)
         print(">>> LIVE [\(label)] ActiveEncodings DELETE HTTP \(stopStatus)")
-        #expect((200..<300).contains(stopStatus) || [400, 404, 410].contains(stopStatus),
+        #expect(MediaBrowserActiveEncodingStopPolicy.isConfirmedStopped(httpStatus: stopStatus),
                 "active encoding cleanup should return success or already-gone status, got \(stopStatus)")
     }
 

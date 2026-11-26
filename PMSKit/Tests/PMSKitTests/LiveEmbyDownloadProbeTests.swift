@@ -182,7 +182,7 @@ struct LiveEmbyDownloadProbeTests {
                 userId: cfg.userId, deviceId: cfg.identity.deviceId,
                 playSessionId: playSessionId)
             let (_, http) = try await send(request)
-            let accepted = (200..<300).contains(http.statusCode) || [400, 404, 410].contains(http.statusCode)
+            let accepted = MediaBrowserActiveEncodingStopPolicy.isConfirmedStopped(httpStatus: http.statusCode)
             print(">>> LIVE [activeEncodingCleanup] HTTP \(http.statusCode) accepted=\(accepted)")
             #expect(accepted, "active encoding cleanup returned unexpected HTTP \(http.statusCode)")
         } catch {

@@ -49,11 +49,11 @@ public struct MediaBrowserPlaybackQualityPolicy: Sendable, Equatable {
 }
 
 /// Shared interpretation for `/Videos/ActiveEncodings` cleanup. A transport failure or auth/server
-/// rejection means the encoder is not confirmed gone; session-unknown statuses mean there is no live
-/// job left to stop, so the caller can drop persisted retry state.
+/// rejection retains cleanup authority. For an exact-session DELETE, 404 and 410 are
+/// accepted as idempotent absence. A malformed request (400) gives no such assurance.
 public enum MediaBrowserActiveEncodingStopPolicy {
     public static func isConfirmedStopped(httpStatus: Int?) -> Bool {
         guard let httpStatus else { return false }
-        return (200..<300).contains(httpStatus) || httpStatus == 400 || httpStatus == 404 || httpStatus == 410
+        return (200..<300).contains(httpStatus) || httpStatus == 404 || httpStatus == 410
     }
 }
