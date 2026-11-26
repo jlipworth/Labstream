@@ -75,13 +75,16 @@ struct PlaybackFormalModelFindingsTests {
 
     // MARK: - Plex
 
-    /// Restart-RetryWedgedByAttach (#526). From the error overlay the user changes quality and
-    /// taps Retry; the retry task waits on the failure's pending stop while the quality
-    /// restart's `load()` supersedes its generation, and it returns without clearing
-    /// `failureRetryTask`. On the next failure Retry does nothing
-    /// (`restart/Finding-RetryWedgedByAttach.cfg`, `RetryRuns`).
-    @Test("#526: Retry still runs after a quality change superseded an earlier retry")
-    func retryStillRunsAfterAQualityChangeSupersededAnEarlierRetry() async throws {
+    /// Restart-RetryWedgedByAttach (#526, fixed). A retry task waits on the failure's pending stop;
+    /// a restart in flight reaches `load()` and bumps the generation before the task's
+    /// continuation runs. The task used to return at its generation check without clearing
+    /// `failureRetryTask`, so Retry did nothing from then on; it now clears its own slot on every
+    /// uncancelled exit (`restart/Faithful-RetryWedgedByAttach-off.cfg`, `RetryRuns`).
+    /// Since #530 a quality change from the overlay joins the same stops before restarting, so no
+    /// public API forces the bump deterministically any more (what remains is a scheduling race).
+    /// The DEBUG seam `advancePlaybackGenerationForTesting()` stands in for that `load()`.
+    @Test("#526: Retry still runs after a restart superseded an earlier retry")
+    func retryStillRunsAfterARestartSupersededAnEarlierRetry() async throws {
         let route = PlexFixtureRoute(videoDecision: "transcode")
         let controller = makePlexController(route: route, maxVideoBitrateKbps: 4000)
         defer { route.hold([]); route.releaseHeld(); controller.stop() }
@@ -91,35 +94,31 @@ struct PlaybackFormalModelFindingsTests {
         controller.surfaceReconnectTimeout()
         try #require(controller.playbackError.isFailed)
         try #require(await eventually { route.count(.stop, .began) == 1 }, "failure sent no stop")
-        controller.reload(bitrateKbps: 2000)   // quality change from the overlay keeps the error
-        try #require(controller.playbackError.isFailed)
         controller.retry()                     // waits on the failure's (held) stop
-        // The quality restart's stop-previous gives up after 2 s, then its load clears the error.
-        try #require(await eventually(within: 8) {
-            route.count(.decision, .began) >= 2 && !controller.playbackError.isFailed
-        }, "quality restart never loaded")
-        controller.surfaceReconnectTimeout()   // the next failure
-        try #require(controller.playbackError.isFailed)
+        let decisionsBeforeRelease = route.count(.decision, .began)
+        controller.advancePlaybackGenerationForTesting()   // a restart's load() overtakes the join
         route.hold([])
-        route.releaseHeld()                    // the first retry task resumes and exits
+        route.releaseHeld()                    // the retry task resumes into a newer generation
         try #require(await eventually {
             route.count(.stop, .answered) + route.count(.stop, .cancelled) == route.count(.stop, .began)
         }, "held stops never resolved")
-        // Retry inside the poll: once a fixed retry task has unwound, one of these calls starts a
-        // retry; on current code every call is a no-op because failureRetryTask stays set.
+        // The superseded retry task bails without restarting.
+        try #require(controller.playbackError.isFailed, "the superseded retry restarted anyway")
+        try #require(route.count(.decision, .began) == decisionsBeforeRelease,
+                     "the superseded retry restarted anyway")
+        // Retry inside the poll: once the superseded task has unwound, one of these calls starts a
+        // retry. Without the fix every call is a no-op because failureRetryTask stays set.
         let retried = await eventually(within: 3) {
             controller.retry()
             return !controller.playbackError.isFailed
         }
-        withKnownIssue("TLA+ finding Restart-RetryWedgedByAttach (#526): a superseded retry task leaves failureRetryTask set, so Retry stops responding") {
-            #expect(retried, "Retry after the second failure did not start a retry")
-        }
+        #expect(retried, "Retry after a superseded retry did not start a retry")
     }
 
-    /// RestartAfterFailureSkipsFinalStop (#527). `surfaceFailure` sends the transcode stop and
-    /// sets `sentTranscodeStop`; only `retry()` clears it. A quality change from the error
-    /// overlay starts a new transcode under the same session, and Close then sends no stop for
-    /// it (`restart/Finding-RestartAfterFailureSkipsFinalStop.cfg`).
+    /// RestartAfterFailureSkipsFinalStop (#527, fixed). `surfaceFailure` sends the transcode stop
+    /// and sets `sentTranscodeStop`. A quality change from the error overlay starts a new
+    /// transcode under the same session; `beginStreaming` clears the latch, so Close sends a stop
+    /// for it (`restart/Faithful-RestartAfterFailureSkipsFinalStop-off.cfg` is the old behaviour).
     @Test("#527: Close stops a transcode started by a quality change after a failure")
     func closeStopsATranscodeStartedByAQualityChangeAfterFailure() async throws {
         let route = PlexFixtureRoute(videoDecision: "transcode")
@@ -134,10 +133,24 @@ struct PlaybackFormalModelFindingsTests {
         let replacementStarted = try #require(route.lastIndex(.decision, .began))
         controller.stop()
         await controller.waitForPendingStopRequests()
-        withKnownIssue("TLA+ finding RestartAfterFailureSkipsFinalStop (#527): the stop latch set by the failure suppresses Close's stop for the replacement transcode") {
-            #expect(route.events.value[replacementStarted...].contains { $0.kind == .stop && $0.phase == .began },
-                    "Close sent no transcode stop for the transcode the quality change started")
-        }
+        #expect(route.events.value[replacementStarted...].contains { $0.kind == .stop && $0.phase == .began },
+                "Close sent no transcode stop for the transcode the quality change started")
+    }
+
+    /// #527 guard: the latch still sends one stop per transcode. A failure stops the transcode and
+    /// Close with no restart in between sends no second stop for it.
+    @Test("#527: Close after a failure with no restart sends no second stop")
+    func closeAfterAFailureWithNoRestartSendsNoSecondStop() async throws {
+        let route = PlexFixtureRoute(videoDecision: "transcode")
+        let controller = makePlexController(route: route, maxVideoBitrateKbps: 4000)
+        controller.start()
+        try #require(await eventually { route.count(.decision, .began) == 1 })
+        controller.surfaceReconnectTimeout()
+        try #require(controller.playbackError.isFailed)
+        try #require(await eventually { route.count(.stop, .began) == 1 }, "failure sent no stop")
+        controller.stop()
+        await controller.waitForPendingStopRequests()
+        #expect(route.count(.stop, .began) == 1, "Close re-sent the stop the failure already sent")
     }
 
     /// Restart-SeekDroppedByAttach (#528). A scrub while no item is loaded arms the 500 ms
@@ -187,11 +200,11 @@ struct PlaybackFormalModelFindingsTests {
         }
     }
 
-    /// FinalStopKillsReplacement (#530). `retry()` joins the pending stops before minting a
-    /// replacement; a quality change from the error overlay goes through
-    /// `restartAtCurrentPosition` and skips that join, so the replacement starts while the
-    /// failure's stop (same session id) is still in flight and can end it
-    /// (`plex/Finding-FinalStopKillsReplacement.cfg`, `StopNeverKillsSuccessor`).
+    /// FinalStopKillsReplacement (#530, fixed). `retry()` joins the pending stops before minting
+    /// a replacement; a quality change from the error overlay goes through
+    /// `restartAtCurrentPosition`, which used to skip that join, so the replacement started while
+    /// the failure's stop (same session id) was still in flight and could end it
+    /// (`plex/Faithful-FinalStopKillsReplacement-off.cfg`, `StopNeverKillsSuccessor`).
     @Test("#530: a restart from the error overlay joins the failure's stop first")
     func restartFromTheErrorOverlayJoinsTheFailuresStopFirst() async throws {
         let route = PlexFixtureRoute(videoDecision: "transcode")
@@ -206,9 +219,55 @@ struct PlaybackFormalModelFindingsTests {
         controller.reload(bitrateKbps: 2000)
         let replacementSent = await eventually(within: 1.5) { route.count(.decision, .began) >= 2 }
         // The failure's stop is still held (nothing releases it in this window).
-        withKnownIssue("TLA+ finding FinalStopKillsReplacement (#530): a restart from the error overlay skips Retry's pending-stop join") {
-            #expect(!replacementSent, "the replacement started while the failure's stop was still in flight")
-        }
+        #expect(!replacementSent, "the replacement started while the failure's stop was still in flight")
+        // Once that stop is answered the restart goes ahead.
+        route.releaseHeld()
+        #expect(await eventually { route.count(.decision, .began) >= 2 },
+                "the restart never went ahead after the failure's stop was answered")
+    }
+
+    /// Jellyfin-RestartFromFailureOverlap (#530, fixed). The failure stops the failed session
+    /// (`onStopAndWait`, a pendingStopTasks entry); a quality change from the error overlay used
+    /// to negotiate the replacement while that stop was still in flight, so two encoders ran
+    /// outside the replace-then-clean-up window
+    /// (`jellyfin/Faithful-RestartFromFailureOverlap-off.cfg`, `OneEncoder`).
+    @Test("#530: a Jellyfin restart from the error overlay joins the failure's stop first")
+    func jellyfinRestartFromTheErrorOverlayJoinsTheFailuresStopFirst() async throws {
+        let log = EventLog()
+        let gate = TestGate()
+        let streamURL = try #require(URL(string: "https://192.0.2.10/videos/fixture/master.m3u8"))
+        let session = MediaBrowserPlaybackSession(
+            streamURL: streamURL, backend: .jellyfin, backendLabel: "Jellyfin", httpHeaders: [:],
+            playSessionID: "session-0", sourceMetadata: .init(videoCodec: "hevc"),
+            playMethod: .transcode, transcodeReasons: [], progressSession: nil,
+            onStop: { log.append("legacy-stop-0") },
+            reopener: { request in
+                log.append("negotiate-\(request.bitrateKbps)")
+                return RemoteStreamOpenResult(url: streamURL, headers: [:], playSessionId: "session-1",
+                                              onStop: { log.append("legacy-stop-1") },
+                                              onStopAndWait: { log.append("stop-1") })
+            },
+            onStopAndWait: {
+                log.append("stop-0-begin")
+                await gate.wait()
+                log.append("stop-0-end")
+            })
+        let controller = makeMediaBrowserController(session: session, maxVideoBitrateKbps: 4000)
+        defer { Task { await gate.open() }; controller.stop() }
+        controller.start()
+        try #require(await eventually { controller.player.currentItem != nil }, "the initial stream never attached")
+        controller.surfaceReconnectTimeout()
+        try #require(controller.playbackError.isFailed)
+        try #require(await eventually { log.items.contains("stop-0-begin") }, "the failure never stopped its session")
+        controller.reload(bitrateKbps: 2000)
+        let negotiatedEarly = await eventually(within: 1.5) { log.items.contains("negotiate-2000") }
+        #expect(!negotiatedEarly, "the replacement was negotiated while the failure's stop was in flight: \(log.items)")
+        await gate.open()
+        #expect(await eventually { log.items.contains("negotiate-2000") },
+                "the restart never went ahead after the failure's stop was answered: \(log.items)")
+        let stopEnd = try #require(log.items.firstIndex(of: "stop-0-end"), "the failure's stop never ended: \(log.items)")
+        let negotiate = try #require(log.items.firstIndex(of: "negotiate-2000"))
+        #expect(stopEnd < negotiate, "negotiated before the failure's stop ended: \(log.items)")
     }
 
     /// Plex-RetryAfterTimedOutStop (#539, conditional on PMS applying a stop after the client
@@ -266,24 +325,46 @@ struct PlaybackFormalModelFindingsTests {
         #expect(route.count(.stop, .answered) == 1, "the tap did not re-send the stop")
     }
 
-    /// #539: a restart from the error overlay that fails before it builds an item (the network
-    /// is still down) must not leave Retry refusing for good. Its task ends; the next tap re-sends
-    /// the failure's stop and restarts once PMS answers.
-    @Test("#539: Retry re-sends and restarts after an overlay reload failed before its item")
-    func retryResendsAfterAnOverlayReloadFailedBeforeItsItem() async throws {
+    /// #539 with #530: a quality change from the error overlay takes the same join as Retry. With
+    /// the failure's stop unconfirmed (it never connected) it re-sends the stop once and, still
+    /// unconfirmed, starts nothing and shows LS-PB-008. Once the network is back the next change
+    /// re-sends, PMS answers, and the restart goes ahead.
+    @Test("#539: an overlay quality change re-sends an unconfirmed failure stop and restarts only once it is answered")
+    func overlayQualityChangeResendsAnUnconfirmedFailureStop() async throws {
         let route = PlexFixtureRoute(videoDecision: "transcode")
         let controller = makePlexController(route: route, maxVideoBitrateKbps: 4000)
         defer { route.fail([]); controller.stop() }
         controller.start()
         try #require(await eventually { route.count(.decision, .began) == 1 })
-        route.fail([.stop, .decision])         // the network drops
+        route.fail([.stop])                    // the network drops
         controller.surfaceReconnectTimeout()
         try #require(await eventually { route.count(.stop, .failed) == 1 }, "failure stop did not fail")
-        controller.reload(bitrateKbps: 2000)   // from the overlay; the error stays
-        try #require(await eventually { route.count(.decision, .failed) == 1 }, "overlay reload never asked for a decision")
-        try? await Task.sleep(for: .milliseconds(200))   // let the reload's task finish
-        try #require(controller.playbackError.isFailed)
+        controller.reload(bitrateKbps: 2000)   // from the overlay
+        try #require(await eventually { route.count(.stop, .failed) == 2 }, "the change did not re-send the stop")
+        try #require(await eventually { controller.playbackError.failure?.code == .priorSessionStopUnconfirmed },
+                     "the change did not surface the unconfirmed stop")
+        #expect(route.count(.decision, .began) == 1, "the change restarted while the failure's stop was unconfirmed")
         route.fail([])                         // the network is back
+        controller.reload(bitrateKbps: 3000)
+        #expect(await eventually { route.count(.decision, .began) == 2 },
+                "the next change did not restart once the re-sent stop was answered")
+        #expect(route.count(.stop, .answered) >= 1)
+    }
+
+    /// The same, recovered by Retry instead of a second change.
+    @Test("#539: Retry re-sends and restarts after an overlay change was refused")
+    func retryResendsAfterAnOverlayChangeWasRefused() async throws {
+        let route = PlexFixtureRoute(videoDecision: "transcode")
+        let controller = makePlexController(route: route, maxVideoBitrateKbps: 4000)
+        defer { route.fail([]); controller.stop() }
+        controller.start()
+        try #require(await eventually { route.count(.decision, .began) == 1 })
+        route.fail([.stop])
+        controller.surfaceReconnectTimeout()
+        try #require(await eventually { route.count(.stop, .failed) == 1 }, "failure stop did not fail")
+        controller.reload(bitrateKbps: 2000)
+        try #require(await eventually { controller.playbackError.failure?.code == .priorSessionStopUnconfirmed })
+        route.fail([])
         let stopsBefore = route.count(.stop, .began)
         controller.retry()
         #expect(await eventually { !controller.playbackError.isFailed },

@@ -395,6 +395,13 @@ final class PlaybackController {
     private var playbackTask: Task<Void, Never>?
     private var upNextTask: Task<Void, Never>?
     private var playbackGeneration = 0
+    #if DEBUG
+    /// Test seam for #526: stands in for an in-flight restart's `load()` bumping the generation
+    /// while a retry task's join is held, an interleaving no public API forces deterministically.
+    func advancePlaybackGenerationForTesting() {
+        playbackGeneration += 1
+    }
+    #endif
     private var offlineObservedItemGeneration: Int?
     private var offlinePlaybackClosed = false
     private lazy var lifecycleCallbacks = PlaybackLifecycleCallbackSink<Int> { [weak self] generation in
@@ -1260,6 +1267,24 @@ final class PlaybackController {
         if restartInFlightGeneration == generation { restartInFlightGeneration = nil }
     }
 
+    /// Bumped by every `surfaceFailure`: the failure a tracked stop outcome belongs to (#539).
+    /// Keyed on the failure, not `playbackGeneration`, so a generation bump between the failure
+    /// and its stop's timeout cannot discard the outcome.
+    private var failureEpoch = 0
+
+    /// Retry or a change from the error overlay found the failure's stop still unconfirmed
+    /// after its one re-send (#539): keep the failure as LS-PB-008, start nothing.
+    private func surfaceUnconfirmedFailedAttemptStop(restartInFlight: Bool) {
+        recordPlaybackDiagnostic("playback.retry_refused", fields: [
+            "failure_code": .label(PlaybackFailure.Code.priorSessionStopUnconfirmed.rawValue),
+            "restart_in_flight": .bool(restartInFlight),
+        ])
+        playbackError.set(PlaybackFailure(code: .priorSessionStopUnconfirmed))
+        // A restart that is genuinely running owns the reconnect status.
+        if !restartInFlight { endReconnectStatus() }
+        updateTransportStatus()
+    }
+
     enum FailedAttemptStopJoin: Equatable {
         /// The failure's stop is confirmed (now or by the re-sent stop): a replacement may start.
         case confirmed
@@ -1379,8 +1404,9 @@ final class PlaybackController {
         }
     }
 
-    /// Whether the final `/video/:/transcode/universal/stop` was already fired, so
-    /// repeated teardowns (dismantle + explicit stop paths) send it exactly once.
+    /// Whether the final `/video/:/transcode/universal/stop` was already fired for the current
+    /// transcode, so repeated teardowns (dismantle + explicit stop paths) send it exactly once.
+    /// Cleared by `beginStreaming` when a new transcode is started (#527).
     private var sentTranscodeStop = false
 
     /// Best-effort: tell PMS to kill this session's transcode job. HLS gives the
@@ -1429,12 +1455,12 @@ final class PlaybackController {
 
     /// Run the failure's exact-session stop as a `pendingStopTasks` entry and record an
     /// unconfirmed outcome before the entry ends, so Retry's join reads it (#539). A late
-    /// outcome from an earlier failure's generation is ignored.
+    /// outcome from an earlier failure (`failureEpoch`) is ignored.
     private func trackFailedAttemptStop(_ stop: @escaping @MainActor () async -> Bool) {
-        let generation = playbackGeneration
+        let epoch = failureEpoch
         pendingStopTasks.append(Task { @MainActor [weak self] in
             let confirmed = await stop()
-            guard !confirmed, let self, self.playbackGeneration == generation else { return }
+            guard !confirmed, let self, self.failureEpoch == epoch else { return }
             self.failedAttemptStopUnconfirmed = true
         })
     }
@@ -2725,17 +2751,16 @@ final class PlaybackController {
             // A stop that timed out or never connected is not joined (#539): this tap
             // re-sends it once and proceeds only on confirmation.
             let join = await self.joinFailedAttemptStop(generation: generation)
-            guard join != .superseded else { return }
+            // Identity guard: `stop()` and `restartAtCurrentPosition` cancel this task before
+            // they release the slot, so a cancelled task no longer owns it (a newer retry may).
+            guard !Task.isCancelled else { return }
+            // An uncancelled task still owns the slot. Release it on every exit, including a
+            // restart that superseded the captured generation while the join ran (#526);
+            // otherwise `retry()`'s `failureRetryTask == nil` guard refuses every later tap.
             self.failureRetryTask = nil
+            guard join != .superseded else { return }
             guard join == .confirmed else {
-                self.recordPlaybackDiagnostic("playback.retry_refused", fields: [
-                    "failure_code": .label(PlaybackFailure.Code.priorSessionStopUnconfirmed.rawValue),
-                    "restart_in_flight": .bool(join == .restartInFlight),
-                ])
-                self.playbackError.set(PlaybackFailure(code: .priorSessionStopUnconfirmed))
-                // The overlay restart owns the reconnect status while it runs.
-                if join != .restartInFlight { self.endReconnectStatus() }
-                self.updateTransportStatus()
+                self.surfaceUnconfirmedFailedAttemptStop(restartInFlight: join == .restartInFlight)
                 return
             }
             self.sentTranscodeStop = false
@@ -2871,6 +2896,11 @@ final class PlaybackController {
         let generation = playbackGeneration
         activeFinalTargetRebuildGeneration = finalTargetRebuildGeneration
         restartInFlightGeneration = generation
+        // #527: every Plex start goes through here, and the start it makes is a new transcode
+        // (a restart stops the previous job first, under the same session id). Re-arm the final
+        // stop for it, or a stop already sent by surfaceFailure would suppress Close's stop for a
+        // transcode a quality/track change started from the error overlay.
+        sentTranscodeStop = false
         playbackTask = Task { [weak self] in
             guard let self else { return }
             defer { self.endRestartInFlight(generation: generation) }
@@ -5335,6 +5365,7 @@ final class PlaybackController {
         recordLocalPlaybackPosition(resumeMs)
         captionAppearance.stopPreview()
         // Each failure owns its own stop outcome (#539).
+        failureEpoch += 1
         failedAttemptStopUnconfirmed = false
         failedAttemptSessionStop = nil
         sendTranscodeStop(tracksFailedAttempt: true)
@@ -5875,6 +5906,37 @@ final class PlaybackController {
                                           intent: PlaybackRestartIntent) {
         failureRetryTask?.cancel()
         failureRetryTask = nil
+        // A quality, audio or subtitle change from the error overlay begins from a failure,
+        // just like Retry: join the failed attempt's stops first, as retry() does, so its
+        // exact-session stop cannot end the replacement (Plex reuses the session id) or
+        // overlap it (Jellyfin) (#530). Retry already joined before calling here.
+        if intent != .explicitRetry, playbackError.isFailed {
+            beginReconnectStatus()
+            let generation = playbackGeneration
+            failureRetryTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                // The same join as Retry (#539): an unconfirmed failure stop is re-sent once,
+                // bounded, and the change starts only once it is confirmed.
+                let join = await self.joinFailedAttemptStop(generation: generation)
+                guard !Task.isCancelled else { return }
+                self.failureRetryTask = nil
+                guard join != .superseded, self.playbackError.isFailed else { return }
+                guard join == .confirmed else {
+                    self.surfaceUnconfirmedFailedAttemptStop(restartInFlight: join == .restartInFlight)
+                    return
+                }
+                self.performRestartAtCurrentPosition(offsetMs: offsetMs,
+                                                     bitrateKbps: bitrateKbps,
+                                                     intent: intent)
+            }
+            return
+        }
+        performRestartAtCurrentPosition(offsetMs: offsetMs, bitrateKbps: bitrateKbps, intent: intent)
+    }
+
+    private func performRestartAtCurrentPosition(offsetMs: Int,
+                                                 bitrateKbps: Int,
+                                                 intent: PlaybackRestartIntent) {
         setPendingResumeMs(offsetMs, cause: .restartTarget, allowsNearZero: true)
         rememberTrustworthyPlaybackPosition(offsetMs,
                                             cause: .restartTarget,

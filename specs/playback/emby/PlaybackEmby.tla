@@ -463,9 +463,9 @@ Start(c) ==
 \*
 \* restartAtCurrentPosition clears failureRetryTask, so retryGen goes.  A
 \* seek's direct reopenRemoteStream leaves it, and the retry task then
-\* wakes to another generation and returns with failureRetryTask still
-\* set: the restart core's Finding-RetryWedgedByAttach, left out here so
-\* that it does not also bound this model.
+\* wakes to another generation, clears failureRetryTask and returns (#526;
+\* the restart core's RetryBails).  That step is left out here, so
+\* retryGen stays set; it only bounds this model's Retry further.
 Reopen(c) ==
     /\ st[c].life = "open"
     /\ st[c].userLeft > 0

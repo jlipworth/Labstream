@@ -85,10 +85,14 @@ CONSTANTS
     RetryJoinsPendingStops,
     RetryNeedsConfirmedStop,
         \* #539: the failure's stop is tracked on its own bounded client.
-        \* Retry restarts at once only if it was answered within that bound;
-        \* otherwise the tap re-sends the stop once, bypassing the latch,
-        \* restarts if the re-send is answered and fails with
-        \* priorSessionStopUnconfirmed if not
+        \* Retry (or a restart from the error overlay, #530) proceeds at once
+        \* only if it was answered within that bound; otherwise the task
+        \* re-sends the stop once, bypassing the latch, proceeds if the
+        \* re-send is answered and fails with priorSessionStopUnconfirmed if
+        \* not
+    FailureRestartJoinsPendingStops,
+        \* #530: a quality or track change while a failure shows joins
+        \* pendingStopTasks first, as retry() does
     CloseSendsFinalStop,
 
     \* Proposed fixes.  FALSE is the code as it stands.
@@ -96,7 +100,9 @@ CONSTANTS
         \* no start request goes out while a stop of this controller's is
         \* unanswered
     FixRestartResetsStopLatch
-        \* every restart clears sentTranscodeStop, not only retry()
+        \* every restart clears sentTranscodeStop, not only retry().
+        \* Shipping since #527 (beginStreaming clears it): TRUE is the
+        \* code as it stands; FALSE is the old latch.
 
 ASSUME /\ MaxUserActions \in Nat
        /\ MaxGeneration >= 3
@@ -106,7 +112,8 @@ ASSUME /\ MaxUserActions \in Nat
                     WarmStartJoinsJob, StopsPreviousFirst,
                     WaitsForPreviousStop, BoundedStopWait,
                     DetachesBeforeStart, RetryJoinsPendingStops,
-                    RetryNeedsConfirmedStop, CloseSendsFinalStop, FixStartAfterOwnStops,
+                    RetryNeedsConfirmedStop, FailureRestartJoinsPendingStops,
+                    CloseSendsFinalStop, FixStartAfterOwnStops,
                     FixRestartResetsStopLatch} :
               b \in BOOLEAN
        /\ ConsentPossible \in BOOLEAN
@@ -166,13 +173,16 @@ IsPTask(t) ==
     /\ t.stopping \in BOOLEAN /\ t.warm \in BOOLEAN
 
 \* st[c].  `latch` is sentTranscodeStop; `retryGen` the generation
-\* failureRetryTask captured (0 for nil); `warmArmed` is
+\* failureRetryTask captured (0 for nil); `retryKind` what that task
+\* restarts with: "retry" (retry()) or "restart" (a quality or track
+\* change while a failure shows, FailureRestartJoinsPendingStops); `warmArmed` is
 \* ~startupDeadlineRetryAttempted; `consent` is
 \* videoTranscodeConsent.generation (0 for nil); `approved` is
 \* videoTranscodeApprovedForCurrentItem.
 StRecords ==
     [life : {"new", "open", "closed"}, failed : BOOLEAN, latch : BOOLEAN,
-     retryGen : Gens, warmArmed : BOOLEAN, userLeft : 0..MaxUserActions,
+     retryGen : Gens, retryKind : {"retry", "restart"},
+     warmArmed : BOOLEAN, userLeft : 0..MaxUserActions,
      consent : Gens, approved : BOOLEAN,
      failStop : StopIds \cup {NoStop}, restop : StopIds \cup {NoStop}]
 
@@ -228,7 +238,7 @@ Init ==
     /\ ControllerInit(0)
     /\ st = [c \in Controllers |->
                 [life |-> "new", failed |-> FALSE, latch |-> FALSE,
-                 retryGen |-> 0, warmArmed |-> TRUE,
+                 retryGen |-> 0, retryKind |-> "retry", warmArmed |-> TRUE,
                  userLeft |-> MaxUserActions, consent |-> 0,
                  approved |-> FALSE, failStop |-> NoStop, restop |-> NoStop]]
     /\ wire = [c \in Controllers |-> {}]
@@ -381,21 +391,47 @@ Start(c) ==
 
 \* reload(bitrateKbps:) and the audio and subtitle track changes:
 \* restartAtCurrentPosition with an intent other than explicitRetry.
-\* Nothing in it asks whether a failure is showing, and only retry()
-\* clears sentTranscodeStop.  reload clears
+\* beginStreaming clears sentTranscodeStop (#527; before it only retry()
+\* did).  reload clears
 \* videoTranscodeApprovedForCurrentItem; a track change keeps it
-\* (`isReload` picks which one the step is).
+\* (`isReload` picks which one the step is).  While a failure shows,
+\* FailureRestartJoinsPendingStops (#530) makes the restart a
+\* failureRetryTask that joins pendingStopTasks first (RetryProceeds);
+\* without it the restart begins at once.
 UserQuality(c) ==
     /\ st[c].life = "open"
     /\ st[c].userLeft > 0
     /\ st[c].failed => RestartFromFailure
-    /\ RestartCore(c, TRUE, FALSE, FALSE)
     /\ \E isReload \in BOOLEAN :
-        st' = [st EXCEPT
-           ![c].userLeft = @ - 1, ![c].retryGen = 0, ![c].warmArmed = TRUE,
-           ![c].restop = NoStop,
-           ![c].latch = IF FixRestartResetsStopLatch THEN FALSE ELSE @,
-           ![c].consent = 0, ![c].approved = @ /\ ~isReload]
+        IF st[c].failed /\ FailureRestartJoinsPendingStops
+        THEN /\ st' = [st EXCEPT
+                   ![c].userLeft = @ - 1, ![c].retryGen = gen[c],
+                   ![c].retryKind = "restart", ![c].restop = NoStop,
+                   ![c].consent = 0, ![c].approved = @ /\ ~isReload]
+             /\ UNCHANGED <<serverVars, ctlVars, wire, ghost>>
+        ELSE /\ RestartCore(c, TRUE, FALSE, FALSE)
+             /\ st' = [st EXCEPT
+                   ![c].userLeft = @ - 1, ![c].retryGen = 0,
+                   ![c].warmArmed = TRUE, ![c].restop = NoStop,
+                   ![c].latch = IF FixRestartResetsStopLatch THEN FALSE ELSE @,
+                   ![c].consent = 0, ![c].approved = @ /\ ~isReload]
+
+\* The failureRetryTask's join: Retry's under RetryJoinsPendingStops, a
+\* restart's (#530) always.
+TaskJoined(c) ==
+    IF st[c].retryKind = "retry" THEN RetryJoinsPendingStops => Joined(c)
+    ELSE Joined(c)
+
+\* st after the failureRetryTask restarts: Retry clears the error and
+\* sentTranscodeStop; a restart keeps the error and clears the latch only
+\* with FixRestartResetsStopLatch (#527).
+AfterTaskRestart(c) ==
+    LET isRetry == st[c].retryKind = "retry" IN
+    [st EXCEPT
+        ![c].retryGen = 0,
+        ![c].latch = IF isRetry \/ FixRestartResetsStopLatch THEN FALSE ELSE @,
+        ![c].failed = IF isRetry THEN FALSE ELSE @,
+        ![c].warmArmed = TRUE, ![c].failStop = NoStop, ![c].restop = NoStop]
 
 \* retry(): failureRetryTask, which first joins pendingStopTasks.
 Retry(c) ==
@@ -403,27 +439,33 @@ Retry(c) ==
     /\ st[c].failed
     /\ st[c].retryGen = 0
     /\ st[c].userLeft > 0
-    /\ st' = [st EXCEPT ![c].retryGen = gen[c], ![c].userLeft = @ - 1]
+    /\ st' = [st EXCEPT ![c].retryGen = gen[c], ![c].retryKind = "retry",
+                        ![c].userLeft = @ - 1]
     /\ UNCHANGED <<serverVars, ctlVars, wire, ghost>>
 
 \* failureRetryTask after `await waitForPendingStopRequests()`.  A task
-\* that wakes to another generation returns and leaves failureRetryTask
-\* set (the restart core's Finding-RetryWedgedByAttach); that is no step.
+\* that wakes to another generation clears failureRetryTask and returns
+\* (#526; the restart core's RetryBails); it is left out here, no step.
+\* A "restart" task that wakes to another generation also takes no step,
+\* where the Swift clears the slot; no action bumps the generation during
+\* the wait without cancelling the task, so nothing is lost.
 \* The join returns when every detached stop is answered or its request
-\* timed out (Joined).
+\* timed out (Joined).  A "restart" task (a quality or track change while
+\* the failure showed) restarts with that change's plan: it clears neither
+\* the error nor, unless FixRestartResetsStopLatch (#527), sentTranscodeStop.
 RetryProceeds(c) ==
+    LET isRetry == st[c].retryKind = "retry" IN
     /\ st[c].retryGen # 0
     /\ st[c].retryGen = gen[c]
-    /\ RetryJoinsPendingStops => Joined(c)
+    /\ TaskJoined(c)
     /\ RetryNeedsConfirmedStop => ~StopUnconfirmed(c)
     /\ st[c].restop = NoStop
     /\ RestartCore(c, TRUE, FALSE, FALSE)
-    /\ st' = [st EXCEPT
-           ![c].retryGen = 0, ![c].latch = FALSE, ![c].failed = FALSE,
-           ![c].warmArmed = TRUE]
+    /\ st' = [AfterTaskRestart(c) EXCEPT ![c].failStop = st[c].failStop]
 
-\* The same task finding failedAttemptStopUnconfirmed set (#539): it re-sends
-\* the session's stop once (plexFailedAttemptStop, not behind the latch) as
+\* The same task (Retry's, or a restart's from the overlay: joinFailedAttemptStop)
+\* finding failedAttemptStopUnconfirmed set (#539): it re-sends the session's
+\* stop once (plexFailedAttemptStop, not behind the latch) as
 \* a pendingStopTasks entry and awaits it, bounded.  Not while a restart
 \* from the error overlay runs (playbackTask != nil): that is refused.
 RetryRestops(c) ==
@@ -431,7 +473,7 @@ RetryRestops(c) ==
     /\ st[c].retryGen # 0
     /\ st[c].retryGen = gen[c]
     /\ st[c].restop = NoStop
-    /\ RetryJoinsPendingStops => Joined(c)
+    /\ TaskJoined(c)
     /\ StopUnconfirmed(c)
     /\ task[c] = NoTask
     /\ pendingStops' = Upd(pendingStops, c,
@@ -442,17 +484,15 @@ RetryRestops(c) ==
     /\ UNCHANGED <<gen, itemGen, item, task, unwinding, idleVars, wire>>
 
 \* The re-sent stop is answered within its bound and the generation is
-\* unchanged: the flag is cleared and Retry restarts in the same run.
+\* unchanged: the flag is cleared and the task restarts in the same run,
+\* with its own kind's plan.
 RetryRestopConfirmed(c) ==
     /\ st[c].restop # NoStop
     /\ st[c].retryGen # 0
     /\ st[c].retryGen = gen[c]
     /\ \E r \in StopReq(c, st[c].restop) : r.status # "inFlight" /\ ~r.late
     /\ RestartCore(c, TRUE, FALSE, FALSE)
-    /\ st' = [st EXCEPT
-           ![c].retryGen = 0, ![c].latch = FALSE, ![c].failed = FALSE,
-           ![c].warmArmed = TRUE, ![c].failStop = NoStop,
-           ![c].restop = NoStop]
+    /\ st' = AfterTaskRestart(c)
 
 \* The re-sent stop passed its bound: priorSessionStopUnconfirmed,
 \* failureRetryTask cleared, so the next tap re-sends again.  Nothing
@@ -462,7 +502,7 @@ RetryRefused(c) ==
     /\ st[c].retryGen = gen[c]
     /\ \/ Unconfirmed(c, st[c].restop)
        \/ /\ st[c].restop = NoStop
-          /\ RetryJoinsPendingStops => Joined(c)
+          /\ TaskJoined(c)
           /\ StopUnconfirmed(c)
           /\ task[c] # NoTask
     /\ st' = [st EXCEPT ![c].retryGen = 0, ![c].restop = NoStop]

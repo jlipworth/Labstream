@@ -2,8 +2,12 @@
 
 TLA+ models of Labstream subsystems, checked with TLC. This page covers the layout and how to
 run the checks. What each model covers, what it found and how it is kept equal to the Swift are
-in [docs/DOWNLOADS-OFFLINE.md, "Formal model (TLA+)"](../docs/DOWNLOADS-OFFLINE.md#formal-model-tla)
-and the plan, [docs/plans/2026-11-24-downloads-tla-model.md](../docs/plans/2026-11-24-downloads-tla-model.md).
+in each area's canonical doc and plan:
+
+- downloads: [docs/DOWNLOADS-OFFLINE.md, "Formal model (TLA+)"](../docs/DOWNLOADS-OFFLINE.md#formal-model-tla)
+  and [docs/plans/2026-11-24-downloads-tla-model.md](../docs/plans/2026-11-24-downloads-tla-model.md);
+- playback restart and cleanup: [docs/PLAYBACK-ARCHITECTURE.md, "Formal model (TLA+)"](../docs/PLAYBACK-ARCHITECTURE.md#formal-model-tla)
+  and [docs/plans/2026-11-25-playback-tla-model.md](../docs/plans/2026-11-25-playback-tla-model.md).
 
 ## Layout
 
@@ -20,9 +24,18 @@ specs/
                               state) and DownloadsSessionRowMapCheck.tla
     admission/  server-prep/  cleanup/  wake/  side-assets/
     storage/  range-train/  status/
+  playback/                   one area: playback restart, reopen, Retry and cleanup
+    base/                     PlaybackBase.tla (abstract server: jobs per session id and
+                              incarnation, stops, acks, recreated jobs) and
+                              PlaybackControllerOps.tla (controller state and steps); the
+                              contract for writing a module
+    restart/                  PlaybackRestart.tla: the backend-agnostic controller core
+    plex/  emby/  jellyfin/   each backend's replacement order over base/
+    proxy/                    PlaybackProxy.tla: the PMSKit loopback proxy's listener,
+                              request handlers and upstream session
 ```
 
-A module folder holds `Downloads<Name>.tla`, any helper module (`wake/` has
+A module folder holds `Downloads<Name>.tla` (`Playback<Name>.tla` in `playback/`), any helper module (`wake/` has
 `DownloadsWakeLaunchGate.tla`, `status/` has `DownloadsStatusPhase.tla`, whose table the Swift
 tests read), its configs and a `README.md` with the model-to-Swift table, bounds, properties,
 per-config results and finding traces. `session/README.md` holds the second-round changes,
@@ -67,7 +80,7 @@ A config is `<Kind>-<What>.cfg` in its module's folder. The first lines are head
 | `Liveness` | A fairness run of the code as it stands. Never uses `SYMMETRY`. | pass |
 | `Faithful` | One shipped fix turned off. Shows the model can see that bug. | be violated |
 | `Mutant` | A deliberately injected bug, for a subsystem with no historical one, or the mutation that once slipped past a check, kept so the check's strength stays tested. | be violated |
-| `Finding` | An open defect the model found on the current design. | be violated until fixed |
+| `Finding` | An open defect the model found on the current design. A finding that holds only if a server behaves a particular way says so in its header ("conditional on …"), and a config that passes only under such an assumption is reported as "pass (given …)". | be violated until fixed |
 | `Proposed` | Proposed fixes turned on. | pass |
 | `Projection` | Proves the reducer fields a module leaves out never affect the ones it keeps. Runs `DownloadsReducerConformance` from `base/`. | pass |
 | `Deep` | Larger bounds, `TIER: deep`. Skipped unless `--deep`, `--deep-only` or `TLC_TIER` asks, or the file is named. | pass |

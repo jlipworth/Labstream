@@ -100,10 +100,14 @@ CONSTANTS
     CloseStopsSession,   \* stop() calls stopRemoteSessionIfNeeded
     RetryJoinsPendingStops,
     RetryNeedsConfirmedStop,
-        \* #539: Retry mints a replacement only after the failed session's
-        \* stop was acknowledged.  Otherwise the tap re-sends that stop once
-        \* (joinFailedAttemptStop), proceeds if the re-send is acknowledged
-        \* and fails with priorSessionStopUnconfirmed if not
+        \* #539: Retry (or a restart from the error overlay, #530) mints a
+        \* replacement only after the failed session's stop was acknowledged.
+        \* Otherwise the task re-sends that stop once (joinFailedAttemptStop),
+        \* proceeds if the re-send is acknowledged and fails with
+        \* priorSessionStopUnconfirmed if not
+    FailureRestartJoinsPendingStops,
+        \* #530: a quality or track change while a failure shows joins
+        \* pendingStopTasks first, as retry() does
     StopTimesOut,        \* an awaited stop request has a timeout
 
     \* The model's own judgement.
@@ -131,7 +135,8 @@ ASSUME /\ MaxUserActions \in Nat
                     RejectedIsStopped, ConsentStopsSession,
                     ConsentRejectsNegotiated, CloseStopsSession,
                     RetryJoinsPendingStops, RetryNeedsConfirmedStop,
-                    StopTimesOut, WindowEndsWithCleanup, FixCloseJoinsTask,
+                    FailureRestartJoinsPendingStops, StopTimesOut,
+                    WindowEndsWithCleanup, FixCloseJoinsTask,
                     FixTracksDeferredStop, FixConsentStopFenced} :
               b \in BOOLEAN
 
@@ -194,6 +199,9 @@ IsJTask(t) ==
 \*   didStop   its stop was handed over (session.didStop)
 \*   consent   videoTranscodeConsent.generation, 0 for nil
 \*   retryGen  the generation failureRetryTask captured, 0 for nil
+\*   retryKind what that task reopens with: "retry" (retry()) or
+\*             "restart" (a quality or track change while a failure
+\*             shows, FailureRestartJoinsPendingStops)
 \*   approved  videoTranscodeApprovedForCurrentItem
 \*   failStop  the current failure's tracked stop request, NoRq once it is
 \*             confirmed or when the failure sent none (#539)
@@ -201,7 +209,7 @@ IsJTask(t) ==
 RqRecs == [sid : SessionIds \cup {NoSession}, gen : Gens, n : Nat]
 StRecords ==
     [life : {"new", "open", "closed"}, failed : BOOLEAN, retryGen : Gens,
-     consent : Gens, cur : JobRefs, didStop : BOOLEAN,
+     retryKind : {"retry", "restart"}, consent : Gens, cur : JobRefs, didStop : BOOLEAN,
      userLeft : 0..MaxUserActions, approved : BOOLEAN,
      failStop : RqRecs, restop : RqRecs]
 
@@ -233,7 +241,7 @@ Init ==
     /\ ControllerInit(0)
     /\ st = [c \in Controllers |->
                 [life |-> "new", failed |-> FALSE, retryGen |-> 0,
-                 consent |-> 0, cur |-> NoJ, didStop |-> FALSE,
+                 retryKind |-> "retry", consent |-> 0, cur |-> NoJ, didStop |-> FALSE,
                  userLeft |-> MaxUserActions, approved |-> FALSE,
                  failStop |-> NoRq, restop |-> NoRq]]
     /\ deferred = [c \in Controllers |-> {}]
@@ -475,7 +483,11 @@ Start(c) ==
 \* taken while a consent choice shows: Approve is the reopen from there.
 \* restartAtCurrentPosition clears failureRetryTask.  reload also clears
 \* videoTranscodeApprovedForCurrentItem; a seek or a track change keeps it
-\* (`isReload` picks which one the step is).
+\* (`isReload` picks which one the step is).  While a failure shows (only
+\* a quality or track change: a seek reopens natively then, and the
+\* startup-deadline retry's observers are gone), FailureRestartJoinsPendingStops
+\* (#530) makes the reopen a failureRetryTask that joins pendingStopTasks
+\* first (RetryProceeds); without it the reopen begins at once.
 Reopen(c) ==
     /\ st[c].life = "open"
     /\ st[c].userLeft > 0
@@ -483,9 +495,15 @@ Reopen(c) ==
     /\ st[c].failed => RestartFromFailure
     /\ QuickReopen \/ ~Replacing(c)
     /\ \E isReload \in BOOLEAN :
-        ReopenCore(c, [st EXCEPT ![c].userLeft = @ - 1, ![c].retryGen = 0,
-                                 ![c].restop = NoRq,
-                                 ![c].approved = @ /\ ~isReload])
+        IF st[c].failed /\ FailureRestartJoinsPendingStops
+        THEN /\ st' = [st EXCEPT ![c].userLeft = @ - 1, ![c].retryGen = gen[c],
+                                 ![c].retryKind = "restart", ![c].restop = NoRq,
+                                 ![c].approved = @ /\ ~isReload]
+             /\ UNCHANGED <<serverVars, ctlRest, deferred, wire, minted,
+                            ghost, harm>>
+        ELSE ReopenCore(c, [st EXCEPT ![c].userLeft = @ - 1, ![c].retryGen = 0,
+                                      ![c].restop = NoRq,
+                                      ![c].approved = @ /\ ~isReload])
 
 \* approveVideoTranscoding.  The tap is a replacement like Reopen, so the
 \* same user-timing assumption gates it.
@@ -508,6 +526,12 @@ Decline(c) ==
                            ghost, harm>>
        ELSE SurfaceFailure(c, NoTask, [st EXCEPT ![c].consent = 0])
 
+\* The failureRetryTask's join: Retry's under RetryJoinsPendingStops, a
+\* restart's (#530) always.
+TaskJoined(c) ==
+    IF st[c].retryKind = "retry" THEN RetryJoinsPendingStops => Joined(c)
+    ELSE Joined(c)
+
 \* retry(): failureRetryTask, which first joins pendingStopTasks.
 Retry(c) ==
     /\ st[c].life = "open"
@@ -515,18 +539,25 @@ Retry(c) ==
     /\ QuickRetry \/ ~Replacing(c)
     /\ st[c].retryGen = 0
     /\ st[c].userLeft > 0
-    /\ st' = [st EXCEPT ![c].retryGen = gen[c], ![c].userLeft = @ - 1]
+    /\ st' = [st EXCEPT ![c].retryGen = gen[c], ![c].retryKind = "retry",
+                        ![c].userLeft = @ - 1]
     /\ UNCHANGED <<serverVars, ctlRest, deferred, wire, minted, ghost, harm>>
 
 \* failureRetryTask after the join in joinFailedAttemptStop, the failure's
-\* stop confirmed.
+\* stop confirmed.  A "restart" task (a quality or track change while the
+\* failure showed, #530) reopens with that change's plan, which leaves the
+\* error showing.  A "restart" task that wakes to another generation takes
+\* no step, where the Swift clears the slot; no action bumps the generation
+\* during the wait without cancelling the task, so nothing is lost.
 RetryProceeds(c) ==
+    LET isRetry == st[c].retryKind = "retry" IN
     /\ st[c].retryGen # 0
     /\ st[c].retryGen = gen[c]
     /\ st[c].restop = NoRq
-    /\ RetryJoinsPendingStops => Joined(c)
+    /\ TaskJoined(c)
     /\ RetryNeedsConfirmedStop => ~StopUnconfirmed(c)
-    /\ ReopenCore(c, [st EXCEPT ![c].retryGen = 0, ![c].failed = FALSE])
+    /\ ReopenCore(c, [st EXCEPT ![c].retryGen = 0,
+                                ![c].failed = IF isRetry THEN FALSE ELSE @])
 
 \* The same task finding failedAttemptStopUnconfirmed set (#539): it re-sends
 \* the failed session's stop once (failedAttemptSessionStop, kept after
@@ -539,7 +570,7 @@ RetryRestops(c) ==
     /\ st[c].retryGen # 0
     /\ st[c].retryGen = gen[c]
     /\ st[c].restop = NoRq
-    /\ RetryJoinsPendingStops => Joined(c)
+    /\ TaskJoined(c)
     /\ StopUnconfirmed(c)
     /\ task[c] = NoTask
     /\ pendingStops' = Upd(pendingStops, c,
@@ -558,7 +589,9 @@ RetryRestopConfirmed(c) ==
     /\ st[c].retryGen = gen[c]
     /\ \E r \in StopsFor(c, rq.sid, rq.gen) :
           r.n = rq.n /\ r.status = "acked" /\ ~r.late
-    /\ ReopenCore(c, [st EXCEPT ![c].retryGen = 0, ![c].failed = FALSE,
+    /\ ReopenCore(c, [st EXCEPT ![c].retryGen = 0,
+                                ![c].failed = IF st[c].retryKind = "retry"
+                                              THEN FALSE ELSE @,
                                 ![c].failStop = NoRq, ![c].restop = NoRq])
 
 \* The re-sent stop failed or passed its bound: priorSessionStopUnconfirmed,
@@ -569,7 +602,7 @@ RetryRefused(c) ==
     /\ st[c].retryGen = gen[c]
     /\ \/ Unconfirmed(c, st[c].restop)
        \/ /\ st[c].restop = NoRq
-          /\ RetryJoinsPendingStops => Joined(c)
+          /\ TaskJoined(c)
           /\ StopUnconfirmed(c)
           /\ task[c] # NoTask
     /\ st' = [st EXCEPT ![c].retryGen = 0, ![c].restop = NoRq]
