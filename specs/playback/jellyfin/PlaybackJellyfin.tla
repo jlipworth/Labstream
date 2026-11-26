@@ -497,7 +497,9 @@ Reopen(c) ==
     /\ \E isReload \in BOOLEAN :
         IF st[c].failed /\ FailureRestartJoinsPendingStops
         THEN /\ st' = [st EXCEPT ![c].userLeft = @ - 1, ![c].retryGen = gen[c],
-                                 ![c].retryKind = "restart", ![c].restop = NoRq,
+                                 ![c].retryKind = "restart",
+                   ![c].failStop = IF st[c].restop # NoRq THEN st[c].restop ELSE @,
+                   ![c].restop = NoRq,
                                  ![c].approved = @ /\ ~isReload]
              /\ UNCHANGED <<serverVars, ctlRest, deferred, wire, minted,
                             ghost, harm>>
@@ -545,8 +547,7 @@ Retry(c) ==
 
 \* failureRetryTask after the join in joinFailedAttemptStop, the failure's
 \* stop confirmed.  A "restart" task (a quality or track change while the
-\* failure showed, #530) reopens with that change's plan, which leaves the
-\* error showing.  A "restart" task that wakes to another generation takes
+\* failure showed, #530) reopens after clearing the error.  A "restart" task that wakes to another generation takes
 \* no step, where the Swift clears the slot; no action bumps the generation
 \* during the wait without cancelling the task, so nothing is lost.
 RetryProceeds(c) ==
@@ -557,7 +558,7 @@ RetryProceeds(c) ==
     /\ TaskJoined(c)
     /\ RetryNeedsConfirmedStop => ~StopUnconfirmed(c)
     /\ ReopenCore(c, [st EXCEPT ![c].retryGen = 0,
-                                ![c].failed = IF isRetry THEN FALSE ELSE @])
+                                ![c].failed = FALSE])
 
 \* The same task finding failedAttemptStopUnconfirmed set (#539): it re-sends
 \* the failed session's stop once (failedAttemptSessionStop, kept after
@@ -590,8 +591,7 @@ RetryRestopConfirmed(c) ==
     /\ \E r \in StopsFor(c, rq.sid, rq.gen) :
           r.n = rq.n /\ r.status = "acked" /\ ~r.late
     /\ ReopenCore(c, [st EXCEPT ![c].retryGen = 0,
-                                ![c].failed = IF st[c].retryKind = "retry"
-                                              THEN FALSE ELSE @,
+                                ![c].failed = FALSE,
                                 ![c].failStop = NoRq, ![c].restop = NoRq])
 
 \* The re-sent stop failed or passed its bound: priorSessionStopUnconfirmed,

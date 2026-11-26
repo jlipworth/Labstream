@@ -528,7 +528,8 @@ UserQuality(c) ==
     /\ latch' = Upd(latch, c,
            IF FixRestartResetsStopLatch THEN FALSE ELSE latch[c])
     /\ breach' = Upd(breach, c, CancelBreach(c))
-    /\ UNCHANGED <<failed, paused>>
+    /\ failed' = Upd(failed, c, FALSE)
+    /\ UNCHANGED paused
 
 \* performUserSeek with a target AVPlayer can seek to itself (in the
 \* buffer, on a lane that never reopens to seek, or after a failure):

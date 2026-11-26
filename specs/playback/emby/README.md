@@ -34,6 +34,12 @@ What the model shows:
 
 None of the findings has been reproduced in the app or against a server.
 
+The current configurations assume an accepted exact-session DELETE ends a job under its id.
+`Finding-AcknowledgedJobSurvives` checks a server that acknowledges the request while leaving
+the encoder running. That interleaving violates `OneEncoder`. A late server acknowledgement
+keeps the timed-out client ticket failed. `InvalidSource` covers a PlaybackInfo result that
+minted an encoder and failed local source validation. Its cleanup remains owned across Retry.
+
 ## What is modelled
 
 Each MainActor run between two awaits is one action. Functions are in

@@ -1,6 +1,7 @@
 ---------------------------- MODULE PlaybackEmby ----------------------------
 \* MODELS: Labstream/Shared/Player/PlaybackController.swift
 \* MODELS: Labstream/Shared/Player/EmbyReopenStopBarrier.swift
+\* MODELS: Labstream/Shared/Backend/Emby/EmbyBrowseService.swift
 \* MODELS: PMSKit/Sources/PMSKit/RemoteStreamLifecyclePolicy.swift
 \* MODELS: PMSKit/Sources/PMSKit/Emby/EmbyPlayback.swift
 \* MODELS: Labstream/Shared/UI/DetailPlaybackLauncher.swift
@@ -142,7 +143,7 @@ NoJ == <<NoSession, 0>>
 JobRefs == Jobs \cup {NoJ}
 
 TaskKinds == {"initial", "consent", "reopen"}
-TaskPcs == {"begin", "awaitStop", "negotiate", "negotiated", "rejectStop",
+TaskPcs == {"begin", "awaitStop", "negotiate", "negotiated", "rejectStop", "invalidSource",
             "consentStop"}
 
 \* A playbackTask.  `gen` is the generation it captured; `sid` and `inc`
@@ -457,8 +458,7 @@ Start(c) ==
 \* subtitle change, or an automatic reopen (attemptEmbyVideoCopyFallback,
 \* attemptEmbyCopyReopenRetry, the MediaBrowser branch of
 \* attemptStartupDeadlineRetry), each ending in reopenRemoteStream.
-\* Nothing in them asks whether a failure is showing, and only explicit
-\* Retry and load() clear it.  It is not taken while a consent choice
+\* An overlay change joins pending cleanup and clears the failure.  It is not taken while a consent choice
 \* shows: Approve is the reopen from there.
 \*
 \* restartAtCurrentPosition clears failureRetryTask, so retryGen goes.  A
@@ -471,7 +471,8 @@ Reopen(c) ==
     /\ st[c].userLeft > 0
     /\ st[c].consent = 0
     /\ st[c].failed => RestartFromFailure
-    /\ ReopenCore(c, [st EXCEPT ![c].userLeft = @ - 1, ![c].retryGen = 0])
+    /\ st[c].failed => Joined(c)
+    /\ ReopenCore(c, [st EXCEPT ![c].failed = FALSE, ![c].userLeft = @ - 1, ![c].retryGen = 0])
 
 \* approveVideoTranscoding.
 Approve(c) ==
@@ -621,17 +622,33 @@ TaskStopUnconfirmed(c, t) ==
 
 \* stopRejectedRemoteStream: the session the task holds goes to the
 \* barrier and the task awaits the ticket, cancelled or not.
-Reject(c, t) ==
+RejectWithContinuation(c, t, pc) ==
     LET j == <<t.sid, t.inc>>
         r == Begin(c, bar[c], j)
     IN IF RejectedIsStopped
-       THEN /\ SetTask(c, t, [t EXCEPT !.pc = "rejectStop", !.tk = r.tk])
+       THEN /\ SetTask(c, t, [t EXCEPT !.pc = pc, !.tk = r.tk])
             /\ ApplyBar(c, r)
             /\ ghost' = [ghost EXCEPT ![c].trap = Trapped(@, r),
                                       ![c].rejected = @ \cup {j}]
        ELSE /\ EndTask(c, t)
             /\ ghost' = [ghost EXCEPT ![c].rejected = @ \cup {j}]
             /\ UNCHANGED <<serverVars, bar>>
+
+Reject(c, t) == RejectWithContinuation(c, t, "rejectStop")
+
+\* PlaybackInfo minted an encoder, but local exact-source validation failed.
+InvalidSource(c, t) ==
+    /\ EnvFails /\ StopsBeforeNegotiate
+    /\ t.kind = "reopen" /\ t.pc = "negotiated" /\ Accepts(c, t)
+    /\ RejectWithContinuation(c, t, "invalidSource")
+    /\ UNCHANGED <<gen, itemGen, item, pendingStops, idleVars, st, wire>>
+
+InvalidSourceDone(c, t) ==
+    /\ t.pc = "invalidSource" /\ TkDone(c, t.tk)
+    /\ IF Accepts(c, t)
+       THEN SurfaceFailure(c, t, st)
+       ELSE /\ EndTask(c, t)
+            /\ UNCHANGED <<serverVars, gen, itemGen, item, pendingStops, idleVars, ownVars>>
 
 \* The answer reaches a current task and playableRemoteStreamURL returns
 \* a URL: the session's callbacks are installed and the item loaded.  The
@@ -778,7 +795,7 @@ TaskStep(c) ==
     \E t \in Running(c) :
         \/ TaskJoins(c, t) \/ TaskStopAcked(c, t) \/ TaskStopUnconfirmed(c, t)
         \/ TaskAttaches(c, t) \/ TaskNeedsConsent(c, t) \/ TaskRejects(c, t)
-        \/ TaskRejectDone(c, t) \/ TaskUnwindExit(c, t)
+        \/ InvalidSource(c, t) \/ InvalidSourceDone(c, t) \/ TaskRejectDone(c, t) \/ TaskUnwindExit(c, t)
         \/ InitialAttaches(c, t) \/ ConsentBegins(c, t)
         \/ ConsentStopAcked(c, t) \/ ConsentStopUnconfirmed(c, t)
 
@@ -790,7 +807,7 @@ TaskStep(c) ==
 \* timeout reads as unacknowledged and stays on the wire.
 BarrierResolves(c) ==
     LET r == PendingReq(c)
-        res == IF r.status = "acked" THEN "ok" ELSE "no"
+        res == IF r.status = "acked" /\ ~r.late THEN "ok" ELSE "no"
     IN
     /\ BarPending(bar[c])
     /\ r.status # "inFlight" \/ (StopTimesOut /\ r.late)
@@ -817,9 +834,14 @@ NegotiateLands(c, w) ==
     /\ UNCHANGED <<gen, itemGen, item, unwinding, pendingStops, idleVars,
                    st, bar, ghost>>
 
+\* Current runs assume an accepted exact-session stop ends a job under its id.
+\* Finding-AcknowledgedJobSurvives checks the alternative server behavior.
+AckCanLeaveJob == FALSE
+AllowSurvivingJob == TRUE
+
 \* A stop is applied, or ends unacknowledged.
 ServerResolves(s) ==
-    /\ ServerAck(s) \/ (StopsCanFail /\ ServerFail(s))
+    /\ ServerAckWithReach(s, IF AckCanLeaveJob THEN StopReach(s) \cup {{}} ELSE StopReach(s)) \/ (StopsCanFail /\ ServerFail(s))
     /\ UNCHANGED <<ctlVars, ownVars>>
 
 \* The server makes a stopped job again from a media request it had
@@ -892,6 +914,13 @@ FailedTicketNeverReplaced ==
 BarrierPreconditions ==
     PendingTicketNeverReplaced /\ FailedTicketNeverReplaced
 
+\* A timeout fixes the client outcome even if the server subsequently acknowledges.
+TimedOutTicketNeverSucceeds ==
+    \A c \in Controllers, k \in DOMAIN bar[c].tix :
+        LET t == bar[c].tix[k] IN
+        \A r \in StopsFor(c, t.job[1], t.job[2]) :
+            (r.n = t.rn /\ r.late) => t.res # "ok"
+
 \* The branch TaskNeedsConsent leaves out is not reached: while a current
 \* reopen holds a session it has not attached, the barrier has no
 \* authority, so requestVideoTranscodeConsent has no ticket to await.
@@ -958,7 +987,7 @@ NoOrphans ==
 JoinCoversCleanup ==
     \A c \in Controllers :
         (st[c].life = "closed" /\ Joined(c))
-        => /\ \A t \in unwinding[c] : t.pc \notin {"negotiated", "rejectStop"}
+        => /\ \A t \in unwinding[c] : t.pc \notin {"negotiated", "rejectStop", "invalidSource"}
            /\ ~BarPending(bar[c])
            /\ wire[c] = {}
 
