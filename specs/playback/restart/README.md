@@ -78,11 +78,11 @@ constants. Neither is a fix under test.
 | Constant | `TRUE` | `FALSE` |
 | --- | --- | --- |
 | `RejectedResultStopped` | `reopenRemoteStream`: a result that fails the generation check is stopped by `stopRejectedRemoteStream` | `startStreaming`: every check is a bare `return` |
-| `StopLatchPerSession` | `MediaBrowserPlaybackSession.didStop`, cleared when a reopen installs the next session's callbacks | `sentTranscodeStop`, one latch per controller, cleared only by `retry()` |
+| `StopLatchPerSession` | `MediaBrowserPlaybackSession.didStop`, cleared when a reopen installs the next session's callbacks | `sentTranscodeStop`, one latch per controller, cleared by `retry()` and, since #527, by every restart (`beginStreaming`; `FixRestartResetsStopLatch = TRUE`) |
 
 The `Current` and `Liveness` configs use `TRUE` for both, except
 `Current-StartStreamingShape`, which uses `FALSE` for both. The `FALSE` shapes also appear in
-`Finding-StopNoJoin-LateStart`, `Finding-RestartAfterFailureSkipsFinalStop` and
+`Finding-StopNoJoin-LateStart`, `Faithful-RestartAfterFailureSkipsFinalStop-off` and
 `Proposed-ControllerLatch`. With a fresh session id per start, the `startStreaming` shape
 overstates what a restart leaves behind (Plex reuses its id, so a later stop reaches the
 same id); task 3 models that. `Finding-StopNoJoin-LateStart` therefore has no restarts.
@@ -231,8 +231,7 @@ adaptive-bitrate restart re-arms the one-shot, so the bound is `1 + 2 * AbrMaxCh
 
 ## Configs and results
 
-2026-11-25 (round-2 fixes; rerun after the #526 fix, `FixRetryBailClearsTask = TRUE`, where the
-numbers changed: `Current-RetryRetry`, `Liveness-Core` with `RetryRuns`), tla2tools v1.7.4, `TLC_WORKERS=auto TLC_HEAP=4g` on 30 cores. Unless
+2026-11-25 (round-2 fixes; state counts rerun after #527 and #526), tla2tools v1.7.4, `TLC_WORKERS=auto TLC_HEAP=4g` on 30 cores. Unless
 noted: one controller, three sessions, `MaxGeneration = 7`, `RestartRoom = 3`, two user actions,
 `RestartBudget = 1`, `AbrMaxChanges = 2`, both cleanup shapes `TRUE`, `CancelDropsAnswer` as
 described above, proxies and failures on, automatic recovery off.
@@ -241,13 +240,14 @@ described above, proxies and failures on, automatic recovery off.
 | --- | --- | --- | --- | --- |
 | `Current-AutoRecovery` | pass | pass | 1,144,656 | 9 s |
 | `Current-CancelPastCheck` | pass | pass | 33,055,192 | 151 s |
-| `Current-Core` | pass | pass | 17,183,405 | 63 s |
-| `Current-RetryRetry` | pass | pass | 886,650 | 9 s |
-| `Current-StartStreamingShape` | pass | pass | 1,431,670 | 6 s |
-| `Liveness-Core` | pass | pass | 489,095 | 144 s |
-| `Liveness-Proxy` | pass | pass | 86,727 | 10 s |
+| `Current-Core` | pass | pass | 17,083,877 | 63 s |
+| `Current-RetryRetry` | pass | pass | 881,348 | 5 s |
+| `Current-StartStreamingShape` | pass | pass | 1,619,920 | 6 s |
+| `Liveness-Core` | pass | pass | 485,983 | 71 s |
+| `Liveness-Proxy` | pass | pass | 86,295 | 10 s |
 | `Faithful-DetachBeforeStop-off` | `DetachBeforeStop` violated | violated | stops at first error | 1 s |
-| `Faithful-RetryWedgedByAttach-off` | `RetryRuns` (temporal) violated | violated | stops at first error | 3 s |
+| `Faithful-RestartAfterFailureSkipsFinalStop-off` | `NoOrphansOutsideLostAnswer` violated | violated | stops at first error | 1 s |
+| `Faithful-RetryWedgedByAttach-off` | `RetryRuns` (temporal) violated | violated | stops at first error | 4 s |
 | `Mutant-AttachUnfenced` | `GenerationFencing` violated | violated | stops at first error | 0 s |
 | `Mutant-BudgetNotEnforced` | `BoundedRestarts` violated | violated | stops at first error | 1 s |
 | `Mutant-CleanupKeepsProxy` | `ProxyOwnershipOutsideYieldRace` violated | violated | stops at first error | 1 s |
@@ -262,22 +262,22 @@ described above, proxies and failures on, automatic recovery off.
 | `Finding-CancelledReopenLosesAnswer-JoinFix` | `JoinCoversCleanup` violated | violated | stops at first error | 1 s |
 | `Finding-ProxyAfterCleanup` | `ProxyOwnership` violated | violated | stops at first error | 4 s |
 | `Finding-ProxyAfterCleanup-Liveness` | `CloseCleansUp` (temporal) violated | violated | stops at first error | 6 s |
-| `Finding-RestartAfterFailureSkipsFinalStop` | `NoOrphansOutsideLostAnswer` violated | violated | stops at first error | 1 s |
 | `Finding-SeekDroppedByAttach` | `SeekIntentSurvivesAttach` violated | violated | stops at first error | 0 s |
 | `Finding-StopNoJoin` | `JoinCoversCleanup` violated | violated | stops at first error | 1 s |
 | `Finding-StopNoJoin-LateStart` | `NoOrphans` violated | violated | stops at first error | 1 s |
 | `Finding-UnattendedRestartResetsSeekBudget` | `BoundedRestarts` violated | violated | stops at first error | 1 s |
 | `Proposed-ControllerLatch` | pass | pass | 14,445,349 | 54 s |
-| `Proposed-Fixes` | pass | pass | 14,504,233 | 54 s |
-| `Proposed-Liveness` | pass | pass | 433,849 | 62 s |
-| `Proposed-LivenessProxy` | pass | pass | 84,131 | 10 s |
+| `Proposed-Fixes` | pass | pass | 14,445,349 | 54 s |
+| `Proposed-Liveness` | pass | pass | 431,695 | 62 s |
+| `Proposed-LivenessProxy` | pass | pass | 83,699 | 10 s |
 
 - `Current-Core` checks `TypeOK`, `GenerationFencing`, `SeekHoldFencing`, `PauseIntent`,
   `DetachBeforeStop`, `ProxyOwnershipOutsideYieldRace`, `NoOrphansOutsideLostAnswer`,
   `CloseStaysEnabled` and `BoundedRestarts`, and so do the other `Current` configs.
 - `Current-StartStreamingShape`: `Current-Core` with both cleanup shapes `FALSE`. It checks
-  everything `Current-Core` does except `NoOrphans`, which that shape breaks (the two
-  findings below).
+  everything `Current-Core` does except `NoOrphans`, which that shape still breaks through
+  `Finding-StopNoJoin-LateStart` (checked after #527: with `NoOrphans` added it fails on that
+  route). The latch half (`Faithful-RestartAfterFailureSkipsFinalStop-off`) is fixed.
 - `Current-AutoRecovery`: the watchdogs and adaptive bitrate with one rung and two changes in
   the window, six sessions, `MaxGeneration = 13`, `AutoRestartBound = 5`, no user, proxies,
   failures or resume seeks. Fewer states than round 1 (1.1 M against 4.5 M): the change window
@@ -312,6 +312,7 @@ excuses only the session whose answer was lost. For the others the broken proper
 | --- | --- | --- | --- |
 | `Faithful-DetachBeforeStop-off` | `StopDetachesFirst` | `DetachBeforeStop` | Close sends the stop while the item is still attached (the order before #327). |
 | `Faithful-RetryWedgedByAttach-off` | `FixRetryBailClearsTask` | `RetryRuns` | A restart from a failure overtakes a waiting retry task, which returns with `failureRetryTask` still set (the code before #526; trace under "Fixed findings"). |
+| `Faithful-RestartAfterFailureSkipsFinalStop-off` | `FixRestartResetsStopLatch` | `NoOrphansOutsideLostAnswer` | The latch before #527: fail, a quality change from the overlay, Close sends no stop for the new session. |
 | `Mutant-AttachUnfenced` | `AttachChecksGeneration` | `GenerationFencing` | Close cancels the task; its request lands and it attaches all the same. |
 | `Mutant-SeekClearUnfenced` | `SeekClearChecksGeneration` | `SeekHoldFencing` | A native seek's completion releases the hold a later restart re-armed. |
 | `Mutant-ResumeUnguarded` | `ResumeSeekGuarded` | `PauseIntent` | The user pauses before the item attaches; its resume seek completes and plays. |
@@ -329,7 +330,7 @@ excuses only the session whose answer was lost. For the others the broken proper
 (`BoundedRestarts` has no `Proposed` config with seeks and automatic recovery together; its
 `Current` configs hold it with one or the other). `NoOrphansOutsideLostAnswer` fails in
 `Mutant-CloseSkipsFinalStop`, `Mutant-RetrySkipsJoin` and
-`Finding-RestartAfterFailureSkipsFinalStop`; `CloseStaysEnabled` in `Mutant-RestartRoomTwo`.
+`Faithful-RestartAfterFailureSkipsFinalStop-off`; `CloseStaysEnabled` in `Mutant-RestartRoomTwo`.
 `AbandonedSessionStopped` fails only through the lost answer (with `CancelDropsAnswer = TRUE`;
 the `Liveness` configs check its scoped form). `RetryRuns` fails in
 `Faithful-RetryWedgedByAttach-off`. `SeekHoldReleased` holds by construction and
@@ -454,7 +455,15 @@ It needs a seek committed in the 500 ms before a start or restart reaches `load(
 Proposed fix (`FixSettleSurvivesAttach`): `load()` re-arms a pending settle under the new
 generation, or the timer captures the seek instead of the playback generation.
 
-### New: no final stop after a restart from a failure (`Finding-RestartAfterFailureSkipsFinalStop`)
+### Fixed (#527): no final stop after a restart from a failure (`Faithful-RestartAfterFailureSkipsFinalStop-off`)
+
+Fixed: `beginStreaming`, which every Plex start goes through, clears `sentTranscodeStop`, so
+the latch covers one transcode instead of the controller. `FixRestartResetsStopLatch` is now
+`TRUE` in every config but the `Faithful` one, which keeps the old latch and still fails as
+below. With the fix on, the same constants pass (17,083,877 distinct states), as does
+`Proposed-ControllerLatch`. Pinned by the `#527` tests in
+`LabstreamTests/PlaybackFormalModelFindingsTests.swift`, including one that Close after a
+failure with no restart still sends no second stop. The trace of the old latch:
 
 `NoOrphans` is violated in 7 states with `StopLatchPerSession = FALSE`, the Plex latch.
 
@@ -469,8 +478,8 @@ The transcode runs until the server reaps it. A second failure in place of Close
 result: `surfaceFailure` sends no stop either. MediaBrowser is not affected: `didStop` is
 cleared when a reopen is accepted (5888).
 
-Proposed fix (`FixRestartResetsStopLatch`, checked by `Proposed-ControllerLatch`): clear the
-latch on every restart, or when a start is accepted.
+The fix (`FixRestartResetsStopLatch`, checked by `Proposed-ControllerLatch`): clear the latch on
+every restart. Swift clears it in `beginStreaming`, synchronously, as the model's restart does.
 
 ### New (review 2): a cancelled reopen loses its answer (`Finding-CancelledReopenLosesAnswer`)
 
@@ -552,9 +561,16 @@ suggests lowering the quality.
 Fix (#526, `FixRetryBailClearsTask = TRUE`): after its join, a retry task that was not
 cancelled clears `failureRetryTask` before the generation check, so every exit releases the
 slot. A cancelled task returns without touching it: `stop()` and `restartAtCurrentPosition`
-cancel the task before they release the slot, so a newer retry may own it by then. The
-behavioural pin is `PlaybackFormalModelFindingsTests` "#526: Retry still runs after a quality
-change superseded an earlier retry".
+cancel the task before they release the slot, so a newer retry may own it by then.
+
+Since #530 a quality or track change from the overlay also joins the failure's stops before it
+restarts, so the trace above no longer has a deterministic route through the public API; what
+remains is a scheduling race (a restart in flight bumps the generation again before the retry
+task's continuation runs). This model does not include #530's join for `UserQuality`, so
+`Faithful-RetryWedgedByAttach-off` still shows the trace and is the record of the defect. The Swift
+regression test, `PlaybackFormalModelFindingsTests` "#526: Retry still runs after a restart
+superseded an earlier retry", forces the bump with the DEBUG seam
+`advancePlaybackGenerationForTesting()`.
 
 ## Observations that are not findings
 - MediaBrowser seek reopens bypass `FinalTargetRebuildPolicy`, so nothing budgets them.

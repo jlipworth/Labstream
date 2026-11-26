@@ -682,3 +682,42 @@ sequenceDiagram
   cleanup as distinct operations.
 - Treat cleanup failures as non-fatal where the user-visible playback path can continue.
 - Keep diagnostic fields shape-level and redacted: no full URLs, tokens, hosts, titles, or filenames.
+
+## Formal model (TLA+)
+
+`specs/playback/` holds TLA+ models of the restart, reopen, Retry and cleanup ordering described
+above, checked with TLC. `specs/README.md` covers the layout, config kinds and how to run them;
+the plan, [docs/plans/2026-11-25-playback-tla-model.md](plans/2026-11-25-playback-tla-model.md),
+records the design, the review rounds and every finding.
+
+| Module | Models |
+| --- | --- |
+| `base/` | An abstract server holding encoding jobs per session id and incarnation, with nondeterministic acknowledgement, latency, failure, session-id reuse and server-recreated jobs; the controller's state and steps as shared operators. |
+| `restart/` | The backend-agnostic controller core: generations, the current and cancelled-but-running tasks, seek hold, restart budgets, `PlaybackRestartIntent`, the proxy slot, Close, failure and Retry. |
+| `plex/` | The in-place order: stop the superseded transcode with a bounded wait, detach, start under the reused session id, attach; the consent boundary. |
+| `emby/` | Detach, the acknowledged exact-session stop barrier, then negotiate; `priorSessionStopUnconfirmed`; the consent boundary. |
+| `jellyfin/` | Replace first, then the deferred prior stop and its reused-id skip; the documented overlap window. |
+| `proxy/` | The PMSKit loopback proxy: listener stand-up and stop across actor hops, request handlers, upstream fetches and the upstream `URLSession`. |
+
+What the models check, across the backends:
+
+- at most one encoding session the client still owns per playback, outside Jellyfin's
+  replace-then-clean-up window (`OneEncoder`);
+- every session the client stops owning is sent a stop, and after Close, a surfaced failure or
+  Retry every negotiated session is attached or stopped (`NoOrphans`);
+- a stop for a superseded session never ends its successor, including with reused session ids
+  and late acknowledgements (`StopNeverKillsSuccessor`);
+- at most one live proxy listener, none after Close, and no upstream fetch after the proxy stops;
+- stale seek completions and stale replacements never win over newer intent; restarts without a
+  user action are bounded; pause intent survives resume-seeks and Retry; Close detaches the item
+  before server stops go out.
+
+Each model also has `Faithful-*-off` configs that reproduce historical bugs with their fix turned
+off, among them the Emby reopen overlap of the 2026-10-04 audit (`emby/Faithful-EmbyOverlap-off`)
+and the Jellyfin reused-id stop (`jellyfin/Faithful-JellyfinReusedIdStop-off`).
+
+Some results depend on server behaviour the repository has no evidence for: whether PMS applies a
+stop the client stopped waiting for, what one stop does to two jobs under one Plex session id, and
+whether Jellyfin or Emby ever return a play-session id that was used before. Those results are
+labelled conditional in each README, and #536 tracks the live checks that would settle them.
+Server acknowledgement still proves only that a request was answered, not that an encoder exited.

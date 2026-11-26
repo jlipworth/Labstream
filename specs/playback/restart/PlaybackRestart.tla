@@ -73,8 +73,8 @@ CONSTANTS
     StopLatchPerSession,
         \* TRUE: MediaBrowserPlaybackSession.didStop, cleared by the reopen
         \* that installs the next session's callbacks.  FALSE:
-        \* sentTranscodeStop, one latch per controller that only retry()
-        \* clears.
+        \* sentTranscodeStop, one latch per controller (cleared by retry()
+        \* and, since #527, by every restart: FixRestartResetsStopLatch).
 
     \* Shipping behaviour.  TRUE is the code as it stands.
     StopDetachesFirst,
@@ -105,7 +105,9 @@ CONSTANTS
     FixSettleSurvivesAttach,
         \* load() does not fence out a pending final-target settle
     FixRestartResetsStopLatch,
-        \* every restart clears sentTranscodeStop, not only retry()
+        \* every restart clears sentTranscodeStop, not only retry().
+        \* Shipping since #527 (beginStreaming clears it): TRUE is the
+        \* code as it stands; FALSE is the old latch.
     FixRetryBailClearsTask
         \* failureRetryTask clears itself when its generation check fails
         \* (shipping since #526)

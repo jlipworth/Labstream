@@ -48,9 +48,10 @@ its load-bearing rules exist only as prose in `docs/PLAYBACK-ARCHITECTURE.md`
 
 ## How the work is done
 
-- **Spec authors are Fable 5.2 agents** (Claude Agent tool, `model: fable`), one per module,
-  working in the `specs/playback-tla` worktree. Spec-authoring agents run TLC but do not run
-  simulators.
+- **Spec authors:** Fable 5.2 agents wrote base, restart, plex and emby; to conserve Fable
+  usage the user moved jellyfin, proxy and every fix round to Opus agents (decided 2026-11-25).
+  Each task was reviewed by a fresh Opus reviewer before the next started. Spec-authoring agents
+  run TLC but do not run simulators.
 - The lead agent re-checks every finding in the Swift and in TLC before an issue is filed, and
   an independent review agent reads each finished model against the Swift (round 2 in the
   downloads plan) before merge.

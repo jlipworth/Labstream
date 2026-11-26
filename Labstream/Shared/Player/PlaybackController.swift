@@ -395,6 +395,13 @@ final class PlaybackController {
     private var playbackTask: Task<Void, Never>?
     private var upNextTask: Task<Void, Never>?
     private var playbackGeneration = 0
+    #if DEBUG
+    /// Test seam for #526: stands in for an in-flight restart's `load()` bumping the generation
+    /// while a retry task's join is held, an interleaving no public API forces deterministically.
+    func advancePlaybackGenerationForTesting() {
+        playbackGeneration += 1
+    }
+    #endif
     private var offlineObservedItemGeneration: Int?
     private var offlinePlaybackClosed = false
     private lazy var lifecycleCallbacks = PlaybackLifecycleCallbackSink<Int> { [weak self] generation in
@@ -1276,8 +1283,9 @@ final class PlaybackController {
         }
     }
 
-    /// Whether the final `/video/:/transcode/universal/stop` was already fired, so
-    /// repeated teardowns (dismantle + explicit stop paths) send it exactly once.
+    /// Whether the final `/video/:/transcode/universal/stop` was already fired for the current
+    /// transcode, so repeated teardowns (dismantle + explicit stop paths) send it exactly once.
+    /// Cleared by `beginStreaming` when a new transcode is started (#527).
     private var sentTranscodeStop = false
 
     /// Best-effort: tell PMS to kill this session's transcode job. HLS gives the
@@ -2718,6 +2726,11 @@ final class PlaybackController {
         playbackGeneration += 1
         let generation = playbackGeneration
         activeFinalTargetRebuildGeneration = finalTargetRebuildGeneration
+        // #527: every Plex start goes through here, and the start it makes is a new transcode
+        // (a restart stops the previous job first, under the same session id). Re-arm the final
+        // stop for it, or a stop already sent by surfaceFailure would suppress Close's stop for a
+        // transcode a quality/track change started from the error overlay.
+        sentTranscodeStop = false
         playbackTask = Task { [weak self] in
             guard let self else { return }
             await self.startStreaming(resumeOffsetMsOverride: resumeOffsetMsOverride,
@@ -5718,6 +5731,31 @@ final class PlaybackController {
                                           intent: PlaybackRestartIntent) {
         failureRetryTask?.cancel()
         failureRetryTask = nil
+        // A quality, audio or subtitle change from the error overlay begins from a failure,
+        // just like Retry: join the failed attempt's stops first, as retry() does, so its
+        // exact-session stop cannot end the replacement (Plex reuses the session id) or
+        // overlap it (Jellyfin) (#530). Retry already joined before calling here.
+        if intent != .explicitRetry, playbackError.isFailed {
+            beginReconnectStatus()
+            let generation = playbackGeneration
+            failureRetryTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.waitForPendingStopRequests()
+                guard !Task.isCancelled else { return }
+                self.failureRetryTask = nil
+                guard self.playbackGeneration == generation, self.playbackError.isFailed else { return }
+                self.performRestartAtCurrentPosition(offsetMs: offsetMs,
+                                                     bitrateKbps: bitrateKbps,
+                                                     intent: intent)
+            }
+            return
+        }
+        performRestartAtCurrentPosition(offsetMs: offsetMs, bitrateKbps: bitrateKbps, intent: intent)
+    }
+
+    private func performRestartAtCurrentPosition(offsetMs: Int,
+                                                 bitrateKbps: Int,
+                                                 intent: PlaybackRestartIntent) {
         setPendingResumeMs(offsetMs, cause: .restartTarget, allowsNearZero: true)
         rememberTrustworthyPlaybackPosition(offsetMs,
                                             cause: .restartTarget,
