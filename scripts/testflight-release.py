@@ -332,6 +332,20 @@ class ASCClient:
             raise APIError(f"App Store Connect API {method} {path} -> HTTP {exc.code}: {detail}", exc.code) from None
         return json.loads(raw) if raw else None
 
+    def highest_build(self, version: str, platform: Platform) -> int:
+        """Highest numeric build already uploaded for this version on this platform (0 if none)."""
+        res = self.request("GET", "/v1/builds", {
+            "filter[app]": self.app_id,
+            "filter[preReleaseVersion.version]": version,
+            "filter[preReleaseVersion.platform]": platform.asc_platform,
+            "sort": "-uploadedDate",
+            "fields[builds]": "version",
+            "limit": "200",
+        })
+        numbers = [int(b["attributes"]["version"]) for b in res.get("data", [])
+                   if str(b["attributes"].get("version", "")).isdigit()]
+        return max(numbers, default=0)
+
     def builds(self, version: str, build: str, platform: Platform) -> list[dict[str, Any]]:
         res = self.request("GET", "/v1/builds", {
             "filter[app]": self.app_id,
@@ -521,19 +535,29 @@ def choose_profile(profiles: list[Profile], platform: Platform, identities: set[
                    now: dt.datetime | None = None) -> tuple[Profile, str]:
     now = now or dt.datetime.now(dt.timezone.utc)
     usable = []
+    managed_only = False
     for profile in profiles:
         if not (profile.platforms & platform.profile_platforms) or profile.expires <= now:
+            continue
+        if profile.xcode_managed:
+            # Archives sign manually, and Xcode refuses an Xcode-managed profile under manual signing.
+            managed_only = managed_only or any(sha.upper() in identities for sha in profile.cert_sha1s)
             continue
         certs = [sha for sha in profile.cert_sha1s if sha.upper() in identities]
         if certs:
             usable.append((profile, certs[0].upper()))
+    if not usable and managed_only:
+        raise ReleaseError(
+            f"only Xcode-managed App Store profiles for {BUNDLE_ID} on {platform.key} match the installed "
+            "certificate; archives sign manually, so create a manually managed App Store profile in the "
+            "Apple Developer portal (or with the App Store Connect API) and install it"
+        )
     if not usable:
         raise ReleaseError(
             f"no unexpired App Store distribution profile for {BUNDLE_ID} on {platform.key} whose "
             "certificate is installed; download it in Xcode or the Apple Developer portal"
         )
-    # Prefer the explicitly created App Store profiles over Xcode-managed team profiles.
-    return max(usable, key=lambda pair: (not pair[0].xcode_managed, pair[0].expires))
+    return max(usable, key=lambda pair: pair[0].expires)
 
 
 @dataclass
@@ -713,6 +737,18 @@ def selected_platforms(args: argparse.Namespace) -> list[Platform]:
     return [PLATFORMS[k] for k in keys]
 
 
+def export_environment() -> dict[str, str]:
+    """Environment for `xcodebuild -exportArchive` with the system tools first on PATH.
+
+    Xcode's IPA step runs /usr/bin/rsync (openrsync), which starts its server half as the first
+    `rsync` on PATH. A Homebrew rsync 3.x there rejects the flags and the export fails with
+    "exportArchive Copy failed".
+    """
+    path = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p]
+    system = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+    return {**os.environ, "PATH": os.pathsep.join(system + [p for p in path if p not in system])}
+
+
 def check_not_uploaded(plans: list[Plan], creds: Credentials) -> None:
     with asc_client(creds) as client:
         for plan in plans:
@@ -720,6 +756,12 @@ def check_not_uploaded(plans: list[Plan], creds: Credentials) -> None:
                 raise ReleaseError(
                     f"{plan.platform.key} {plan.version} ({plan.build}) is already on App Store Connect; "
                     "bump CURRENT_PROJECT_VERSION or use --build-number auto for a new binary"
+                )
+            highest = client.highest_build(plan.version, plan.platform)
+            if plan.build.isdigit() and int(plan.build) <= highest:
+                raise ReleaseError(
+                    f"{plan.platform.key} {plan.version} ({plan.build}) is not above the highest build already "
+                    f"on App Store Connect for that version ({highest}); pass --build-number {highest + 1} or higher"
                 )
 
 
@@ -739,7 +781,7 @@ def cmd_preflight(args: argparse.Namespace) -> dict[str, Any]:
         warn("App Store Connect credentials not configured; skipped the already-uploaded check")
     else:
         check_not_uploaded(plans, creds)
-        say("App Store Connect: these version/build numbers are not uploaded yet")
+        say("App Store Connect: these build numbers are new and above every uploaded build for the version")
     return {"source": source, "plans": plans}
 
 
@@ -812,7 +854,7 @@ def cmd_upload(args: argparse.Namespace) -> int:
                     "-exportPath", str(work / "export"), "-exportOptionsPlist", str(options),
                     "-allowProvisioningUpdates", "-authenticationKeyPath", str(key_path),
                     "-authenticationKeyID", creds.key_id, "-authenticationKeyIssuerID", creds.issuer_id,
-                ])
+                ], env=export_environment())
                 say(f"  uploaded {plan.platform.key}")
             finally:
                 shutil.rmtree(work, ignore_errors=True)
