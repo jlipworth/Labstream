@@ -93,7 +93,8 @@ public actor PlexClient {
         }
 
         guard let http = response as? HTTPURLResponse else {
-            // Non-HTTP response (shouldn't happen for our endpoints).
+            // Exact-session cleanup requires a positive HTTP acknowledgement.
+            if preservingTransportError { throw URLError(.badServerResponse) }
             return data
         }
 

@@ -128,7 +128,7 @@ was queried for this model.
 | --- | --- |
 | `EmbyPlayback.playbackInfoRequest` and `resolveMediaBrowserStream` (`PMSKit/Sources/PMSKit/Emby/EmbyPlayback.swift`) | The play-session id is read from the PlaybackInfo response: the server mints it, once per negotiation. |
 | `EmbyLibrary.activeEncodingStopRequest` (`PMSKit/Sources/PMSKit/Emby/EmbyLibrary.swift`) | A stop is `DELETE /Videos/ActiveEncodings` with `DeviceId` and `PlaySessionId`. `DeviceId` is the app's client identifier, the same for every controller. |
-| `MediaBrowserActiveEncodingStopPolicy.isConfirmedStopped` (`PMSKit/Sources/PMSKit/MediaBrowser/MediaBrowserPlaybackPolicy.swift`) | 2xx, 400, 404 and 410 are acknowledgements, so "nothing to stop" is one. A transport error, a timeout included, is not. |
+| `MediaBrowserActiveEncodingStopPolicy.isConfirmedStopped` (`PMSKit/Sources/PMSKit/MediaBrowser/MediaBrowserPlaybackPolicy.swift`) | 2xx acknowledges the DELETE. An exact-session 404 or 410 counts as already gone. HTTP 400, other rejections, transport errors and timeouts retain cleanup authority. |
 | `EmbyBrowseService.stopActiveEncoding` (`Labstream/Shared/Backend/Emby/EmbyBrowseService.swift`) | The stop goes through `URLSession.shared` with no timeout of its own: the bound is the session's default request timeout. |
 | `RemoteStreamLifecyclePolicy.priorSessionStopDecision`, and `EmbyReopenStopBarrierTests` (`same-session`; "A newly opened encoder may reuse an ID") | The code is written for a backend that can return an id again. Nothing records Emby doing so. |
 | `docs/evidence/audits/2026-10-04-emby-reopen-session-overlap.md` | Two sessions overlapping on the server is the reproduced failure boundary. An acknowledgement is not proof the worker exited. |
