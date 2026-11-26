@@ -2,6 +2,8 @@
 \* MODELS: PMSKit/Sources/PMSKit/MediaSession/MediaSessionProxy.swift
 \* MODELS: PMSKit/Sources/PMSKit/MediaSession/LoopbackOrigin.swift
 \* MODELS: PMSKit/Sources/PMSKit/MediaSession/UpstreamConnection.swift
+\* MODELS: PMSKit/Sources/PMSKit/Transcode/SeekRestartBudget.swift
+\* MODELS: Labstream/Shared/Player/PlaybackController.swift
 (***************************************************************************)
 (* The PMSKit side of the loopback HLS proxy: one MediaSessionProxy actor, *)
 (* its LoopbackOrigin (an NWListener on a serial dispatch queue), the      *)

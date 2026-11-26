@@ -4,6 +4,9 @@
 \* MODELS: Labstream/Shared/Player/PlaybackPositionModels.swift
 \* MODELS: PMSKit/Sources/PMSKit/Transcode/SeekRestartBudget.swift
 \* MODELS: PMSKit/Sources/PMSKit/Transcode/FinalTargetRebuildPolicy.swift
+\* MODELS: PMSKit/Sources/PMSKit/Transcode/AdaptiveBitratePolicy.swift
+\* MODELS: PMSKit/Sources/PMSKit/RemoteStreamLifecyclePolicy.swift
+\* MODELS: Labstream/Shared/Player/PlaybackSessionSource.swift
 (***************************************************************************)
 (* PlaybackController's restart and cleanup core, with the backend's       *)
 (* replacement order abstracted to "stop the prior session, then           *)
@@ -48,7 +51,11 @@ CONSTANTS
     MaxUserActions,   \* seeks, quality changes, pauses and Retry taps
     RestartBudget,    \* SeekRestartBudget.burstLimit, inside one burst window
     AbrRungs,         \* adaptive-bitrate rungs below the user's cap
+    AbrMaxChanges,    \* AdaptiveBitratePolicy.maxChangesPerWindow, inside one
+                      \* change window
     AutoRestartBound, \* the most restarts in a row with no user action
+    RestartRoom,      \* generations a restart reserves: its own bump, its
+                      \* load(), and one for a Close or failure after that
 
     \* What the run includes.
     UserSeeks,        \* the user seeks
@@ -80,6 +87,13 @@ CONSTANTS
     CleanupClearsProxySlot,
     CloseSendsFinalStop,
     RetryJoinsPendingStops,
+    CancelDropsAnswer,
+        \* cancelling a playbackTask cancels the URLSession request of
+        \* remoteStreamReopener with it: an answer to a request the server
+        \* already acted on is lost, the catch's acceptsReopenResult guard
+        \* fails and the task returns without stopping the session.  FALSE
+        \* is the proposed fix: the request runs without inheriting
+        \* cancellation and the rejected result is stopped.
 
     \* Proposed fixes.  FALSE is the code as it stands.
     FixProxyRecheck,
@@ -98,7 +112,9 @@ CONSTANTS
 ASSUME /\ MaxUserActions \in Nat
        /\ RestartBudget \in Gens
        /\ AbrRungs \in Nat
+       /\ AbrMaxChanges \in Nat
        /\ AutoRestartBound \in Nat
+       /\ RestartRoom \in {2, 3}
        /\ MaxGeneration >= 2
        /\ \A b \in {UserSeeks, UserPauses, ResumeSeeks, UsesProxy, EnvFails,
                     AutoRecovery, RejectedResultStopped,
@@ -107,7 +123,8 @@ ASSUME /\ MaxUserActions \in Nat
                     ResumeSeekGuarded, RetryPreservesPause,
                     EscalateOnExhaustedBudget, StartupRetryOneShot,
                     CleanupClearsProxySlot, CloseSendsFinalStop,
-                    RetryJoinsPendingStops, FixProxyRecheck,
+                    RetryJoinsPendingStops, CancelDropsAnswer,
+                    FixProxyRecheck,
                     FixJoinCancelledTasks, FixSettleSurvivesAttach,
                     FixRestartResetsStopLatch, FixRetryBailClearsTask} :
               b \in BOOLEAN
@@ -128,6 +145,7 @@ VARIABLES
     pendingTarget,  \* FinalTargetRebuildPolicy.pendingOffsetMs is set
     startupArmed,   \* ~startupDeadlineRetryAttempted
     rung,           \* downshifts the adaptive-bitrate policy still has
+    abrLeft,        \* changes AdaptiveBitratePolicy still allows in the window
     autoRun,        \* ghost: restarts in a row with no user action
     seekRun,        \* ghost: seek rebuilds since the budget was last reset
     userLeft,       \* user actions left
@@ -136,19 +154,19 @@ VARIABLES
 
 ownVars ==
     <<life, failed, cur, latch, retryGen, seekDone, resumeGen, resumeDone,
-      playing, wantPause, settle, pendingTarget, startupArmed, rung, autoRun,
+      playing, wantPause, settle, pendingTarget, startupArmed, rung, abrLeft, autoRun,
       seekRun, userLeft, starts, breach>>
 
 \* ownVars without settle, for the steps that run beginStreaming's tail.
 ownRest ==
     <<life, failed, cur, latch, retryGen, seekDone, resumeGen, resumeDone,
-      playing, wantPause, pendingTarget, startupArmed, rung, autoRun,
+      playing, wantPause, pendingTarget, startupArmed, rung, abrLeft, autoRun,
       seekRun, userLeft, starts, breach>>
 
 \* ownRest without breach, for a rejected result.
 ownRejected ==
     <<life, failed, cur, latch, retryGen, seekDone, resumeGen, resumeDone,
-      playing, wantPause, pendingTarget, startupArmed, rung, autoRun,
+      playing, wantPause, pendingTarget, startupArmed, rung, abrLeft, autoRun,
       seekRun, userLeft, starts>>
 
 vars == <<serverVars, ctlVars, ownVars>>
@@ -185,10 +203,13 @@ IsRTask(t) ==
 \* A fencing break: its kind and, for a proxy the yield race touched, the
 \* generation of that proxy (0 otherwise).
 B(kind) == <<kind, 0>>
+\* A session whose answer was lost to cancellation is marked with its id
+\* (ids are never reused here, so the id names the job).
 BreachKinds ==
     ({"staleAttach", "staleSeekRelease", "staleResume", "retryBeforeJoin",
       "yieldRace"} \X {0})
     \cup ({"racedProxy"} \X ProxyGens)
+    \cup ({"lostAnswer"} \X SessionIds)
 
 TypeOK ==
     /\ BaseTypeOK
@@ -208,6 +229,7 @@ TypeOK ==
     /\ pendingTarget \in [Controllers -> BOOLEAN]
     /\ startupArmed \in [Controllers -> BOOLEAN]
     /\ rung \in [Controllers -> 0..AbrRungs]
+    /\ abrLeft \in [Controllers -> 0..AbrMaxChanges]
     /\ autoRun \in [Controllers -> Nat]
     /\ seekRun \in [Controllers -> Nat]
     /\ userLeft \in [Controllers -> 0..MaxUserActions]
@@ -234,6 +256,7 @@ Init ==
     /\ pendingTarget = [c \in Controllers |-> FALSE]
     /\ startupArmed = [c \in Controllers |-> TRUE]
     /\ rung = [c \in Controllers |-> AbrRungs]
+    /\ abrLeft = [c \in Controllers |-> AbrMaxChanges]
     /\ autoRun = [c \in Controllers |-> 0]
     /\ seekRun = [c \in Controllers |-> 0]
     /\ userLeft = [c \in Controllers |-> MaxUserActions]
@@ -318,10 +341,13 @@ Tail(c, t, failedNow, g) ==
          /\ seekHold' = Upd(seekHold, c, HoldBeginBounded(c))
     ELSE UNCHANGED <<settle, seekHold>>
 
-\* The bounds leave room for one more task: a generation for the restart
-\* and one for its load(), and a session id.
+\* The bounds leave room for one more task: a generation for the restart,
+\* one for its load(), one for a Close or failure after the load()
+\* (RestartRoom = 3), and a session id.  With RestartRoom = 2 the last
+\* attach the bound allows leaves no generation for Close
+\* (Mutant-RestartRoomTwo).
 RoomToRestart(c) ==
-    /\ gen[c] + 2 <= MaxGeneration
+    /\ gen[c] + RestartRoom <= MaxGeneration
     /\ starts < Cardinality(SessionIds)
 
 \* playbackTask?.cancel(), playbackGeneration += 1, detach, and the new
@@ -352,10 +378,16 @@ RestartCore(c, rb) ==
 
 \* The steps of a PlaybackRestartPlan every intent has: resetFinalTarget
 \* (which also resets the restart budget) and rearmStartupDeadlineRetry.
-PlanReset(c) ==
+\* `user`: the reset comes from explicit user intent (Retry, a quality or
+\* track change, Close).  The ghost seekRun measures the budget against
+\* SeekRestartBudget's contract, "reset() on explicit user intent"
+\* (SeekRestartBudget.swift 17), so only those reset it; the code's own
+\* budget is reset by every caller (Finding-UnattendedRestartResetsSeekBudget).
+PlanResetG(c, user) ==
     /\ budget' = Upd(budget, c, RestartBudget)
     /\ pendingTarget' = Upd(pendingTarget, c, FALSE)
-    /\ seekRun' = Upd(seekRun, c, 0)
+    /\ seekRun' = Upd(seekRun, c, IF user THEN 0 ELSE seekRun[c])
+PlanReset(c) == PlanResetG(c, TRUE)
 
 \* sendTranscodeStop / stopRemoteSessionIfNeeded would send a stop now.
 FinalStopNeeded(c) ==
@@ -376,7 +408,8 @@ FinalStopTickets(c) ==
 \* What stop() and surfaceFailure share.  `inTask`: the failure is raised
 \* by the current task itself, which then returns.  `join`: the cancelled
 \* task is appended to pendingStopTasks.  `send`: server stops go out.
-Terminal(c, inTask, join, send) ==
+\* `user`: stop() is user intent, surfaceFailure is not.
+Terminal(c, inTask, join, send, user) ==
     /\ gen[c] < MaxGeneration
     /\ gen' = Upd(gen, c, gen[c] + 1)
     /\ unwinding' =
@@ -400,17 +433,19 @@ Terminal(c, inTask, join, send) ==
     /\ latch' = Upd(latch, c, send \/ latch[c])
     /\ seekHold' = Upd(seekHold, c, HoldClear(c))
     /\ settle' = Upd(settle, c, 0)
-    /\ PlanReset(c)
+    /\ PlanResetG(c, user)
     /\ playing' = Upd(playing, c, FALSE)
     /\ breach' = Upd(breach, c, IF inTask THEN breach[c] ELSE CancelBreach(c))
 
-\* surfaceFailure, past its `guard !playbackError.isFailed`.
+\* surfaceFailure, past its `guard !playbackError.isFailed`.  Playback
+\* stays open, so the bound keeps a generation for the Close after it.
 SurfaceFailure(c, inTask) ==
-    /\ Terminal(c, inTask, TRUE, TRUE)
+    /\ gen[c] + RestartRoom - 1 <= MaxGeneration
+    /\ Terminal(c, inTask, TRUE, TRUE, FALSE)
     /\ failed' = Upd(failed, c, TRUE)
     /\ item' = Upd(item, c, Detached(c))
     /\ UNCHANGED <<itemGen, paused, jellyfinWindow, life, retryGen, seekDone,
-                   resumeGen, resumeDone, wantPause, startupArmed, rung,
+                   resumeGen, resumeDone, wantPause, startupArmed, rung, abrLeft,
                    autoRun, userLeft, starts>>
 
 \* load(): the task hands its session to the controller and attaches the
@@ -438,7 +473,7 @@ Attach(c, t, proxyNew) ==
            ELSE breach[c] \cup {B("staleAttach")})
     /\ UNCHANGED <<serverVars, budget, paused, pendingStops, jellyfinWindow,
                    life, latch, retryGen, seekDone, resumeGen, resumeDone,
-                   wantPause, pendingTarget, startupArmed, rung, autoRun,
+                   wantPause, pendingTarget, startupArmed, rung, abrLeft, autoRun,
                    seekRun, userLeft, starts>>
 
 \* A cancelled task finds its result rejected.  reopenRemoteStream stops
@@ -470,7 +505,7 @@ Start(c) ==
     /\ UNCHANGED <<serverVars, itemGen, item, unwinding, seekHold, budget,
                    paused, proxy, pendingStops, jellyfinWindow, failed, cur,
                    latch, retryGen, seekDone, resumeGen, resumeDone, playing,
-                   wantPause, settle, pendingTarget, startupArmed, rung,
+                   wantPause, settle, pendingTarget, startupArmed, rung, abrLeft,
                    autoRun, seekRun, userLeft, breach>>
 
 \* reload(bitrateKbps:), and the audio and subtitle track changes: an
@@ -483,6 +518,7 @@ UserQuality(c) ==
     /\ PlanReset(c)
     /\ startupArmed' = Upd(startupArmed, c, TRUE)
     /\ rung' = Upd(rung, c, AbrRungs)
+    /\ abrLeft' = Upd(abrLeft, c, AbrMaxChanges)
     /\ autoRun' = Upd(autoRun, c, 0)
     /\ userLeft' = Upd(userLeft, c, userLeft[c] - 1)
     /\ retryGen' = Upd(retryGen, c, 0)
@@ -526,7 +562,7 @@ UserSeek(c) ==
     /\ UNCHANGED <<serverVars, gen, itemGen, item, task, unwinding, budget,
                    paused, proxy, pendingStops, jellyfinWindow, life, failed,
                    cur, latch, retryGen, resumeGen, resumeDone, playing,
-                   wantPause, rung, seekRun, starts, breach>>
+                   wantPause, rung, abrLeft, seekRun, starts, breach>>
 
 \* requestPause and requestPlay.
 UserPause(c) ==
@@ -540,7 +576,7 @@ UserPause(c) ==
     /\ UNCHANGED <<serverVars, gen, itemGen, item, task, unwinding, seekHold,
                    budget, proxy, pendingStops, jellyfinWindow, life, failed,
                    cur, latch, retryGen, seekDone, resumeGen, resumeDone,
-                   settle, pendingTarget, startupArmed, rung, autoRun,
+                   settle, pendingTarget, startupArmed, rung, abrLeft, autoRun,
                    seekRun, starts, breach>>
 
 \* retry(): start failureRetryTask, which first joins pendingStopTasks.
@@ -554,7 +590,7 @@ Retry(c) ==
     /\ userLeft' = Upd(userLeft, c, userLeft[c] - 1)
     /\ UNCHANGED <<serverVars, ctlVars, life, failed, cur, latch, seekDone,
                    resumeGen, resumeDone, playing, wantPause, settle,
-                   pendingTarget, startupArmed, rung, autoRun, seekRun,
+                   pendingTarget, startupArmed, rung, abrLeft, autoRun, seekRun,
                    starts, breach>>
 
 \* failureRetryTask after `await waitForPendingStopRequests()`:
@@ -567,6 +603,7 @@ RetryProceeds(c) ==
     /\ PlanReset(c)
     /\ startupArmed' = Upd(startupArmed, c, TRUE)
     /\ rung' = Upd(rung, c, AbrRungs)
+    /\ abrLeft' = Upd(abrLeft, c, AbrMaxChanges)
     /\ autoRun' = Upd(autoRun, c, 0)
     /\ retryGen' = Upd(retryGen, c, 0)
     /\ latch' = Upd(latch, c, FALSE)
@@ -590,19 +627,19 @@ RetryBails(c) ==
     /\ retryGen' = Upd(retryGen, c, 0)
     /\ UNCHANGED <<serverVars, ctlVars, life, failed, cur, latch, seekDone,
                    resumeGen, resumeDone, playing, wantPause, settle,
-                   pendingTarget, startupArmed, rung, autoRun, seekRun,
+                   pendingTarget, startupArmed, rung, abrLeft, autoRun, seekRun,
                    userLeft, starts, breach>>
 
 \* stop().  With StopDetachesFirst off (the order before #327) the server
 \* stops go out first and the item is released in a later step.
 Close(c) ==
     /\ life[c] = "open"
-    /\ Terminal(c, FALSE, FixJoinCancelledTasks, CloseSendsFinalStop)
+    /\ Terminal(c, FALSE, FixJoinCancelledTasks, CloseSendsFinalStop, TRUE)
     /\ life' = Upd(life, c, IF StopDetachesFirst THEN "closed" ELSE "closing")
     /\ item' = Upd(item, c, IF StopDetachesFirst THEN Detached(c) ELSE item[c])
     /\ retryGen' = Upd(retryGen, c, 0)
     /\ UNCHANGED <<itemGen, paused, jellyfinWindow, failed, seekDone,
-                   resumeGen, resumeDone, wantPause, startupArmed, rung,
+                   resumeGen, resumeDone, wantPause, startupArmed, rung, abrLeft,
                    autoRun, userLeft, starts>>
 
 CloseDetach(c) ==
@@ -613,7 +650,7 @@ CloseDetach(c) ==
                    budget, paused, proxy, pendingStops, jellyfinWindow,
                    failed, cur, latch, retryGen, seekDone, resumeGen,
                    resumeDone, playing, wantPause, settle, pendingTarget,
-                   startupArmed, rung, autoRun, seekRun, userLeft, starts,
+                   startupArmed, rung, abrLeft, autoRun, seekRun, userLeft, starts,
                    breach>>
 
 -----------------------------------------------------------------------------
@@ -630,17 +667,19 @@ Fail(c) ==
     /\ SurfaceFailure(c, FALSE)
 
 \* handleStallTimeout: a downshift while the adaptive-bitrate policy has a
-\* lower rung (intent adaptiveBitrate), then the Retry overlay.
+\* lower rung and a change left in its window (intent adaptiveBitrate),
+\* then the Retry overlay.  The reset is not user intent.
 StallWatchdog(c) ==
     /\ AutoRecovery
     /\ life[c] = "open"
     /\ item[c] = "attached"
     /\ ~failed[c] /\ ~paused[c]
-    /\ IF rung[c] > 0
+    /\ IF rung[c] > 0 /\ abrLeft[c] > 0
        THEN /\ RestartCore(c, FALSE)
-            /\ PlanReset(c)
+            /\ PlanResetG(c, FALSE)
             /\ startupArmed' = Upd(startupArmed, c, TRUE)
             /\ rung' = Upd(rung, c, rung[c] - 1)
+            /\ abrLeft' = Upd(abrLeft, c, abrLeft[c] - 1)
             /\ autoRun' = Upd(autoRun, c, autoRun[c] + 1)
             /\ breach' = Upd(breach, c, CancelBreach(c))
             /\ UNCHANGED <<failed, paused, latch, retryGen, userLeft>>
@@ -655,26 +694,30 @@ StartupDeadline(c) ==
     /\ ~failed[c]
     /\ IF startupArmed[c]
        THEN /\ RestartCore(c, FALSE)
-            /\ PlanReset(c)
+            /\ PlanResetG(c, FALSE)
             /\ startupArmed' = Upd(startupArmed, c, ~StartupRetryOneShot)
             /\ autoRun' = Upd(autoRun, c, autoRun[c] + 1)
             /\ breach' = Upd(breach, c, CancelBreach(c))
-            /\ UNCHANGED <<failed, paused, latch, retryGen, userLeft, rung>>
+            /\ UNCHANGED <<failed, paused, latch, retryGen, userLeft, rung, abrLeft>>
        ELSE SurfaceFailure(c, FALSE)
 
-\* maybeAdaptBitrateAfterHealthyPlayback: an upshift.  Healthy playback
-\* is progress, so the run of unattended restarts starts again at one.
+\* maybeAdaptBitrateAfterHealthyPlayback: an upshift, while the policy
+\* has a change left in its window.  It is not user intent: the run of
+\* unattended restarts goes on, bounded by AdaptiveBitratePolicy's
+\* maxChangesPerWindow (only reload and explicitRetry reset the policy).
 AbrSwitch(c) ==
     /\ AutoRecovery
     /\ life[c] = "open"
     /\ item[c] = "attached"
     /\ ~failed[c] /\ ~paused[c] /\ playing[c]
     /\ rung[c] < AbrRungs
+    /\ abrLeft[c] > 0
     /\ RestartCore(c, FALSE)
-    /\ PlanReset(c)
+    /\ PlanResetG(c, FALSE)
     /\ startupArmed' = Upd(startupArmed, c, TRUE)
     /\ rung' = Upd(rung, c, rung[c] + 1)
-    /\ autoRun' = Upd(autoRun, c, 1)
+    /\ abrLeft' = Upd(abrLeft, c, abrLeft[c] - 1)
+    /\ autoRun' = Upd(autoRun, c, autoRun[c] + 1)
     /\ breach' = Upd(breach, c, CancelBreach(c))
     /\ UNCHANGED <<failed, paused, latch, retryGen, userLeft>>
 
@@ -688,7 +731,7 @@ ReadyToPlay(c) ==
     /\ resumeDone' = Upd(resumeDone, c, resumeDone[c] \cup {itemGen[c]})
     /\ UNCHANGED <<serverVars, ctlVars, life, failed, cur, latch, retryGen,
                    seekDone, playing, wantPause, settle, pendingTarget,
-                   startupArmed, rung, autoRun, seekRun, userLeft, starts,
+                   startupArmed, rung, abrLeft, autoRun, seekRun, userLeft, starts,
                    breach>>
 
 \* The resume seek's completion: resumeAfterCompletedSeek, after
@@ -706,7 +749,7 @@ ResumeSeekComplete(c, g) ==
                  THEN breach[c] \cup {B("staleResume")} ELSE breach[c])
     /\ UNCHANGED <<serverVars, ctlVars, life, failed, cur, latch, retryGen,
                    seekDone, resumeGen, wantPause, settle, pendingTarget,
-                   startupArmed, rung, autoRun, seekRun, userLeft, starts>>
+                   startupArmed, rung, abrLeft, autoRun, seekRun, userLeft, starts>>
 
 \* A native seek's completion handler: clearSeekHold(ifGeneration:).
 SeekComplete(c, g) ==
@@ -723,7 +766,7 @@ SeekComplete(c, g) ==
     /\ UNCHANGED <<serverVars, gen, itemGen, item, task, unwinding, budget,
                    paused, proxy, pendingStops, jellyfinWindow, life, failed,
                    cur, latch, retryGen, resumeGen, resumeDone, playing,
-                   wantPause, settle, pendingTarget, startupArmed, rung,
+                   wantPause, settle, pendingTarget, startupArmed, rung, abrLeft,
                    autoRun, seekRun, userLeft, starts>>
 
 \* clearSeekHoldIfLanded: the clock reached the target, or the 12-second
@@ -746,7 +789,7 @@ SeekSettle(c) ==
                            jellyfinWindow, life, failed, cur, latch,
                            retryGen, seekDone, resumeGen, resumeDone,
                            playing, wantPause, pendingTarget, startupArmed,
-                           rung, autoRun, seekRun, userLeft, starts, breach>>
+                           rung, abrLeft, autoRun, seekRun, userLeft, starts, breach>>
        ELSE IF failed[c] \/ ~pendingTarget[c]
        THEN \* nothing to rebuild: setSeeking(false)
             /\ settle' = Upd(settle, c, 0)
@@ -756,7 +799,7 @@ SeekSettle(c) ==
                            jellyfinWindow, life, failed, cur, latch,
                            retryGen, seekDone, resumeGen, resumeDone,
                            playing, wantPause, pendingTarget, startupArmed,
-                           rung, autoRun, seekRun, userLeft, starts, breach>>
+                           rung, abrLeft, autoRun, seekRun, userLeft, starts, breach>>
        ELSE IF RebuildActive(c)
        THEN \* .alreadyRebuilding: the target is recorded again and the
             \* running rebuild's tail picks it up.
@@ -766,7 +809,7 @@ SeekSettle(c) ==
                            jellyfinWindow, life, failed, cur, latch,
                            retryGen, seekDone, resumeGen, resumeDone,
                            playing, wantPause, pendingTarget, startupArmed,
-                           rung, autoRun, seekRun, userLeft, starts, breach>>
+                           rung, abrLeft, autoRun, seekRun, userLeft, starts, breach>>
        ELSE IF budget[c] = 0 /\ EscalateOnExhaustedBudget
        THEN \* .escalate: surfaceFailure, "Playback keeps falling behind"
             SurfaceFailure(c, FALSE)
@@ -778,7 +821,7 @@ SeekSettle(c) ==
             /\ pendingTarget' = Upd(pendingTarget, c, FALSE)
             /\ breach' = Upd(breach, c, CancelBreach(c))
             /\ UNCHANGED <<failed, paused, latch, retryGen, startupArmed,
-                           rung, autoRun, userLeft>>
+                           rung, abrLeft, autoRun, userLeft>>
 
 -----------------------------------------------------------------------------
 (* The task                                                                *)
@@ -903,6 +946,29 @@ ProxyOwnStopped(c, t) ==
     /\ t.pc = "stopOwnProxy"
     /\ Reject(c, t, [proxy[c] EXCEPT !.live = @ \ {t.px}], breach[c])
 
+\* A cancelled task at `negotiated` loses its answer: cancelling the task
+\* cancelled the URLSession request inside remoteStreamReopener
+\* (PlaybackController.swift 5839) after the server had acted on it, the
+\* await throws CancellationError, and the catch (5903 to 5907) fails
+\* acceptsReopenResult and returns.  stopRejectedRemoteStream is never
+\* reached and the client never learns the session.  Only the
+\* reopenRemoteStream shape (the startStreaming shape drops a rejected
+\* result in Reject already), and only a restart's task: start()'s task
+\* (generation 1) is beginRemoteStream, whose session the launcher
+\* negotiated before the controller existed.  The session is marked
+\* lostAnswer.
+NegotiatedLost(c, t) ==
+    /\ CancelDropsAnswer
+    /\ RejectedResultStopped
+    /\ t \in unwinding[c]
+    /\ t.gen > 1
+    /\ t.pc = "negotiated"
+    /\ DropTask(c, t)
+    /\ Tail(c, t, failed[c], gen[c])
+    /\ breach' = Upd(breach, c, breach[c] \cup {<<"lostAnswer", t.sid>>})
+    /\ UNCHANGED <<serverVars, gen, itemGen, item, budget, paused, proxy,
+                   pendingStops, jellyfinWindow, ownRejected>>
+
 \* stopRejectedRemoteStream returns and the cancelled task with it.
 TaskRejectDone(c, t) ==
     /\ t \in unwinding[c]
@@ -939,6 +1005,7 @@ TaskStep(c) ==
           \/ ProxyInstall(c, t)
           \/ ProxyOwnStopped(c, t)
           \/ TaskRejectDone(c, t)
+          \/ NegotiatedLost(c, t)
 
 Next ==
     \/ ServerStep
@@ -1069,13 +1136,25 @@ ProxyOwnershipOutsideYieldRace ==
 \* Every session a request of c's created is the one playing, has had a
 \* stop sent, or is in the hands of a task that will attach or stop it;
 \* and Retry restarts only after pendingStopTasks is joined.
-NoOrphans ==
+\* L(c) is a set of session ids left out of the judgement.
+NoOrphansExcept(L(_)) ==
     \A c \in Controllers :
         /\ \A j \in JobsOf(c) :
+              \/ j[1] \in L(c)
               \/ SentStopFor(c, j[1], j[2])
               \/ HeldByTask(c, j)
               \/ IsCur(c, j)
         /\ B("retryBeforeJoin") \notin breach[c]
+
+NoOrphans == NoOrphansExcept(LAMBDA c : {})
+
+\* The sessions whose answer a cancelled task lost (NegotiatedLost).
+LostAnswer(c) == {s \in SessionIds : <<"lostAnswer", s>> \in breach[c]}
+
+\* What the code as it stands keeps: the same for every session but one
+\* whose answer was lost to cancellation (Finding-CancelledReopenLosesAnswer).
+\* Every other session in the same behaviour is still held to it.
+NoOrphansOutsideLostAnswer == NoOrphansExcept(LostAnswer)
 
 \* A task that can still reach the server: its request may yet create a
 \* job, or it has a job or a listener to dispose of.
@@ -1084,7 +1163,9 @@ ReachesServer(t) == t.pc # "awaitStop"
 \* Once waitForPendingStopRequests would return after Close, or after a
 \* surfaced failure with no restart under way, nothing of this playback
 \* is left to happen on the server.  The code does not keep this (see
-\* Finding-StopNoJoin).
+\* Finding-StopNoJoin).  The consequent asks that a stop was sent, not
+\* that it was answered: the prior session's stop of a restart is not
+\* ticketed, and a late one may still be on the wire (see the README).
 JoinCoversCleanup ==
     \A c \in Controllers :
         /\ life[c] = "closed" \/ (failed[c] /\ task[c] = NoTask)
@@ -1130,7 +1211,9 @@ RetryJoinEnds ==
         retryGen[c] # 0 /\ retryGen[c] = gen[c]
             ~> retryGen[c] = 0 \/ retryGen[c] # gen[c]
 
-\* The scrubber is never held for ever.
+\* The scrubber is never held for ever.  This holds by construction:
+\* SeekHoldCeiling is enabled whenever the hold is, under weak fairness.
+\* It is kept as a check of the model, not of the code.
 SeekHoldReleased ==
     \A c \in Controllers : seekHold[c].held ~> ~seekHold[c].held
 
@@ -1174,4 +1257,13 @@ NeverResumeFenced ==
 NeverSeekFenced ==
     \A c \in Controllers :
         \A g \in seekDone[c] : seekHold[c].held => g = seekHold[c].gen
+
+-----------------------------------------------------------------------------
+(* The bound of the model                                                  *)
+
+\* Close's guard holds in every open state: no behaviour reaches an open
+\* controller that the generation bound forbids to close.  Close needs
+\* only life = "open" and room for Terminal's bump.
+CloseStaysEnabled ==
+    \A c \in Controllers : life[c] = "open" => gen[c] < MaxGeneration
 =============================================================================

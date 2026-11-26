@@ -11,9 +11,11 @@ their own modules.
 scripts/check-tla-specs.sh specs/playback/restart
 ```
 
-The model reproduces suspect 1 and suspect 4, and found three defects nobody had named. Each
-has a `Finding-*` config and a trace below. A review read each against the Swift and found it
-plausible; none has been reproduced in the app.
+The model reproduces suspect 1 and suspect 4, and found five defects nobody had named (two of
+them from the second independent review: a cancelled reopen that loses its answer, and an
+unattended restart that resets the seek budget). Each has a `Finding-*` config and a trace
+below. A review read each against the Swift and found it plausible; none has been reproduced
+in the app.
 
 ## What is modelled
 
@@ -40,12 +42,15 @@ Each MainActor run between two awaits is one action. Functions are in
 | `Terminal`, `SurfaceFailure` | what `stop()` and `surfaceFailure` share; `sendTranscodeStop`, `stopRemoteSessionIfNeeded` |
 | `TaskStopWaitDone` | the wait in `stopPreviousTranscode`, or for the stop barrier in `reopenRemoteStream` |
 | `NegotiateLands` | the server accepts the start (`start.m3u8`) or reopen (`remoteStreamReopener`) request |
-| `TaskResume`, `TaskUnwindExit` | the `guard !Task.isCancelled, generation == playbackGeneration` checks of `startStreaming`; `RemoteStreamLifecyclePolicy.acceptsReopenResult` in `reopenRemoteStream` |
+| `TaskResume`, `TaskUnwindExit` | the `guard !Task.isCancelled, generation == playbackGeneration` checks of `startStreaming`; `RemoteStreamLifecyclePolicy.acceptsReopenResult` (`PMSKit/Sources/PMSKit/RemoteStreamLifecyclePolicy.swift`) in `reopenRemoteStream` |
+| `NegotiatedLost` | a cancelled `reopenRemoteStream` task whose request the server already acted on: `try await remoteStreamReopener` (5839) throws `CancellationError`, and the `catch` returns at `acceptsReopenResult` (5903 to 5907) without a stop |
 | `Attach` | `load(_:resumeOffsetMs:)`, and the tail of the task in `beginStreaming` |
-| `Reject`, `TaskRejectDone` | `stopRejectedRemoteStream`, or the bare `return` of `startStreaming` |
+| `Reject`, `TaskRejectDone` | `stopRejectedRemoteStream`, which waits through `stopAndWaitIgnoringCancellation` (`Labstream/Shared/Player/PlaybackSessionSource.swift`), or the bare `return` of `startStreaming` |
 | `ProxyStandUp`, `ProxyInstall`, `ProxyOwnStopped` | the proxy stand-up in `startStreaming` and `prepareRemoteStreamURL`, split at `await oldProxy.stop(generation:)` |
 | `ProxyStopRuns` | a `pendingStopTasks` entry running `proxy.stop(generation:)` |
 | `budget`, `pendingTarget`, `RebuildActive` | `SeekRestartBudget` (`SeekRestartBudget.swift`), `FinalTargetRebuildPolicy.pendingOffsetMs` and `activeGeneration` (`FinalTargetRebuildPolicy.swift`) |
+| `rung`, `abrLeft` | `AdaptiveBitratePolicy` (`PMSKit/Sources/PMSKit/Transcode/AdaptiveBitratePolicy.swift`): the rungs below the cap, and the changes `maxChangesPerWindow` still allows (`canChange`, 163 to 170). `reload` (2478) and `explicitRetry` (5727) reset it |
+| `cur.stopped`, `StopLatchPerSession` | `MediaBrowserPlaybackSession.didStop` (`PlaybackSessionSource.swift` 144); `RemoteStreamLifecyclePolicy.finalSessionStopDecision` |
 
 A task is `[gen, pc, sid, inc, px, old, rb]`: the generation it captured, where it is, the job
 its request created, the proxy it stood up, the proxy whose stop it awaits, and whether it is a
@@ -80,6 +85,33 @@ The `Current` and `Liveness` configs use `TRUE` for both, except
 overstates what a restart leaves behind (Plex reuses its id, so a later stop reaches the
 same id); task 3 models that. `Finding-StopNoJoin-LateStart` therefore has no restarts.
 
+### A cancelled request loses its answer
+
+`CancelDropsAnswer` (shipping `TRUE`) adds `NegotiatedLost`: a cancelled restart task at
+`negotiated` may return with no stop, because cancelling `playbackTask` cancelled its URLSession
+request after the server had acted on it. Before the second review the model always delivered
+the answer, so `NoOrphans` in `Current-Core` and `JoinCoversCleanup` in `Proposed-Fixes` held
+only because of that assumption. The action is gated on `RejectedResultStopped` (the
+`startStreaming` shape already drops a rejected result) and on a restart's task: `start()`'s
+task on MediaBrowser is `beginRemoteStream`, whose session the launcher negotiated.
+
+The configs are scoped around it the way the module already scopes suspect 1:
+
+- `Current` configs, `Faithful`, `Mutant` and safety `Finding` configs run with `TRUE`. Where
+  they checked `NoOrphans` they now check `NoOrphansOutsideLostAnswer`, which excuses only a
+  session marked `lostAnswer` and holds every other session in the same behaviour to the full
+  property. `Finding-CancelledReopenLosesAnswer` checks the full `NoOrphans`.
+- `Proposed` configs run with `FALSE`: that is the proposed fix (the request does not inherit
+  cancellation and the rejected result is stopped). `Finding-CancelledReopenLosesAnswer-JoinFix`
+  shows the #525 fix alone does not close it.
+- Temporal configs (`Liveness-*`, `Finding-ProxyAfterCleanup-Liveness`,
+  `Finding-RetryWedgedByAttach`, `Proposed-Liveness*`) run with `FALSE`. With `TRUE` the lost
+  session is never stopped, so `AbandonedSessionStopped` and `CloseCleansUpOutsideYieldRace`
+  both fail for that reason alone (checked: `Liveness-Core` with `TRUE` violates both). The
+  liveness passes are therefore claims about every behaviour in which no answer is lost. The
+  two liveness findings carry over to `TRUE`: `NegotiatedLost` only adds behaviours, and it is
+  enabled only where `TaskResume` also is, so a violating fair behaviour stays fair.
+
 ## What is abstracted, and why
 
 - **Replacement order.** The prior session's stop is sent in the synchronous part of the
@@ -96,12 +128,15 @@ same id); task 3 models that. `Finding-StopNoJoin-LateStart` therefore has no re
   instead of every permutation. `NegotiateLands` reads `Latest(s)` through `FreshIds` to do
   that. This is the server choosing the id it mints, not a client guard reading the server. `OneEncoder` and `NoWrongKill` are not checked: with the order
   abstracted they say nothing, and they belong to the backend modules.
-- **Healthy playback.** `AbrSwitch` restarts the count of unattended restarts at one. An
-  upshift needs real progress first: `AdaptiveBitratePolicy` waits 180 s after a downshift
-  and wants 120 s of continuously healthy playback
-  (`PMSKit/Sources/PMSKit/Transcode/AdaptiveBitratePolicy.swift`, 23 and 36 to 37).
+- **Adaptive bitrate.** A downshift or upshift needs a change left in
+  `AdaptiveBitratePolicy`'s window (`maxChangesPerWindow`, 4 in 600 s in the app; `AbrMaxChanges`
+  here, with the window never expiring). An upshift is not user intent: it does not restart the
+  count of unattended restarts. Only `reload` and `explicitRetry` reset the policy; the model
+  also resets it on track changes (one `UserQuality` action covers both), which only adds
+  resets, so the bound stays sound. Real upshifts also wait 180 s after a downshift and want
+  120 s of healthy playback (23 and 36 to 37); the model leaves time out.
 - **Time.** The budget is one burst window with no cooldown: a `.deferred` answer only re-arms
-  the same timer. The seek hold's 12-second deadline is an action that can always fire. The
+  the same timer. `BoundedRestarts` is therefore a bound per window. The seek hold's 12-second deadline is an action that can always fire. The
   watchdogs fire whenever their guards hold.
 - **The seek hold.** One generation per MainActor run, where the Swift bumps it once per
   `setSeeking(true)`. Every restart re-arms the hold, as `reopenRemoteStream` does; a Plex
@@ -114,6 +149,23 @@ same id); task 3 models that. `Finding-StopNoJoin-LateStart` therefore has no re
   same MainActor run.
 - **The startup-deadline retry** stops the prior session like any restart. On Plex it
   deliberately does not (`stoppingPreviousTranscode: false`); task 3.
+- **Final-stop tickets.** `FinalStopTickets` joins every stop in flight for `cur`, which is
+  Emby's (`beginFinalStop` joins the barrier) and Plex's (the stop is re-sent under the same
+  id). Jellyfin's deferred prior stop is untracked (5929 to 5940), so the results for the
+  MediaBrowser shape here are Emby results, not Jellyfin results; `../jellyfin` covers that.
+- **The prior session's stop of a restart is not ticketed.** After `TaskStopWaitDone` on a
+  `late` stop and an attach, that stop can still be on the wire when the join returns, and
+  `JoinCoversCleanup` asks only that a stop was sent. The Swift cancels that stop on Plex
+  (`stopPreviousTranscode`'s `group.cancelAll()`) and blocks on it on Emby, so the model's
+  late-then-proceed branch matches neither backend exactly; the backend modules own the order.
+- **`ProxyInstall` treats the awaited `oldProxy.stop` as stopping the listener at once**
+  (`oldGone`). `../proxy` shows `stop` only queues the listener cancel on the origin's queue
+  (#533), so a listener can outlive the await briefly. The composition assumes that queue
+  drains; the restart properties do not depend on how soon.
+- **Close before Start is not modelled.** `Start` needs `life = "new"` and `Close` needs
+  `"open"`. Swift `start()` guards only `!started`, so a `stop()` that came first would not
+  stop a later `start()`. Whether the UI can do this is not checked here; adding it is not a
+  one-line change because the model would need a closed-but-startable state.
 - **Left out:** the video-transcode consent boundary, Emby's copy fallback and copy reopen
   retry, the direct-play fallback, the deferred Jellyfin stop, the Emby stop barrier and
   transaction tail, timeline reporting, `upNextTask`, and `ServerRecreate`. The reconnect,
@@ -122,8 +174,13 @@ same id); task 3 models that. `Finding-StopNoJoin-LateStart` therefore has no re
 ## Bounds
 
 - One controller. `SessionIds` bounds the tasks ever started (one id each); `MaxGeneration`
-  bounds `playbackGeneration` and the hold generation. A restart needs room for its own bump and
-  its `load()`, so a running task can always attach.
+  bounds `playbackGeneration` and the hold generation. A restart reserves `RestartRoom = 3`
+  generations: its own bump, its `load()`, and one for a Close or failure after it; a failure
+  keeps one for the Close after it. So a running task can always attach and an open
+  controller can always close (`CloseStaysEnabled`, checked in every `Current` and `Proposed`
+  safety config). Round 1 reserved two, which left no generation for Close after the last
+  attach the bound allowed and pruned every Close behind it (`Mutant-RestartRoomTwo`). Every
+  config's `MaxGeneration` went up by one to keep the same number of restarts.
 - `MaxUserActions` bounds seeks, quality changes, pauses and Retry taps together. Close is
   always available once.
 - `RestartBudget` is `SeekRestartBudget.burstLimit` (5 in the app, 1 here). `AbrRungs` is the
@@ -137,85 +194,100 @@ same id); task 3 models that. `Finding-StopNoJoin-LateStart` therefore has no re
 | --- | --- | --- |
 | `GenerationFencing` | invariant | Only the current task attaches, and an attached item has no restart behind it. |
 | `SeekHoldFencing` | invariant | A seek completion releases only the hold it was issued for. |
-| `BoundedRestarts` | action property | Seek rebuilds since the budget was last reset never exceed `RestartBudget`, and restarts in a row with no user action never exceed `AutoRestartBound`. |
+| `BoundedRestarts` | action property | Seek rebuilds since the last explicit user intent (Retry, a quality or track change, Close: `SeekRestartBudget.swift` 17) never exceed `RestartBudget`, and restarts in a row with no user action never exceed `AutoRestartBound`. **Violated by the code once automatic recovery and seeks are both on** (`Finding-UnattendedRestartResetsSeekBudget`). |
 | `PauseIntent` | invariant | The player never plays against the user's pause, a resume-seek completion resumes only its own current item, and only the user changes the pause intent (Retry keeps it). |
 | `DetachBeforeStop` | invariant | No stop is on the wire for the session an attached item plays from. |
 | `ProxyOwnership` | invariant | Every listener is the one in the slot or is being stopped, and the slot is empty after Close and while a failure shows. **Violated by the code (suspect 1).** |
 | `ProxyOwnershipOutsideYieldRace` | invariant | The same for every listener except those the yield race touched (`Raced(c)`): a proxy whose task was cancelled while suspended at `await oldProxy.stop`, and a proxy that task's late write pushed out of the slot. Every other listener in the same behaviour is still held to the full property. This is what the code keeps. |
-| `NoOrphans` | invariant | Every session a request created is the one playing, has had a stop sent, or is held by a task that will attach or stop it; and Retry restarts only after `pendingStopTasks` is joined. |
+| `NoOrphans` | invariant | Every session a request created is the one playing, has had a stop sent, or is held by a task that will attach or stop it; and Retry restarts only after `pendingStopTasks` is joined. **Violated by the code** (`Finding-CancelledReopenLosesAnswer`). |
+| `NoOrphansOutsideLostAnswer` | invariant | The same for every session but one a cancelled task lost the answer for (`LostAnswer(c)`). This is what the code keeps. |
+| `CloseStaysEnabled` | invariant | An open controller always has a generation for Close. A check of the bound, not of the code. |
 | `JoinCoversCleanup` | invariant | Once `waitForPendingStopRequests` would return after Close, or after a failure with no restart under way, no task can still reach the server and every session has had a stop sent. **Violated by the code (suspect 4).** |
 | `SeekIntentSurvivesAttach` | invariant | A recorded seek target always has a current settle timer or a running rebuild to act on it. **Violated by the code.** |
 | `CloseCleansUp` | liveness | After Close every task returns, the joined cleanup ends, every session has had a stop sent and no listener is left. **Violated by the code with proxies (suspect 1).** |
 | `CloseCleansUpOutsideYieldRace` | liveness | The same, but a listener in `Raced(c)` may be left. This is what the code keeps. |
 | `AbandonedSessionStopped` | liveness | A session that is not the one playing gets a stop. |
-| `SeekHoldReleased` | liveness | A held scrubber is released. |
+| `SeekHoldReleased` | liveness | A held scrubber is released. Holds by construction (the ceiling is always enabled while held, under weak fairness); a check of the model. |
 | `RetryJoinEnds` | liveness | The wait of a retry task that is still current ends. |
 | `RetryRuns` | liveness | Every retry task ends, so Retry can be tapped again. **Violated by the code.** |
 
 `BoundedRestarts` counts with two ghost counters instead of a liveness formula. With bounded
 generations every behaviour restarts finitely often, so "eventually no more restarts" could
-not fail; a count can. `AutoRestartBound` is exact: `Current-AutoRecovery` passes with 4 and is
-violated with 3 (stall downshift, upshift, startup-deadline retry, downshift, startup-deadline
-retry).
+not fail; a count can. Each ghost is tied to a documented contract, not to the code's own reset
+points: `seekRun` resets only on explicit user intent, as `SeekRestartBudget`'s comment says,
+and `autoRun` resets only on a user action. An upshift no longer resets `autoRun` (round 1 did,
+which made the bound hold only between upshifts); stall/upshift cycles are bounded by
+`AdaptiveBitratePolicy`'s change window instead. `AutoRestartBound` is exact: with one rung and
+`AbrMaxChanges = 2`, `Current-AutoRecovery` passes with 5 and is violated with 4 (startup-deadline
+retry, stall downshift, startup-deadline retry, upshift, startup-deadline retry: every
+adaptive-bitrate restart re-arms the one-shot, so the bound is `1 + 2 * AbrMaxChanges`).
 
 "A stop was sent" is the judgement the design uses: a stop that fails still counts.
 
 ## Configs and results
 
-2026-11-25, tla2tools v1.7.4, `TLC_WORKERS=auto TLC_HEAP=4g` on 30 cores. Unless noted: one
-controller, three sessions, `MaxGeneration = 6`, two user actions, `RestartBudget = 1`, both
-cleanup shapes `TRUE`, proxies and failures on, automatic recovery off.
+2026-11-25 (round-2 fixes), tla2tools v1.7.4, `TLC_WORKERS=auto TLC_HEAP=4g` on 30 cores. Unless
+noted: one controller, three sessions, `MaxGeneration = 7`, `RestartRoom = 3`, two user actions,
+`RestartBudget = 1`, `AbrMaxChanges = 2`, both cleanup shapes `TRUE`, `CancelDropsAnswer` as
+described above, proxies and failures on, automatic recovery off.
 
 | Config | Expect | Result | Distinct states | Time |
 | --- | --- | --- | --- | --- |
-| `Current-AutoRecovery` | pass | pass | 4,463,294 | 32 s |
-| `Current-CancelPastCheck` | pass | pass | 26,512,489 | 124 s |
-| `Current-Core` | pass | pass | 12,407,383 | 74 s |
-| `Current-RetryRetry` | pass | pass | 811,768 | 4 s |
-| `Current-StartStreamingShape` | pass | pass | 967,789 | 5 s |
-| `Liveness-Core` | pass | pass | 390,437 | 59 s |
-| `Liveness-Proxy` | pass | pass | 74,024 | 9 s |
+| `Current-AutoRecovery` | pass | pass | 1,144,656 | 9 s |
+| `Current-CancelPastCheck` | pass | pass | 33,055,192 | 151 s |
+| `Current-Core` | pass | pass | 17,183,405 | 63 s |
+| `Current-RetryRetry` | pass | pass | 886,440 | 4 s |
+| `Current-StartStreamingShape` | pass | pass | 1,431,670 | 6 s |
+| `Liveness-Core` | pass | pass | 450,769 | 63 s |
+| `Liveness-Proxy` | pass | pass | 85,684 | 9 s |
 | `Faithful-DetachBeforeStop-off` | `DetachBeforeStop` violated | violated | stops at first error | 1 s |
-| `Mutant-AttachUnfenced` | `GenerationFencing` violated | violated | stops at first error | 1 s |
+| `Mutant-AttachUnfenced` | `GenerationFencing` violated | violated | stops at first error | 0 s |
 | `Mutant-BudgetNotEnforced` | `BoundedRestarts` violated | violated | stops at first error | 1 s |
 | `Mutant-CleanupKeepsProxy` | `ProxyOwnershipOutsideYieldRace` violated | violated | stops at first error | 1 s |
-| `Mutant-CloseSkipsFinalStop` | `NoOrphans` violated | violated | stops at first error | 1 s |
-| `Mutant-ResumeUnguarded` | `PauseIntent` violated | violated | stops at first error | 2 s |
+| `Mutant-CloseSkipsFinalStop` | `NoOrphansOutsideLostAnswer` violated | violated | stops at first error | 0 s |
+| `Mutant-RestartRoomTwo` | `CloseStaysEnabled` violated | violated | stops at first error | 2 s |
+| `Mutant-ResumeUnguarded` | `PauseIntent` violated | violated | stops at first error | 1 s |
 | `Mutant-RetryDropsPause` | `PauseIntent` violated | violated | stops at first error | 1 s |
-| `Mutant-RetrySkipsJoin` | `NoOrphans` violated | violated | stops at first error | 1 s |
+| `Mutant-RetrySkipsJoin` | `NoOrphansOutsideLostAnswer` violated | violated | stops at first error | 0 s |
 | `Mutant-SeekClearUnfenced` | `SeekHoldFencing` violated | violated | stops at first error | 1 s |
 | `Mutant-StartupRetryRearms` | `BoundedRestarts` violated | violated | stops at first error | 1 s |
-| `Finding-ProxyAfterCleanup` | `ProxyOwnership` violated | violated | stops at first error | 3 s |
-| `Finding-ProxyAfterCleanup-Liveness` | `CloseCleansUp` (temporal) violated | violated | stops at first error | 4 s |
-| `Finding-RestartAfterFailureSkipsFinalStop` | `NoOrphans` violated | violated | stops at first error | 1 s |
+| `Finding-CancelledReopenLosesAnswer` | `NoOrphans` violated | violated | stops at first error | 1 s |
+| `Finding-CancelledReopenLosesAnswer-JoinFix` | `JoinCoversCleanup` violated | violated | stops at first error | 1 s |
+| `Finding-ProxyAfterCleanup` | `ProxyOwnership` violated | violated | stops at first error | 4 s |
+| `Finding-ProxyAfterCleanup-Liveness` | `CloseCleansUp` (temporal) violated | violated | stops at first error | 6 s |
+| `Finding-RestartAfterFailureSkipsFinalStop` | `NoOrphansOutsideLostAnswer` violated | violated | stops at first error | 1 s |
 | `Finding-RetryWedgedByAttach` | `RetryRuns` (temporal) violated | violated | stops at first error | 4 s |
-| `Finding-SeekDroppedByAttach` | `SeekIntentSurvivesAttach` violated | violated | stops at first error | 1 s |
+| `Finding-SeekDroppedByAttach` | `SeekIntentSurvivesAttach` violated | violated | stops at first error | 0 s |
 | `Finding-StopNoJoin` | `JoinCoversCleanup` violated | violated | stops at first error | 1 s |
 | `Finding-StopNoJoin-LateStart` | `NoOrphans` violated | violated | stops at first error | 1 s |
-| `Proposed-ControllerLatch` | pass | pass | 10,814,542 | 55 s |
-| `Proposed-Fixes` | pass | pass | 10,873,426 | 51 s |
-| `Proposed-Liveness` | pass | pass | 374,859 | 58 s |
-| `Proposed-LivenessProxy` | pass | pass | 72,471 | 9 s |
+| `Finding-UnattendedRestartResetsSeekBudget` | `BoundedRestarts` violated | violated | stops at first error | 1 s |
+| `Proposed-ControllerLatch` | pass | pass | 14,445,349 | 54 s |
+| `Proposed-Fixes` | pass | pass | 14,504,233 | 54 s |
+| `Proposed-Liveness` | pass | pass | 433,849 | 62 s |
+| `Proposed-LivenessProxy` | pass | pass | 84,131 | 10 s |
 
 - `Current-Core` checks `TypeOK`, `GenerationFencing`, `SeekHoldFencing`, `PauseIntent`,
-  `DetachBeforeStop`, `ProxyOwnershipOutsideYieldRace`, `NoOrphans` and `BoundedRestarts`, and
-  so do the other `Current` configs.
+  `DetachBeforeStop`, `ProxyOwnershipOutsideYieldRace`, `NoOrphansOutsideLostAnswer`,
+  `CloseStaysEnabled` and `BoundedRestarts`, and so do the other `Current` configs.
 - `Current-StartStreamingShape`: `Current-Core` with both cleanup shapes `FALSE`. It checks
   everything `Current-Core` does except `NoOrphans`, which that shape breaks (the two
   findings below).
-- `Current-AutoRecovery`: the watchdogs and adaptive bitrate with one rung, six sessions,
-  `MaxGeneration = 12`, no user, proxies, failures or resume seeks.
+- `Current-AutoRecovery`: the watchdogs and adaptive bitrate with one rung and two changes in
+  the window, six sessions, `MaxGeneration = 13`, `AutoRestartBound = 5`, no user, proxies,
+  failures or resume seeks. Fewer states than round 1 (1.1 M against 4.5 M): the change window
+  now bounds stall/upshift cycles that only the generation bound stopped before.
 - `Current-CancelPastCheck` (review focus 1): four sessions and three quality changes with
   proxies, no seeks, pauses, failures or resume seeks. Up to three tasks unwind at once, each
   cancelled at any await, and one cancelled at `oldProxyStop` goes on to write the slot.
 - `Current-RetryRetry` (review focus 5): three Retry or quality actions with failures,
-  `MaxGeneration = 8`, no proxies, seeks, pauses or resume seeks.
+  `MaxGeneration = 9`, no proxies, seeks, pauses or resume seeks.
 - `Liveness-Core`: two Retry or quality actions, no proxies or seeks. `Liveness-Proxy`: one
   user action over two sessions with everything on. Both check
   `CloseCleansUpOutsideYieldRace`, `AbandonedSessionStopped`, `RetryJoinEnds` and
   `SeekHoldReleased`.
 - `Proposed-Fixes` and `Proposed-ControllerLatch` check the full `ProxyOwnership`,
-  `JoinCoversCleanup` and `SeekIntentSurvivesAttach` beside the rest; `Proposed-Liveness`
+  `NoOrphans`, `JoinCoversCleanup` and `SeekIntentSurvivesAttach` beside the rest, with
+  `CancelDropsAnswer = FALSE`; `Proposed-Liveness`
   checks the full `RetryRuns`, and `Proposed-LivenessProxy` the full `CloseCleansUp` with
   proxies.
 
@@ -223,7 +295,8 @@ How the `Current` configs are scoped around the findings: each finding breaks on
 leaves the rest of the model as it was, so the `Current` configs keep the behaviour and check
 what the code does keep. For suspect 1 that is `ProxyOwnershipOutsideYieldRace` and
 `CloseCleansUpOutsideYieldRace`, which excuse only the listeners that race touched and so
-pin the defect to the one yield. For the others the broken property is left to its `Finding` and
+pin the defect to the one yield. For the lost answer it is `NoOrphansOutsideLostAnswer`, which
+excuses only the session whose answer was lost. For the others the broken property is left to its `Finding` and
 `Proposed` configs.
 
 ### Faithfulness and mutants
@@ -238,13 +311,20 @@ pin the defect to the one yield. For the others the broken property is left to i
 | `Mutant-StartupRetryRearms` | `StartupRetryOneShot` | `BoundedRestarts` | Two startup-deadline retries in a row with no rung to re-arm the first. |
 | `Mutant-BudgetNotEnforced` | `EscalateOnExhaustedBudget` | `BoundedRestarts` | A second seek rebuild on a budget of one. |
 | `Mutant-CleanupKeepsProxy` | `CleanupClearsProxySlot` | `ProxyOwnershipOutsideYieldRace` | Close leaves the proxy in the slot. |
-| `Mutant-CloseSkipsFinalStop` | `CloseSendsFinalStop` | `NoOrphans` | Close with a session playing and no stop. |
-| `Mutant-RetrySkipsJoin` | `RetryJoinsPendingStops` | `NoOrphans` | Retry restarts while the failed attempt's task is still unwinding. |
+| `Mutant-CloseSkipsFinalStop` | `CloseSendsFinalStop` | `NoOrphansOutsideLostAnswer` | Close with a session playing and no stop. |
+| `Mutant-RetrySkipsJoin` | `RetryJoinsPendingStops` | `NoOrphansOutsideLostAnswer` | Retry restarts while the failed attempt's task is still unwinding. |
+| `Mutant-RestartRoomTwo` | `RestartRoom` (3 to 2) | `CloseStaysEnabled` | Round 1's bound: start, fail, Retry, fail, a quality change attaches at the bound, fail; the controller is open and cannot Close. |
 
-`ProxyOwnership`, `JoinCoversCleanup`, `SeekIntentSurvivesAttach`, `RetryRuns` and
-`CloseCleansUp` are violated by the code as it stands; their `Finding` configs are the proof
-they can fail and the `Proposed` configs the proof they can hold.
-`AbandonedSessionStopped`, `SeekHoldReleased` and `RetryJoinEnds` have no failing run.
+`ProxyOwnership`, `JoinCoversCleanup`, `SeekIntentSurvivesAttach`, `RetryRuns`,
+`CloseCleansUp`, `NoOrphans` and `BoundedRestarts` are violated by the code as it stands; their
+`Finding` configs are the proof they can fail and the `Proposed` configs the proof they can hold
+(`BoundedRestarts` has no `Proposed` config with seeks and automatic recovery together; its
+`Current` configs hold it with one or the other). `NoOrphansOutsideLostAnswer` fails in
+`Mutant-CloseSkipsFinalStop`, `Mutant-RetrySkipsJoin` and
+`Finding-RestartAfterFailureSkipsFinalStop`; `CloseStaysEnabled` in `Mutant-RestartRoomTwo`.
+`AbandonedSessionStopped` fails only through the lost answer (with `CancelDropsAnswer = TRUE`,
+which no committed liveness config uses). `SeekHoldReleased` holds by construction and
+`RetryJoinEnds` has no failing run.
 
 ### Every branch is taken
 
@@ -406,12 +486,60 @@ cleared when a reopen is accepted (5888).
 Proposed fix (`FixRestartResetsStopLatch`, checked by `Proposed-ControllerLatch`): clear the
 latch on every restart, or when a start is accepted.
 
-## Observations that are not findings
+### New (review 2): a cancelled reopen loses its answer (`Finding-CancelledReopenLosesAnswer`)
 
-- The restart budget is reset by restarts the user did not ask for: the adaptive-bitrate plan
-  includes `resetFinalTarget`, and `attemptStartupDeadlineRetry` calls
-  `finalTargetRebuildPolicy.reset()`. `SeekRestartBudget`'s comment says reset is for explicit
-  user intent. Unattended restarts stay bounded because the rungs and the one-shot are.
+`NoOrphans` is violated in 6 states with `Current-Core`'s constants.
+
+| Step | Model | Swift |
+| --- | --- | --- |
+| 1 | `Start` | `start()`, `beginRemoteStream` 3231 |
+| 2 | `UserQuality`: reopen A; with no session yet it asks for one at once | `reload` 2470, `restartAtCurrentPosition` 5710, `reopenRemoteStream`: `playbackTask?.cancel()` 5766, the new task's `try await remoteStreamReopener(request)` 5839 |
+| 3 | `UserQuality` again: A is cancelled with its request on the wire | 5766 |
+| 4 | `NegotiateLands(A)`: the server acts on A's PlaybackInfo and mints a session | `JellyfinBrowseService.swift` 256 to 258 and `DetailPlaybackLauncher.swift` 175 to 176 say PlaybackInfo may mint an encoder |
+| 5 | `NegotiatedLost(A)`: A returns with no stop | cancelling the task cancelled the URLSession request; the await throws `CancellationError`; the `catch` fails `acceptsReopenResult` and returns (5903 to 5907). `stopRejectedRemoteStream` (5844) is never reached, and the client never learns the `PlaySessionId` |
+
+The session has no stop meant for it, no task holds it and it is not the one playing. Any
+cancellation does it: a second seek-settle reopen, a quality or track change, `stop()` (1181) or
+`surfaceFailure` while A's request is out. It is likeliest during repeated deep seeks on
+Jellyfin or Emby. This is not #525: joining the task does not help, because the task returns
+with nothing to stop (`Finding-CancelledReopenLosesAnswer-JoinFix`, below).
+
+`Finding-CancelledReopenLosesAnswer-JoinFix`: `Proposed-Fixes`' constants with
+`CancelDropsAnswer = TRUE`. `JoinCoversCleanup` is violated in 7 states: `Start`, `UserQuality`
+(reopen A), `Close` (A is cancelled and, with `FixJoinCancelledTasks`, joined), the start task
+unwinds, `NegotiateLands(A)`, `NegotiatedLost(A)`. A's join ticket is done, so
+`waitForPendingStopRequests` returns with A's session alive.
+
+Proposed fix (`CancelDropsAnswer = FALSE`, checked by every `Proposed` config): run the
+PlaybackInfo call without inheriting cancellation (an unstructured Task that is awaited, as
+`stopAndWaitIgnoringCancellation` does) and, once the answer arrives, reject and stop it.
+
+### New (review 2): an unattended restart resets the seek budget (`Finding-UnattendedRestartResetsSeekBudget`)
+
+`BoundedRestarts` is violated in 9 states: seeks and automatic recovery on, one rung, four
+sessions, `MaxGeneration = 10`, `AutoRestartBound` out of reach.
+
+| Step | Model | Swift |
+| --- | --- | --- |
+| 1 | `Start` | `start()` |
+| 2 | `UserSeek` out of the buffer: the target is recorded and the settle timer armed | `performUserSeek` 2597, `scheduleFinalTargetRebuild` 5665 |
+| 3 | `SeekSettle`: a final-target rebuild; the budget of one is spent | `beginFinalTargetRebuild` 5943, `FinalTargetRebuildPolicy.beginRebuild`, `SeekRestartBudget.requestRestart` (`FinalTargetRebuildPolicy.swift` 45) |
+| 4, 5 | `NegotiateLands`, `TaskResume` and `Attach` | `load` 3789 |
+| 6 | `StallWatchdog`: a stall downshift; the budget is back to one | `handleStallTimeout` 5340, `attemptAdaptiveBitrateFallback` 5538, `applyAdaptiveBitrateDecision` 5577, `restartAtCurrentPosition(intent: .adaptiveBitrate)` 5602; the plan's `resetFinalTarget` calls `finalTargetRebuildPolicy.reset()` (5724 to 5725), which calls `budget.reset()` (`FinalTargetRebuildPolicy.swift` 72 to 75) |
+| 7, 8 | `UserSeek`, `SeekSettle`: a second seek rebuild in the same window | as 2 and 3 |
+
+`SeekRestartBudget.swift` 17 says `reset()` is "on explicit user intent (Retry, quality
+reload)". An upshift does the same through the same plan, and `attemptStartupDeadlineRetry`
+calls `finalTargetRebuildPolicy.reset()` itself (5462, 5482). Seek rebuilds can then pass `burstLimit` (5 in 60 s) inside
+one window, against the #27 contract. Every rebuild still needs a user seek, and the unattended
+restarts are themselves bounded (the one-shot, and `AdaptiveBitratePolicy`'s 4 changes per
+600 s), so this matters only on a stream that is already struggling: severity low.
+
+Proposed fix: unattended restarts (`adaptiveBitrate` intent, `attemptStartupDeadlineRetry`)
+clear the pending target without resetting the budget, or the budget's contract is widened to
+say unattended restarts reset it.
+
+## Observations that are not findings
 - MediaBrowser seek reopens bypass `FinalTargetRebuildPolicy`, so nothing budgets them.
 - While a failure shows and a quality change is restarting, `surfaceFailure` is a no-op
   (its `guard !playbackError.isFailed`): a second failure of that restart ends the task and
@@ -422,7 +550,7 @@ latch on every restart, or when a start is accepted.
 - This module does not check `OneEncoder`, `NoWrongKill` or `StopNeverKillsSuccessor`. With a
   cancelled task's request still on the wire, the core has two sessions at once (the rejected
   one and its successor) on every backend that does not chain its tasks.
-- `Terminal(c, inTask, join, send)` is the shape of `stop()` and `surfaceFailure`;
+- `Terminal(c, inTask, join, send, user)` is the shape of `stop()` and `surfaceFailure`;
   `RestartCore(c, rb)` the shape of a restart. A backend module copies the parts it needs: no
   module imports this one.
 - The task record adds `inc`, `px`, `old` and `rb` to the base's `Task(g, pc, s)`. The base
@@ -430,3 +558,8 @@ latch on every restart, or when a start is accepted.
 - Open questions handed on: the `startStreaming` late start (task 3), the unjoined rejected
   cleanup with a reused id (task 5), and whether Emby's transaction tail closes the same gap
   (task 4).
+- The lost answer (`Finding-CancelledReopenLosesAnswer`) needs per-backend confirmation: whether
+  a PlaybackInfo call alone starts an encoder on Jellyfin and on Emby. The code's own comments
+  say it may (`JellyfinBrowseService.swift` 256 to 258, `DetailPlaybackLauncher.swift` 175 to
+  176). Emby's transaction tail does not help: the predecessor join orders the next request,
+  but the lost task still never learns its session.

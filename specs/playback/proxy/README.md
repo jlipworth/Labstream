@@ -72,6 +72,11 @@ Either one alone keeps `TeardownNotLost`; `Mutant-TeardownDropped` turns both of
 and the install are one step here: the controller's yield at `await oldProxy.stop` between
 them is suspect 1 and belongs to `../restart` (`Finding-ProxyAfterCleanup`).
 
+Because these two constants encode `PlaybackController`, the module declares
+`MODELS: Labstream/Shared/Player/PlaybackController.swift`, so a change to the controller's
+cancel or re-check (3099 to 3103, 3128 to 3132, 3467 to 3471) flags this folder as well as
+`../restart`. It also declares `SeekRestartBudget.swift`, whose rotate budget is `RotateBudget`.
+
 ### Constants under test
 
 | Constant | `TRUE` is | Flipped by |
@@ -146,6 +151,13 @@ them is suspect 1 and belongs to `../restart` (`Finding-ProxyAfterCleanup`).
 | `HandlersFinish` | liveness | Every accepted connection's handler finishes. |
 | `StoppedListenerDies` | liveness | A torn-down session's listener stops listening. |
 | `TeardownCompletes` | liveness | A caller's teardown completes and leaves none of its listeners live. |
+
+`NoFetchAfterStop`, `NoAcceptAfterStop` and the `FixCancelHandlers` gate all start at
+`DeliverStop`, when `stop(generation:)` runs on the proxy actor, not at the controller's
+teardown. A fetch that starts between `stop()` or `surfaceFailure` queueing the stop Task and
+that Task reaching the actor is not counted, even under the proposed fix. That is why the
+property says "once the proxy has torn a session down": the window before is the controller's,
+and closing it would need the controller to cancel the handlers itself.
 
 `TeardownNotLost` is checked as a safety property over drained states: TLC explores the
 schedule that runs the queue and every stop call, so a lost teardown shows up in a finite
