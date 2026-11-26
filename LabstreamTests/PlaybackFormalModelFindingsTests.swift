@@ -25,9 +25,14 @@ import Testing
 /// are the Emby remote-HLS proxy and the DV-injection proxy, both behind live prewarm or a DV
 /// source. It pins the shape of the source until the stand-up is extracted into a policy that
 /// decides "install or stop" from the generation re-checked after `await oldProxy.stop`.
+/// #525 (Close does not join the cancelled Plex start) is not pinned: cancelling the task
+/// cancels the start's URLSession task at once, so the task unwinds and Close's stop is sent
+/// after the start resolves on the client already today. The defect is only visible on the
+/// server (the start reaching PMS after the stop), which no client-visible event can anchor.
+/// A pin keyed to that would be vacuous on current code or unpassable under the issue's fix.
 /// #529's conditional half and #536 are server behaviours and are not pinned here.
 /// The proxy findings (#533, #534) are pinned in PMSKit's `PlaybackFormalModelFindingsTests`.
-@Suite(.serialized)
+@Suite("Playback formal-model findings (controller)", .serialized)
 @MainActor
 struct PlaybackFormalModelFindingsTests {
 
@@ -37,19 +42,29 @@ struct PlaybackFormalModelFindingsTests {
     /// `remoteHLSProxy = proxy` with no generation check; Close or `surfaceFailure` in that
     /// window clears the slot, and the resumed task installs a proxy nothing will stop
     /// (`restart/Finding-ProxyAfterCleanup.cfg`, `ProxyOwnership`). Source-text pin: every
-    /// such stand-up must re-check the generation between the await and the install.
-    @Test func proxyStandUpRechecksGenerationAfterAwaitingOldProxyStop() throws {
-        let source = try #require(Self.appSource("Labstream/Shared/Player/PlaybackController.swift"))
-        let oldProxyStop = "await oldProxy.stop(generation: oldGeneration)"
-        var searchStart = source.startIndex
-        var windows: [Substring] = []
-        while let stop = source.range(of: oldProxyStop, range: searchStart..<source.endIndex) {
-            let install = try #require(source.range(of: "remoteHLSProxy = proxy",
-                                                    range: stop.upperBound..<source.endIndex))
-            windows.append(source[stop.upperBound..<install.lowerBound])
-            searchStart = install.upperBound
+    /// such stand-up must re-check the generation between the await and the install. The three
+    /// sites are the macOS P7 candidate and DV-injection proxies in `startStreaming` and the Emby
+    /// remote-HLS proxy in `prepareRemoteStreamURL`; none is reachable hermetically (DV source
+    /// and settings, or live prewarm). Replace this with a behavioural pin once the stand-up's
+    /// "install or stop" step is extracted into a policy that takes the generation re-checked
+    /// after `await oldProxy.stop`.
+    @Test("#524: a proxy stand-up re-checks the generation after awaiting the old proxy's stop")
+    func proxyStandUpRechecksGenerationAfterAwaitingOldProxyStop() throws {
+        let path = "Labstream/Shared/Player/PlaybackController.swift"
+        var windows: [String] = []
+        for function in ["startStreaming", "prepareRemoteStreamURL"] {
+            let body = try #require(Self.appFunctionSource(named: function, in: path), "\(function) not found")
+            var searchStart = body.startIndex
+            while let stop = body.range(of: "await oldProxy.stop(generation: oldGeneration)",
+                                        range: searchStart..<body.endIndex) {
+                let install = try #require(body.range(of: "remoteHLSProxy = proxy",
+                                                      range: stop.upperBound..<body.endIndex),
+                                           "\(function): stop without a following install")
+                windows.append(String(body[stop.upperBound..<install.lowerBound]))
+                searchStart = install.upperBound
+            }
         }
-        try #require(windows.count >= 2, "expected the Plex DV and MediaBrowser proxy stand-ups")
+        try #require(windows.count == 3, "expected the P7, DV-injection and Emby remote-HLS stand-ups, found \(windows.count)")
         withKnownIssue("TLA+ finding Restart-ProxyAfterCleanup (#524): a stand-up installs its proxy after cleanup without re-checking the generation") {
             for window in windows {
                 #expect(window.contains("playbackGeneration") || window.contains("isCurrentPlaybackLifecycle"),
@@ -60,38 +75,13 @@ struct PlaybackFormalModelFindingsTests {
 
     // MARK: - Plex
 
-    /// StopNoJoin / Plex-LateStartOutlivesStop (#525). A copy-lane start is on the wire when
-    /// the user closes. `stop()` cancels the task without joining it and sends the transcode
-    /// stop; the start then lands and nothing stops the transcoder it started
-    /// (`plex/Finding-LateStartOutlivesStop.cfg`, `restart/Finding-StopNoJoin-LateStart.cfg`).
-    @Test func closeStopsATranscodeWhoseStartLandsAfterTheStop() async throws {
-        let route = PlexFixtureRoute(videoDecision: "copy")
-        route.hold([.start])
-        let controller = makePlexController(route: route, maxVideoBitrateKbps: 0)
-        controller.start()
-        try #require(await eventually { route.count(.start, .began) == 1 }, "copy-lane start never sent")
-        controller.stop()
-        try #require(await eventually { route.count(.stop, .began) == 1 }, "Close sent no transcode stop")
-        // The start reaches the server now, after the stop. Cancelling the task cancels the
-        // client's URLSession task, but cannot retract a request already on the wire; the
-        // model's start is not retracted either. A fix must order the final stop after the
-        // start resolves (for example, by not cancelling it and joining the task in Close).
-        let startLanded = route.events.value.count
-        route.releaseHeld()
-        await controller.waitForPendingStopRequests()
-        try await Task.sleep(for: .milliseconds(300))
-        withKnownIssue("TLA+ finding StopNoJoin (#525): Close does not join the cancelled start, so a start that lands after the stop is never stopped") {
-            #expect(route.events.value[startLanded...].contains { $0.kind == .stop && $0.phase == .began },
-                    "no transcode stop was sent after the late start landed: \(route.events.value.map { "\($0.kind)-\($0.phase)" })")
-        }
-    }
-
     /// Restart-RetryWedgedByAttach (#526). From the error overlay the user changes quality and
     /// taps Retry; the retry task waits on the failure's pending stop while the quality
     /// restart's `load()` supersedes its generation, and it returns without clearing
     /// `failureRetryTask`. On the next failure Retry does nothing
     /// (`restart/Finding-RetryWedgedByAttach.cfg`, `RetryRuns`).
-    @Test func retryStillRunsAfterAQualityChangeSupersededAnEarlierRetry() async throws {
+    @Test("#526: Retry still runs after a quality change superseded an earlier retry")
+    func retryStillRunsAfterAQualityChangeSupersededAnEarlierRetry() async throws {
         let route = PlexFixtureRoute(videoDecision: "transcode")
         let controller = makePlexController(route: route, maxVideoBitrateKbps: 4000)
         defer { route.hold([]); route.releaseHeld(); controller.stop() }
@@ -112,7 +102,10 @@ struct PlaybackFormalModelFindingsTests {
         try #require(controller.playbackError.isFailed)
         route.hold([])
         route.releaseHeld()                    // the first retry task resumes and exits
-        try await Task.sleep(for: .milliseconds(300))
+        try #require(await eventually {
+            route.count(.stop, .answered) + route.count(.stop, .cancelled) == route.count(.stop, .began)
+        }, "held stops never resolved")
+        for _ in 0..<50 { await Task.yield() }   // the pending-stop join returns to the retry task
         controller.retry()
         let retried = await eventually(within: 3) { !controller.playbackError.isFailed }
         withKnownIssue("TLA+ finding Restart-RetryWedgedByAttach (#526): a superseded retry task leaves failureRetryTask set, so Retry stops responding") {
@@ -124,7 +117,8 @@ struct PlaybackFormalModelFindingsTests {
     /// sets `sentTranscodeStop`; only `retry()` clears it. A quality change from the error
     /// overlay starts a new transcode under the same session, and Close then sends no stop for
     /// it (`restart/Finding-RestartAfterFailureSkipsFinalStop.cfg`).
-    @Test func closeStopsATranscodeStartedByAQualityChangeAfterFailure() async throws {
+    @Test("#527: Close stops a transcode started by a quality change after a failure")
+    func closeStopsATranscodeStartedByAQualityChangeAfterFailure() async throws {
         let route = PlexFixtureRoute(videoDecision: "transcode")
         let controller = makePlexController(route: route, maxVideoBitrateKbps: 4000)
         controller.start()
@@ -147,7 +141,8 @@ struct PlaybackFormalModelFindingsTests {
     /// final-target rebuild and holds the scrubber; the start's `load()` bumps the generation
     /// before the timer fires, the timer returns at its generation guard, and the seek is
     /// dropped with the scrubber held (`restart/Finding-SeekDroppedByAttach.cfg`).
-    @Test func aSeekMadeBeforeTheItemLoadsIsNotDropped() async throws {
+    @Test("#528: a seek made before the item loads is not dropped")
+    func aSeekMadeBeforeTheItemLoadsIsNotDropped() async throws {
         let route = PlexFixtureRoute(videoDecision: "transcode")
         let controller = makePlexController(route: route, maxVideoBitrateKbps: 4000)
         defer { controller.stop() }
@@ -155,13 +150,13 @@ struct PlaybackFormalModelFindingsTests {
         controller.performUserSeek(toMs: 600_000)   // before the first item exists
         try #require(controller.isSeeking)
         try #require(await eventually { route.count(.decision, .answered) == 1 })
-        try await Task.sleep(for: .milliseconds(1_200))   // past the 500 ms settle timer
-        let rebuiltToTarget = route.events.value.contains {
-            $0.kind == .decision && $0.phase == .began && $0.offset == "600"
+        func rebuiltToTarget() -> Bool {
+            route.events.value.contains { $0.kind == .decision && $0.phase == .began && $0.offset == "600" }
         }
+        // Well past the 500 ms settle timer.
+        let survived = await eventually(within: 3) { !controller.isSeeking || rebuiltToTarget() }
         withKnownIssue("TLA+ finding Restart-SeekDroppedByAttach (#528): the load supersedes the settle timer, which drops the seek and keeps the scrubber held") {
-            #expect(!controller.isSeeking || rebuiltToTarget,
-                    "the seek was neither carried into a rebuild nor released")
+            #expect(survived, "the seek was neither carried into a rebuild nor released (isSeeking=\(controller.isSeeking))")
         }
     }
 
@@ -169,7 +164,8 @@ struct PlaybackFormalModelFindingsTests {
     /// unresolved after 2 s; `stopPreviousTranscode` gives up and the replacement goes out under
     /// the same session id beside the unstopped job (`plex/Finding-LateStopPilesUp.cfg`,
     /// `OneEncoder`). The conditional "late stop kills the replacement" half is not pinned.
-    @Test func replacementIsNotStartedUnderTheSessionWhileItsOwnStopIsUnresolved() async throws {
+    @Test("#529: the replacement does not start under the session while its own stop is unresolved")
+    func replacementIsNotStartedUnderTheSessionWhileItsOwnStopIsUnresolved() async throws {
         let route = PlexFixtureRoute(videoDecision: "transcode")
         let controller = makePlexController(route: route, maxVideoBitrateKbps: 4000)
         defer { route.hold([]); route.releaseHeld(); controller.stop() }
@@ -193,7 +189,8 @@ struct PlaybackFormalModelFindingsTests {
     /// `restartAtCurrentPosition` and skips that join, so the replacement starts while the
     /// failure's stop (same session id) is still in flight and can end it
     /// (`plex/Finding-FinalStopKillsReplacement.cfg`, `StopNeverKillsSuccessor`).
-    @Test func restartFromTheErrorOverlayJoinsTheFailuresStopFirst() async throws {
+    @Test("#530: a restart from the error overlay joins the failure's stop first")
+    func restartFromTheErrorOverlayJoinsTheFailuresStopFirst() async throws {
         let route = PlexFixtureRoute(videoDecision: "transcode")
         let controller = makePlexController(route: route, maxVideoBitrateKbps: 4000)
         defer { route.hold([]); route.releaseHeld(); controller.stop() }
@@ -218,7 +215,8 @@ struct PlaybackFormalModelFindingsTests {
     /// object; the consent continuation then sets `didStop = true` before its generation guard,
     /// and Close skips the new session's stop
     /// (`jellyfin/Finding-ConsentClobbersDidStop.cfg`, `NoOrphans`).
-    @Test func closeStopsTheSessionAttachedWhileConsentAwaitedTheOldStop() async throws {
+    @Test("#531: Close stops the session attached while consent awaited the old stop")
+    func closeStopsTheSessionAttachedWhileConsentAwaitedTheOldStop() async throws {
         let log = EventLog()
         let gate = TestGate()
         let streamURL = try #require(URL(string: "https://192.0.2.10/videos/fixture/master.m3u8"))
@@ -242,11 +240,13 @@ struct PlaybackFormalModelFindingsTests {
         controller.start()
         try #require(await eventually { log.items.contains("stop-0-begin") }, "consent never stopped the old session")
         controller.reload(bitrateKbps: 4000)
-        try #require(await eventually { log.items.contains("negotiate-4000") }, "quality change never reopened")
-        try await Task.sleep(for: .milliseconds(200))   // the reopened session attaches
+        try #require(await eventually { session.playSessionID == "session-1" && !session.didStop },
+                     "the reopened session never attached")
         await gate.open()
         try #require(await eventually { log.items.contains("stop-0-end") })
-        try await Task.sleep(for: .milliseconds(100))   // the consent continuation resumes
+        // The consent continuation resumes on the main actor; today it marks the session
+        // stopped. Bounded so a fixed controller (which never writes it) is not held long.
+        _ = await eventually(within: 1) { session.didStop }
         controller.stop()
         await controller.waitForPendingStopRequests()
         withKnownIssue("TLA+ finding Jellyfin-ConsentClobbersDidStop (#531): the consent request marks the newer session stopped, so Close never stops it") {
@@ -257,7 +257,8 @@ struct PlaybackFormalModelFindingsTests {
     /// Jellyfin-ThirdEncoder (#532). Jellyfin replaces first and defers the prior session's
     /// stop by 2 s; two reopens that both attach within 2 s leave three encoders live
     /// (`jellyfin/Finding-ThirdEncoder-Attached.cfg`, `OneEncoderWhilePlaying`).
-    @Test func twoQuickReopensLeaveAtMostOneExtraEncoder() async throws {
+    @Test("#532: two quick reopens leave at most one extra encoder")
+    func twoQuickReopensLeaveAtMostOneExtraEncoder() async throws {
         let log = EventLog()
         var live: Set<String> = ["session-0"]
         var opened = 0
@@ -277,12 +278,15 @@ struct PlaybackFormalModelFindingsTests {
             })
         let controller = makeMediaBrowserController(session: session, maxVideoBitrateKbps: 4000)
         defer { controller.stop() }
+        controller.start()
+        try #require(await eventually { controller.player.currentItem != nil }, "the initial stream never attached")
+        let firstReload = ContinuousClock.now
         controller.reload(bitrateKbps: 3000)
-        try #require(await eventually { log.items.contains("negotiate-3000") })
-        try await Task.sleep(for: .milliseconds(200))   // first replacement attaches
+        try #require(await eventually { session.playSessionID == "session-1" }, "first replacement never attached")
         controller.reload(bitrateKbps: 2000)
-        try #require(await eventually { log.items.contains("negotiate-2000") })
-        try await Task.sleep(for: .milliseconds(200))   // second replacement attaches, well inside 2 s
+        try #require(await eventually { session.playSessionID == "session-2" }, "second replacement never attached")
+        // Both attached inside the 2 s deferred-stop delay, so the model's ordering was reached.
+        try #require(firstReload.duration(to: .now) < .milliseconds(1_500))
         withKnownIssue("TLA+ finding Jellyfin-ThirdEncoder (#532): two quick reopens leave three encoders running") {
             #expect(live.count <= 2, "live encoders after two quick reopens: \(live.sorted())")
         }
@@ -293,7 +297,8 @@ struct PlaybackFormalModelFindingsTests {
     /// the "Allow video transcoding?" choice shows bumps the generation and leaves the overlay
     /// up with both buttons inert. Driven here by a scrub, which reaches `reopenRemoteStream`
     /// through the final-target rebuild just as a track change does.
-    @Test func aReopenWhileTheConsentChoiceShowsLeavesItDismissable() async throws {
+    @Test("#535: a reopen while the consent choice shows leaves it dismissable")
+    func aReopenWhileTheConsentChoiceShowsLeavesItDismissable() async throws {
         let log = EventLog()
         let gate = TestGate()
         let streamURL = try #require(URL(string: "https://192.0.2.10/videos/fixture/master.m3u8"))
@@ -362,6 +367,16 @@ struct PlaybackFormalModelFindingsTests {
         // LabstreamTests/<this file> -> repository root.
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         return try? String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+    }
+
+    /// The text of one function in an app source file, from its declaration to the next
+    /// declaration at the same indentation. Nil when the file or the function is missing.
+    private static func appFunctionSource(named name: String, in relativePath: String) -> String? {
+        guard let source = appSource(relativePath),
+              let start = source.range(of: "    private func \(name)(") else { return nil }
+        let rest = source[start.upperBound...]
+        let end = rest.range(of: "\n    private func ")?.lowerBound ?? rest.endIndex
+        return String(source[start.lowerBound..<end])
     }
 }
 
