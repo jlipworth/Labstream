@@ -362,16 +362,19 @@ Start(c) ==
 \* reload(bitrateKbps:) and the audio and subtitle track changes:
 \* restartAtCurrentPosition with an intent other than explicitRetry.
 \* Nothing in it asks whether a failure is showing, and only retry()
-\* clears sentTranscodeStop.
+\* clears sentTranscodeStop.  reload clears
+\* videoTranscodeApprovedForCurrentItem; a track change keeps it
+\* (`isReload` picks which one the step is).
 UserQuality(c) ==
     /\ st[c].life = "open"
     /\ st[c].userLeft > 0
     /\ st[c].failed => RestartFromFailure
     /\ RestartCore(c, TRUE, FALSE, FALSE)
-    /\ st' = [st EXCEPT
+    /\ \E isReload \in BOOLEAN :
+        st' = [st EXCEPT
            ![c].userLeft = @ - 1, ![c].retryGen = 0, ![c].warmArmed = TRUE,
            ![c].latch = IF FixRestartResetsStopLatch THEN FALSE ELSE @,
-           ![c].consent = 0]
+           ![c].consent = 0, ![c].approved = @ /\ ~isReload]
 
 \* retry(): failureRetryTask, which first joins pendingStopTasks.
 Retry(c) ==

@@ -445,14 +445,18 @@ Start(c) ==
 \* subtitle change, or the MediaBrowser branch of
 \* attemptStartupDeadlineRetry, each ending in reopenRemoteStream.  Not
 \* taken while a consent choice shows: Approve is the reopen from there.
-\* restartAtCurrentPosition clears failureRetryTask.
+\* restartAtCurrentPosition clears failureRetryTask.  reload also clears
+\* videoTranscodeApprovedForCurrentItem; a seek or a track change keeps it
+\* (`isReload` picks which one the step is).
 Reopen(c) ==
     /\ st[c].life = "open"
     /\ st[c].userLeft > 0
     /\ st[c].consent = 0
     /\ st[c].failed => RestartFromFailure
     /\ QuickReopen \/ ~Replacing(c)
-    /\ ReopenCore(c, [st EXCEPT ![c].userLeft = @ - 1, ![c].retryGen = 0])
+    /\ \E isReload \in BOOLEAN :
+        ReopenCore(c, [st EXCEPT ![c].userLeft = @ - 1, ![c].retryGen = 0,
+                                 ![c].approved = @ /\ ~isReload])
 
 \* approveVideoTranscoding.  The tap is a replacement like Reopen, so the
 \* same user-timing assumption gates it.

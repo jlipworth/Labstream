@@ -104,12 +104,14 @@ The configs are scoped around it the way the module already scopes suspect 1:
 - `Proposed` configs run with `FALSE`: that is the proposed fix (the request does not inherit
   cancellation and the rejected result is stopped). `Finding-CancelledReopenLosesAnswer-JoinFix`
   shows the #525 fix alone does not close it.
-- Temporal configs (`Liveness-*`, `Finding-ProxyAfterCleanup-Liveness`,
-  `Finding-RetryWedgedByAttach`, `Proposed-Liveness*`) run with `FALSE`. With `TRUE` the lost
+- `Liveness-Core` and `Liveness-Proxy` run with `TRUE`, the shipping behaviour. The lost
   session is never stopped, so `AbandonedSessionStopped` and `CloseCleansUpOutsideYieldRace`
-  both fail for that reason alone (checked: `Liveness-Core` with `TRUE` violates both). The
-  liveness passes are therefore claims about every behaviour in which no answer is lost. The
-  two liveness findings carry over to `TRUE`: `NegotiatedLost` only adds behaviours, and it is
+  fail for that reason alone (checked: `Liveness-Core` with `TRUE` violates both). These two
+  configs check instead `CloseCleansUpOutsideRaceAndLost` and
+  `AbandonedSessionStoppedOutsideLost`, which excuse only `LostAnswer(c)` sessions and hold
+  every other session to the full property. The other temporal configs
+  (`Finding-ProxyAfterCleanup-Liveness`, `Finding-RetryWedgedByAttach`, `Proposed-Liveness*`)
+  run with `FALSE`. The two liveness findings carry over to `TRUE`: `NegotiatedLost` only adds behaviours, and it is
   enabled only where `TaskResume` also is, so a violating fair behaviour stays fair.
 
 ## What is abstracted, and why
@@ -207,6 +209,7 @@ The configs are scoped around it the way the module already scopes suspect 1:
 | `CloseCleansUp` | liveness | After Close every task returns, the joined cleanup ends, every session has had a stop sent and no listener is left. **Violated by the code with proxies (suspect 1).** |
 | `CloseCleansUpOutsideYieldRace` | liveness | The same, but a listener in `Raced(c)` may be left. This is what the code keeps. |
 | `AbandonedSessionStopped` | liveness | A session that is not the one playing gets a stop. |
+| `CloseCleansUpOutsideRaceAndLost`, `AbandonedSessionStoppedOutsideLost` | liveness | `CloseCleansUpOutsideYieldRace` and `AbandonedSessionStopped` excusing also a session in `LostAnswer(c)`. This is what the code keeps. |
 | `SeekHoldReleased` | liveness | A held scrubber is released. Holds by construction (the ceiling is always enabled while held, under weak fairness); a check of the model. |
 | `RetryJoinEnds` | liveness | The wait of a retry task that is still current ends. |
 | `RetryRuns` | liveness | Every retry task ends, so Retry can be tapped again. **Violated by the code.** |
@@ -238,8 +241,8 @@ described above, proxies and failures on, automatic recovery off.
 | `Current-Core` | pass | pass | 17,183,405 | 63 s |
 | `Current-RetryRetry` | pass | pass | 886,440 | 4 s |
 | `Current-StartStreamingShape` | pass | pass | 1,431,670 | 6 s |
-| `Liveness-Core` | pass | pass | 450,769 | 63 s |
-| `Liveness-Proxy` | pass | pass | 85,684 | 9 s |
+| `Liveness-Core` | pass | pass | 489,095 | 71 s |
+| `Liveness-Proxy` | pass | pass | 86,727 | 10 s |
 | `Faithful-DetachBeforeStop-off` | `DetachBeforeStop` violated | violated | stops at first error | 1 s |
 | `Mutant-AttachUnfenced` | `GenerationFencing` violated | violated | stops at first error | 0 s |
 | `Mutant-BudgetNotEnforced` | `BoundedRestarts` violated | violated | stops at first error | 1 s |
@@ -282,9 +285,9 @@ described above, proxies and failures on, automatic recovery off.
 - `Current-RetryRetry` (review focus 5): three Retry or quality actions with failures,
   `MaxGeneration = 9`, no proxies, seeks, pauses or resume seeks.
 - `Liveness-Core`: two Retry or quality actions, no proxies or seeks. `Liveness-Proxy`: one
-  user action over two sessions with everything on. Both check
-  `CloseCleansUpOutsideYieldRace`, `AbandonedSessionStopped`, `RetryJoinEnds` and
-  `SeekHoldReleased`.
+  user action over two sessions with everything on. Both run with `CancelDropsAnswer = TRUE`
+  and check `CloseCleansUpOutsideRaceAndLost`, `AbandonedSessionStoppedOutsideLost`,
+  `RetryJoinEnds` and `SeekHoldReleased`.
 - `Proposed-Fixes` and `Proposed-ControllerLatch` check the full `ProxyOwnership`,
   `NoOrphans`, `JoinCoversCleanup` and `SeekIntentSurvivesAttach` beside the rest, with
   `CancelDropsAnswer = FALSE`; `Proposed-Liveness`
@@ -322,8 +325,8 @@ excuses only the session whose answer was lost. For the others the broken proper
 `Current` configs hold it with one or the other). `NoOrphansOutsideLostAnswer` fails in
 `Mutant-CloseSkipsFinalStop`, `Mutant-RetrySkipsJoin` and
 `Finding-RestartAfterFailureSkipsFinalStop`; `CloseStaysEnabled` in `Mutant-RestartRoomTwo`.
-`AbandonedSessionStopped` fails only through the lost answer (with `CancelDropsAnswer = TRUE`,
-which no committed liveness config uses). `SeekHoldReleased` holds by construction and
+`AbandonedSessionStopped` fails only through the lost answer (with `CancelDropsAnswer = TRUE`;
+the `Liveness` configs check its scoped form). `SeekHoldReleased` holds by construction and
 `RetryJoinEnds` has no failing run.
 
 ### Every branch is taken

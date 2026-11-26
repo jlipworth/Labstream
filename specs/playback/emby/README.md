@@ -211,10 +211,13 @@ What depends on them:
   the server, as in Jellyfin. #421 is the same mechanism as the Jellyfin audit: a job made again
   from the client's own accepted media request. (#421 also tracks Emby 4.10 restarting a mid-file
   encoder on every request after losing its position; that is not a stopped job made again and is
-  not modelled.) The liveness configs take `ServerRecreates = FALSE`: the step changes only
-  `server`, and under their `"never"` and `"live"` reuse no client step, stop resolution or
-  timeout depends on whether a stopped job runs again, so it adds states and no client behaviour;
-  with it `Liveness-BoundedWait` grew from 107 s past the default tier's five minutes.
+  not modelled.) `Liveness-Reopen` takes `ServerRecreates = TRUE` and passes, so that the
+  liveness claim is checked with it. `Liveness-BoundedWait`, the liveness mutants and
+  `Proposed-Liveness` take `ServerRecreates = FALSE`, argued rather than checked: the step
+  changes only `server`, and under their `"never"` and `"live"` reuse no client step, stop
+  resolution or timeout depends on whether a stopped job runs again, so it adds states and no
+  client behaviour; with it `Liveness-BoundedWait` grew from 107 s past the default tier's five
+  minutes.
 - **Automatic reopens** (the copy fallback, the copy reopen retry, the startup-deadline reopen)
   are `Reopen` steps and count against `MaxUserActions`.
 - **`failureRetryTask`.** `Reopen` and `Approve` clear it, as `restartAtCurrentPosition` does. A
@@ -276,7 +279,7 @@ failure, failing stops and `ServerRecreates` on, consent and late stops off, `Id
 | `Current-LateAckLive` | pass | pass (given `StopEndsAllUnderId`; `StopNeverKillsSuccessor` not checked) | 189,344 | 2 s |
 | `Current-LateAckConsent` | pass | pass (given `IdReuse = "never"`) | 4,045,273 | 20 s |
 | `Current-CloseAtConsent` | pass | pass (given `IdReuse = "never"`) | 7,379,778 | 34 s |
-| `Liveness-Reopen` | pass | pass | 37,338 | 5 s |
+| `Liveness-Reopen` | pass | pass | 192,358 | 22 s |
 | `Liveness-BoundedWait` | pass | pass | 787,928 | 107 s |
 | `Faithful-EmbyOverlap-off` | `OneEncoder` violated | violated | stops at first error | 1 s |
 | `Mutant-StopNotAwaited` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
@@ -323,8 +326,9 @@ failure, failing stops and `ServerRecreates` on, consent and late stops off, `Id
   `IdReuse = "never"`.
 - `Liveness-Reopen`: consent, one user action, `MaxGeneration = 11`, under `FairSpec`:
   `ReopenSettles` and `CloseCleansUp`. `Liveness-BoundedWait`: the same with late stops and
-  `IdReuse = "never"`, under `ClockFairSpec`. Both, and the liveness mutants and
-  `Proposed-Liveness`, take `ServerRecreates = FALSE` (see the abstractions).
+  `IdReuse = "never"`, under `ClockFairSpec`. `Liveness-Reopen` takes `ServerRecreates = TRUE`;
+  `Liveness-BoundedWait`, the liveness mutants and `Proposed-Liveness` take `FALSE` (see the
+  abstractions).
 - `Proposed-CloseJoinsTask`: `Current-CloseAtConsent`'s run with `FixCloseJoinsTask`, checking
   `JoinCoversCleanup` beside the rest. `Proposed-Liveness`: `Liveness-Reopen`'s run with the fix.
 - `Deep-BackToBack`: two controllers, three session ids, one user action each,

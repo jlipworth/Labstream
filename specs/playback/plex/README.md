@@ -99,8 +99,10 @@ failed", so a pass of `OneEncoder` is sound. The base's `NoWrongKill` is checked
   one that has a job to stop. The other calls of `requestVideoTranscodeConsent` from
   `startStreaming` (2958, 2993, 3006: the decision or the copy-playlist fetch says video needs
   encoding) come after the same stop and wait, and on a first start there is no job to stop; they
-  are not separate actions. The Original-quality condition is not modelled, and once the item's
-  encoding is approved no consent is asked again.
+  are not separate actions. The Original-quality condition is not modelled. Once the item's
+  encoding is approved no consent is asked again until `reload` clears the approval
+  (`videoTranscodeApprovedForCurrentItem = false`, 2475): a `UserQuality` step is either a
+  reload, which clears it, or a track change, which keeps it.
 - **Which request starts a transcoder.** On a cold session `start.m3u8` alone does not; the
   fetch of the media playlist does (the comment above the prewarm in `startStreaming`). The
   model has one start request per attempt and two places for it: the task makes it and waits
@@ -220,6 +222,7 @@ controller, two user actions, `MaxGeneration = 16`, failures and the startup-dea
 | `Current-InPlace` | pass | pass | 2,801,859 | 12 s |
 | `Current-ReusedId` | pass | pass (given `StopEndsAllUnderId`) | 1,262,840 | 6 s |
 | `Current-LateAck` | pass | pass (given `StopEndsAllUnderId`) | 2,534,848 | 10 s |
+| `Current-LateFail` | pass | pass (given `StopEndsAllUnderId`; `LiveStopNeverKillsSuccessor` not checked) | 240,066 | 2 s |
 | `Current-Consent` | pass | pass | 1,530,725 | 8 s |
 | `Liveness-InPlace` | pass | pass | 240,066 | 16 s |
 | `Liveness-BoundedWait` | pass | pass | 149,595 | 7 s |
@@ -258,7 +261,9 @@ controller, two user actions, `MaxGeneration = 16`, failures and the startup-dea
   `LiveStopNeverKillsSuccessor`, `NoZombieItem`, `NoOrphans` and `CleanAfterAckedClose`. With
   failures it fails `LiveStopNeverKillsSuccessor` (`Finding-RetryAfterTimedOutStop`, the same
   constants with `EnvFails`); before the detached stop's timeout was modelled it passed with them
-  (20,963,959 states).
+  (20,963,959 states). `Current-LateFail`: `Current-LateAck` with `EnvFails`, one user action and
+  `MaxGeneration = 11`, every `Current-LateAck` invariant except `LiveStopNeverKillsSuccessor`
+  (owned by `Finding-RetryAfterTimedOutStop`), so late stops and failures are checked together.
 - `Current-Consent`: `Current-InPlace` with `ConsentPossible`, two user actions,
   `MaxGeneration = 19`, every `Current-InPlace` invariant and `ConsentBoundary`.
   `Finding-ConsentShowsOverRunningJob` is it with late stops (checking `ConsentBoundary` only),
@@ -280,7 +285,8 @@ checks the full property, or keeps it and checks what the code still keeps.
 `OneEncoderOutsideCancelledStops` and `LiveStopNeverKillsSuccessor` excuse only the stops the
 client itself cancelled, which pins suspect 2 to `stopPreviousTranscode`'s give-up and to a
 cancelled wait. `RestartFromFailure` and `LateStarts` are off in every `Current` config; their
-`Finding` configs turn on nothing else. `Current-LateAck` has no failures, and `Current-Consent`
+`Finding` configs turn on nothing else. `Current-LateAck` has no failures (`Current-LateFail` has
+them and drops `LiveStopNeverKillsSuccessor`), and `Current-Consent`
 no late stops, for the same reason (`Finding-RetryAfterTimedOutStop`,
 `Finding-ConsentShowsOverRunningJob`).
 

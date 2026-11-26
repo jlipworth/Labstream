@@ -1193,6 +1193,21 @@ CloseCleansUp ==
 CloseCleansUpOutsideYieldRace ==
     \A c \in Controllers : life[c] = "closed" ~> CleanedUp(c, Raced(c))
 
+\* CloseCleansUpOutsideYieldRace and AbandonedSessionStopped scoped for
+\* CancelDropsAnswer = TRUE: a session in LostAnswer(c) is excused (nobody
+\* holds its id to stop it; Finding-CancelledReopenLosesAnswer), every other
+\* session is held to the full property.
+CleanedUpL(c, X) ==
+    /\ unwinding[c] = {}
+    /\ PendingStopsJoined(c)
+    /\ \A j \in JobsOf(c) : SentStopFor(c, j[1], j[2]) \/ j[1] \in LostAnswer(c)
+    /\ proxy[c].live \subseteq X
+CloseCleansUpOutsideRaceAndLost ==
+    \A c \in Controllers : life[c] = "closed" ~> CleanedUpL(c, Raced(c))
+AbandonedSessionStoppedOutsideLost ==
+    \A c \in Controllers :
+        []<>(\A j \in JobsOf(c) : SentStopFor(c, j[1], j[2]) \/ IsCur(c, j) \/ j[1] \in LostAnswer(c))
+
 \* A session that is not the one playing gets a stop.
 AbandonedSessionStopped ==
     \A c \in Controllers :

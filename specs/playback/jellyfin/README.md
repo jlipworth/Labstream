@@ -222,6 +222,8 @@ What depends on them:
   `stopRejectedRemoteStream` sending its request are one step.
 - **The consent request from `handlePlaybackFailure`** (`PlayerNeedsConsent`) is taken only with
   an attached item and no task running, and not once the item's encoding was approved, as Emby's.
+  `reload` clears the approval (2475): a `Reopen` step is either a reload, which clears it, or a
+  seek or track change, which keeps it.
   Its Original-quality condition (`maxVideoBitrateKbps <= 0`) is not modelled.
 - **Left out:** direct play, whose stop sends no request;
   the progress stop (`Sessions/Playing/Stopped`), which is not an encoder stop; a stale auth
@@ -284,8 +286,9 @@ shipping value of every behaviour constant.
 | `Current-ReopenSmall` | — | pass | pass | 43,146 | 1 s |
 | `Current-Reopen` | — | pass | pass | 723,971 | 5 s |
 | `Current-LateStops` | `Current-Reopen` + `StopsCanBeLate` − `EnvFails`, `RestartFromFailure` | pass | pass | 38,913 | 1 s |
+| `Current-LateFail` | `Current-ReopenSmall` + `StopsCanBeLate` | pass | pass (`OneEncoder` not checked; `Finding-RetryAfterTimedOutStop` owns it) | 252,336 | 2 s |
 | `Current-ReusedId` | — | pass | pass (given `"latest"` reuse that replaces the job, `StopEndsAllUnderId`) | 233,522 | 2 s |
-| `Current-Consent` | `Current-ReopenSmall` + `ConsentPossible`, `MaxGeneration = 15` | pass | pass (no reopen while a task awaits a stop) | 2,187,120 | 12 s |
+| `Current-Consent` | `Current-ReopenSmall` + `ConsentPossible`, `MaxGeneration = 15` | pass | pass (no reopen while a task awaits a stop) | 2,221,320 | 12 s |
 | `Current-QuickRetry` | `Current-ReopenSmall` + `QuickRetry` | pass | pass | 55,495 | 1 s |
 | `Current-QuickReopen` | `Current-ReopenSmall` + `QuickReopen`, `QuickRetry` | pass | pass (`OneEncoder` not checked) | 97,540 | 2 s |
 | `Liveness-Reopen` | — | pass | pass | 33,430 | 4 s |
@@ -327,7 +330,8 @@ shipping value of every behaviour constant.
   (8 states: `Fail`, the stop times out, a quality change while the failure shows, the
   replacement attaches). Before the user-timing gate was corrected the run passed with late
   stops (6,229,375 states) only because a timed-out stop blocked Retry and restarts for ever.
-  `Current-LateStops` keeps late stops and drops failures. `StopNeverKillsSuccessor` cannot fail
+  `Current-LateStops` keeps late stops and drops failures. `Current-LateFail` keeps both on
+  `Current-ReopenSmall`'s run and checks every invariant but `OneEncoder`. `StopNeverKillsSuccessor` cannot fail
   without id reuse, so it is listed only in the configs that reuse ids (`Current-ReusedId`, the
   conditional findings, `Proposed-TracksDeferredStop`, `Deep-BackToBack`).
   `Current-ReopenSmall` is its smaller run (two user actions, three ids, `MaxGeneration = 12`),
