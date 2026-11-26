@@ -261,7 +261,7 @@ each module's README; this section records the program-level outcome.
 
 - TLC: every config in `specs/playback/` and `specs/downloads/`, default and deep tiers, on the
   final branch head (see the PR for the run summary); `scripts/check-tla-drift.py` clean.
-- Swift: hermetic PMSKit tests; `LabstreamMacTests` 1032 tests and `LabstreamTests` on the iPhone
+- Swift: hermetic PMSKit tests; `LabstreamMacTests` 1037 tests and `LabstreamTests` on the iPhone
   simulator 1013 tests. The app targets record 8 known issues from 6 open controller pins (#524's
   pin wraps three expectations, one per proxy stand-up); the two proxy pins (#533, #534) run in
   PMSKit's `swift test`. That is 8 open pins in total; #525 is not pinned. visionOS, iPhone, tvOS and macOS
