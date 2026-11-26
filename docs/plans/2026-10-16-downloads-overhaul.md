@@ -416,6 +416,14 @@ workflow; release pin 15 is satisfied.
 - Derived Offline availability and one-shot Cinema return before Reconnect.
 - Cellular, constrained and expensive network preference remains one policy; tvOS stays streaming-only.
 
+## Formal model follow-ups
+
+W0–W8 merged in #505. F1 and F2 have Swift regression tests and fix-off model checks.
+Track product fixes in the individual findings issues, including the undelivered-body case (#506).
+This plan owns the remaining device confirmations and runtime tests, CI and drift-guard work,
+and model coverage and cost decisions listed in the
+[archived modeling journal](../archive/plans/2026-11-24-downloads-tla-model.md#follow-ups).
+
 ## Open gates (never claimed by this work)
 
 - **Live Plex/Jellyfin/Emby:** exact variants and audio, direct/remux/encode provenance, optimizer/

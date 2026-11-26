@@ -27,9 +27,9 @@ When a plan is complete or superseded:
   geometry-driven layout, fold-during-playback invariants, iOS 27.1 vertical bars, Xcode 27.1
   toolchain move and Duo XCUITest lanes, with player follow-ups through 2026-11-02; physical Duo
   and Duo App Store screenshot gates remain open.
-- [Downloads formal model (TLA+)](2026-11-24-downloads-tla-model.md) — pilot model of the session,
-  finalize and sweep core is done with two open findings (F1, F2) pinned as known issues; the
-  shared base module and seven follow-up models are not started.
+- [Playback and session-lifecycle formal models](2026-11-25-playback-tla-model.md) — playback
+  restart and cleanup (phase 1) merged in #547. SharePlay (phase 2, #521) and audio and Now Playing
+  ownership (phase 3, #522) remain open.
 - [Downloads manager overhaul](2026-10-16-downloads-overhaul.md) — P1–P7 (including the 1.8.0
   source bump) and follow-ups are implemented, with internal TestFlight builds recorded in
   Releases; live-backend, physical-device and release acceptance ([#403](https://github.com/jlipworth/Labstream/issues/403))

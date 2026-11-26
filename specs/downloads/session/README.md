@@ -3,7 +3,7 @@
 `DownloadsSessionCore.tla` is the pilot model: one row from `admitted` to a terminal lifecycle
 through the session, the finalizer, the stash sweep and relaunch recovery, with process death. Its
 design, properties and the F1 to F3 traces (F2 is fixed: `Faithful-F2-off`) are in
-[docs/plans/2026-11-24-downloads-tla-model.md](../../../docs/plans/2026-11-24-downloads-tla-model.md).
+[docs/archive/plans/2026-11-24-downloads-tla-model.md](../../../docs/archive/plans/2026-11-24-downloads-tla-model.md).
 This page holds what the second review round changed, the F1 and F3 fixes and the current
 results.
 
