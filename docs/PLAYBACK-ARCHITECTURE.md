@@ -346,6 +346,20 @@ debounced into one settled final-target rebuild instead of restarting for every 
 - Emby detaches the old item, then awaits an acknowledged exact-session stop of the prior session
   before negotiating the replacement. An unacknowledged stop keeps cleanup authority and fails
   with `priorSessionStopUnconfirmed` (LS-PB-008) instead of starting a new encoder.
+- A replacement that begins from a surfaced failure, whether explicit Retry or a quality, audio
+  or subtitle change from the error overlay, first joins the failed attempt's exact-session stop.
+  On Plex and Jellyfin that stop is tracked on its own bound (`failedAttemptStopTimeout`, 30 s,
+  longer than the 5 s recovery control client) so a timed-out request is never counted as
+  joined. If it is still unconfirmed, the replacement re-sends the stop once on a shorter bound
+  (`failedAttemptRestopTimeout`, 10 s) and proceeds only when it is confirmed; otherwise it shows
+  LS-PB-008 and the next attempt re-sends again. Both bounds are judgment calls: long enough for a
+  slow but reachable server, short enough that a user tap is never held indefinitely, and never an
+  unbounded retry. The outcome is keyed on a failure epoch, so a late result from an older failure
+  cannot clear a newer one. A confirmed re-send does not fence a stop the client already gave up
+  on: on a reused session id that earlier request could still land late (conditional, #536).
+- The Plex final-stop latch is re-armed for every new transcode, so Close after a restart from the
+  error overlay stops the replacement; a failure followed by Close with no restart still sends
+  exactly one stop.
 - On either MediaBrowser backend, a consent boundary awaits the old session stop before showing
   the choice, and cleans up any rejected newly negotiated session without attaching it.
 
@@ -667,7 +681,9 @@ sequenceDiagram
   detach the player item, and stop its exact backend session without waiting for Close.
   The shared error surface uses the [stable playback codes](AGENT-PLAYBACK-TROUBLESHOOTING.md#playback-failure-codes),
   not raw server text. Explicit Retry joins pending cleanup before replacing the attempt and
-  preserves trustworthy resume position, quality, approved consent, and user pause intent.
+  preserves trustworthy resume position, quality, approved consent, and user pause intent. The
+  Retry task always releases its slot when it is not cancelled, including when a newer generation
+  superseded it, so Retry cannot become unresponsive.
 - Terminal stop detaches the player item before issuing server-stop requests so paused HLS
   resource loading cannot continue against a stopped session. UI teardown remains non-blocking;
   named probes join the controller-owned stop requests before publishing their final report.
