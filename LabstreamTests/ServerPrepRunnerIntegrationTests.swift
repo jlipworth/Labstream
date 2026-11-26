@@ -190,13 +190,30 @@ struct ServerPrepRunnerIntegrationTests {
 
     @Test func embyStorageRefusalPersistsItsReason() async throws {
         let fixture = try await PrepRunnerFixture()
+        fixture.manager.storageLimitBytesOverrideForTesting = 1
+        let key = try await fixture.seed(.emby)
+        let poller = try #require(fixture.manager.beginEmbyConvertPoller(for: key))
+        try #require(fixture.manager.embyConvertAttemptIsCurrent(ratingKey: key.ratingKey,
+            attemptID: poller, targetName: fixture.target))
+        await fixture.manager.handoffEmbyConvertedSource(item: fixture.item, sourceID: "converted",
+            targetName: fixture.target, audioStreamIndex: nil, attemptKey: key,
+            pollerID: poller, waitsForTransferSlot: false)
+        guard case .storageLimitExceeded = fixture.manager.lastError[key.ratingKey] else {
+            Issue.record("Handoff should reach the storage refusal"); return
+        }
+        let reopened = DownloadTestFiles.store(baseDirectory: fixture.directory)
+        #expect(reopened.lifecycleState(for: key)?.history.lastFailure == .storage)
+        #expect(fixture.store.lifecycleState(for: key)?.history.lastFailure == .storage)
+        #expect(fixture.transfers.value.isEmpty)
+    }
+
+    @Test func reusedEmbyConversionReportsStorageFailure() async throws {
+        let fixture = try await PrepRunnerFixture()
         fixture.wire.withValue { $0.embyReuseAfterRead = 1 }
         fixture.manager.storageLimitBytesOverrideForTesting = 1
         let key = try await fixture.seed(.emby)
-        await fixture.manager.triggerConvertAndDownload(item: fixture.item, targetName: fixture.target,
-            metadata: try #require(fixture.store.record(for: key)?.metadata), session: fixture.embyLane, attemptKey: key)
-        let reopened = DownloadTestFiles.store(baseDirectory: fixture.directory)
-        #expect(reopened.lifecycleState(for: key)?.history.lastFailure == .storage)
+        fixture.startEmby(key)
+        try #require(await fixture.wait { fixture.store.record(for: key)?.status == .failed })
         #expect(fixture.store.lifecycleState(for: key)?.history.lastFailure == .storage)
         #expect(fixture.transfers.value.isEmpty)
     }
