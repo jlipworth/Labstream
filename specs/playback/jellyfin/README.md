@@ -18,6 +18,8 @@ What the model shows:
   one's cleanup is still under way, the order as it stands keeps `OneEncoder`, `NoOrphans` and
   `StopNeverKillsSuccessor`. Under id reuse that also needs a server that ends a job when it
   returns that job's id again: the server the same-id skip is written for (`Current-ReusedId`).
+  With quick reopens and Retry, `NoOrphans` and `StopNeverKillsSuccessor` still hold
+  (`Current-QuickReopen`); only `OneEncoder` fails.
 - The skip of `94a9ca4e` is what keeps a reused id safe: without it the deferred stop ends the
   replacement (`Faithful-JellyfinReusedIdStop-off`).
 - **Suspect 3 is reproduced, conditional on the server.** The deferred stop is unfenced, is not
@@ -28,14 +30,18 @@ What the model shows:
   deferred stop ends the replacement. The join half needs no server assumption:
   `Finding-DeferredStopNotJoined`. It is refuted for servers that never reuse an id, reuse only
   the id they minted last, or reuse only ids with nothing running under them.
-- Two findings need no server assumption:
+- Three findings need no server assumption:
   - `requestVideoTranscodeConsent` sets `session.didStop = true` after its await, with no check, on
     the one session object a reopen may have reloaded meanwhile. The new session is then never
     stopped, and a later consent choice shows over its running encoder
     (`Finding-ConsentClobbersDidStop`).
   - Jellyfin has no transaction tail. A quick second reopen negotiates while the first one's
     result is still to be rejected and the session before both still runs: three jobs at once
-    (`Finding-ThirdEncoder`).
+    (`Finding-ThirdEncoder`). Two quick reopens that both attach leave the first two sessions
+    asleep on their deferred stops while the third plays (`Finding-ThirdEncoder-Attached`).
+  - A quality or track change while a failure shows reopens without the join `retry()` has, so the
+    failed attempt's session overlaps the replacement past the window
+    (`Finding-RestartFromFailureOverlap`).
 - `stop()` does not join the task it cancels (`Finding-StopNoJoin`, the restart core's finding).
 - Four more stale-stop routes need id reuse: a rejected result's stop that the next negotiation
   does not wait for, through a reopen or through Retry (`Finding-RejectedStopKillsReusedId`,
@@ -109,19 +115,26 @@ records each other wrong kill when the server step makes it (`Harmed(s)`).
 
 ### The window
 
-`jellyfinWindow` is recomputed after every step (`SetsWindow` in `Next`, so a server step can
-close it): it is open while a reopen task runs, a deferred stop sleeps, or a stop the controller
-sent is unanswered. Jellyfin waits for no stop before negotiating, apart from Retry's join, so
-the prior session and its replacement overlap until the prior's stop is answered. Inside it
-`OneEncoder` allows two jobs, outside it one. `WindowCloses` (liveness) checks that it closes,
-and `Mutant-WindowStaysOpen` is a window that never closes once open. This recomputation is the
-one place server steps change controller state (a ghost) beside the base contract's
+`jellyfinWindow` is the base's replace-then-clean-up window: from the replacement request to the
+end of the prior session's deferred cleanup. It is recomputed after every step (`SetsWindow` in
+`Next`, so a server step can close it) and is open while a reopen task runs, a deferred stop
+sleeps, or the stop of a prior session whose deferred stop went out (`ghost.fired`), or of a
+rejected result, is unanswered. The rejected results belong to the same cleanup: Close during a
+reopen leaves the prior's and the rejected result's stops both in flight, and without that clause
+`Current-Reopen` fails `OneEncoder` there. Inside the window `OneEncoder` allows two jobs, outside
+it one. A stop sent by Close, `surfaceFailure` or a consent request does not hold the window open,
+so a replacement that overlaps such a session past the window fails `OneEncoder`
+(`Finding-RestartFromFailureOverlap`; `Mutant-RetrySkipsJoin-Overlap` is the same overlap made by
+removing Retry's join). `WindowCloses` (liveness) checks that the window closes, and
+`Mutant-WindowStaysOpen` is a window that never closes once open. This recomputation is the one
+place server steps change controller state (a ghost) beside the base contract's
 `UNCHANGED ctlVars`.
 
 ### User timing
 
 `QuickReopen` and `QuickRetry` say whether the user (or an automatic reopen) may start another
-replacement, or tap Retry, while the window is open or a task still awaits a stop: in practice
+replacement, or tap Retry, while any cleanup is under way (`CleanupUnderway`: the window, any
+stop the controller sent that is unanswered, or a task still awaiting a stop): in practice
 within about two seconds of the last replacement. They are environment assumptions, not client
 guards. The Current configs take `FALSE`, and every finding that needs `TRUE` says so.
 
@@ -200,7 +213,7 @@ What depends on them:
 - One controller unless noted. `MaxGeneration` bounds `playbackGeneration` and the incarnations
   under one id. `GenerationsSuffice` is checked in every passing safety config: no guard on a
   generation counter ever disables an action. It fails with `MaxGeneration = 11` in
-  `Current-Reopen`'s smaller run, so the bound is tight.
+  `Current-ReopenSmall`, so the bound is tight.
 - `MaxUserActions` bounds reopens, approvals and Retry taps together. Close, one failure per
   attempt and consent requests are always available.
 - `SessionIds`: with `IdReuse = "never"` each negotiation uses one, so a config has one more id
@@ -211,7 +224,8 @@ What depends on them:
 
 | Property | Kind | Meaning |
 | --- | --- | --- |
-| `OneEncoder` (base) | invariant | At most one job the client still owns, two inside the window. **Violated by the code with a quick second reopen (`Finding-ThirdEncoder`) and through the consent finding; conditionally by the skip.** |
+| `OneEncoder` (base) | invariant | At most one job the client still owns, two inside the window. **Violated by the code with a quick second reopen (`Finding-ThirdEncoder`), a quick restart while a failure shows (`Finding-RestartFromFailureOverlap`) and through the consent finding; conditionally by the skip.** |
+| `OneEncoderWhilePlaying` | invariant | `OneEncoder` in the states where a replacement plays and no task runs. Only `Finding-ThirdEncoder-Attached` checks it, to pin the attached shape. |
 | `StopNeverKillsSuccessor` | invariant | No stop meant for an older job under an id ends a newer one the client still wanted. **Violated by the code if Jellyfin reuses ids (conditional), suspect 3 included.** |
 | `NoOrphans` | invariant | Every live job of the controller's is the playing session, held by a task that will attach or stop it, asleep on a deferred stop, or has had a stop sent; and after Close, or while a failure shows with nothing under way, the playing session has had its stop sent. **Violated by the code (`Finding-ConsentClobbersDidStop`).** |
 | `ConsentBoundary` | invariant | While a consent choice shows, nothing is attached and the playing session's stop and every rejected session's stop have been sent. **Violated by the code through the consent finding.** |
@@ -234,51 +248,62 @@ failing stops on, consent, late stops, quick reopens and quick Retry off, `IdReu
 `ReusedIdReplacesJob = FALSE`, `StopEndsAllUnderId = FALSE`, `IdsNeverShared = TRUE`, and the
 shipping value of every behaviour constant.
 
-| Config | Expect | Result | Distinct states | Time |
-| --- | --- | --- | --- | --- |
-| `Current-Reopen` | pass | pass | 6,229,375 | 37 s |
-| `Current-ReusedId` | pass | pass (given `"latest"` reuse that replaces the job, `StopEndsAllUnderId`) | 233,522 | 2 s |
-| `Current-Consent` | pass | pass (no reopen while a task awaits a stop) | 254,451 | 2 s |
-| `Liveness-Reopen` | pass | pass | 8,363 | 2 s |
-| `Liveness-BoundedWait` | pass | pass | 48,437 | 4 s |
-| `Faithful-JellyfinReusedIdStop-off` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
-| `Mutant-NoDeferredStop` | `OneEncoder` violated | violated | stops at first error | 1 s |
-| `Mutant-RejectedNotStopped` | `NoOrphans` violated | violated | stops at first error | 1 s |
-| `Mutant-CloseSkipsFinalStop` | `NoOrphans` violated | violated | stops at first error | 1 s |
-| `Mutant-RetrySkipsJoin` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
-| `Mutant-ConsentSkipsStop` | `ConsentBoundary` violated | violated | stops at first error | 1 s |
-| `Mutant-ConsentAttachesNegotiated` | `ConsentBoundary` violated | violated | stops at first error | 1 s |
-| `Mutant-WindowStaysOpen` | `WindowCloses` (temporal) violated | violated | stops at first error | 3 s |
-| `Mutant-UnboundedStopWait` | `ReopenSettles` (temporal) violated | violated | stops at first error | 3 s |
-| `Finding-ThirdEncoder` | `OneEncoder` violated | violated | stops at first error | 1 s |
-| `Finding-ConsentClobbersDidStop` | `NoOrphans` violated | violated | stops at first error | 1 s |
-| `Finding-StopNoJoin` | `JoinCoversCleanup` violated | violated | stops at first error | 1 s |
-| `Finding-DeferredStopNotJoined` | `JoinCoversCleanup` violated | violated | stops at first error | 1 s |
-| `Finding-DeferredStopUnfenced` (conditional) | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
-| `Finding-DeferredStopUnfenced-Retry` (conditional) | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
-| `Finding-RejectedStopKillsReusedId` (conditional) | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
-| `Finding-RejectedStopKillsReusedId-Retry` (conditional) | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
-| `Finding-RestartFromFailureStaleStop` (conditional) | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
-| `Finding-SameIdSkipLeavesPrior` (conditional) | `OneEncoder` violated | violated | stops at first error | 1 s |
-| `Finding-BackToBackStaleStop` (conditional) | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
-| `Proposed-CloseJoins` | pass | pass | 46,626 | 1 s |
-| `Proposed-ConsentStopFenced` | pass | pass | 161,922 | 2 s |
-| `Proposed-TracksDeferredStop` | pass | pass (given `StopsCanBeLate = FALSE`) | 267,636 | 3 s |
-| `Deep-BackToBack` (deep) | pass | pass (given `IdReuse = "stopped"`) | 122,691,237 | 11 min 34 s |
+| Config | Built from | Expect | Result | Distinct states | Time |
+| --- | --- | --- | --- | --- | --- |
+| `Current-ReopenSmall` | — | pass | pass | 43,146 | 2 s |
+| `Current-Reopen` | — | pass | pass | 6,229,375 | 34 s |
+| `Current-ReusedId` | — | pass | pass (given `"latest"` reuse that replaces the job, `StopEndsAllUnderId`) | 233,522 | 2 s |
+| `Current-Consent` | `Current-ReopenSmall` + `ConsentPossible` | pass | pass (no reopen while a task awaits a stop) | 274,791 | 2 s |
+| `Current-QuickRetry` | `Current-ReopenSmall` + `QuickRetry` | pass | pass | 55,495 | 1 s |
+| `Current-QuickReopen` | `Current-ReopenSmall` + `QuickReopen`, `QuickRetry` | pass | pass (`OneEncoder` not checked) | 97,540 | 1 s |
+| `Liveness-Reopen` | — | pass | pass | 8,553 | 1 s |
+| `Liveness-BoundedWait` | — | pass | pass | 48,807 | 4 s |
+| `Faithful-JellyfinReusedIdStop-off` | `Current-ReusedId` − `SkipsReusedIdStop` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
+| `Mutant-NoDeferredStop` | `Current-ReopenSmall` − `DefersPriorStop` | `OneEncoder` violated | violated | stops at first error | 1 s |
+| `Mutant-RejectedNotStopped` | `Current-ReopenSmall` − `RejectedIsStopped` | `NoOrphans` violated | violated | stops at first error | 0 s |
+| `Mutant-CloseSkipsFinalStop` | `Current-ReopenSmall` − `CloseStopsSession` | `NoOrphans` violated | violated | stops at first error | 0 s |
+| `Mutant-RetrySkipsJoin` | `Current-ReusedId` − `RetryJoinsPendingStops` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
+| `Mutant-RetrySkipsJoin-Overlap` | `Current-QuickRetry` − `RetryJoinsPendingStops` | `OneEncoder` violated | violated | stops at first error | 0 s |
+| `Mutant-ConsentSkipsStop` | `Current-Consent` − `ConsentStopsSession` | `ConsentBoundary` violated | violated | stops at first error | 1 s |
+| `Mutant-ConsentAttachesNegotiated` | `Current-Consent` − `ConsentRejectsNegotiated` | `ConsentBoundary` violated | violated | stops at first error | 1 s |
+| `Mutant-WindowStaysOpen` | `Liveness-Reopen` − `WindowEndsWithCleanup` | `WindowCloses` (temporal) violated | violated | stops at first error | 3 s |
+| `Mutant-UnboundedStopWait` | `Liveness-BoundedWait` − `StopTimesOut` (only `ReopenSettles` listed) | `ReopenSettles` (temporal) violated | violated | stops at first error | 3 s |
+| `Finding-ThirdEncoder` | `Current-ReopenSmall` + `QuickReopen` | `OneEncoder` violated | violated | stops at first error | 1 s |
+| `Finding-ThirdEncoder-Attached` | `Finding-ThirdEncoder` − `EnvFails`, `RestartFromFailure` | `OneEncoderWhilePlaying` violated | violated | stops at first error | 1 s |
+| `Finding-RestartFromFailureOverlap` | `Current-ReopenSmall` + `QuickReopen`, one user action | `OneEncoder` violated | violated | stops at first error | 1 s |
+| `Finding-ConsentClobbersDidStop` | `Current-Consent` + `QuickReopen` | `NoOrphans` violated | violated | stops at first error | 2 s |
+| `Finding-StopNoJoin` | `Current-ReopenSmall` | `JoinCoversCleanup` violated | violated | stops at first error | 1 s |
+| `Finding-DeferredStopNotJoined` | `Current-ReopenSmall` + `FixCloseJoinsTask` | `JoinCoversCleanup` violated | violated | stops at first error | 1 s |
+| `Finding-DeferredStopUnfenced` (conditional) | `Current-ReusedId` + `"live"`, `QuickReopen`, `RestartFromFailure` − `QuickRetry`, `EnvFails`, route constraint | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
+| `Finding-DeferredStopUnfenced-Retry` (conditional) | `Current-ReusedId` + `"live"`, route constraint | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
+| `Finding-RejectedStopKillsReusedId` (conditional) | `Current-ReusedId` + `QuickReopen` − `QuickRetry` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
+| `Finding-RejectedStopKillsReusedId-Retry` (conditional) | `Current-ReusedId` + `RestartFromFailure` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
+| `Finding-RestartFromFailureStaleStop` (conditional) | `Current-ReusedId` + `RestartFromFailure`, `QuickReopen` − `QuickRetry` | `StopNeverKillsSuccessor` violated | violated | stops at first error | 1 s |
+| `Finding-SameIdSkipLeavesPrior` (conditional) | `Current-ReusedId` − `ReusedIdReplacesJob` | `OneEncoder` violated | violated | stops at first error | 1 s |
+| `Finding-BackToBackStaleStop` (conditional) | two controllers, see the config | `StopNeverKillsSuccessor` violated | violated | stops at first error | 0 s |
+| `Proposed-CloseJoins` | `Current-ReopenSmall` + both join fixes | pass | pass | 48,176 | 2 s |
+| `Proposed-ConsentStopFenced` | `Finding-ConsentClobbersDidStop` + `FixConsentStopFenced` | pass | pass (`OneEncoder` not checked) | 293,722 | 2 s |
+| `Proposed-TracksDeferredStop` | `Finding-DeferredStopUnfenced-Retry` + `FixTracksDeferredStop`, no constraint | pass | pass (given `StopsCanBeLate = FALSE`) | 270,612 | 2 s |
+| `Deep-BackToBack` (deep) | — | pass | pass (given `IdReuse = "stopped"`) | 122,691,237 | 11 min 34 s |
 
 - `Current-Reopen`: three user actions, four session ids, `MaxGeneration = 15`, late stops. It
   checks `TypeOK`, `OneEncoder`, `StopNeverKillsSuccessor`, `NoOrphans`, `GenerationsSuffice` and
-  `IdsSuffice`. The other configs derive from its smaller run (two user actions, three ids,
-  `MaxGeneration = 12`, no late stops).
+  `IdsSuffice`. `Current-ReopenSmall` is its smaller run (two user actions, three ids,
+  `MaxGeneration = 12`, no late stops), committed as the base most other one-controller configs
+  are built from. The "Built from" column names each config's base and the constants it changes
+  (+ sets a switch, − clears one); every Mutant and the Faithful config change exactly one.
 - `Current-ReusedId` (review focus 2): `IdReuse = "latest"`, `ReusedIdReplacesJob`,
   `StopEndsAllUnderId`, quick Retry, no restart from a failure. The same-id skip is taken
   (witness `NeverSkipped`), ids are reused (`NeverReusedId`) and a job is replaced by id
   (`NeverReplacedById`). `Mutant-RetrySkipsJoin`, `Faithful-JellyfinReusedIdStop-off` and
-  `Finding-SameIdSkipLeavesPrior` differ from it in one constant each; the four other reuse
+  `Finding-SameIdSkipLeavesPrior` differ from it in one constant each; the other reuse
   findings differ in the timing and restart constants their routes need, and in `IdReuse`.
 - `Current-Consent`: consent on, every invariant including `ConsentBoundary` and `NoOrphans`.
-  The two consent mutants and `Proposed-ConsentStopFenced` differ from it in one constant, and
-  `Finding-ConsentClobbersDidStop` in `QuickReopen`.
+  The two consent mutants differ from it in one constant, `Finding-ConsentClobbersDidStop` in
+  `QuickReopen`, and `Proposed-ConsentStopFenced` is the finding's run with the fix: the clobber
+  is reachable there, and `NoOrphans`, `ConsentBoundary` and `StopNeverKillsSuccessor` hold.
+- `Current-QuickReopen`: quick reopens and Retry, every invariant but `OneEncoder`.
+  `Current-QuickRetry`: quick Retry only, every invariant.
 - `Liveness-Reopen`: consent, one user action, two ids, `MaxGeneration = 10`, `FairSpec`:
   `ReopenSettles`, `CloseCleansUp`, `WindowCloses`. `Liveness-BoundedWait`: the same with late
   stops under `ClockFairSpec`: `ReopenSettles`, `CloseCleansUp`.
@@ -305,6 +330,7 @@ constraint is defined in the module and used nowhere else.
 | `Mutant-RejectedNotStopped` | `RejectedIsStopped` | `NoOrphans` | A superseded reopen's result is dropped. |
 | `Mutant-CloseSkipsFinalStop` | `CloseStopsSession` | `NoOrphans` | Close with a session playing and no stop. |
 | `Mutant-RetrySkipsJoin` | `RetryJoinsPendingStops` | `StopNeverKillsSuccessor` | A failure's stop is in flight, Retry reopens at once and gets the same id, and the stop ends the replacement. |
+| `Mutant-RetrySkipsJoin-Overlap` | `RetryJoinsPendingStops` (from `Current-QuickRetry`) | `OneEncoder` | Without id reuse: the failure's stop is still in flight when the Retry's replacement attaches. That session is not a replaced prior, so the overlap lasts past the window. |
 | `Mutant-ConsentSkipsStop` | `ConsentStopsSession` | `ConsentBoundary` | The choice shows with the session's encoder running and no stop sent. |
 | `Mutant-ConsentAttachesNegotiated` | `ConsentRejectsNegotiated` | `ConsentBoundary` | A reopen's result needs consent; the choice shows over the attached result. |
 | `Mutant-WindowStaysOpen` | `WindowEndsWithCleanup` | `WindowCloses` | The window opens at the first reopen and never closes. |
@@ -407,6 +433,22 @@ C: A, B and C run at once. The variant where the first reopen attaches B first i
 asleep on its deferred stop. Emby's transaction tail exists to prevent the first shape; Jellyfin
 has nothing in its place, and its prior stop is deferred by design. The cost is server load for
 up to two seconds plus a stop's flight; the property says two.
+
+The attached shape (`Finding-ThirdEncoder-Attached`, 11 states, no failures): `Start` (A),
+`Reopen`, its negotiation returns B, B attaches and A's stop is scheduled (5899), a second `Reopen`
+within the two seconds, its negotiation returns C, C attaches and B's stop is scheduled. A and B
+are both asleep on their deferred stops while C plays: three running encoders with nothing under
+way, independent of when Jellyfin starts an encoder.
+
+### A restart while a failure shows overlaps the failed session (`Finding-RestartFromFailureOverlap`)
+
+`OneEncoder` is violated in 7 states with `QuickReopen`; no server assumption. `Start` (A),
+`Fail` (A's stop sent and joined by nothing yet), a quality or track change while the failure
+shows starts a reopen (it does not await `waitForPendingStopRequests`, as `retry()` does at
+2580), its negotiation returns B, and B attaches with A's stop still unanswered. A is not a
+replaced prior (its stop came from `surfaceFailure`, not the deferred path), so the window does not
+cover it. `Mutant-RetrySkipsJoin-Overlap` shows the same overlap on the Retry path once its join
+is removed. `Finding-RestartFromFailureStaleStop` is this route under id reuse.
 
 ### `stop()` does not join the task it cancels (`Finding-StopNoJoin`)
 

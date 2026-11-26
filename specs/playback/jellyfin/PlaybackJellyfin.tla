@@ -190,8 +190,10 @@ StRecords ==
 \* ghost[c].
 \*   rejected  sessions stopRejectedRemoteStream was given
 \*   skipped   a deferred stop was skipped for a reused id
+\*   fired     prior sessions whose deferred stop has gone out
 IsGhost(g) ==
-    /\ DOMAIN g = {"rejected", "skipped"}
+    /\ DOMAIN g = {"rejected", "skipped", "fired"}
+    /\ g.fired \subseteq Jobs
     /\ g.rejected \subseteq Jobs
     /\ g.skipped \in BOOLEAN
 
@@ -218,7 +220,8 @@ Init ==
     /\ deferred = [c \in Controllers |-> {}]
     /\ wire = [c \in Controllers |-> {}]
     /\ minted = NoSession
-    /\ ghost = [c \in Controllers |-> [rejected |-> {}, skipped |-> FALSE]]
+    /\ ghost = [c \in Controllers |-> [rejected |-> {}, skipped |-> FALSE,
+                                         fired |-> {}]]
     /\ harm = {}
 
 -----------------------------------------------------------------------------
@@ -263,22 +266,32 @@ Joined(c) ==
     /\ FixTracksDeferredStop => deferred[c] = {}
 
 
-\* jellyfinWindow: a replacement is under way, a deferred stop sleeps, or
-\* a stop the controller sent is unanswered.  Jellyfin waits for no stop
-\* before negotiating (Retry's join aside), so the prior session and its
-\* replacement overlap until the prior's stop is answered.
+\* jellyfinWindow, the base's replace-then-clean-up window: from the
+\* replacement request to the end of the prior session's deferred
+\* cleanup.  Open while a reopen task runs, a deferred stop sleeps, or the
+\* stop of a prior session whose deferred stop went out, or of a rejected
+\* result, is unanswered.  The rejected results are part of the same
+\* cleanup: Close during a reopen leaves the prior's and the rejected
+\* result's stops both in flight.
 WindowCause(c) ==
     \/ \E t \in Running(c) : t.kind = "reopen"
     \/ deferred[c] # {}
-    \/ \E r \in stopReqs : r.c = c /\ r.status = "inFlight"
+    \/ \E r \in stopReqs :
+          /\ r.c = c /\ r.status = "inFlight"
+          /\ <<r.sid, r.gen>> \in ghost[c].fired \cup ghost[c].rejected
 
-\* The user starts another replacement while the window is open, or while
-\* a task still awaits a stop: within about two seconds of the last
-\* replacement, or before the stops it caused are answered and the tasks
-\* awaiting them have run on.
-Replacing(c) ==
+\* Any cleanup of c's still under way: the window, or any stop c sent
+\* that is unanswered, or a task still awaiting a stop.  Only the
+\* user-timing constants read it.
+CleanupUnderway(c) ==
     \/ WindowCause(c)
+    \/ \E r \in stopReqs : r.c = c /\ r.status = "inFlight"
     \/ \E t \in Running(c) : t.pc \in {"consentStop", "rejectStop"}
+
+\* The user starts another replacement while cleanup is under way: within
+\* about two seconds of the last replacement, or before the stops it
+\* caused are answered and the tasks awaiting them have run on.
+Replacing(c) == CleanupUnderway(c)
 
 \* The ids a negotiation may return now.  This is the server choosing the
 \* id it mints, not a client guard.  Ids it has never used are
@@ -513,8 +526,9 @@ DeferredFires(c, j) ==
                     pendingStops[c]
                     \cup {ServerStopTicket(NextStopReq(c, j[1], j[2]))})
            ELSE pendingStops
+    /\ ghost' = [ghost EXCEPT ![c].fired = @ \cup {j}]
     /\ UNCHANGED <<gen, itemGen, item, task, unwinding, idleVars, st, wire,
-                   minted, ghost, harm>>
+                   minted, harm>>
 
 -----------------------------------------------------------------------------
 (* The reopen task                                                         *)
@@ -849,6 +863,14 @@ GenerationsSuffice == \A c \in Controllers : gen[c] + 2 <= MaxGeneration
 
 \* A request on the wire always has an id the server can return.
 IdsSuffice == (\E c \in Controllers : wire[c] # {}) => Mintable # {}
+
+\* OneEncoder in the states where a replacement plays and nothing is under
+\* way.  Finding-ThirdEncoder-Attached checks it, so that its trace is the
+\* shape where every replacement attached.
+OneEncoderWhilePlaying ==
+    \A c \in Controllers :
+        (item[c] = "attached" /\ Running(c) = {})
+        => Cardinality(Owned(c)) <= IF jellyfinWindow[c] THEN 2 ELSE 1
 
 -----------------------------------------------------------------------------
 (* Liveness                                                                *)
