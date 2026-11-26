@@ -105,9 +105,12 @@ struct PlaybackFormalModelFindingsTests {
         try #require(await eventually {
             route.count(.stop, .answered) + route.count(.stop, .cancelled) == route.count(.stop, .began)
         }, "held stops never resolved")
-        for _ in 0..<50 { await Task.yield() }   // the pending-stop join returns to the retry task
-        controller.retry()
-        let retried = await eventually(within: 3) { !controller.playbackError.isFailed }
+        // Retry inside the poll: once a fixed retry task has unwound, one of these calls starts a
+        // retry; on current code every call is a no-op because failureRetryTask stays set.
+        let retried = await eventually(within: 3) {
+            controller.retry()
+            return !controller.playbackError.isFailed
+        }
         withKnownIssue("TLA+ finding Restart-RetryWedgedByAttach (#526): a superseded retry task leaves failureRetryTask set, so Retry stops responding") {
             #expect(retried, "Retry after the second failure did not start a retry")
         }
