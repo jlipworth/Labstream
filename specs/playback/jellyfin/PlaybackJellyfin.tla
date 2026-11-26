@@ -550,15 +550,18 @@ Retry(c) ==
 \* failure showed, #530) reopens after clearing the error.  A "restart" task that wakes to another generation takes
 \* no step, where the Swift clears the slot; no action bumps the generation
 \* during the wait without cancelling the task, so nothing is lost.
+KeepOverlayErrorDuringRestart == FALSE
+HistoricalOverlayError == TRUE
+RestartError(c) == KeepOverlayErrorDuringRestart /\ st[c].retryKind = "restart" /\ st[c].failed
+
 RetryProceeds(c) ==
-    LET isRetry == st[c].retryKind = "retry" IN
     /\ st[c].retryGen # 0
     /\ st[c].retryGen = gen[c]
     /\ st[c].restop = NoRq
     /\ TaskJoined(c)
     /\ RetryNeedsConfirmedStop => ~StopUnconfirmed(c)
     /\ ReopenCore(c, [st EXCEPT ![c].retryGen = 0,
-                                ![c].failed = FALSE])
+                                ![c].failed = RestartError(c)])
 
 \* The same task finding failedAttemptStopUnconfirmed set (#539): it re-sends
 \* the failed session's stop once (failedAttemptSessionStop, kept after
@@ -591,7 +594,7 @@ RetryRestopConfirmed(c) ==
     /\ \E r \in StopsFor(c, rq.sid, rq.gen) :
           r.n = rq.n /\ r.status = "acked" /\ ~r.late
     /\ ReopenCore(c, [st EXCEPT ![c].retryGen = 0,
-                                ![c].failed = FALSE,
+                                ![c].failed = RestartError(c),
                                 ![c].failStop = NoRq, ![c].restop = NoRq])
 
 \* The re-sent stop failed or passed its bound: priorSessionStopUnconfirmed,

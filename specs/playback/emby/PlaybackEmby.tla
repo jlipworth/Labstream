@@ -916,7 +916,7 @@ BarrierPreconditions ==
 
 \* A timeout fixes the client outcome even if the server subsequently acknowledges.
 TimedOutTicketNeverSucceeds ==
-    \A c \in Controllers, k \in DOMAIN bar[c].tix :
+    \A c \in Controllers : \A k \in DOMAIN bar[c].tix :
         LET t == bar[c].tix[k] IN
         \A r \in StopsFor(c, t.job[1], t.job[2]) :
             (r.n = t.rn /\ r.late) => t.res # "ok"

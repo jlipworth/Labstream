@@ -39,6 +39,7 @@ The current configurations assume an accepted exact-session DELETE ends a job un
 the encoder running. That interleaving violates `OneEncoder`. A late server acknowledgement
 keeps the timed-out client ticket failed. `InvalidSource` covers a PlaybackInfo result that
 minted an encoder and failed local source validation. Its cleanup remains owned across Retry.
+`Current-RejectedPlaybackInfo` checks that ordering and the permanent failure of a timed-out ticket.
 
 ## What is modelled
 

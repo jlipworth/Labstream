@@ -544,7 +544,7 @@ trace and line numbers below are the code before the fix.
 | Step | Model | Swift |
 | --- | --- | --- |
 | 1, 2 | `Start`, `NegotiateFails`: a failure shows | `surfaceFailure` 5133 |
-| 3 | `UserQuality`: a restart from the failure. After cleanup the restart clears the error | `reload` 2470, `restartAtCurrentPosition` 5710; `PlaybackRestartIntent.plan` |
+| 3 | `UserQuality`: a restart from the failure. This historical config retains the error until attach, as the code did before #552 | `reload` 2470, `restartAtCurrentPosition` 5710; `PlaybackRestartIntent.plan` |
 | 4 | `Retry`, while the error still shows: the retry task captures generation G and waits for the join | `retry()` 2567, 2575 to 2580 |
 | 5, 6 | `NegotiateLands`, `TaskResume` and `Attach`: `load()` bumps the generation and clears the error | 3795, 3816 |
 | 7 | `Fail`: a failure shows again, and `failureRetryTask` is still set | `surfaceFailure` |

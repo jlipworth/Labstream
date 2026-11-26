@@ -514,6 +514,10 @@ Start(c) ==
 \* reload(bitrateKbps:), and the audio and subtitle track changes: an
 \* intent other than explicitRetry.  Nothing here asks whether playback
 \* has failed, and the plan does not clear the error.
+\* The historical #526 trace predates the overlay-error reset fixed in #552.
+KeepOverlayErrorDuringRestart == FALSE
+HistoricalOverlayError == TRUE
+
 UserQuality(c) ==
     /\ life[c] = "open"
     /\ userLeft[c] > 0
@@ -528,7 +532,7 @@ UserQuality(c) ==
     /\ latch' = Upd(latch, c,
            IF FixRestartResetsStopLatch THEN FALSE ELSE latch[c])
     /\ breach' = Upd(breach, c, CancelBreach(c))
-    /\ failed' = Upd(failed, c, FALSE)
+    /\ failed' = Upd(failed, c, KeepOverlayErrorDuringRestart /\ failed[c])
     /\ UNCHANGED paused
 
 \* performUserSeek with a target AVPlayer can seek to itself (in the
